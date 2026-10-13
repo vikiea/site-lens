@@ -10,11 +10,12 @@ Pass --single-suite to run every integration suite through one combined
 entrypoint; that avoids reinstalling the debug APK once per file on wireless
 adb while keeping the same tests and the same database backup/restore flow.
 
-Wireless adb can drop mid-push (`device offline`, `EOF`, later
-`No route to host`), so every install retries after reconnecting, and
---restart-adb adds the known kill-server/start-server workaround. When a run
-fails only while restoring, --restore-from DIR finishes that run from the
-retained backup without replaying the suites.
+For an IP:port endpoint, connection setup is strict: the endpoint must already
+be online before the run starts. A failed preflight never reconnects, restarts
+adb, installs an APK, or runs a suite. Once a strict endpoint is online, an
+install failure is reported immediately instead of triggering a reconnect
+retry. When a run fails only while restoring, --restore-from DIR finishes that
+run from the retained backup without replaying the suites.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ import time
 from pathlib import Path
 from android_artifact import FORMAL_PACKAGE, verify_apk_package, verify_formal_apk
 from android_media_actions import MediaActionDriver
+from validation_runner import is_tcp_endpoint
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = "dev.vikiea.site_lens.debug"
@@ -66,25 +68,41 @@ RESTART_ADB = False
 INSTALL_ATTEMPTS = 3
 INSTALL_TIMEOUT_SECONDS = 600
 RECONNECT_WAIT_SECONDS = 90
+ADB_COMMAND_TIMEOUT_SECONDS = 30
 
 
-def adb(device: str, *args: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
+def adb(
+    device: str,
+    *args: str,
+    check: bool = True,
+    timeout: int = ADB_COMMAND_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         [ADB, "-s", device, *args],
         check=check,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        timeout=timeout,
     )
 
 
 def device_online(device: str) -> bool:
-    result = adb(device, "get-state", check=False)
+    try:
+        result = adb(device, "get-state", check=False, timeout=10)
+    except subprocess.TimeoutExpired:
+        return False
     return result.returncode == 0 and result.stdout.strip() == b"device"
 
 
 def require_device(device: str) -> None:
-    if not device_online(device) and ":" in device:
-        reconnect(device)
+    if is_tcp_endpoint(device):
+        if not device_online(device):
+            print(
+                f"device {device} is unavailable; provide the correct adb port",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        return
     if not device_online(device):
         raise SystemExit(f"device {device} is not online")
 
@@ -125,7 +143,8 @@ def install(device: str, apk: Path, expected_package: str) -> None:
         # RuntimeError, not SystemExit: SystemExit is a BaseException and would
         # escape the `except Exception` that reports the retained backup.
         raise RuntimeError(f"missing APK: {apk}")
-    for attempt in range(1, INSTALL_ATTEMPTS + 1):
+    attempts = 1 if is_tcp_endpoint(device) else INSTALL_ATTEMPTS
+    for attempt in range(1, attempts + 1):
         try:
             subprocess.run(
                 [ADB, "-s", device, "install", "--no-streaming", "-r", str(apk)],
@@ -135,12 +154,12 @@ def install(device: str, apk: Path, expected_package: str) -> None:
             )
             return
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            if attempt == INSTALL_ATTEMPTS:
+            if attempt == attempts:
                 raise RuntimeError(
-                    f"install failed {INSTALL_ATTEMPTS}x for {apk.name}: {exc}"
+                    f"install failed {attempts}x for {apk.name}: {exc}"
                 ) from exc
             print(
-                f"install attempt {attempt}/{INSTALL_ATTEMPTS} failed for "
+                f"install attempt {attempt}/{attempts} failed for "
                 f"{apk.name}; reconnecting before the retry",
                 file=sys.stderr,
                 flush=True,
@@ -416,7 +435,9 @@ def main() -> int:
             'integration_test/acceptance_suite_test.dart',
             'integration_test/app_flow_test.dart',
             'integration_test/browser_tabs_test.dart',
+            'integration_test/host_contract_test.dart',
             'integration_test/modernization_test.dart',
+            'integration_test/script_import_test.dart',
         ],
         default='integration_test/acceptance_suite_test.dart',
     )
@@ -424,6 +445,13 @@ def main() -> int:
 
     global RESTART_ADB
     RESTART_ADB = args.restart_adb
+    if is_tcp_endpoint(args.device) and args.restart_adb:
+        print(
+            "--restart-adb is not allowed for an IP:port device; "
+            "provide a reachable adb port instead",
+            file=sys.stderr,
+        )
+        raise SystemExit(3)
     require_device(args.device)
 
     if args.restore_from:

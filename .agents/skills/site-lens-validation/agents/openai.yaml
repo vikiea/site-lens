@@ -1,0 +1,7 @@
+interface:
+  display_name: "Site Lens Validation"
+  short_description: "按风险分级执行 Site Lens 验证"
+  default_prompt: "Use $site-lens-validation to choose and run the smallest sufficient Site Lens validation level."
+
+policy:
+  allow_implicit_invocation: true

@@ -17,7 +17,7 @@ export ANDROID_HOME
 APK_DEBUG := build/app/outputs/flutter-apk/app-debug.apk
 APK_RELEASE := build/app/outputs/flutter-apk/app-release.apk
 
-.PHONY: help deps analyze format test check build build-debug build-release \
+.PHONY: help deps analyze format test check verify-level build build-debug build-release \
         devices connect install install-debug install-release acceptance acceptance-per-file \
         restore-device verify-script clean clean-flutter-cache clean-flutter-cache-preview require-device require-backup
 
@@ -31,6 +31,7 @@ help:
 	  '  make format                dart format lib test integration_test tool' \
 	  '  make test                  unit/widget tests' \
 	  '  make check                 analyze + Flutter tests + JS/tooling contracts' \
+	  '  make verify-level         choose and run the smallest validation level' \
 	  '  make build                 build debug and release APKs' \
 	  '  make clean                 flutter clean (remove all generated state)' \
 	  '  make clean-flutter-cache   remove old .dart_tool/flutter_build caches' \
@@ -75,6 +76,9 @@ test:
 
 check:
 	./tool/check.sh
+
+verify-level:
+	python3 tool/verify_level.py $(ARGS)
 
 build-debug:
 	$(FLUTTER_BIN_DIR)/flutter build apk --debug

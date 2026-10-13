@@ -1,0 +1,2 @@
+# Preserve the uploaded minified userscript fixture byte-for-byte.
+integration_test/fixtures/miss_player_5.6.17.user.js whitespace=-trailing

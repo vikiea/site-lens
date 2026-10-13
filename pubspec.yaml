@@ -30,3 +30,4 @@ flutter:
     - web_assets/userscript_runtime.js
     - web_assets/page_inspector.js
     - web_assets/media_lifecycle.js
+    - integration_test/fixtures/miss_player_5.6.17.user.js

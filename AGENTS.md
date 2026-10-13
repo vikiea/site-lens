@@ -6,7 +6,7 @@ This is a Flutter app for Android-first, local-first site discovery and browsing
 
 ## Build, Test, and Development Commands
 
-Run `flutter pub get` after dependency changes. Use `make check` for the normal gate: dependency resolution, Pigeon regeneration, `flutter analyze`, Flutter tests, and the JavaScript runtime contract. Format Dart with `make format`, build APKs with `make build`, and run `make verify-script SCRIPT=path/to/file.user.js` to validate a userscript. For a physical Android device, use `make acceptance DEVICE=<adb-serial>`; `make devices` lists available devices. `make build-release` produces and validates `build/app/outputs/flutter-apk/app-release.apk`.
+Run `flutter pub get` after dependency changes. Use the project `$site-lens-validation` Skill or `python3 tool/verify_level.py --auto` to select the smallest sufficient validation level. L1 uses `make check`, while higher levels add protected integration, device, or release validation. Format Dart with `make format`, build APKs with `make build`, and run `make verify-script SCRIPT=path/to/file.user.js` to validate a userscript. For Android validation, use `make acceptance DEVICE=<adb-serial>`; `make devices` lists available devices. An `IP:port` endpoint is preflighted once and is never automatically reconnected or retried. `make build-release` produces and validates `build/app/outputs/flutter-apk/app-release.apk`.
 
 ## Coding Style & Naming Conventions
 
@@ -14,7 +14,7 @@ Follow `flutter_lints` and Dart conventions: two-space indentation, `lower_snake
 
 ## Testing Guidelines
 
-Name Dart tests with descriptive `*_test.dart` suffixes and group cases around one behavior. Put fast unit/widget coverage in `test/`; reserve `integration_test/` for real device or host-contract behavior. Run `flutter test` and `make check` before review. Device acceptance requires an Android serial and may modify or restore the app database; use the documented Make targets rather than ad hoc installs.
+Name Dart tests with descriptive `*_test.dart` suffixes and group cases around one behavior. Put fast unit/widget coverage in `test/`; reserve `integration_test/` for real device or host-contract behavior. Run the validation level selected by `$site-lens-validation` before review. Device acceptance requires an Android serial and may modify or restore the app database; use the documented Make targets rather than ad hoc installs. Keep the independent review requirement before commits.
 
 ## Commit & Pull Request Guidelines
 

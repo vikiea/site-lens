@@ -22,6 +22,6 @@ Use this skill for UI work in this repository. Read [references/ui-system.md](re
 2. Reuse or extend the shared primitive layer before composing a page-local widget.
 3. Keep Material controls when they provide useful semantics and interaction; style them through the Site Lens theme or wrap them in a Site Lens surface.
 4. Check light mode, dark mode, a non-default theme preset, narrow phone width, long Chinese text, empty state, and error state.
-5. Run the targeted UI tests, `make check`, and the relevant screenshot review before reporting completion.
+5. Use `$site-lens-validation` to run the targeted UI tests and the smallest sufficient validation level before reporting completion. UI changes that affect WebView overlays, platform insets, gestures, or native callbacks require L2 or higher.
 
 Do not introduce Cupertino as a replacement for the whole component system. Use it only when a platform-native interaction is explicitly required.

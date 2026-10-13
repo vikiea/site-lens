@@ -1,5 +1,6 @@
 # Local plans
 /plans/
+/.ci_cache/
 
 # Miscellaneous
 *.class
