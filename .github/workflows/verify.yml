@@ -1,0 +1,54 @@
+name: Verify Site Lens
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      ios_acceptance:
+        description: Build and run the iOS simulator contract (requires Xcode runner)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fixed Flutter SDK
+        shell: bash
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          git -C "$RUNNER_TEMP/flutter" checkout 5fc346839b5d0eef006ed8404392afb4dfae428d
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - run: ./tool/check.sh
+      - name: Generated contract must match source
+        run: git diff --exit-code -- lib/web_host/web_host.g.dart android/app/src/main/kotlin/dev/vikiea/site_lens/WebHost.g.kt ios/Runner/WebHost.g.swift
+      - run: flutter build apk --debug
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: android-debug-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+  ios:
+    if: github.event_name == 'workflow_dispatch' && inputs.ios_acceptance
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fixed Flutter SDK
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          git -C "$RUNNER_TEMP/flutter" checkout 5fc346839b5d0eef006ed8404392afb4dfae428d
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - name: Build and exercise simulator
+        run: |
+          UUID=$(xcrun simctl list devices available -j | python3 -c 'import sys,json; j=json.load(sys.stdin); print(next(d["udid"] for ds in j["devices"].values() for d in ds if d["name"].startswith("iPhone") and d.get("isAvailable")))')
+          xcrun simctl boot "$UUID" || true
+          xcrun simctl bootstatus "$UUID" -b
+          ./tool/ios_acceptance.sh "$UUID"

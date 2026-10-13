@@ -1,0 +1,7 @@
+interface:
+  display_name: "Site Lens UI"
+  short_description: "统一 Site Lens 的 Flutter 液态玻璃 UI"
+  default_prompt: "Use $site-lens-ui to design or modify Site Lens Flutter UI with the project liquid-glass system."
+
+policy:
+  allow_implicit_invocation: true

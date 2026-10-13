@@ -1,0 +1,27 @@
+---
+name: site-lens-ui
+description: Apply the Site Lens Flutter UI system when creating or changing screens, themes, widgets, dialogs, navigation, browser chrome, or visual regression captures. Preserve the project's iOS 27 liquid-glass surface language while keeping Material as the behavior and accessibility substrate.
+---
+
+# Site Lens UI
+
+Use this skill for UI work in this repository. Read [references/ui-system.md](references/ui-system.md) before changing a shared surface, theme token, page shell, dialog, sheet, navigation control, or screenshot.
+
+## Core contract
+
+- Treat liquid glass as the visual surface system and Material as Flutter's application, behavior, semantics, focus, and accessibility infrastructure. Do not replace `MaterialApp`, `ThemeData`, `Scaffold`, `Navigator`, or Material behavior wholesale.
+- Use `SiteLensBackdrop`, `SiteLensGlassSurface`, `SiteLensPanel`, and `SiteLensGlassGroup` for app surfaces. Use `SiteLensSurfaceRole.platformView` only for controls over the native WebView.
+- Keep the background static, low saturation, and theme tinted. Do not add page-local gradients, shadows, opaque cards, or a second spacing/radius system.
+- The bottom navigation is a floating, narrow glass chrome surface. It must use the liquid-glass path, keep one row of icon-plus-label destinations, and use a tinted selected capsule without a solid navigation slab.
+- Prefer shared UI primitives and theme tokens over one-off `Container`, `BoxDecoration`, `Card`, `TextStyle`, `BorderRadius`, or hard-coded colors in screens.
+- Preserve existing business behavior, fail-closed navigation and script rules, WebView lifecycle, and data flows while changing presentation.
+
+## Implementation workflow
+
+1. Inspect the existing surface role and theme token before adding a new one.
+2. Reuse or extend the shared primitive layer before composing a page-local widget.
+3. Keep Material controls when they provide useful semantics and interaction; style them through the Site Lens theme or wrap them in a Site Lens surface.
+4. Check light mode, dark mode, a non-default theme preset, narrow phone width, long Chinese text, empty state, and error state.
+5. Run the targeted UI tests, `make check`, and the relevant screenshot review before reporting completion.
+
+Do not introduce Cupertino as a replacement for the whole component system. Use it only when a platform-native interaction is explicitly required.

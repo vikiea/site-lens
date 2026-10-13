@@ -1,0 +1,81 @@
+# Local plans
+/plans/
+
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+Thumbs.db
+.atom/
+.buildlog/
+.history/
+.svn/
+migrate_working_dir/
+
+# IDE files
+*.iml
+*.ipr
+*.iws
+.idea/
+.vscode/
+
+# Dart and Flutter generated files
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+/build/
+/coverage/
+**/doc/api/
+**/ios/Flutter/.last_build_id
+app.*.symbols
+app.*.map.json
+# Keep pubspec.lock tracked for reproducible application builds.
+
+# Android generated files and local configuration
+**/android/.gradle/
+**/android/build/
+**/android/captures/
+**/android/local.properties
+**/android/app/debug/
+**/android/app/profile/
+**/android/app/release/
+**/android/key.properties
+*.jks
+*.keystore
+
+# iOS and macOS generated files
+**/ios/**/DerivedData/
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/App.framework
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/ephemeral/
+**/ios/Flutter/flutter_assets/
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/Runner/GeneratedPluginRegistrant.*
+**/macos/Pods/
+**/macos/.symlinks/
+**/macos/Flutter/ephemeral/
+**/*.xcuserstate
+**/xcuserdata/
+**/*.xcscmblueprint
+**/*.xccheckout
+
+# Desktop generated files
+**/linux/flutter/ephemeral/
+**/windows/flutter/ephemeral/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+!.env.sample
+*.p12
+*.mobileprovision
