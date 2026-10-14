@@ -12,3 +12,4 @@ node tool/test_media_lifecycle.mjs
 python3 tool/test_android_tools.py
 python3 tool/test_check_emulator.py
 python3 tool/test_verify_level.py
+python3 tool/test_bootstrap_dev.py
