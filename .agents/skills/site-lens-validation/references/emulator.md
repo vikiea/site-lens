@@ -13,7 +13,7 @@ Use this profile for Site Lens L2/L3/L4 validation when an Android emulator is a
 Example:
 
 ```sh
-emulator -avd sl_g37 \
+emulator -avd <avd-name> \
   -memory 3072 \
   -cores 2 \
   -gpu host \
@@ -26,11 +26,11 @@ Record the effective RAM, GPU backend, API level, WebView package/version, emula
 
 ## Startup and live monitoring
 
-Before starting validation, check `emulator -list-avds`, the selected AVD `config.ini`, host RAM, and existing emulator/ADB processes. After starting, poll every five seconds until both conditions hold:
+Before starting validation, run `make emulator-check EMULATOR_AVD=<avd-name>` or `python3 tool/check_emulator.py --avd <avd-name>`. The one-shot check accepts `--serial` when the ADB serial is already known, `--port` when a fixed emulator console port is needed, and runtime overrides such as `--memory-mb`, `--cores`, `--gpu`, `--timeout`, `--adb`, `--emulator`, and `--log`. Its default startup timeout is 45 seconds. It checks ADB state and `sys.boot_completed=1`; it does not install, back up, or run tests. Before starting validation, check `emulator -list-avds`, the selected AVD `config.ini`, host RAM, and existing emulator/ADB processes. After starting, poll every five seconds until both conditions hold:
 
 ```sh
-adb devices -l                         # serial is present and state is device
-adb -s emulator-5554 shell getprop sys.boot_completed  # equals 1
+adb devices -l                         # selected serial is present and state is device
+adb -s <serial> shell getprop sys.boot_completed  # equals 1
 ```
 
 Use bounded command timeouts for every ADB shell probe. A probe that hangs is a health signal; do not let monitoring itself block the validation indefinitely.

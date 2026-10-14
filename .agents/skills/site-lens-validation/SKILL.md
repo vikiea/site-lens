@@ -13,7 +13,7 @@ Use this skill for implementation, bug fixes, UI changes, test changes, tooling 
 2. Read [references/validation-matrix.md](references/validation-matrix.md) and classify the change by behavior first, then by path.
 3. Select the smallest sufficient level from L0 through L4. Escalate when the change crosses WebView, navigation, scripts, permissions, persistence, Pigeon, native code, media, device lifecycle, or release identity.
 4. Run `python3 tool/verify_level.py --auto` unless a user explicitly selects a level. Use `--device IP:PORT` for Android validation.
-5. For emulator validation, read [references/emulator.md](references/emulator.md) before starting it. Use the recommended bounded RAM/GPU profile and monitor ADB, boot state, test progress, emulator process, and host memory while the runner is active.
+5. For emulator validation, run `make emulator-check EMULATOR_AVD=<avd-name>` or `python3 tool/check_emulator.py --avd <avd-name>` before acceptance. The check waits up to 45 seconds by default, accepts an explicit `--serial`, `--port`, `--memory-mb`, `--cores`, `--gpu`, `--adb`, `--emulator`, or `--log`, and does not install an APK or run tests. Read [references/emulator.md](references/emulator.md) before starting it. Use the recommended bounded RAM/GPU profile and monitor ADB, boot state, test progress, emulator process, and host memory while the runner is active.
 6. Treat a skipped required stage as incomplete. Preserve the runner's nonzero exit code and include the missing evidence in the report.
 7. Report the selected level, reason, commands, cache hits, failures, emulator configuration, monitoring observations, and remaining gates. A successful lower level does not imply that a higher level passed.
 

@@ -4,6 +4,10 @@ SHELL := /bin/bash
 #   make acceptance DEVICE=DEVICE_ID
 DEVICE ?=
 ARGS ?=
+EMULATOR_AVD ?=
+EMULATOR_SERIAL ?=
+EMULATOR_TIMEOUT ?=45
+EMULATOR_ARGS ?=
 FLUTTER_BIN_DIR ?= $(HOME)/.local/share/flutter/bin
 JAVA_HOME ?= /opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
 ANDROID_HOME ?= /opt/homebrew/share/android-commandlinetools
@@ -18,7 +22,7 @@ APK_DEBUG := build/app/outputs/flutter-apk/app-debug.apk
 APK_RELEASE := build/app/outputs/flutter-apk/app-release.apk
 
 .PHONY: help deps analyze format test check verify-level build build-debug build-release \
-        devices connect install install-debug install-release acceptance acceptance-per-file \
+        devices emulator-check connect install install-debug install-release acceptance acceptance-per-file \
         restore-device verify-script clean clean-flutter-cache clean-flutter-cache-preview require-device require-backup
 
 help:
@@ -39,6 +43,7 @@ help:
 	  '' \
 	  'Device:' \
 	  '  make devices               list adb devices' \
+	  '  make emulator-check        check or start an emulator and wait up to 45s' \
 	  '  make connect DEVICE=...    adb connect to a wireless device' \
 	  '  make install DEVICE=...    build + install release APK' \
 	  '  make install-debug DEVICE=...' \
@@ -49,6 +54,10 @@ help:
 	  '' \
 	  'Variables:' \
 	  '  DEVICE=host:port       wireless adb device (required by device targets)' \
+	  '  EMULATOR_AVD=name      AVD name to start for emulator-check' \
+	  '  EMULATOR_SERIAL=id    adb serial to check, e.g. emulator-5554' \
+	  '  EMULATOR_TIMEOUT=45   emulator startup timeout in seconds' \
+	  '  EMULATOR_ARGS=...     extra arguments for tool/check_emulator.py' \
 	  '  BACKUP=/tmp/...        retained backup dir printed by a previous run' \
 	  '  ARGS=--restart-adb         extra flags passed to the acceptance script' \
 	  '  FLUTTER_BUILD_CACHE_KEEP=N  keep the newest N Flutter build caches (default: 12)'
@@ -92,6 +101,12 @@ build: build-debug build-release
 
 devices:
 	$(ADB) devices -l
+
+emulator-check:
+	python3 tool/check_emulator.py --timeout "$(EMULATOR_TIMEOUT)" \
+		$(if $(EMULATOR_AVD),--avd "$(EMULATOR_AVD)",) \
+		$(if $(EMULATOR_SERIAL),--serial "$(EMULATOR_SERIAL)",) \
+		$(EMULATOR_ARGS)
 
 connect: require-device
 	$(ADB) connect $(DEVICE)
