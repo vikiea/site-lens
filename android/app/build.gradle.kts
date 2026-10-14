@@ -82,6 +82,7 @@ flutter {
 }
 
 dependencies {
+    implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.webkit:webkit:1.17.1")
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
 }

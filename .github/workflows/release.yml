@@ -1,0 +1,124 @@
+name: Release Site Lens
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fixed Flutter SDK
+        shell: bash
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          git -C "$RUNNER_TEMP/flutter" checkout 5fc346839b5d0eef006ed8404392afb4dfae428d
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Resolve and validate release tag
+        id: release
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            tag="$DISPATCH_TAG"
+          else
+            tag="$GITHUB_REF_NAME"
+          fi
+          python3 - "$tag" <<'PY'
+          import re
+          import sys
+          tag = sys.argv[1]
+          if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
+              raise SystemExit(f"invalid release tag: {tag}")
+          PY
+          git rev-parse "$tag^{commit}" >/dev/null
+          version="${tag#v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Run repository checks
+        run: ./tool/check.sh
+
+      - name: Restore formal signing configuration
+        env:
+          SITE_LENS_KEYSTORE_BASE64: ${{ secrets.SITE_LENS_KEYSTORE_BASE64 }}
+          SITE_LENS_KEYSTORE_PASSWORD: ${{ secrets.SITE_LENS_KEYSTORE_PASSWORD }}
+          SITE_LENS_KEY_ALIAS: ${{ secrets.SITE_LENS_KEY_ALIAS }}
+          SITE_LENS_KEY_PASSWORD: ${{ secrets.SITE_LENS_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SITE_LENS_KEYSTORE_BASE64"
+          test -n "$SITE_LENS_KEYSTORE_PASSWORD"
+          test -n "$SITE_LENS_KEY_ALIAS"
+          test -n "$SITE_LENS_KEY_PASSWORD"
+          keystore="$RUNNER_TEMP/site-lens-release.jks"
+          properties="$RUNNER_TEMP/site-lens-signing.properties"
+          printf '%s' "$SITE_LENS_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          chmod 600 "$keystore"
+          {
+            printf 'storeFile=%s\n' "$keystore"
+            printf 'storePassword=%s\n' "$SITE_LENS_KEYSTORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$SITE_LENS_KEY_ALIAS"
+            printf 'keyPassword=%s\n' "$SITE_LENS_KEY_PASSWORD"
+          } > "$properties"
+          chmod 600 "$properties"
+          echo "SITE_LENS_SIGNING_PROPERTIES=$properties" >> "$GITHUB_ENV"
+
+      - name: Build and verify formal APK
+        env:
+          BUILD_NAME: ${{ steps.release.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          make build-release BUILD_NAME="$BUILD_NAME" BUILD_NUMBER="$BUILD_NUMBER"
+
+      - name: Prepare release assets
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          apk="dist/site-lens-${TAG}.apk"
+          cp build/app/outputs/flutter-apk/app-release.apk "$apk"
+          sha256sum "$apk" > "$apk.sha256"
+          ls -lh dist
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            args=("$TAG" --title "Site Lens $TAG" --target "$(git rev-parse HEAD)" --generate-notes)
+            gh release create "${args[@]}"
+          fi
+          gh release upload "$TAG" dist/* --clobber

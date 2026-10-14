@@ -4,16 +4,26 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
+import android.provider.Settings
+import androidx.core.content.FileProvider
+import androidx.webkit.ProfileStore
+import androidx.webkit.WebViewFeature
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import androidx.webkit.ProfileStore
-import androidx.webkit.WebViewFeature
+import java.io.File
+import java.security.MessageDigest
 
 class MainActivity : FlutterActivity() {
+    private companion object {
+        const val FORMAL_CERT_SHA256 = "9db2d0302374a13f915382c06dbbcee315cca82e04d073eaa10a5de9e752947d"
+    }
     private var hosts: NativeWebHostRegistry? = null
     private var pendingNotification: Pair<String, String>? = null
     private var notificationPermissionAsked = false
@@ -49,27 +59,30 @@ class MainActivity : FlutterActivity() {
                 grantResults[0] == PackageManager.PERMISSION_GRANTED
         val pending = pendingNotification
         pendingNotification = null
-        // Deliver the notice the moment the user allows notifications.
         if (granted && pending != null) postNotification(pending.first, pending.second)
     }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
             val store = ProfileStore.getInstance()
             for (name in store.allProfileNames.filter { it.startsWith("site-lens-probe-") }) {
-                try { store.deleteProfile(name) } catch (_: IllegalStateException) { /* Never delete an in-use profile. */ }
+                try { store.deleteProfile(name) } catch (_: IllegalStateException) { }
             }
         }
         hosts = NativeWebHostRegistry(this, flutterEngine)
-        // Minimal device-conditions channel for the background survival check.
+        registerDeviceChannel(flutterEngine)
+        registerUpdateChannel(flutterEngine)
+    }
+
+    private fun registerDeviceChannel(flutterEngine: FlutterEngine) {
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "site_lens/device",
         ).setMethodCallHandler { call, result ->
             when (call.method) {
                 "isCharging" -> {
-                    val battery =
-                        getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+                    val battery = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
                     result.success(battery.isCharging)
                 }
                 "notify" -> {
@@ -79,8 +92,6 @@ class MainActivity : FlutterActivity() {
                         checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
                             PackageManager.PERMISSION_GRANTED
                     ) {
-                        // Ask exactly once per process; the caller keeps the
-                        // notice and it is delivered when permission is granted.
                         pendingNotification = title to body
                         if (!notificationPermissionAsked) {
                             notificationPermissionAsked = true
@@ -99,10 +110,140 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
+
+    private fun registerUpdateChannel(flutterEngine: FlutterEngine) {
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "site_lens/update",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "canInstallPackages" -> result.success(canInstallPackages())
+                "openInstallPermissionSettings" -> {
+                    openInstallPermissionSettings()
+                    result.success(null)
+                }
+                "verifyApk", "verifyAndInstallApk" -> {
+                    val path = call.argument<String>("path")
+                    val expectedSha256 = call.argument<String>("sha256")
+                    val expectedVersion = call.argument<String>("version")
+                    if (path.isNullOrBlank() || expectedSha256.isNullOrBlank() || expectedVersion.isNullOrBlank()) {
+                        result.error("invalid_apk", "APK 校验参数不完整", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val apk = verifyDownloadedApk(File(path), expectedSha256, expectedVersion)
+                        if (call.method == "verifyAndInstallApk") installApk(apk)
+                        result.success(null)
+                    } catch (error: UpdateInstallException) {
+                        result.error(error.code, error.message, null)
+                    } catch (error: Exception) {
+                        result.error("install_failed", error.message ?: "APK 校验或安装失败", null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    private fun canInstallPackages(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()
+
+    private fun openInstallPermissionSettings() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        startActivity(
+            Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:$packageName"),
+            ),
+        )
+    }
+
+    private fun verifyDownloadedApk(apk: File, expectedSha256: String, expectedVersion: String): File {
+        if (!apk.isFile) throw UpdateInstallException("invalid_apk", "下载的 APK 不存在")
+        if (!expectedSha256.matches(Regex("[0-9a-fA-F]{64}"))) {
+            throw UpdateInstallException("invalid_apk", "APK SHA-256 校验值格式错误")
+        }
+        if (!sha256(apk).equals(expectedSha256, ignoreCase = true)) {
+            throw UpdateInstallException("digest_mismatch", "APK SHA-256 校验失败")
+        }
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PackageManager.GET_SIGNING_CERTIFICATES
+        } else {
+            @Suppress("DEPRECATION") PackageManager.GET_SIGNATURES
+        }
+        val archive = packageManager.getPackageArchiveInfo(apk.absolutePath, flags)
+            ?: throw UpdateInstallException("invalid_apk", "无法读取下载的 APK")
+        if (archive.packageName != packageName) {
+            throw UpdateInstallException("package_mismatch", "下载的 APK 不是 Site Lens 正式包")
+        }
+        if (archive.versionName != expectedVersion) {
+            throw UpdateInstallException("version_mismatch", "APK 版本与发布信息不一致")
+        }
+        val current = packageManager.getPackageInfo(packageName, flags)
+        val currentCertificates = certificateDigests(current)
+        val archiveCertificates = certificateDigests(archive)
+        if (currentCertificates != setOf(FORMAL_CERT_SHA256) ||
+            archiveCertificates != setOf(FORMAL_CERT_SHA256) ||
+            currentCertificates != archiveCertificates
+        ) {
+            throw UpdateInstallException("signature_mismatch", "下载的 APK 不是 Site Lens 正式签名")
+        }
+        val currentCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) current.longVersionCode else @Suppress("DEPRECATION") current.versionCode.toLong()
+        val archiveCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) archive.longVersionCode else @Suppress("DEPRECATION") archive.versionCode.toLong()
+        if (archiveCode <= currentCode) {
+            throw UpdateInstallException("version_not_newer", "下载的 APK 版本号没有高于当前版本")
+        }
+        return apk
+    }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+    }
+
+    private fun installApk(apk: File) {
+        if (!canInstallPackages()) {
+            throw UpdateInstallException("install_permission_required", "请先允许安装未知来源应用")
+        }
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
+        startActivity(
+            Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+        )
+    }
+
+    private fun certificateDigests(info: PackageInfo): Set<String> {
+        val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val signingInfo = info.signingInfo ?: return emptySet()
+            if (signingInfo.hasMultipleSigners()) signingInfo.apkContentsSigners
+            else signingInfo.signingCertificateHistory
+        } else {
+            @Suppress("DEPRECATION") info.signatures
+        }
+        if (signatures.isNullOrEmpty()) return emptySet()
+        return signatures.mapTo(mutableSetOf()) { signature ->
+            MessageDigest.getInstance("SHA-256").digest(signature.toByteArray())
+                .joinToString("") { byte -> "%02x".format(byte) }
+        }
+    }
+
     override fun onPause() { hosts?.foreground(false); super.onPause() }
     override fun onResume() { super.onResume(); hosts?.foreground(true) }
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
         hosts?.dispose(); hosts = null
         super.cleanUpFlutterEngine(flutterEngine)
     }
+
+    private class UpdateInstallException(val code: String, message: String) : Exception(message)
 }
