@@ -43,22 +43,22 @@ FLUTTER_BIN_DIR :=
 else ifeq ($(FLUTTER_ROOT_EXTERNAL)$(FLUTTER_BIN_EXTERNAL),01)
 FLUTTER_ROOT :=
 else ifeq ($(FLUTTER_ROOT_EXTERNAL)$(FLUTTER_BIN_EXTERNAL),00)
-FLUTTER_ROOT := $(shell python3 tool/bootstrap_dev.py env-value --file "$(ENV_FILE)" FLUTTER_ROOT)
-FLUTTER_BIN_DIR := $(shell python3 tool/bootstrap_dev.py env-value --file "$(ENV_FILE)" FLUTTER_BIN_DIR)
+FLUTTER_ROOT := $(shell python3 tool/bootstrap_dev.py env-value FLUTTER_ROOT --file "$(ENV_FILE)")
+FLUTTER_BIN_DIR := $(shell python3 tool/bootstrap_dev.py env-value FLUTTER_BIN_DIR --file "$(ENV_FILE)")
 endif
 ifeq ($(ANDROID_HOME_EXTERNAL)$(ANDROID_SDK_ROOT_EXTERNAL),10)
 ANDROID_SDK_ROOT :=
 else ifeq ($(ANDROID_HOME_EXTERNAL)$(ANDROID_SDK_ROOT_EXTERNAL),01)
 ANDROID_HOME :=
 else ifeq ($(ANDROID_HOME_EXTERNAL)$(ANDROID_SDK_ROOT_EXTERNAL),00)
-ANDROID_HOME := $(shell python3 tool/bootstrap_dev.py env-value --file "$(ENV_FILE)" ANDROID_HOME)
-ANDROID_SDK_ROOT := $(shell python3 tool/bootstrap_dev.py env-value --file "$(ENV_FILE)" ANDROID_SDK_ROOT)
+ANDROID_HOME := $(shell python3 tool/bootstrap_dev.py env-value ANDROID_HOME --file "$(ENV_FILE)")
+ANDROID_SDK_ROOT := $(shell python3 tool/bootstrap_dev.py env-value ANDROID_SDK_ROOT --file "$(ENV_FILE)")
 endif
-JAVA_HOME ?= $(shell python3 tool/bootstrap_dev.py env-value --file "$(ENV_FILE)" JAVA_HOME)
-EMULATOR_AVD ?= $(shell python3 tool/bootstrap_dev.py env-value --file "$(ENV_FILE)" EMULATOR_AVD)
-AVD_NAME ?= $(shell python3 tool/bootstrap_dev.py env-value --file "$(ENV_FILE)" AVD_NAME)
-AVD_IMAGE ?= $(shell python3 tool/bootstrap_dev.py env-value --file "$(ENV_FILE)" AVD_IMAGE)
-SITE_LENS_SIGNING_PROPERTIES ?= $(shell python3 tool/bootstrap_dev.py env-value --file "$(ENV_FILE)" SITE_LENS_SIGNING_PROPERTIES)
+JAVA_HOME ?= $(shell python3 tool/bootstrap_dev.py env-value JAVA_HOME --file "$(ENV_FILE)")
+EMULATOR_AVD ?= $(shell python3 tool/bootstrap_dev.py env-value EMULATOR_AVD --file "$(ENV_FILE)")
+AVD_NAME ?= $(shell python3 tool/bootstrap_dev.py env-value AVD_NAME --file "$(ENV_FILE)")
+AVD_IMAGE ?= $(shell python3 tool/bootstrap_dev.py env-value AVD_IMAGE --file "$(ENV_FILE)")
+SITE_LENS_SIGNING_PROPERTIES ?= $(shell python3 tool/bootstrap_dev.py env-value SITE_LENS_SIGNING_PROPERTIES --file "$(ENV_FILE)")
 # Origin metadata lets doctor distinguish caller overrides from local defaults.
 export SITE_LENS_ENV_ORIGIN_FLUTTER_ROOT := $(if $(filter environment command line,$(origin FLUTTER_ROOT)),$(origin FLUTTER_ROOT),$(if $(FLUTTER_ROOT),$(ENV_FILE),automatic discovery))
 export SITE_LENS_ENV_ORIGIN_FLUTTER_BIN_DIR := $(if $(filter environment command line,$(origin FLUTTER_BIN_DIR)),$(origin FLUTTER_BIN_DIR),$(if $(FLUTTER_BIN_DIR),$(ENV_FILE),automatic discovery))

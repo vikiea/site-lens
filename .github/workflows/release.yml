@@ -62,7 +62,14 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Run repository checks
-        run: ./tool/check.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The bootstrap tests exercise .env alias precedence. The fixed SDK
+          # is supplied through PATH for this job, so clear any runner-level
+          # SDK aliases before running those tests.
+          unset FLUTTER_ROOT FLUTTER_BIN_DIR SITE_LENS_ENV_FILE
+          ./tool/check.sh
 
       - name: Restore formal signing configuration
         env:
