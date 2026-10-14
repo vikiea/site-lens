@@ -291,8 +291,14 @@ class NativeHosts extends WebHostEvents {
           !(permissions[op]?.any(metadata.grants.contains) ?? false)) {
         throw StateError('未声明的 GM 操作：$op');
       }
-      Future<void> ensureActive() async {
+      Future<void> ensureActive({bool inspectDocument = true}) async {
         if (!_active(session, request)) throw const Cancelled();
+        // Menu registration is a document-local bookkeeping operation. The
+        // WebView can be between committed frames while a document-end script
+        // registers its menu, so forcing an HTML inspection here turns a valid
+        // bridge request into a timing race. NativeWebHost still checks the
+        // binding, generation, source origin, and current URL before replying.
+        if (!inspectDocument) return;
         final snapshot = await api
             .inspect(session.id, 'html')
             .timeout(const Duration(seconds: 2));
@@ -303,7 +309,9 @@ class NativeHosts extends WebHostEvents {
         }
       }
 
-      await ensureActive();
+      await ensureActive(
+        inspectDocument: op != 'registerMenu' && op != 'unregisterMenu',
+      );
       Object? value;
       if (op == 'setClipboard') {
         await Clipboard.setData(
