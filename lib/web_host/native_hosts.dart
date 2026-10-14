@@ -309,9 +309,9 @@ class NativeHosts extends WebHostEvents {
         }
       }
 
-      await ensureActive(
-        inspectDocument: op != 'registerMenu' && op != 'unregisterMenu',
-      );
+      final skipDocumentInspection =
+          op == 'registerMenu' || op == 'unregisterMenu';
+      await ensureActive(inspectDocument: !skipDocumentInspection);
       Object? value;
       if (op == 'setClipboard') {
         await Clipboard.setData(
@@ -379,7 +379,7 @@ class NativeHosts extends WebHostEvents {
         final key = '${request.hostId}:${request.scriptId}';
         final previous = _queues[key] ?? Future<void>.value();
         final operation = previous.then((_) async {
-          await ensureActive();
+          await ensureActive(inspectDocument: !skipDocumentInspection);
           switch (op) {
             case 'getValue':
               value =
@@ -421,7 +421,7 @@ class NativeHosts extends WebHostEvents {
         _queues[key] = operation.catchError((Object _) {});
         await operation;
       }
-      await ensureActive();
+      await ensureActive(inspectDocument: !skipDocumentInspection);
       return jsonEncode({'id': payload['id'], 'ok': true, 'value': value});
     } catch (e) {
       return jsonEncode({
