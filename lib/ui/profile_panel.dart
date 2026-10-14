@@ -338,7 +338,9 @@ class ProfileDetailScreen extends StatelessWidget {
                 ),
               ),
             ),
-            _SectionTitle(ledger.live ? '本轮择优（按首页就绪耗时）' : '上一轮择优（按首页就绪耗时）'),
+            _SectionTitle(
+              ledger.live ? '本轮择优（先看可访问性，再看耗时）' : '上一轮择优（先看可访问性，再看耗时）',
+            ),
             if (current.isEmpty)
               const SiteLensPanel(
                 padding: EdgeInsets.zero,
@@ -358,13 +360,15 @@ class ProfileDetailScreen extends StatelessWidget {
                   ),
                 ),
               ),
-            for (final r in current)
+            for (final r in current) ...[
               _ResultTile(
                 app: app,
                 result: r,
                 onEnter: onEnter,
                 stale: !ledger.live,
               ),
+              const SizedBox(height: SiteLensMetrics.listGap),
+            ],
             _SectionTitle('候选落点（${candidates.length}）'),
             for (final site in candidates) ...[
               SiteLensPanel(
@@ -468,8 +472,24 @@ class _ResultTile extends StatelessWidget {
               : Icons.info_outline,
         ),
         title: Text(site?.label ?? result.entryUrl.host),
-        subtitle: Text(
-          '${stale ? '上一轮 · ' : ''}${statusLabel(result)}${result.elapsed == null ? '' : ' · ${result.elapsed!.inMilliseconds} ms'}\n${result.finalUrl ?? result.entryUrl}${result.reason == null ? '' : '\n${result.reason}'}',
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${stale ? '上一轮 · ' : ''}${statusLabel(result)}${result.elapsed == null ? '' : ' · ${result.elapsed!.inMilliseconds} ms'}',
+            ),
+            SiteLensCopyableText(
+              text: '${result.finalUrl ?? result.entryUrl}',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            if (result.reason != null)
+              Text(
+                result.reason!,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+          ],
         ),
         isThreeLine: true,
         trailing: site == null ? null : const Icon(Icons.arrow_forward),

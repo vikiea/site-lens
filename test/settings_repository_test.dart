@@ -38,6 +38,62 @@ void main() {
     expect(value.scriptsDisabled, true);
   });
 
+  test(
+    'new preferences stay in the single versioned settings record',
+    () async {
+      await settings.update({
+        'glassOpacity': 72,
+        'replaceSameSiteTabs': true,
+        'themePreset': 'aurora_cyan',
+      });
+      final decoded = jsonDecode(
+        (await db.setting(AppPolicy.settingsKey))!,
+      ) as Map<String, dynamic>;
+      expect(decoded['glassOpacity'], 72);
+      expect(decoded['replaceSameSiteTabs'], isTrue);
+      expect(decoded['themePreset'], 'aurora_cyan');
+      expect(await db.setting('glassOpacity'), isNull);
+      expect(await db.setting('replaceSameSiteTabs'), isNull);
+    },
+  );
+
+  test(
+    'glass transparency is clamped when reading and rejected when writing',
+    () async {
+      final low = AppSettings.fromJson({'glassOpacity': 0});
+      final high = AppSettings.fromJson({'glassOpacity': 101});
+      expect(low.glassOpacity, 1);
+      expect(high.glassOpacity, 100);
+      await expectLater(
+        settings.update({'glassOpacity': 0}),
+        throwsA(isA<FormatException>()),
+      );
+      await expectLater(
+        settings.update({'glassOpacity': 101}),
+        throwsA(isA<FormatException>()),
+      );
+    },
+  );
+
+  test(
+    'legacy transparency migrates within the single settings record',
+    () async {
+      await db.setSetting(
+        AppPolicy.settingsKey,
+        '{"version":2,"glassTransparency":72,"themePreset":"mist_pine"}',
+      );
+      expect((await settings.read()).glassOpacity, 28);
+      final updated = await settings.update({'replaceSameSiteTabs': true});
+      expect(updated.glassOpacity, 28);
+      expect(updated.themePreset, ThemePresetId.mistPine);
+      final json =
+          jsonDecode((await db.setting(AppPolicy.settingsKey))!) as Map;
+      expect(json['glassOpacity'], 28);
+      expect(json.containsKey('glassTransparency'), false);
+      expect(const AppSettings().glassOpacity, 45);
+    },
+  );
+
   test('writes the current format with no glass-mode field', () async {
     await settings.update({'themePreset': 'mist_pine'});
     final decoded = jsonDecode(

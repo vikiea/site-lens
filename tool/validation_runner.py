@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import codecs
 import os
 import platform
+import selectors
 import shutil
 import subprocess
 import sys
@@ -389,15 +391,72 @@ def build_plan(
     )
 
 
-def _run_capture(command: Sequence[str], cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+def _run_capture(
+    command: Sequence[str],
+    cwd: Path = ROOT,
+    *,
+    stream_output: bool = False,
+    on_output: Callable[[str, bool], None] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    if not stream_output:
+        return subprocess.run(
+            list(command),
+            cwd=cwd,
+            env=runtime_env(),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    # Device acceptance can take several minutes over wireless ADB. Keep the
+    # complete output for the report while forwarding it as it arrives; a
+    # captured pipe otherwise makes a healthy test run look frozen until the
+    # child exits.
+    process = subprocess.Popen(
         list(command),
         cwd=cwd,
         env=runtime_env(),
-        text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        check=False,
+        bufsize=0,
+    )
+    assert process.stdout is not None
+    assert process.stderr is not None
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, (process.stdout, sys.stdout))
+    selector.register(process.stderr, selectors.EVENT_READ, (process.stderr, sys.stderr))
+    decoders = {
+        process.stdout: codecs.getincrementaldecoder('utf-8')('replace'),
+        process.stderr: codecs.getincrementaldecoder('utf-8')('replace'),
+    }
+    captured = {process.stdout: [], process.stderr: []}
+    try:
+        while selector.get_map():
+            for key, _ in selector.select():
+                chunk = os.read(key.fd, 4096)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                text = decoders[key.fileobj].decode(chunk)
+                captured[key.fileobj].append(text)
+                if on_output is not None:
+                    on_output(text, key.fileobj is process.stderr)
+                print(text, end='', file=key.data[1], flush=True)
+        for stream in (process.stdout, process.stderr):
+            tail = decoders[stream].decode(b'', final=True)
+            if tail:
+                captured[stream].append(tail)
+                if on_output is not None:
+                    on_output(tail, stream is process.stderr)
+                print(tail, end='', file=sys.stdout if stream is process.stdout else sys.stderr, flush=True)
+    finally:
+        selector.close()
+    return subprocess.CompletedProcess(
+        list(command),
+        process.wait(),
+        ''.join(captured[process.stdout]),
+        ''.join(captured[process.stderr]),
     )
 
 
@@ -414,17 +473,43 @@ def runtime_env() -> dict[str, str]:
     return value
 
 
+def _restart_adb_server(adb_path: str, device: str) -> None:
+    for action in ("kill-server", "start-server"):
+        subprocess.run(
+            [adb_path, action],
+            cwd=ROOT,
+            env=runtime_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=60,
+        )
+    subprocess.run(
+        [adb_path, "connect", device],
+        cwd=ROOT,
+        env=runtime_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=60,
+    )
+
+
 def preflight_device(
     device: str,
     adb_path: str | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    *,
+    recover_adb_once: bool = False,
+    restart_runner: Callable[[str, str], None] | None = None,
 ) -> None:
-    """Perform one current get-state preflight before any device evidence."""
+    """Perform current get-state preflight, with one optional ADB recovery."""
     adb = adb_path or shutil.which("adb", path=runtime_env().get("PATH"))
     if not adb:
         raise DeviceConnectionError("adb is unavailable; install/configure Android platform tools")
-    try:
-        result = runner(
+
+    def check_state() -> subprocess.CompletedProcess[str]:
+        return runner(
             [adb, "-s", device, "get-state"],
             cwd=ROOT,
             env=runtime_env(),
@@ -434,19 +519,37 @@ def preflight_device(
             check=False,
             timeout=30,
         )
+
+    try:
+        result = check_state()
     except subprocess.TimeoutExpired as exc:
-        detail = f"adb get-state timed out after {exc.timeout}s"
-        if not is_tcp_endpoint(device):
-            raise DeviceConnectionError(f"device {device} is not online ({detail})") from exc
+        result = None
+        first_error = f"adb get-state timed out after {exc.timeout}s"
+    else:
+        first_error = result.stderr.strip() or result.stdout.strip() or "adb get-state failed"
+
+    if result is not None and result.returncode == 0 and result.stdout.strip() == "device":
+        return
+    if not is_tcp_endpoint(device):
+        raise DeviceConnectionError(f"device {device} is not online ({first_error})")
+    if not recover_adb_once:
         raise DeviceConnectionError(
-            f"device {device} is unavailable ({detail}); provide the correct adb port"
+            f"device {device} is unavailable ({first_error}); provide the correct adb port"
+        )
+
+    (restart_runner or _restart_adb_server)(adb, device)
+    try:
+        retry = check_state()
+    except subprocess.TimeoutExpired as exc:
+        raise DeviceConnectionError(
+            f"device {device} is unavailable after one adb-server recovery "
+            f"(get-state timed out after {exc.timeout}s); provide the correct adb port"
         ) from exc
-    if result.returncode != 0 or result.stdout.strip() != "device":
-        detail = result.stderr.strip() or result.stdout.strip() or "adb get-state failed"
-        if not is_tcp_endpoint(device):
-            raise DeviceConnectionError(f"device {device} is not online ({detail})")
+    if retry.returncode != 0 or retry.stdout.strip() != "device":
+        detail = retry.stderr.strip() or retry.stdout.strip() or "adb get-state failed"
         raise DeviceConnectionError(
-            f"device {device} is unavailable ({detail}); provide the correct adb port"
+            f"device {device} is unavailable after one adb-server recovery "
+            f"({detail}); provide the correct adb port"
         )
 
 
@@ -575,8 +678,19 @@ def execute_plan(
     needs_current_device = any(stage.requires_device for stage in plan.stages) and bool(plan.device)
     device_unavailable = False
     if needs_current_device:
+        recovery_attempted = False
+
+        def recover_once(adb_path: str, device: str) -> None:
+            nonlocal recovery_attempted
+            recovery_attempted = True
+            _restart_adb_server(adb_path, device)
+
         try:
-            preflight_device(plan.device or "")
+            preflight_device(
+                plan.device or "",
+                recover_adb_once=True,
+                restart_runner=recover_once,
+            )
         except DeviceConnectionError as exc:
             report.device_status = "failed: " + str(exc)
             device_unavailable = True
@@ -600,6 +714,8 @@ def execute_plan(
             if plan.strict_device
             else "passed: current device preflight"
         )
+        if recovery_attempted:
+            report.device_status += " after one adb-server recovery"
     elif any(stage.requires_device for stage in plan.stages):
         if not plan.device:
             report.device_status = "missing: DEVICE is required"
@@ -608,7 +724,6 @@ def execute_plan(
 
     missing_device = any(stage.requires_device for stage in plan.stages) and not plan.device
 
-    execute = runner or (lambda command: _run_capture(command))
     for stage in plan.stages:
         if stage.requires_device and (not plan.device or device_unavailable):
             detail = "DEVICE is required" if not plan.device else "current device preflight failed"
@@ -631,13 +746,21 @@ def execute_plan(
             )
             continue
 
-        result = execute(stage.command)
-        stdout = result.stdout or ""
-        stderr = result.stderr or ""
-        if stdout:
-            print(stdout, end="")
-        if stderr:
-            print(stderr, end="", file=sys.stderr)
+        streamed = runner is None and stage.requires_device
+        result = (
+            _run_capture(stage.command, stream_output=streamed)
+            if runner is None
+            else runner(stage.command)
+        )
+        # Streamed device stages already wrote their output above. Local stages
+        # and injected test runners still get the historical deferred printing.
+        if not streamed:
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
+            if stdout:
+                print(stdout, end="")
+            if stderr:
+                print(stderr, end="", file=sys.stderr)
         if result.returncode == 0:
             detail = ""
             if cached and cached.get("status") == "passed":

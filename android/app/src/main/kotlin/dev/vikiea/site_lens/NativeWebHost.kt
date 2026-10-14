@@ -433,7 +433,16 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 try { webUri(request.url.toString()) } catch (_: Exception) { return true }
                 // Redirects are the same in-flight navigation, not a new lease.
                 if (purpose != HostPurpose.BROWSING || !request.isRedirect) {
-                    prepareNavigation(request.url.toString()) { webView.loadUrl(request.url.toString()) }
+                    // A page-started navigation may itself return a cross-origin
+                    // 301/302. Do not install document-start scripts before that
+                    // chain resolves: WebView 154 can deliver the redirect
+                    // callback after the landing document has already run its
+                    // injection. App-started entry navigations still install and
+                    // follow their own redirect chain through navigate()/reload().
+                    prepareNavigation(
+                        request.url.toString(),
+                        installScripts = purpose != HostPurpose.BROWSING,
+                    ) { webView.loadUrl(request.url.toString()) }
                     return true
                 }
                 return false
@@ -514,13 +523,25 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         bindings.forEach { WebViewCompat.removeWebMessageListener(webView, it.world, "lensBridge") }; bindings.clear()
         event("invalidated")
     }
-    fun prepareNavigation(url: String, followEntryRedirects: Boolean = false, load: () -> Unit) {
+    fun prepareNavigation(
+        url: String,
+        followEntryRedirects: Boolean = false,
+        installScripts: Boolean = true,
+        load: () -> Unit,
+    ) {
         revoke(); val ticket = generation
         // Only the navigations the app itself starts may follow the server's own
         // redirect chain (see [entryFollowing]); everything a page starts on its
-        // own keeps the strict lease rules.
+        // own keeps the strict lease rules. Page-started navigations also defer
+        // script installation until an app-owned reload because a cross-origin
+        // redirect may commit before WebView reports the redirect callback.
         entryFollowing = followEntryRedirects; entryHops = 0; entryNavigation = null
         entryArmed = followEntryRedirects
+        if (!installScripts) {
+            expectedUrl = url; leasedOrigin = webOrigin(url)
+            load()
+            return
+        }
         events.getScriptsForNavigation(id, ticket, url) { result ->
             if (destroyed || generation != ticket) return@getScriptsForNavigation
             if (result.isFailure) { refreshLayout?.isRefreshing = false; event("networkError", result.exceptionOrNull()?.message ?: "Navigation policy rejected"); return@getScriptsForNavigation }

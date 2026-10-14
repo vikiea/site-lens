@@ -37,7 +37,13 @@ Future<HealthRunReport> runBackgroundHealthCheck(AppDatabase db) async {
   if (!(await SettingsRepository(db).read()).backgroundHealthCheck) {
     return const HealthRunReport(outcome: HealthRunOutcome.skippedDisabled);
   }
-  final conditions = await const DeviceConditions().read();
+  // WorkManager already enforces requiresCharging=true before starting this
+  // isolate. Do not ask the Activity-only channel again: on some devices,
+  // especially while wireless charging, that channel is unavailable in the
+  // worker and falsely reports charging=false.
+  final conditions = await const DeviceConditions().read(
+    chargingOverride: true,
+  );
   final checker = ProfileHealthChecker(
     db: db,
     probe: HttpReachabilityProbe(),
@@ -55,6 +61,30 @@ Future<HealthRunReport> runBackgroundHealthCheck(AppDatabase db) async {
 /// Schedules/cancels the periodic survival check. No-op off Android.
 class HealthScheduler {
   const HealthScheduler();
+
+  static Future<void>? _startupReady;
+
+  /// Starts WorkManager initialization before the app widget tree is built.
+  /// The returned future is intentionally non-failing: callers can still try
+  /// [apply] and report a scheduling failure without blocking the first frame.
+  static Future<void> initializeForAppStartup() {
+    return _startupReady ??= _initializeForAppStartup();
+  }
+
+  static Future<void> _initializeForAppStartup() async {
+    try {
+      await const HealthScheduler().initialize();
+    } catch (_) {
+      // The later apply call remains the source of truth for scheduling errors.
+    }
+  }
+
+  /// Waits only when the production app has started the shared initialization.
+  /// Unit tests that construct an AppController without main() continue
+  /// without an Android plugin bootstrap.
+  static Future<void> waitForAppStartup() async {
+    await _startupReady;
+  }
 
   Future<void> initialize() async {
     if (!Platform.isAndroid) return;

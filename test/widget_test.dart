@@ -73,21 +73,20 @@ void main() {
         ),
       );
       expect(find.text('高级与诊断'), findsOneWidget);
-      // Long safety text is folded away; the诊断 rows themselves stay visible.
-      await tester.scrollUntilVisible(
-        find.text('全局关闭脚本'),
-        500,
-        scrollable: find.byType(Scrollable),
-      );
-      expect(find.text('全局关闭脚本'), findsOneWidget);
+      expect(find.text('全局关闭脚本'), findsNothing);
       await tester.scrollUntilVisible(
         find.text('后台存活检查'),
         200,
         scrollable: find.byType(Scrollable),
       );
       expect(find.text('后台存活检查'), findsOneWidget);
-      await tester.ensureVisible(find.widgetWithText(SwitchListTile, '全局关闭脚本'));
-      await tester.pumpAndSettle();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ScriptsPage(app: app)),
+        ),
+      );
+      expect(find.text('全局关闭脚本'), findsOneWidget);
       await tester.tap(
         find.descendant(
           of: find.widgetWithText(SwitchListTile, '全局关闭脚本'),

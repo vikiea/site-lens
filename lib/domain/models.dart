@@ -137,6 +137,25 @@ class ProbeResult {
   );
 }
 
+/// Sorts probe results by whether the site is usable before considering speed.
+/// Homepage-ready results are the strongest recommendation, HTTP-reachable
+/// results are next, and failures remain visible after them for diagnosis.
+int probeResultPriority(ProbeResult result) {
+  if (result.verified) return 0;
+  if (result.status == ProbeStatus.reachable) return 1;
+  return 2;
+}
+
+int compareProbeResults(ProbeResult a, ProbeResult b) {
+  final priority = probeResultPriority(a).compareTo(probeResultPriority(b));
+  if (priority != 0) return priority;
+  final elapsed = (a.elapsed ?? const Duration(days: 365)).compareTo(
+    b.elapsed ?? const Duration(days: 365),
+  );
+  if (elapsed != 0) return elapsed;
+  return a.candidateId.compareTo(b.candidateId);
+}
+
 class InstalledScript {
   const InstalledScript({
     required this.id,

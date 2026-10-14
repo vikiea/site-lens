@@ -7,6 +7,12 @@ enum ThemePresetId {
   roseGray,
   sandstoneCopper,
   graphiteBlue,
+  auroraCyan,
+  sunsetCoral,
+  lavenderInk,
+  mintGlass,
+  amberGlow,
+  midnightIndigo,
 }
 
 extension ThemePresetWireId on ThemePresetId {
@@ -17,6 +23,12 @@ extension ThemePresetWireId on ThemePresetId {
     ThemePresetId.roseGray => 'rose_gray',
     ThemePresetId.sandstoneCopper => 'sandstone_copper',
     ThemePresetId.graphiteBlue => 'graphite_blue',
+    ThemePresetId.auroraCyan => 'aurora_cyan',
+    ThemePresetId.sunsetCoral => 'sunset_coral',
+    ThemePresetId.lavenderInk => 'lavender_ink',
+    ThemePresetId.mintGlass => 'mint_glass',
+    ThemePresetId.amberGlow => 'amber_glow',
+    ThemePresetId.midnightIndigo => 'midnight_indigo',
   };
 }
 
@@ -24,30 +36,35 @@ enum ThemeModePreference { system, light, dark }
 
 /// User preferences. Policy limits and runtime state are intentionally separate.
 ///
-/// The material is not a preference: the app is always iOS 27 liquid glass, so
-/// there is no glass-mode field to read, migrate or back up.
+/// All user preferences live in one JSON record behind [SettingsRepository].
+/// Browser sessions, business data and transient health state use their own
+/// storage because they are not preferences.
 class AppSettings {
   const AppSettings({
     this.themeMode = ThemeModePreference.system,
     this.themePreset = ThemePresetId.oceanBlue,
+    this.glassOpacity = 45,
     this.autoHideBrowserControls = true,
     this.allowBackgroundPlayback = false,
     this.restoreBrowserSessions = true,
     this.backgroundHealthCheck = true,
-    this.followEntryRedirects = true,
     this.pullToRefresh = false,
+    this.replaceSameSiteTabs = false,
     this.scriptsDisabled = false,
     this.controlsX = 0.5,
     this.controlsY = 1,
   });
   final ThemeModePreference themeMode;
   final ThemePresetId themePreset;
+
+  /// Absolute panel background fill opacity; no effect on content or optics.
+  final int glassOpacity;
   final bool autoHideBrowserControls;
   final bool allowBackgroundPlayback;
   final bool restoreBrowserSessions;
   final bool backgroundHealthCheck;
-  final bool followEntryRedirects;
   final bool pullToRefresh;
+  final bool replaceSameSiteTabs;
   final bool scriptsDisabled;
   final double controlsX;
   final double controlsY;
@@ -56,20 +73,19 @@ class AppSettings {
     'version': 2,
     'themeMode': themeMode.name,
     'themePreset': themePreset.wireId,
+    'glassOpacity': glassOpacity,
     'autoHideBrowserControls': autoHideBrowserControls,
     'allowBackgroundPlayback': allowBackgroundPlayback,
     'restoreBrowserSessions': restoreBrowserSessions,
     'backgroundHealthCheck': backgroundHealthCheck,
-    'followEntryRedirects': followEntryRedirects,
     'pullToRefresh': pullToRefresh,
+    'replaceSameSiteTabs': replaceSameSiteTabs,
     'scriptsDisabled': scriptsDisabled,
     'controlsX': controlsX,
     'controlsY': controlsY,
   };
   String encode() => jsonEncode(toJson());
 
-  /// Only the current format decodes. v1 records (and the old glass-mode
-  /// field) are rejected instead of being silently reinterpreted.
   factory AppSettings.decode(String raw) {
     final decoded = jsonDecode(raw);
     if (decoded is! Map<String, dynamic> || decoded['version'] != 2) {
@@ -83,6 +99,13 @@ class AppSettings {
         values.where((v) => v.name == json[key]).firstOrNull ?? fallback;
     bool flag(String key, bool fallback) =>
         json[key] is bool ? json[key] as bool : fallback;
+    int percentage(String key, int fallback) {
+      final value = json[key];
+      return value is num && value.isFinite
+          ? value.round().clamp(1, 100)
+          : fallback;
+    }
+
     double coordinate(String key, double fallback) {
       final value = json[key];
       return value is num && value.isFinite
@@ -101,14 +124,18 @@ class AppSettings {
               .where((v) => v.wireId == json['themePreset'])
               .firstOrNull ??
           ThemePresetId.oceanBlue,
+      glassOpacity: json.containsKey('glassOpacity')
+          ? percentage('glassOpacity', 45)
+          : json['glassTransparency'] is num &&
+                (json['glassTransparency'] as num).isFinite
+          ? (100 - percentage('glassTransparency', 45)).clamp(1, 100)
+          : 45,
       autoHideBrowserControls: flag('autoHideBrowserControls', true),
       allowBackgroundPlayback: flag('allowBackgroundPlayback', false),
       restoreBrowserSessions: flag('restoreBrowserSessions', true),
       backgroundHealthCheck: flag('backgroundHealthCheck', true),
-      followEntryRedirects: json.containsKey('followEntryRedirects')
-          ? flag('followEntryRedirects', false)
-          : true,
       pullToRefresh: flag('pullToRefresh', false),
+      replaceSameSiteTabs: flag('replaceSameSiteTabs', false),
       // Damaged security-related values fail closed rather than enabling scripts.
       scriptsDisabled: json.containsKey('scriptsDisabled')
           ? flag('scriptsDisabled', true)
@@ -122,12 +149,13 @@ class AppSettings {
     const fields = {
       'themeMode',
       'themePreset',
+      'glassOpacity',
       'autoHideBrowserControls',
       'allowBackgroundPlayback',
       'restoreBrowserSessions',
       'backgroundHealthCheck',
-      'followEntryRedirects',
       'pullToRefresh',
+      'replaceSameSiteTabs',
       'scriptsDisabled',
       'controlsX',
       'controlsY',
@@ -137,8 +165,6 @@ class AppSettings {
     }
     const enums = {
       'themeMode': {'system', 'light', 'dark'},
-      // Theme presets have exactly one wire vocabulary (`wireId`); the old
-      // camelCase names are not accepted anywhere.
       'themePreset': {
         'ocean_blue',
         'mist_pine',
@@ -146,6 +172,12 @@ class AppSettings {
         'rose_gray',
         'sandstone_copper',
         'graphite_blue',
+        'aurora_cyan',
+        'sunset_coral',
+        'lavender_ink',
+        'mint_glass',
+        'amber_glow',
+        'midnight_indigo',
       },
     };
     for (final entry in changes.entries) {
@@ -153,7 +185,12 @@ class AppSettings {
       if (choices != null && !choices.contains(entry.value)) {
         throw const FormatException('不支持的设置选项');
       }
-      if (entry.key.startsWith('controls')) {
+      if (entry.key == 'glassOpacity') {
+        final value = entry.value;
+        if (value is! num || !value.isFinite || value < 1 || value > 100) {
+          throw const FormatException('不透明度必须在 1 到 100 之间');
+        }
+      } else if (entry.key.startsWith('controls')) {
         final value = entry.value;
         if (value is! num || !value.isFinite || value < 0 || value > 1) {
           throw const FormatException('位置必须在有效范围内');

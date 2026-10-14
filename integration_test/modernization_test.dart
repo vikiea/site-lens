@@ -4,12 +4,12 @@ import 'dart:io';
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:site_lens/main.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/browser/browser_session_store.dart';
-import 'package:site_lens/main.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/app_theme.dart';
 import 'package:site_lens/ui/navigation_observer.dart';
@@ -21,8 +21,7 @@ class _ModernApp extends AppController {
   _ModernApp(super.db);
   @override
   Future<void> initialize() async {
-    await load();
-    await restoreSavedSessions();
+    await super.initialize();
   }
 }
 
@@ -41,84 +40,83 @@ Future<void> _wait(
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  testWidgets('modern settings, six themes, full backup and cold tab restore', (
-    tester,
-  ) async {
-    final db = AppDatabase(NativeDatabase.memory());
-    final app = _ModernApp(db);
-    try {
-      await app.load();
-      await app.db.createProfile('验收档案');
-      await app.scripts.save(
-        '// ==UserScript==\n// @name Backup fixture\n// @match https://example.com/*\n// @grant GM_getValue\n// ==/UserScript==\n',
-      );
-      await app.load();
-      final script = app.installed.single;
-      await db.setValue(script.id, 'acceptance-value', 42);
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [appControllerProvider.overrideWithValue(app)],
-          child: const SiteLensApp(),
-        ),
-      );
-      await tester.pumpAndSettle();
-      // The app uses a custom labelled bottom row so the icon and label share
-      // one selected capsule; assert its public semantics instead of relying
-      // on Material NavigationDestination internals.
-      expect(find.bySemanticsLabel('设置'), findsOneWidget);
-      await tester.tap(find.bySemanticsLabel('设置'));
-      await tester.pumpAndSettle();
-      expect(find.text('脚本管理'), findsOneWidget);
-      for (final preset in ThemePresetId.values) {
-        await app.setThemePreset(preset);
-        await app.setThemeModePreference(ThemeModePreference.light);
-        await tester.pumpAndSettle();
-        expect(
-          tester
-              .widget<MaterialApp>(find.byType(MaterialApp))
-              .theme!
-              .colorScheme
-              .primary,
-          buildSiteLensTheme(preset, Brightness.light).colorScheme.primary,
+  testWidgets(
+    'modern settings, twelve themes, full backup and cold tab restore',
+    (tester) async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final app = _ModernApp(db);
+      try {
+        await app.load();
+        await app.db.createProfile('验收档案');
+        await app.scripts.save(
+          '// ==UserScript==\n// @name Backup fixture\n// @match https://example.com/*\n// @grant GM_getValue\n// ==/UserScript==\n',
         );
+        await app.load();
+        final script = app.installed.single;
+        await db.setValue(script.id, 'acceptance-value', 42);
+        await tester.pumpWidget(const SizedBox());
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [appControllerProvider.overrideWithValue(app)],
+            child: const SiteLensApp(),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('设置'));
+        await tester.pumpAndSettle();
+        expect(find.text('脚本管理'), findsOneWidget);
+        expect(find.text('不透明度'), findsOneWidget);
+        for (final preset in ThemePresetId.values) {
+          await app.setThemePreset(preset);
+          await app.setThemeModePreference(ThemeModePreference.light);
+          await tester.pumpAndSettle();
+          expect(
+            tester
+                .widget<MaterialApp>(find.byType(MaterialApp))
+                .theme!
+                .colorScheme
+                .primary,
+            buildSiteLensTheme(preset, Brightness.light).colorScheme.primary,
+          );
+        }
+        await app.setThemeModePreference(ThemeModePreference.dark);
+        await app.sessionStore.save([
+          SavedBrowserTab(
+            id: 'cold-a',
+            initialUrl: Uri.parse('https://a.example/'),
+            currentUrl: Uri.parse('https://a.example/new'),
+            title: '冷标签 A',
+          ),
+          SavedBrowserTab(
+            id: 'cold-b',
+            initialUrl: Uri.parse('https://b.example/'),
+            currentUrl: Uri.parse('https://b.example/'),
+            title: '冷标签 B',
+          ),
+        ], 'cold-a');
+        await app.restoreSavedSessions(force: true);
+        expect(app.hosts.sessions, isEmpty);
+        final exported = await app.exportBackup();
+        final snapshot = await app.inspectBackup(exported);
+        await db.setValue(script.id, 'acceptance-value', 100);
+        await app.restoreBackup(snapshot);
+        expect((await db.values(script.id))['acceptance-value'], 42);
+        expect(app.installed.single.enabled, false);
+        expect(app.installed.single.approvedDigest, isNull);
+        expect(app.themePreset, ThemePresetId.values.last);
+        expect(app.themeModePreference, ThemeModePreference.dark);
+        expect(app.hosts.sessions, isEmpty);
+        expect(app.browserTabs.map((t) => t.id), ['cold-a', 'cold-b']);
+        expect(app.activeBrowser!.currentUrl.path, '/new');
+        expect(app.browserTabs.every((t) => t.loadedHost == null), true);
+        debugPrint('MODERN_BACKUP_THEMES_COLD_RESTORE_PASS');
+      } finally {
+        await tester.pumpWidget(const SizedBox());
+        await app.shutdown();
+        await db.close();
       }
-      await app.setThemeModePreference(ThemeModePreference.dark);
-      await app.sessionStore.save([
-        SavedBrowserTab(
-          id: 'cold-a',
-          initialUrl: Uri.parse('https://a.example/'),
-          currentUrl: Uri.parse('https://a.example/new'),
-          title: '冷标签 A',
-        ),
-        SavedBrowserTab(
-          id: 'cold-b',
-          initialUrl: Uri.parse('https://b.example/'),
-          currentUrl: Uri.parse('https://b.example/'),
-          title: '冷标签 B',
-        ),
-      ], 'cold-a');
-      await app.restoreSavedSessions(force: true);
-      expect(app.hosts.sessions, isEmpty);
-      final exported = await app.exportBackup();
-      final snapshot = await app.inspectBackup(exported);
-      await db.setValue(script.id, 'acceptance-value', 100);
-      await app.restoreBackup(snapshot);
-      expect((await db.values(script.id))['acceptance-value'], 42);
-      expect(app.installed.single.enabled, false);
-      expect(app.installed.single.approvedDigest, isNull);
-      expect(app.themePreset, ThemePresetId.graphiteBlue);
-      expect(app.themeModePreference, ThemeModePreference.dark);
-      expect(app.hosts.sessions, isEmpty);
-      expect(app.browserTabs.map((t) => t.id), ['cold-a', 'cold-b']);
-      expect(app.activeBrowser!.currentUrl.path, '/new');
-      expect(app.browserTabs.every((t) => t.loadedHost == null), true);
-      debugPrint('MODERN_BACKUP_THEMES_COLD_RESTORE_PASS');
-    } finally {
-      await tester.pumpWidget(const SizedBox());
-      await app.shutdown();
-      await db.close();
-    }
-  });
+    },
+  );
 
   testWidgets(
     'real WebView media route pause, background playback and system controls',
@@ -151,7 +149,7 @@ void main() {
       final navigator = GlobalKey<NavigatorState>();
       try {
         await phase.writeAsString('idle');
-        await app.load();
+        await app.initialize();
         await app.updateSettings({'autoHideBrowserControls': false});
         final tab = await app.openUrl(
           Uri.parse('http://127.0.0.2:${server.port}/media'),

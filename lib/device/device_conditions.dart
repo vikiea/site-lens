@@ -36,8 +36,8 @@ class DeviceConditions {
     }
   }
 
-  Future<HealthConditions> read() async {
-    final charging = await isCharging();
+  Future<HealthConditions> read({bool? chargingOverride}) async {
+    final charging = chargingOverride ?? await isCharging();
     final network = await detectNetworkClass();
     return HealthConditions(
       charging: charging,

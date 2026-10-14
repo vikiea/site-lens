@@ -67,6 +67,39 @@ void main() {
     expect(app.activeBrowser, same(first));
   });
 
+  test('same-site replacement mode reuses the tab and host', () async {
+    await app.updateSettings({'replaceSameSiteTabs': true});
+    final first = await app.openUrl(
+      Uri.parse('https://a.example/'),
+      label: 'a',
+      profileId: 7,
+    );
+    final hostId = first.host.id;
+
+    final replaced = await app.openUrl(
+      Uri.parse('https://b.example/'),
+      label: 'b',
+      profileId: 7,
+    );
+
+    expect(identical(replaced, first), isTrue);
+    expect(app.browserTabs, hasLength(1));
+    expect(first.site.url, Uri.parse('https://b.example/'));
+    expect(first.title, 'b');
+    expect(first.host.id, hostId);
+    expect(api.destroyed, isEmpty);
+  });
+
+  test(
+    'same-site replacement mode does not merge different profiles',
+    () async {
+      await app.updateSettings({'replaceSameSiteTabs': true});
+      await app.openUrl(Uri.parse('https://a.example/'), profileId: 1);
+      await app.openUrl(Uri.parse('https://b.example/'), profileId: 2);
+      expect(app.browserTabs, hasLength(2));
+    },
+  );
+
   test('concurrent opens reserve the tab limit', () async {
     final futures = [
       for (var i = 0; i < AppController.maxBrowserTabs + 1; i++)

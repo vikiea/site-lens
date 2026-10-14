@@ -30,11 +30,9 @@ import '../web_host/web_host.g.dart';
 import '../settings/settings_repository.dart';
 import '../settings/app_settings.dart';
 
-/// Settings keys for the two browsing policies the user can switch. The other
-/// preferences travel as one versioned record (`AppPolicy.settingsKey`), so
-/// they have no per-key constants.
-const followEntryRedirectsKey = 'followEntryRedirects';
-const pullToRefreshKey = 'pullToRefresh';
+/// The user preferences travel as one versioned record (`AppPolicy.settingsKey`).
+/// This key is retained for compatibility with older database fixtures only;
+/// it is not read as an independent preference.
 
 final databaseProvider = Provider<AppDatabase>(
   (ref) => throw StateError('Database not initialized'),
@@ -166,6 +164,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   List<InstalledScript> installed = [];
   List<ProbeResult> history = [];
   HostCapabilities? capabilities;
+  bool checkingHostCapabilities = false;
+  String? hostCapabilityError;
   String? error;
   bool refreshing = false;
   bool scriptsDisabled = false;
@@ -175,17 +175,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   bool restoreBrowserSessions = true;
   bool allowBackgroundPlayback = false;
 
-  /// Whether the navigations the *app* starts (opening a candidate or profile
-  /// entry, 回首页, 刷新/下拉刷新) may follow their own 301/302 chain onto the
-  /// landing and keep the privileged lease (bounded, first commit only).
-  ///
-  /// On by default: for a mirror site that funnels every entry domain through a
-  /// 301 the strict rule revoked the lease on *every* entry, which showed the
-  /// red banner and left user scripts suspended until an explicit refresh —
-  /// while the same entry could already hand the request to another host with a
-  /// JS `location = ...` hop and be re-authorized. Off restores the strict
-  /// fail-closed revocation for entry redirects too.
-  bool followEntryRedirects = true;
+  /// Entry redirects are always retained by product policy.
+  bool get followEntryRedirects => true;
 
   /// Android browsing host: whether the swipe-to-refresh gesture belongs to the
   /// app. **Off by default**: the gesture is a page/script feature first, and the
@@ -195,7 +186,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// The policy the hosts enforce; also what a host created right now receives.
   HostPreferences get hostPreferences => HostPreferences(
-    followEntryRedirects: followEntryRedirects,
+    // Entry redirects are always retained so a mirror's 301/302 funnel does
+    // not suspend the user's scripts. This is product policy, not a setting.
+    followEntryRedirects: true,
     pullToRefresh: pullToRefresh,
   );
   HealthRunReport? lastHealthReport;
@@ -210,17 +203,23 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Cancellation _discovery = Cancellation();
   Cancellation _recon = Cancellation();
   StreamSubscription<List<ConnectivityResult>>? _network;
+  Future<void> _applyBackgroundHealthSchedule() async {
+    await HealthScheduler.waitForAppStartup();
+    try {
+      await const HealthScheduler().apply(backgroundHealthCheck);
+    } catch (_) {
+      // Scheduling is best effort and must not affect foreground startup.
+    }
+  }
+
   Future<void> initialize() async {
     WidgetsBinding.instance.addObserver(this);
     await load();
     await restoreSavedSessions();
-    // Schedule/cancel the periodic survival check to match the stored toggle,
-    // then surface any notice the background isolate recorded.
-    try {
-      await const HealthScheduler().apply(backgroundHealthCheck);
-    } catch (_) {
-      /* scheduling is best effort and never blocks startup */
-    }
+    // Schedule/cancel the periodic survival check in the background. It waits
+    // for WorkManager's shared startup Future before registering, but never
+    // blocks the first product screen on a slow device plugin initialization.
+    unawaited(_applyBackgroundHealthSchedule());
     await drainBackgroundNotice();
     // Capabilities are observed on the first real host; cold-start restoration
     // must not construct an otherwise unused native WebView.
@@ -253,7 +252,6 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     restoreBrowserSessions = settings.restoreBrowserSessions;
     allowBackgroundPlayback = settings.allowBackgroundPlayback;
     scriptsDisabled = settings.scriptsDisabled;
-    followEntryRedirects = settings.followEntryRedirects;
     pullToRefresh = settings.pullToRefresh;
     backgroundHealthCheck = settings.backgroundHealthCheck;
     browserControlsFraction = Offset(settings.controlsX, settings.controlsY);
@@ -450,10 +448,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     return probes.results.values
         .where((r) => r.round == probes.round && ids.contains(r.candidateId))
         .toList()
-      ..sort(
-        (a, b) =>
-            (a.elapsed ?? Duration.zero).compareTo(b.elapsed ?? Duration.zero),
-      );
+      ..sort(compareProbeResults);
   }
 
   /// Ready landing from *this* round only. Used for persistence so a failed or
@@ -481,10 +476,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
     final newest = mine.map((r) => r.round).reduce((a, b) => a > b ? a : b);
     final results = mine.where((r) => r.round == newest).toList()
-      ..sort(
-        (a, b) =>
-            (a.elapsed ?? Duration.zero).compareTo(b.elapsed ?? Duration.zero),
-      );
+      ..sort(compareProbeResults);
     return (round: newest, live: newest == probes.round, results: results);
   }
 
@@ -759,10 +751,6 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<void> setFollowEntryRedirects(bool enabled) async {
-    await updateSettings({'followEntryRedirects': enabled});
-  }
-
   Future<void> setPullToRefresh(bool enabled) async {
     await updateSettings({'pullToRefresh': enabled});
   }
@@ -797,8 +785,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  /// Runs one survival check now (manual trigger or a scheduled run). Uses the
-  /// HTTP-only probe: no WebView host is ever created for this path.
+  /// Checks the native browser host once without opening a user tab or
+  /// running the background HTTP health policy. The temporary host is destroyed
+  /// immediately after its capabilities are captured.
+  /// Compatibility API for existing background-check integration coverage.
+  /// The settings page now uses [checkHostCapabilities] instead.
   Future<HealthRunReport> runHealthCheckOnce({
     HealthConditions? conditions,
   }) async {
@@ -817,6 +808,27 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     await load();
     notifyListeners();
     return report;
+  }
+
+  Future<HostCapabilities> checkHostCapabilities() async {
+    checkingHostCapabilities = true;
+    hostCapabilityError = null;
+    notifyListeners();
+    HostSession? host;
+    try {
+      host = await hosts.create(HostPurpose.browsing);
+      final result = host.capabilities;
+      await hosts.destroy(host);
+      capabilities = result;
+      return result;
+    } catch (_) {
+      capabilities = null;
+      hostCapabilityError = '检查未完成，请重试';
+      throw StateError('检查未完成，请重试');
+    } finally {
+      checkingHostCapabilities = false;
+      notifyListeners();
+    }
   }
 
   String? lastHealthNotice;
@@ -946,9 +958,27 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     if (restoringData) throw StateError('正在恢复数据，请稍后打开标签');
     cancelToken?.check();
     final selection = ++_selectionEpoch;
-    final existing = browserTabs
+    ActiveBrowserSession? existing = browserTabs
         .where((tab) => tab.site.profileId == profileId && _tabAt(tab, url))
         .firstOrNull;
+    if (existing == null && settings.replaceSameSiteTabs && profileId != null) {
+      existing = browserTabs
+          .where((tab) => tab.site.profileId == profileId)
+          .firstOrNull;
+      if (existing != null) {
+        await ensureTabLoaded(existing);
+        cancelToken?.check();
+        existing.updateNavigation(url, label: label, candidate: candidate);
+        await hosts.navigate(existing.host, url);
+        if (selection != _selectionEpoch || !browserTabs.contains(existing)) {
+          return existing;
+        }
+        activeBrowser = existing;
+        notifyListeners();
+        await _persistSessions();
+        return existing;
+      }
+    }
     if (existing != null) {
       await ensureTabLoaded(existing);
       cancelToken?.check();

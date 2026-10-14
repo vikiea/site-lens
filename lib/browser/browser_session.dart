@@ -24,7 +24,7 @@ class ActiveBrowserSession {
   static String _newId() =>
       'tab_${DateTime.now().microsecondsSinceEpoch}_${++_sequence}';
   final String id;
-  final Candidate site;
+  Candidate site;
   HostSession? _host;
   HostSession? get loadedHost => _host;
   HostSession get host => _host ?? (throw StateError('标签尚未加载'));
@@ -46,6 +46,24 @@ class ActiveBrowserSession {
             uri.userInfo.isEmpty
         ? uri
         : lastUrl;
+  }
+
+  void updateNavigation(Uri url, {String? label, Candidate? candidate}) {
+    site =
+        candidate ??
+        Candidate(
+          id: site.id,
+          url: url,
+          label: label ?? site.label,
+          enabled: site.enabled,
+          sourceId: site.sourceId,
+          profileId: site.profileId,
+          readySelector: site.readySelector,
+          readySelectorOverride: site.readySelectorOverride,
+        );
+    lastUrl = url;
+    title = label ?? site.label;
+    failure = null;
   }
 
   BrowserSessionState get state {

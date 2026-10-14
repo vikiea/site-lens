@@ -6,6 +6,9 @@ import 'package:site_lens/settings/settings_repository.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/app_theme.dart';
 import 'package:site_lens/ui/screens.dart';
+import 'package:site_lens/web_host/web_host.g.dart';
+
+import 'fake_web_host_api.dart';
 
 Future<void> pumpSettings(WidgetTester tester, AppController app) async {
   await tester.pumpWidget(
@@ -25,7 +28,7 @@ void main() {
 
   setUp(() async {
     db = AppDatabase(NativeDatabase.memory());
-    app = AppController(db);
+    app = AppController(db, api: FakeWebHostApi());
     await app.load();
   });
   tearDown(() async {
@@ -36,6 +39,10 @@ void main() {
   testWidgets('明暗模式 switches inline, without a bottom sheet', (tester) async {
     await pumpSettings(tester, app);
     expect(find.text('明暗模式'), findsOneWidget);
+    expect(find.text('不透明度'), findsOneWidget);
+    expect(find.textContaining('只影响面板背景填充'), findsNothing);
+    expect(find.text('透明度'), findsNothing);
+    expect(find.textContaining('45 / 100'), findsOneWidget);
     final segmented = find.byType(SiteLensSegmented<ThemeModePreference>);
     expect(segmented, findsOneWidget);
     expect(tester.getSize(segmented).height, SiteLensMetrics.segmentedHeight);
@@ -109,6 +116,41 @@ void main() {
     );
   });
 
+  testWidgets(
+    'capability results have one readable summary without raw diagnostics',
+    (tester) async {
+      app.capabilities = HostCapabilities(
+        platform: 'Android WebView private raw platform',
+        reason: 'world=true; navigation=false; internal_reason',
+        isolatedScripts: true,
+        documentStart: false,
+        privateProbes: true,
+      );
+      await pumpSettings(tester, app);
+      await tester.scrollUntilVisible(
+        find.text('检查宿主能力'),
+        400,
+        scrollable: find.byType(Scrollable),
+      );
+      expect(find.text('检查宿主能力'), findsOneWidget);
+      expect(find.textContaining('脚本增强：支持'), findsOneWidget);
+      expect(find.textContaining('页面注入：不可用'), findsOneWidget);
+      expect(find.textContaining('private raw'), findsNothing);
+      expect(find.textContaining('internal_reason'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('details-host-capabilities')),
+        findsNothing,
+      );
+      await tester.ensureVisible(find.text('检查宿主能力'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('检查宿主能力'));
+      await tester.pumpAndSettle();
+      expect(find.text('网页增强能力可用'), findsOneWidget);
+      expect(app.browserTabs, isEmpty);
+      expect(app.hosts.sessions, isEmpty);
+    },
+  );
+
   testWidgets('long safety text is folded behind 详情 but kept in full', (
     tester,
   ) async {
@@ -133,5 +175,39 @@ void main() {
       scrollable: find.byType(Scrollable),
     );
     expect(find.textContaining('不会干扰登录状态与用户脚本'), findsOneWidget);
+  });
+
+  testWidgets(
+    'removed duplicate entries and new tab policy are visible in one settings page',
+    (tester) async {
+      await pumpSettings(tester, app);
+      expect(find.text('入口跨域跳转后保留脚本'), findsNothing);
+      expect(find.text('全局关闭脚本'), findsNothing);
+      expect(find.text('脚本管理'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('同站点标签页互相替换'),
+        500,
+        scrollable: find.byType(Scrollable),
+      );
+      expect(find.text('同站点标签页互相替换'), findsOneWidget);
+      expect(find.text('检查宿主能力'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('details-host-capabilities')),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets('settings exposes about and software update entries', (
+    tester,
+  ) async {
+    await pumpSettings(tester, app);
+    await tester.scrollUntilVisible(
+      find.text('关于 Site Lens'),
+      300,
+      scrollable: find.byType(Scrollable),
+    );
+    expect(find.text('关于 Site Lens'), findsOneWidget);
+    expect(find.text('软件更新'), findsOneWidget);
   });
 }

@@ -16,6 +16,6 @@ High-risk fallback paths include:
 - L3: `integration_test/acceptance_suite_test.dart`, `modernization_test.dart`, `evidence_test.dart`, Android acceptance and restore tooling, media action tooling, backup and device lifecycle code.
 - L2: `integration_test/`, `pigeons/`, generated host bindings, `lib/web_host/`, native host code, `web_assets/`, `lib/browser/`, `lib/scripts/`, browser entry and navigation observer code, and background host code.
 
-When no device is available for a required L2/L3/L4 stage, run all possible lower stages and return exit code `2`. Device stages perform a current `adb get-state` preflight before cache lookup; an L2 device result is never accepted from stale cache alone. Do not report the requested level as passed.
+When no device is available for a required L2/L3/L4 stage, run all possible lower stages and return exit code `2`. Device stages perform a current `adb get-state` preflight before cache lookup. For an unavailable IP:PORT endpoint, restart the local ADB server once, run `adb connect IP:PORT` once, and retry that preflight once; an L2 device result is never accepted from stale cache alone. Do not report the requested level as passed.
 
 For emulator operation, read [emulator.md](emulator.md) before starting. Use a bounded startup wait and live health sampling; stop on ADB loss, repeated shell timeouts, stalled test progress, or host memory pressure instead of repeatedly restarting the emulator or replaying the suite.

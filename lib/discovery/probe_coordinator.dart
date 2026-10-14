@@ -183,8 +183,7 @@ class ProbeCoordinator extends ChangeNotifier {
         unique[key] = r;
       }
     }
-    return unique.values.toList()
-      ..sort((a, b) => a.elapsed!.compareTo(b.elapsed!));
+    return unique.values.toList()..sort(compareProbeResults);
   }
 
   void cancel([String reason = '检测已取消，旧结果不再参与推荐']) {
@@ -241,7 +240,7 @@ class ProbeCoordinator extends ChangeNotifier {
           results.values
               .where((r) => all || r.status == ProbeStatus.reachable)
               .toList()
-            ..sort((a, b) => a.elapsed!.compareTo(b.elapsed!));
+            ..sort(compareProbeResults);
       // Coalesced entrypoints share a landing and aren't counted as independent coverage.
       final selected = <ProbeResult>[];
       final seen = <String>{};

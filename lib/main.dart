@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -15,16 +17,12 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
     final database = await AppDatabase.open();
-    try {
-      await LiquidGlassWidgets.initialize(enablePerformanceMonitor: false);
-    } catch (_) {
-      // The library has a frosted fallback; a shader failure is not a DB error.
-    }
-    try {
-      await const HealthScheduler().initialize();
-    } catch (_) {
-      /* Background scheduling is best effort. */
-    }
+    // Liquid glass is composed through wrap() below and loads shader programs
+    // on demand. Do not prewarm during Android startup: emulator Impeller
+    // rasterization can crash while a warmup future is active.
+    // WorkManager is started separately and does not block runApp; the
+    // controller applies the stored schedule after its shared Future is ready.
+    unawaited(HealthScheduler.initializeForAppStartup());
     runApp(
       ProviderScope(
         overrides: [databaseProvider.overrideWithValue(database)],
@@ -53,8 +51,16 @@ class SiteLensApp extends ConsumerWidget {
         title: '择站 · Site Lens',
         debugShowCheckedModeBanner: false,
         scrollBehavior: const SiteLensScrollBehavior(),
-        theme: buildSiteLensTheme(app.themePreset, Brightness.light),
-        darkTheme: buildSiteLensTheme(app.themePreset, Brightness.dark),
+        theme: buildSiteLensTheme(
+          app.themePreset,
+          Brightness.light,
+          glassOpacity: app.settings.glassOpacity,
+        ),
+        darkTheme: buildSiteLensTheme(
+          app.themePreset,
+          Brightness.dark,
+          glassOpacity: app.settings.glassOpacity,
+        ),
         themeMode: toThemeMode(app.themeModePreference),
         builder: (context, child) {
           final brightness = Theme.of(context).brightness;

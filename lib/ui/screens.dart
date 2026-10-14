@@ -8,15 +8,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../discovery/health_checker.dart';
-
 import '../domain/models.dart';
 import '../network/transport.dart';
 import '../scripts/metadata.dart';
 import '../web_host/native_hosts.dart';
+import '../web_host/web_host.g.dart';
 import 'app_controller.dart';
 import 'navigation_observer.dart';
 import 'data_management_screen.dart';
+import 'about_screen.dart';
+import 'software_update_screen.dart';
 import 'app_theme.dart';
 import '../settings/app_settings.dart' show AppPolicy;
 import 'glass_surface.dart';
@@ -208,20 +209,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 radius: 0,
                 child: SizedBox.shrink(),
               ),
-              actions: [
-                if (destination == AppDestination.sites)
-                  IconButton(
-                    tooltip: '添加站点档案',
-                    onPressed: () => showAddProfileDialog(context, app),
-                    icon: const Icon(Icons.add_link),
-                  ),
-                if (destination == AppDestination.settings)
-                  IconButton(
-                    tooltip: '脚本管理',
-                    onPressed: () => _openScripts(app),
-                    icon: const Icon(Icons.code),
-                  ),
-              ],
+              actions: const [],
             ),
             body: SafeArea(
               child: switch (destination) {
@@ -285,12 +273,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ),
         );
       },
-    );
-  }
-
-  void _openScripts(AppController app) {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => ScriptManagementScreen(app: app)),
     );
   }
 
@@ -864,6 +846,27 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
                 Divider(height: 1, indent: 18, endIndent: 18),
+                ListTile(
+                  leading: const Icon(Icons.opacity_outlined, size: 20),
+                  title: const Text('不透明度'),
+                  subtitle: Text('${app.settings.glassOpacity} / 100'),
+                  trailing: SizedBox(
+                    width: 170,
+                    child: Slider(
+                      min: 1,
+                      max: 100,
+                      divisions: 99,
+                      value: app.settings.glassOpacity.toDouble(),
+                      label: '${app.settings.glassOpacity}',
+                      onChanged: (value) => safely(
+                        context,
+                        () =>
+                            app.updateSettings({'glassOpacity': value.round()}),
+                      ),
+                    ),
+                  ),
+                ),
+                Divider(height: 1, indent: 18, endIndent: 18),
                 // The presets stay out of the way until asked for: one collapsed
                 // block instead of a bottom sheet over the page.
                 ExpansionTile(
@@ -968,14 +971,6 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 Divider(height: 1, indent: 18, endIndent: 18),
                 SwitchListTile(
-                  title: const Text('全局关闭脚本'),
-                  subtitle: const Text('优先使用此入口恢复故障页面'),
-                  value: app.scriptsDisabled,
-                  onChanged: (value) =>
-                      safely(context, () => app.disableAllScripts(value)),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                SwitchListTile(
                   title: const Text('后台存活检查'),
                   subtitle: const Text('仅充电 + WiFi，每天最多两次；只做 HTTP 初筛'),
                   value: app.backgroundHealthCheck,
@@ -993,21 +988,6 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 Divider(height: 1, indent: 18, endIndent: 18),
                 SwitchListTile(
-                  title: const Text('入口跨域跳转后保留脚本'),
-                  subtitle: const Text('镜像入口 301/302 到落点域名时继续保留脚本授权'),
-                  value: app.followEntryRedirects,
-                  onChanged: (value) =>
-                      safely(context, () => app.setFollowEntryRedirects(value)),
-                ),
-                _Details(
-                  key: const ValueKey('details-entry-redirects'),
-                  text:
-                      '最多跟随 5 跳，落地即止；只作用于应用自己发起的导航'
-                      '（进入站点 / 回首页 / 刷新），页面自己发起的跳转不跟随。'
-                      '关掉后按 fail-closed 撤销授权并显示红色提示。',
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                SwitchListTile(
                   title: const Text('浏览页下拉刷新（Android）'),
                   subtitle: const Text('默认关闭：下拉手势属于页面和用户脚本'),
                   value: app.pullToRefresh,
@@ -1019,38 +999,43 @@ class _SettingsPageState extends State<SettingsPage> {
                   text: '打开后，页面处于顶部时下拉即刷新当前页。关闭时下拉手势完全交给页面。',
                 ),
                 Divider(height: 1, indent: 18, endIndent: 18),
+                SwitchListTile(
+                  title: const Text('同站点标签页互相替换'),
+                  subtitle: const Text('打开同一档案的新落点时复用已有标签；默认允许多标签'),
+                  value: app.settings.replaceSameSiteTabs,
+                  onChanged: (value) => safely(
+                    context,
+                    () => app.updateSettings({'replaceSameSiteTabs': value}),
+                  ),
+                ),
+                Divider(height: 1, indent: 18, endIndent: 18),
                 ListTile(
                   leading: const Icon(
                     Icons.health_and_safety_outlined,
                     size: 20,
                   ),
-                  title: const Text('立即检查一次'),
+                  title: const Text('检查宿主能力'),
                   subtitle: Text(
-                    app.lastHealthReport == null
-                        ? '手动触发同一套逻辑，用于验证（不启动 WebView）'
-                        : '最近一次：${_healthReportText(app.lastHealthReport!)}${app.lastHealthNotice == null ? '' : '\n${app.lastHealthNotice}'}',
+                    app.hostCapabilityError ??
+                        _hostCapabilitySummary(app.capabilities),
                   ),
-                  isThreeLine: app.lastHealthNotice != null,
+                  isThreeLine: app.capabilities != null,
                   trailing: const Icon(Icons.play_circle_outline),
-                  onTap: () => safely(context, () async {
-                    final report = await app.runHealthCheckOnce();
-                    if (!context.mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text(_healthReportText(report))),
-                    );
-                  }),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                _Details(
-                  key: const ValueKey('details-host-capabilities'),
-                  title: '当前网页宿主能力',
-                  text:
-                      '平台：${app.capabilities?.platform ?? '首次打开标签时检查'}\n'
-                      '特权隔离与同世界消息：${app.capabilities?.isolatedScripts == true ? '支持' : '关闭'}\n'
-                      '生命周期注入：${app.capabilities?.documentStart == true ? '支持' : '关闭'}\n'
-                      '独立检测数据环境：${app.capabilities?.privateProbes == true ? '支持' : '关闭'}\n'
-                      '${app.capabilities?.reason ?? app.error ?? ''}',
-                  startsOpen: false,
+                  onTap: app.checkingHostCapabilities
+                      ? null
+                      : () async {
+                          String notice;
+                          try {
+                            final capabilities = await app
+                                .checkHostCapabilities();
+                            notice = _hostCapabilitiesNotice(capabilities);
+                          } catch (_) {
+                            notice = '检查未完成，请重试';
+                          }
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context)
+                              .showSnackBar(SnackBar(content: Text(notice)));
+                        },
                 ),
                 Divider(height: 1, indent: 18, endIndent: 18),
                 _Details(
@@ -1071,6 +1056,35 @@ class _SettingsPageState extends State<SettingsPage> {
               ],
             ),
           ),
+          _sectionLabel(context, '关于与更新'),
+          SiteLensPanel(
+            padding: EdgeInsets.zero,
+            child: Column(
+              children: [
+                SiteLensActionRow(
+                  icon: Icons.info_outline,
+                  title: '关于 Site Lens',
+                  subtitle: '版本、许可证与项目链接',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const AboutScreen(),
+                    ),
+                  ),
+                ),
+                Divider(height: 1, indent: 18, endIndent: 18),
+                SiteLensActionRow(
+                  icon: Icons.system_update_outlined,
+                  title: '软件更新',
+                  subtitle: '检查 GitHub Release 中的最新正式版本',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const SoftwareUpdateScreen(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
           const SizedBox(height: SiteLensMetrics.sectionGap),
           Center(
             child: Text(
@@ -1083,6 +1097,23 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
     );
   }
+
+  String _hostCapabilitySummary(HostCapabilities? capabilities) {
+    if (capabilities == null) return '点击检查网页增强能力';
+    return '脚本增强：${_capabilityLabel(capabilities.isolatedScripts)}\n'
+        '页面注入：${_capabilityLabel(capabilities.documentStart)} · '
+        '检测隔离：${_capabilityLabel(capabilities.privateProbes)}';
+  }
+
+  String _hostCapabilitiesNotice(HostCapabilities capabilities) {
+    final complete =
+        capabilities.isolatedScripts &&
+        capabilities.documentStart &&
+        capabilities.privateProbes;
+    return complete ? '网页增强能力可用' : '网页增强能力受限，部分功能不可用';
+  }
+
+  String _capabilityLabel(bool value) => value ? '支持' : '不可用';
 
   Widget _sectionLabel(BuildContext context, String text) => Padding(
     padding: const EdgeInsets.fromLTRB(6, SiteLensMetrics.sectionGap, 6, 8),
@@ -1207,7 +1238,10 @@ class SiteLensSegmented<T> extends StatelessWidget {
       height: SiteLensMetrics.segmentedHeight,
       padding: const EdgeInsets.all(SiteLensMetrics.segmentedInset),
       decoration: BoxDecoration(
-        color: colors.panelTint,
+        // The surrounding panel is white in light mode at high opacity. Use
+        // the recessed well tint for the track so the selector remains
+        // separated from that surface instead of disappearing into it.
+        color: colors.wellTint,
         borderRadius: BorderRadius.circular(
           SiteLensMetrics.segmentedHeight / 2,
         ),
@@ -1323,7 +1357,9 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   void didChangeDependencies() {
     super.didChangeDependencies();
     final route = ModalRoute.of(context);
-    if (route is ModalRoute<void>) browserRouteObserver.subscribe(this, route);
+    if (route is ModalRoute<dynamic>) {
+      browserRouteObserver.subscribe(this, route);
+    }
   }
 
   @override
@@ -1559,9 +1595,30 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     await widget.app.hosts.navigate(current, tab.site.url);
   }
 
-  /// Leaves the browsing UI but keeps every tab alive, so the home screen can
-  /// bring the same WebViews back.
+  bool get _currentTabIsInaccessible {
+    final tab = _tab;
+    final current = host;
+    if (tab == null) return false;
+    if (tab.failure != null || error != null || current?.error != null) {
+      return true;
+    }
+    return switch (current?.errorKind) {
+      'networkError' || 'certificateError' || 'httpError' => true,
+      _ => false,
+    };
+  }
+
+  /// Leaves the browsing UI. A failed/inaccessible tab is closed first so it
+  /// cannot occupy a slot or reappear as a dead restored session.
   void _exitToHome() {
+    unawaited(_exitToHomeAsync());
+  }
+
+  Future<void> _exitToHomeAsync() async {
+    final tab = _tab;
+    if (tab != null && _currentTabIsInaccessible) {
+      await widget.app.closeTab(tab);
+    }
     widget.app.cancel('已退出浏览页');
     _hideTimer?.cancel();
     if (mounted) Navigator.of(context).pop();
@@ -2123,11 +2180,3 @@ class _BrowserNotice extends StatelessWidget {
     ),
   );
 }
-
-String _healthReportText(HealthRunReport report) => switch (report.outcome) {
-  HealthRunOutcome.skippedConditions => '已跳过：需要同时满足充电 + WiFi',
-  HealthRunOutcome.skippedRateLimit => '已跳过：今天已达检查次数上限',
-  HealthRunOutcome.skippedDisabled => '已跳过：后台存活检查已关闭',
-  HealthRunOutcome.ran =>
-    '已检查 ${report.checked} 个档案${report.failing == 0 ? '' : '，${report.failing} 个连续不可达'}',
-};

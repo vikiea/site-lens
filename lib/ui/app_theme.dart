@@ -81,7 +81,10 @@ abstract final class SiteLensMetrics {
   static const navBarHeight = 72.0;
   static const navIconSize = 20.0;
   static const navLabelSize = 12.0;
-  static const navRadius = 34.0;
+  // The rendered capsule is 60dp tall after the outer inset; keep the
+  // superellipse radius within half its height so the clipped edge stays
+  // smooth on Impeller and Skia.
+  static const navRadius = 30.0;
   static const navHorizontalInset = 28.0;
   static const navCapsuleInset = 6.0;
 
@@ -105,15 +108,27 @@ extension ThemePresetIdLabel on ThemePresetId {
     ThemePresetId.roseGray => '玫瑰灰',
     ThemePresetId.sandstoneCopper => '砂岩铜',
     ThemePresetId.graphiteBlue => '石墨蓝灰',
+    ThemePresetId.auroraCyan => '极光青',
+    ThemePresetId.sunsetCoral => '落日珊瑚',
+    ThemePresetId.lavenderInk => '皇家紫',
+    ThemePresetId.mintGlass => '青柠橄榄',
+    ThemePresetId.amberGlow => '琥珀金',
+    ThemePresetId.midnightIndigo => '深海墨蓝',
   };
 
   Color get seed => switch (this) {
     ThemePresetId.oceanBlue => const Color(0xff4c63d9),
     ThemePresetId.mistPine => const Color(0xff2f766b),
-    ThemePresetId.irisViolet => const Color(0xff7560a8),
+    ThemePresetId.irisViolet => const Color(0xff9254ba),
     ThemePresetId.roseGray => const Color(0xffa45570),
     ThemePresetId.sandstoneCopper => const Color(0xff986449),
     ThemePresetId.graphiteBlue => const Color(0xff5a6776),
+    ThemePresetId.auroraCyan => const Color(0xff159aab),
+    ThemePresetId.sunsetCoral => const Color(0xffd8665c),
+    ThemePresetId.lavenderInk => const Color(0xff4a148c),
+    ThemePresetId.mintGlass => const Color(0xff8aa22b),
+    ThemePresetId.amberGlow => const Color(0xffc58428),
+    ThemePresetId.midnightIndigo => const Color(0xff174a63),
   };
 }
 
@@ -308,10 +323,39 @@ TextTheme _textTheme(ColorScheme scheme) {
   );
 }
 
-ThemeData buildSiteLensTheme(ThemePresetId preset, Brightness brightness) {
+@immutable
+class SiteLensGlassTheme extends ThemeExtension<SiteLensGlassTheme> {
+  const SiteLensGlassTheme({required this.backgroundAlpha});
+
+  /// Absolute fill alpha for Flutter liquid-glass surfaces. Blur, refraction,
+  /// frost and rim treatment stay at their normal strength.
+  final double backgroundAlpha;
+
+  @override
+  SiteLensGlassTheme copyWith({double? backgroundAlpha}) => SiteLensGlassTheme(
+    backgroundAlpha: backgroundAlpha ?? this.backgroundAlpha,
+  );
+
+  @override
+  SiteLensGlassTheme lerp(ThemeExtension<SiteLensGlassTheme>? other, double t) {
+    if (other is! SiteLensGlassTheme) return this;
+    return SiteLensGlassTheme(
+      backgroundAlpha: lerpDouble(backgroundAlpha, other.backgroundAlpha, t),
+    );
+  }
+
+  static double lerpDouble(double a, double b, double t) => a + (b - a) * t;
+}
+
+ThemeData buildSiteLensTheme(
+  ThemePresetId preset,
+  Brightness brightness, {
+  int glassOpacity = 45,
+}) {
   final scheme = ColorScheme.fromSeed(
     seedColor: preset.seed,
     brightness: brightness,
+    dynamicSchemeVariant: DynamicSchemeVariant.fidelity,
   );
   final colors = SiteLensColors.resolve(preset, brightness);
   final text = _textTheme(scheme);
@@ -328,7 +372,10 @@ ThemeData buildSiteLensTheme(ThemePresetId preset, Brightness brightness) {
     // transparent and the glass has something to refract.
     scaffoldBackgroundColor: Colors.transparent,
     splashFactory: InkSparkle.splashFactory,
-    extensions: [colors],
+    extensions: [
+      colors,
+      SiteLensGlassTheme(backgroundAlpha: glassOpacity.clamp(1, 100) / 100),
+    ],
     pageTransitionsTheme: const PageTransitionsTheme(
       builders: {
         TargetPlatform.android: SiteLensFadePageTransitionsBuilder(),

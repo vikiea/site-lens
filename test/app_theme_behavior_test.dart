@@ -2,10 +2,12 @@ import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/main.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/app_theme.dart';
+import 'package:site_lens/ui/glass_surface.dart';
 import 'package:site_lens/ui/screens.dart';
 
 import 'fake_web_host_api.dart';
@@ -27,6 +29,56 @@ void main() {
     expect(dark.statusBarIconBrightness, Brightness.light);
     expect(dark.systemNavigationBarIconBrightness, Brightness.light);
     expect(dark.statusBarBrightness, Brightness.dark);
+  });
+
+  testWidgets('glass opacity controls Flutter glass surfaces', (tester) async {
+    final theme = buildSiteLensTheme(
+      ThemePresetId.oceanBlue,
+      Brightness.light,
+      glassOpacity: 22,
+    );
+    await tester.pumpWidget(MaterialApp(theme: theme, home: const SizedBox()));
+    final context = tester.element(find.byType(SizedBox));
+    final panel = siteLensGlassSettings(context);
+    final chrome = siteLensGlassSettings(
+      context,
+      role: SiteLensSurfaceRole.chrome,
+    );
+    expect(panel.visibility, closeTo(1, 0.001));
+    expect(panel.bodyMode, GlassBodyMode.clear);
+    expect(panel.glassColor.a, closeTo(0.22, 0.001));
+    expect(panel.glassColor.r, closeTo(1, 0.001));
+    expect(panel.glassColor.g, closeTo(1, 0.001));
+    expect(panel.glassColor.b, closeTo(1, 0.001));
+    final lowAlphaProgress = (0.22 / 0.45).clamp(0.0, 1.0);
+    final frostFactor =
+        0.15 + 0.85 * Curves.easeOut.transform(lowAlphaProgress);
+    expect(panel.frostOpacity, closeTo(0.73 * frostFactor, 0.001));
+    expect(chrome.visibility, closeTo(1, 0.001));
+    expect(chrome.bodyMode, GlassBodyMode.clear);
+    expect(chrome.glassColor.a, closeTo(0.22, 0.001));
+
+    final defaultTheme = buildSiteLensTheme(
+      ThemePresetId.oceanBlue,
+      Brightness.light,
+      glassOpacity: 45,
+    );
+    await tester.pumpWidget(
+      MaterialApp(theme: defaultTheme, home: const SizedBox()),
+    );
+    final defaultContext = tester.element(find.byType(SizedBox));
+    final defaultPanel = siteLensGlassSettings(defaultContext);
+    final fullTheme = buildSiteLensTheme(
+      ThemePresetId.oceanBlue,
+      Brightness.light,
+      glassOpacity: 100,
+    );
+    await tester.pumpWidget(
+      MaterialApp(theme: fullTheme, home: const SizedBox()),
+    );
+    final fullContext = tester.element(find.byType(SizedBox));
+    final fullPanel = siteLensGlassSettings(fullContext);
+    expect(fullPanel.frostOpacity, closeTo(defaultPanel.frostOpacity, 0.001));
   });
 
   test('theme AppBar carries the matching system overlay style', () {

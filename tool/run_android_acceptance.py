@@ -10,10 +10,12 @@ Pass --single-suite to run every integration suite through one combined
 entrypoint; that avoids reinstalling the debug APK once per file on wireless
 adb while keeping the same tests and the same database backup/restore flow.
 
-For an IP:port endpoint, connection setup is strict: the endpoint must already
-be online before the run starts. A failed preflight never reconnects, restarts
-adb, installs an APK, or runs a suite. Once a strict endpoint is online, an
-install failure is reported immediately instead of triggering a reconnect
+For an IP:port endpoint, connection setup is strict: the endpoint must be
+online before the run starts. A failed preflight gets one local ADB-server
+recovery (`adb kill-server`, `adb start-server`) and one repeated preflight.
+The runner never disconnects/connects the endpoint, waits for it, installs an
+APK, or runs a suite before that retry passes. Once a strict endpoint is online,
+an install failure is reported immediately instead of triggering a reconnect
 retry. When a run fails only while restoring, --restore-from DIR finishes that
 run from the retained backup without replaying the suites.
 """
@@ -94,14 +96,32 @@ def device_online(device: str) -> bool:
     return result.returncode == 0 and result.stdout.strip() == b"device"
 
 
+def restart_adb_server(device: str) -> None:
+    subprocess.run([ADB, "kill-server"], check=False, env=ENV, timeout=60)
+    subprocess.run([ADB, "start-server"], check=False, env=ENV, timeout=60)
+    subprocess.run(
+        [ADB, "connect", device], check=False, env=ENV, timeout=60,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+
+
 def require_device(device: str) -> None:
     if is_tcp_endpoint(device):
         if not device_online(device):
             print(
-                f"device {device} is unavailable; provide the correct adb port",
+                f"device {device} preflight failed; restarting local adb server once",
                 file=sys.stderr,
+                flush=True,
             )
-            raise SystemExit(2)
+            restart_adb_server(device)
+            if not device_online(device):
+                print(
+                    f"device {device} is unavailable after one adb-server recovery; "
+                    "provide the correct adb port",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+            print(f"device {device} passed after one adb-server recovery", flush=True)
         return
     if not device_online(device):
         raise SystemExit(f"device {device} is not online")
@@ -445,13 +465,6 @@ def main() -> int:
 
     global RESTART_ADB
     RESTART_ADB = args.restart_adb
-    if is_tcp_endpoint(args.device) and args.restart_adb:
-        print(
-            "--restart-adb is not allowed for an IP:port device; "
-            "provide a reachable adb port instead",
-            file=sys.stderr,
-        )
-        raise SystemExit(3)
     require_device(args.device)
 
     if args.restore_from:

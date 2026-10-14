@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -139,6 +142,52 @@ class ValidationPlannerTests(unittest.TestCase):
         with self.assertRaisesRegex(DeviceConnectionError, "not online"):
             preflight_tcp_device("emulator-5554", adb_path="adb", runner=runner)
 
+    def test_device_stage_streams_stdout_and_stderr_before_child_exit(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        progress_seen = threading.Event()
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / 'release'
+            command = [
+                sys.executable,
+                '-c',
+                (
+                    'import pathlib, sys, time\n'
+                    'print("device-progress", flush=True)\n'
+                    'print("device-error", file=sys.stderr, flush=True)\n'
+                    'marker=pathlib.Path(sys.argv[1])\n'
+                    'while not marker.exists():\n'
+                    '    time.sleep(0.01)\n'
+                ),
+                str(marker),
+            ]
+            result_holder = {}
+
+            def run():
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result_holder['result'] = runner_module._run_capture(
+                        command,
+                        stream_output=True,
+                        on_output=lambda text, is_stderr: progress_seen.set()
+                        if 'device-progress' in text
+                        else None,
+                    )
+
+            thread = threading.Thread(target=run)
+            thread.start()
+            self.assertTrue(progress_seen.wait(2), 'device output was not streamed')
+            self.assertTrue(thread.is_alive(), 'child exited before streamed output was observed')
+            marker.touch()
+            thread.join(2)
+            self.assertFalse(thread.is_alive(), 'streaming runner did not finish')
+
+        result = result_holder['result']
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('device-progress', result.stdout)
+        self.assertIn('device-error', result.stderr)
+        self.assertIn('device-progress', stdout.getvalue())
+        self.assertIn('device-error', stderr.getvalue())
+
     def test_cache_key_includes_complete_worktree_fingerprint(self):
         plan = build_plan(["lib/domain/models.dart"], requested_level="L1")
         stage = StagePlan("full local check", ("./tool/check.sh",))
@@ -150,42 +199,56 @@ class ValidationPlannerTests(unittest.TestCase):
 
 
 class StrictDeviceTests(unittest.TestCase):
-    def test_tcp_preflight_calls_get_state_once_and_rejects_unreachable_endpoint(self):
+    def test_tcp_preflight_restarts_adb_once_and_retries(self):
+        runner = Mock(
+            side_effect=[
+                subprocess.CompletedProcess(["adb"], 1, "", "failed to connect"),
+                subprocess.CompletedProcess(["adb"], 0, "device\n", ""),
+            ]
+        )
+        restart = Mock()
+        preflight_tcp_device(
+            "192.0.2.10:5555",
+            adb_path="adb",
+            runner=runner,
+            recover_adb_once=True,
+            restart_runner=restart,
+        )
+        self.assertEqual(runner.call_count, 2)
+        restart.assert_called_once_with("adb", "192.0.2.10:5555")
+
+    def test_tcp_preflight_stops_after_one_failed_recovery(self):
         runner = Mock(
             return_value=subprocess.CompletedProcess(
                 ["adb"], 1, "", "failed to connect"
             )
         )
-        with self.assertRaisesRegex(DeviceConnectionError, "correct adb port"):
-            preflight_tcp_device("192.0.2.10:5555", adb_path="adb", runner=runner)
-        runner.assert_called_once()
-        self.assertEqual(runner.call_args.args[0], ["adb", "-s", "192.0.2.10:5555", "get-state"])
+        restart = Mock()
+        with self.assertRaisesRegex(DeviceConnectionError, "after one adb-server recovery"):
+            preflight_tcp_device(
+                "192.0.2.10:5555",
+                adb_path="adb",
+                runner=runner,
+                recover_adb_once=True,
+                restart_runner=restart,
+            )
+        self.assertEqual(runner.call_count, 2)
+        restart.assert_called_once_with("adb", "192.0.2.10:5555")
 
-    def test_acceptance_does_not_reconnect_unreachable_tcp_endpoint(self):
-        with patch.object(acceptance, "device_online", return_value=False), patch.object(
-            acceptance, "reconnect"
-        ) as reconnect:
-            with self.assertRaises(SystemExit) as raised:
-                acceptance.require_device("192.0.2.10:5555")
-        self.assertEqual(raised.exception.code, 2)
+    def test_acceptance_restarts_adb_once_for_unavailable_tcp_endpoint(self):
+        with patch.object(acceptance, "device_online", side_effect=[False, True]), patch.object(
+            acceptance, "restart_adb_server"
+        ) as restart, patch.object(acceptance, "reconnect") as reconnect:
+            acceptance.require_device("192.0.2.10:5555")
+        restart.assert_called_once_with("192.0.2.10:5555")
         reconnect.assert_not_called()
-
-    def test_acceptance_rejects_restart_for_tcp_endpoint(self):
-        with patch.object(acceptance, "require_device") as require:
-            with patch.object(
-                sys,
-                "argv",
-                ["run_android_acceptance.py", "192.0.2.10:5555", "--restart-adb"],
-            ):
-                with self.assertRaises(SystemExit) as raised:
-                    acceptance.main()
-        self.assertEqual(raised.exception.code, 3)
-        require.assert_not_called()
 
     def test_acceptance_main_stops_before_any_work_on_bad_tcp_endpoint(self):
         with patch.object(acceptance, "device_online", return_value=False), patch.object(
-            acceptance, "run_flutter"
-        ) as run_flutter, patch.object(acceptance, "backup_database") as backup:
+            acceptance, "restart_adb_server"
+        ) as restart, patch.object(acceptance, "run_flutter") as run_flutter, patch.object(
+            acceptance, "backup_database"
+        ) as backup:
             with patch.object(
                 sys,
                 "argv",
@@ -196,6 +259,7 @@ class StrictDeviceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
         run_flutter.assert_not_called()
         backup.assert_not_called()
+        restart.assert_called_once_with("192.0.2.10:5555")
 
     def test_tcp_install_failure_is_not_retried(self):
         with tempfile.NamedTemporaryFile() as apk, patch.object(

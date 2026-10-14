@@ -77,8 +77,39 @@ LiquidGlassSettings siteLensGlassSettings(
   final base = dark
       ? LiquidGlassSettings.ios27Dark
       : LiquidGlassSettings.ios27Light;
-  if (role != SiteLensSurfaceRole.platformView) return base;
-  return base.copyWith(
+  // The user preference controls the fill of every Flutter glass surface.
+  // Keep blur, refraction, frost and rim treatment at full strength. Controls
+  // over a native WebView retain their polarity-matched backer for contrast.
+  final glassFillAlpha =
+      Theme.of(context).extension<SiteLensGlassTheme>()?.backgroundAlpha ??
+      0.45;
+  // A light glass fill must contrast with the pale backdrop. Reusing
+  // backdropTop here makes alpha changes visually disappear because the fill
+  // and the pixels behind it are effectively the same color.
+  final glassFill =
+      (dark ? SiteLensColors.of(context).backdropBottom : Colors.white)
+          .withValues(alpha: glassFillAlpha);
+  // Keep the material baseline unchanged from the default value upward.
+  // Only low fill alpha needs a limited frost reduction; otherwise the
+  // preference would also change the glass character at ordinary values.
+  const defaultFillAlpha = 0.45;
+  final lowAlphaProgress = (glassFillAlpha / defaultFillAlpha).clamp(0.0, 1.0);
+  final frostFactor = glassFillAlpha >= defaultFillAlpha
+      ? 1.0
+      : 0.15 + 0.85 * Curves.easeOut.transform(lowAlphaProgress);
+  final adjusted = role == SiteLensSurfaceRole.platformView
+      ? base
+      : base.copyWith(
+          visibility: 1,
+          bodyMode: GlassBodyMode.clear,
+          glassColor: glassFill,
+          // The frost veil is material, not the user's fill alpha. Keep a
+          // small floor so low opacity remains glass-like, and use a gentle
+          // curve so the 45-100 range keeps the iOS material character.
+          frostOpacity: base.frostOpacity * frostFactor,
+        );
+  if (role != SiteLensSurfaceRole.platformView) return adjusted;
+  return adjusted.copyWith(
     backerColor: dark ? const Color(0x99000000) : const Color(0xA6FFFFFF),
   );
 }
