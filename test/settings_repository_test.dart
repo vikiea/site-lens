@@ -43,6 +43,7 @@ void main() {
     () async {
       await settings.update({
         'glassOpacity': 72,
+        'glassQualityMode': 'high',
         'replaceSameSiteTabs': true,
         'themePreset': 'aurora_cyan',
       });
@@ -50,6 +51,7 @@ void main() {
         (await db.setting(AppPolicy.settingsKey))!,
       ) as Map<String, dynamic>;
       expect(decoded['glassOpacity'], 72);
+      expect(decoded['glassQualityMode'], 'high');
       expect(decoded['replaceSameSiteTabs'], isTrue);
       expect(decoded['themePreset'], 'aurora_cyan');
       expect(await db.setting('glassOpacity'), isNull);
@@ -94,14 +96,26 @@ void main() {
     },
   );
 
-  test('writes the current format with no glass-mode field', () async {
+  test('writes the current format with the glass quality mode', () async {
     await settings.update({'themePreset': 'mist_pine'});
     final decoded = jsonDecode(
       (await db.setting(AppPolicy.settingsKey))!,
     ) as Map<String, dynamic>;
     expect(decoded['version'], 2);
+    expect(decoded['glassQualityMode'], 'automatic');
     expect(decoded.containsKey('glassMode'), isFalse);
     expect(decoded['themePreset'], 'mist_pine');
+  });
+
+  test('glass quality mode accepts the three supported values only', () async {
+    final high = await settings.update({'glassQualityMode': 'high'});
+    expect(high.glassQualityMode, SiteLensGlassQualityMode.high);
+    final standard = await settings.update({'glassQualityMode': 'standard'});
+    expect(standard.glassQualityMode, SiteLensGlassQualityMode.standard);
+    await expectLater(
+      settings.update({'glassQualityMode': 'premium'}),
+      throwsA(isA<FormatException>()),
+    );
   });
 
   test('the removed glass-mode field is not a writable setting', () async {

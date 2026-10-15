@@ -172,8 +172,8 @@ void main() {
         ).colorScheme.primary,
       );
       expect(find.text('主题色'), findsOneWidget);
-      // The material is fixed: there is no glass-mode row to negotiate it.
-      expect(find.text('玻璃效果'), findsNothing);
+      expect(find.text('玻璃质量'), findsOneWidget);
+      expect(find.text('自动'), findsOneWidget);
       await tester.runAsync(app.shutdown);
       await tester.pumpWidget(const SizedBox());
     },

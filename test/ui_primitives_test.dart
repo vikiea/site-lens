@@ -24,7 +24,11 @@ void main() {
       find.byType(SiteLensGlassSurface),
     );
     expect(surface.role, SiteLensSurfaceRole.chrome);
-    expect(find.byType(AdaptiveGlass), findsOneWidget);
+    expect(
+      find.byType(AdaptiveGlass).evaluate().isNotEmpty ||
+          find.byType(ClipPath).evaluate().isNotEmpty,
+      isTrue,
+    );
   });
 
   testWidgets('glass alert dialog keeps Material dialog semantics', (

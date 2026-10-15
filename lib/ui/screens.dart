@@ -23,7 +23,7 @@ import 'data_management_screen.dart';
 import 'about_screen.dart';
 import 'software_update_screen.dart';
 import 'app_theme.dart';
-import '../settings/app_settings.dart' show AppPolicy;
+import '../settings/app_settings.dart' show AppPolicy, SiteLensGlassQualityMode;
 import 'glass_surface.dart';
 import 'browser_entry.dart';
 import 'profile_panel.dart';
@@ -1409,6 +1409,36 @@ class _SettingsPageState extends State<SettingsPage> {
                       ),
                     ),
                   ),
+                ),
+                Divider(height: 1, indent: 18, endIndent: 18),
+                _rowTitle(context, Icons.speed_outlined, '玻璃质量'),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                  child: SiteLensSegmented<SiteLensGlassQualityMode>(
+                    value: app.settings.glassQualityMode,
+                    onChanged: (value) =>
+                        safely(context, () => app.setGlassQualityMode(value)),
+                    options: const [
+                      (
+                        SiteLensGlassQualityMode.automatic,
+                        '自动',
+                        Icons.auto_awesome_outlined,
+                      ),
+                      (
+                        SiteLensGlassQualityMode.standard,
+                        '标准',
+                        Icons.tune_outlined,
+                      ),
+                      (SiteLensGlassQualityMode.high, '高质量', Icons.hd_outlined),
+                    ],
+                  ),
+                ),
+                ListTile(
+                  dense: true,
+                  contentPadding: const EdgeInsets.fromLTRB(18, 0, 18, 4),
+                  leading: const SizedBox(width: 20),
+                  title: const Text('当前有效质量'),
+                  subtitle: Text(app.effectiveGlassQuality.label),
                 ),
                 Divider(height: 1, indent: 18, endIndent: 18),
                 // The presets stay out of the way until asked for: one collapsed

@@ -34,6 +34,16 @@ extension ThemePresetWireId on ThemePresetId {
 
 enum ThemeModePreference { system, light, dark }
 
+enum SiteLensGlassQualityMode { automatic, standard, high }
+
+extension SiteLensGlassQualityModeLabel on SiteLensGlassQualityMode {
+  String get label => switch (this) {
+    SiteLensGlassQualityMode.automatic => '自动',
+    SiteLensGlassQualityMode.standard => '标准',
+    SiteLensGlassQualityMode.high => '高质量',
+  };
+}
+
 /// User preferences. Policy limits and runtime state are intentionally separate.
 ///
 /// All user preferences live in one JSON record behind [SettingsRepository].
@@ -44,6 +54,7 @@ class AppSettings {
     this.themeMode = ThemeModePreference.system,
     this.themePreset = ThemePresetId.oceanBlue,
     this.glassOpacity = 45,
+    this.glassQualityMode = SiteLensGlassQualityMode.automatic,
     this.autoHideBrowserControls = true,
     this.allowBackgroundPlayback = false,
     this.restoreBrowserSessions = true,
@@ -59,6 +70,7 @@ class AppSettings {
 
   /// Absolute panel background fill opacity; no effect on content or optics.
   final int glassOpacity;
+  final SiteLensGlassQualityMode glassQualityMode;
   final bool autoHideBrowserControls;
   final bool allowBackgroundPlayback;
   final bool restoreBrowserSessions;
@@ -74,6 +86,7 @@ class AppSettings {
     'themeMode': themeMode.name,
     'themePreset': themePreset.wireId,
     'glassOpacity': glassOpacity,
+    'glassQualityMode': glassQualityMode.name,
     'autoHideBrowserControls': autoHideBrowserControls,
     'allowBackgroundPlayback': allowBackgroundPlayback,
     'restoreBrowserSessions': restoreBrowserSessions,
@@ -130,6 +143,11 @@ class AppSettings {
                 (json['glassTransparency'] as num).isFinite
           ? (100 - percentage('glassTransparency', 45)).clamp(1, 100)
           : 45,
+      glassQualityMode: choice(
+        'glassQualityMode',
+        SiteLensGlassQualityMode.values,
+        SiteLensGlassQualityMode.automatic,
+      ),
       autoHideBrowserControls: flag('autoHideBrowserControls', true),
       allowBackgroundPlayback: flag('allowBackgroundPlayback', false),
       restoreBrowserSessions: flag('restoreBrowserSessions', true),
@@ -150,6 +168,7 @@ class AppSettings {
       'themeMode',
       'themePreset',
       'glassOpacity',
+      'glassQualityMode',
       'autoHideBrowserControls',
       'allowBackgroundPlayback',
       'restoreBrowserSessions',
@@ -165,6 +184,7 @@ class AppSettings {
     }
     const enums = {
       'themeMode': {'system', 'light', 'dark'},
+      'glassQualityMode': {'automatic', 'standard', 'high'},
       'themePreset': {
         'ocean_blue',
         'mist_pine',

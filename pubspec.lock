@@ -29,10 +29,10 @@ packages:
     dependency: "direct main"
     description:
       name: archive
-      sha256: "6c5bcd986e06b94e3c40244af471750840a3d2341d1f9763a1100a14add517b4"
+      sha256: "0d58d1fa1fddf6588251ccf2819f3fb3b6d0452c1b2813ac7413a05592bfbefe"
       url: "https://pub.dev"
     source: hosted
-    version: "4.3.0"
+    version: "4.5.2"
   args:
     dependency: transitive
     description:
@@ -419,10 +419,10 @@ packages:
     dependency: "direct main"
     description:
       name: liquid_glass_widgets
-      sha256: "5f494e8d6fd9b561eca98493c234fb6255fc4c65159e3899407e4e09aefdd237"
+      sha256: b66e9f72535bf7c50ffc2442693b8bbb50026e90b3674f9b0e7ae80c55c3c77c
       url: "https://pub.dev"
     source: hosted
-    version: "1.11.0"
+    version: "1.13.0"
   listen:
     dependency: transitive
     description:
@@ -579,10 +579,10 @@ packages:
     dependency: "direct dev"
     description:
       name: pigeon
-      sha256: "644f4e413fd2517be3010b3c40352a4e47f2219f420c0fc87fa233d610196568"
+      sha256: f4a98c7bcbb8e383859c04890c225455573c0c8de0b7ff0ba1866c0a5f2b297d
       url: "https://pub.dev"
     source: hosted
-    version: "29.0.7"
+    version: "29.0.10"
   platform:
     dependency: transitive
     description:
@@ -672,10 +672,10 @@ packages:
     dependency: "direct main"
     description:
       name: sqlite3
-      sha256: cc62d72dbf16bb1f6ae8954b238016de1473e53df060ed0c332eed0a41dd1848
+      sha256: "144132790ec1947fad9f3ddceffd0af2ab80a1f0d1e81a4d094ee6707ec3df0b"
       url: "https://pub.dev"
     source: hosted
-    version: "3.7.0"
+    version: "3.7.1"
   stack_trace:
     dependency: transitive
     description:

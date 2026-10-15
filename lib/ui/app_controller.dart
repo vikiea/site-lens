@@ -10,6 +10,7 @@ import '../backup/backup_service.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../data/database.dart';
 import '../browser/browser_session.dart';
@@ -29,6 +30,7 @@ import '../web_host/native_hosts.dart';
 import '../web_host/web_host.g.dart';
 import '../settings/settings_repository.dart';
 import '../settings/app_settings.dart';
+import 'glass_quality_cache.dart';
 
 /// The user preferences travel as one versioned record (`AppPolicy.settingsKey`).
 /// This key is retained for compatibility with older database fixtures only;
@@ -55,6 +57,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     BrowserSessionStore? sessionStore,
   }) {
     settingsRepository = SettingsRepository(db);
+    glassQualityCacheRepository = SiteLensGlassQualityCacheRepository(db);
     this.sessionStore = sessionStore ?? BrowserSessionStore(db);
     scripts = ScriptService(db, ControlledHttp());
     hosts = NativeHosts(db, scripts, ControlledHttp(), api: api);
@@ -81,12 +84,14 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
   final AppDatabase db;
   late final SettingsRepository settingsRepository;
+  late final SiteLensGlassQualityCacheRepository glassQualityCacheRepository;
   late final BrowserSessionStore sessionStore;
   bool _restoredSessions = false;
   bool _restorationValid = false;
   bool _restoring = false;
   int _restorePolicyEpoch = 0;
   Future<void>? _shutdownFuture;
+  Future<void> _glassQualityWrites = Future.value();
   bool _disposed = false;
   bool _browserVisible = false;
   bool _foreground = true;
@@ -151,6 +156,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _sessionSaveTimer;
   Future<void> _sessionWrites = Future.value();
   AppSettings settings = const AppSettings();
+  SiteLensGlassQualityCache? glassQualityCache;
+  GlassQuality effectiveGlassQuality = GlassQuality.standard;
   late final ScriptService scripts;
   late final ProfilePacks packs;
   late final NativeHosts hosts;
@@ -236,9 +243,76 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     // Startup restores metadata only; discovery runs on explicit user entry.
   }
 
+  String get glassQualityFingerprint =>
+      SiteLensGlassFingerprint.current(appVersion: _packageVersion);
+
+  final String _packageVersion = const String.fromEnvironment(
+    'FLUTTER_BUILD_NAME',
+    defaultValue: 'dev',
+  );
+
+  GlassAdaptiveScopeConfig get glassAdaptiveConfig {
+    final mode = settings.glassQualityMode;
+    final cached = glassQualityCache;
+    final cachedQuality =
+        cached != null && cached.matches(glassQualityFingerprint)
+        ? cached.quality
+        : null;
+    return GlassAdaptiveScopeConfig(
+      minQuality: GlassQuality.standard,
+      maxQuality: mode == SiteLensGlassQualityMode.standard
+          ? GlassQuality.standard
+          : GlassQuality.premium,
+      initialQuality: mode == SiteLensGlassQualityMode.standard
+          ? GlassQuality.standard
+          : cachedQuality ?? GlassQuality.standard,
+      allowStepUp: true,
+      onQualityChanged: (_, to) => effectiveGlassQuality = to,
+      onDiagnostic: (diagnostic) =>
+          unawaited(recordGlassQualityDiagnostic(diagnostic)),
+    );
+  }
+
+  Future<void> recordGlassQualityDiagnostic(
+    GlassAdaptiveDiagnostic diagnostic,
+  ) {
+    _glassQualityWrites = _glassQualityWrites.then((_) async {
+      if (_disposed ||
+          diagnostic.reason == GlassQualityChangeReason.restoredFromCache) {
+        return;
+      }
+      final previous = glassQualityCache;
+      final cache = SiteLensGlassQualityCache(
+        // Persist the warm-up classification as the next cold-start hint.
+        // Thermal changes update diagnostics without turning a transient
+        // over-budget window into a permanent startup downgrade.
+        quality: diagnostic.reason == GlassQualityChangeReason.warmupComplete
+            ? diagnostic.to
+            : previous?.quality ?? diagnostic.to,
+        p75Ms: diagnostic.p75Ms ?? previous?.p75Ms,
+        p95Ms: diagnostic.p95Ms ?? previous?.p95Ms,
+        fingerprint: glassQualityFingerprint,
+      );
+      glassQualityCache = cache;
+      effectiveGlassQuality = diagnostic.to;
+      await glassQualityCacheRepository.write(cache);
+      if (!_disposed) notifyListeners();
+    });
+    return _glassQualityWrites;
+  }
+
+  Future<void> _clearGlassQualityCache() async {
+    glassQualityCache = null;
+    effectiveGlassQuality = GlassQuality.standard;
+    await glassQualityCacheRepository.clear();
+  }
+
   Future<void> updateSettings(Map<String, Object?> patch) async {
     if (patch.containsKey('restoreBrowserSessions')) _restorePolicyEpoch++;
     settings = await settingsRepository.update(patch);
+    if (patch.containsKey('glassQualityMode')) {
+      await _clearGlassQualityCache();
+    }
     if (!settings.restoreBrowserSessions) await sessionStore.clear();
     _applySettings();
     await hosts.applyPreferences(hostPreferences);
@@ -261,6 +335,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       updateSettings({'themeMode': value.name});
   Future<void> setThemePreset(ThemePresetId value) =>
       updateSettings({'themePreset': value.wireId});
+  Future<void> setGlassQualityMode(SiteLensGlassQualityMode value) =>
+      updateSettings({'glassQualityMode': value.name});
   Future<void> setRestoreBrowserSessions(bool value) async {
     await updateSettings({'restoreBrowserSessions': value});
     await _persistSessions();
@@ -403,6 +479,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     installed = await db.scripts();
     history = await db.recentProbes();
     settings = await settingsRepository.read();
+    glassQualityCache = await glassQualityCacheRepository.read();
+    final cached = glassQualityCache;
+    if (cached == null || !cached.matches(glassQualityFingerprint)) {
+      glassQualityCache = null;
+    } else {
+      effectiveGlassQuality = cached.quality;
+    }
     _applySettings();
     await hosts.applyPreferences(hostPreferences);
     await syncMediaPolicy();

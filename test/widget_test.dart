@@ -79,6 +79,11 @@ void main() {
           home: Scaffold(body: SettingsPage(app: app)),
         ),
       );
+      await tester.scrollUntilVisible(
+        find.text('高级与诊断'),
+        200,
+        scrollable: find.byType(Scrollable),
+      );
       expect(find.text('高级与诊断'), findsOneWidget);
       expect(find.text('全局关闭脚本'), findsNothing);
       await tester.scrollUntilVisible(

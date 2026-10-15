@@ -2,8 +2,11 @@ import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
+import 'package:site_lens/settings/app_settings.dart';
 import 'package:site_lens/settings/settings_repository.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:site_lens/ui/app_controller.dart';
+import 'package:site_lens/ui/glass_quality_cache.dart';
 import 'package:site_lens/ui/app_theme.dart';
 import 'package:site_lens/ui/screens.dart';
 import 'package:site_lens/web_host/web_host.g.dart';
@@ -35,6 +38,21 @@ void main() {
     await app.shutdown();
     await db.close();
   });
+
+  test(
+    'changing glass quality mode clears the runtime quality cache',
+    () async {
+      final cache = SiteLensGlassQualityCacheRepository(db);
+      await cache.write(
+        const SiteLensGlassQualityCache(
+          quality: GlassQuality.premium,
+          fingerprint: 'old-fingerprint',
+        ),
+      );
+      await app.setGlassQualityMode(SiteLensGlassQualityMode.high);
+      expect(await db.setting(SiteLensGlassQualityCacheRepository.key), isNull);
+    },
+  );
 
   testWidgets('明暗模式 switches inline, without a bottom sheet', (tester) async {
     await pumpSettings(tester, app);
@@ -99,11 +117,12 @@ void main() {
     expect(find.text('雾松绿'), findsWidgets);
   });
 
-  testWidgets('rows are separated and the material is not a preference', (
+  testWidgets('rows are separated and glass quality is an explicit mode', (
     tester,
   ) async {
     await pumpSettings(tester, app);
-    expect(find.text('玻璃效果'), findsNothing);
+    expect(find.text('玻璃质量'), findsOneWidget);
+    expect(find.text('自动'), findsOneWidget);
     // Every setting-sized surface is gone: rows live in one panel per section.
     expect(find.byType(Card), findsNothing);
 

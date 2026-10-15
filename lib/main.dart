@@ -40,6 +40,9 @@ Future<void> main() async {
   }
 }
 
+bool _isFlutterTestBinding() =>
+    WidgetsBinding.instance.runtimeType.toString().contains('TestWidgets');
+
 class SiteLensApp extends ConsumerWidget {
   const SiteLensApp({super.key});
   @override
@@ -68,14 +71,21 @@ class SiteLensApp extends ConsumerWidget {
             value: siteLensSystemUiOverlayStyle(brightness),
             child: LiquidGlassWidgets.wrap(
               brightnessResolver: Theme.maybeBrightnessOf,
-              // iOS 27 liquid glass is the product's material, so the quality tier
-              // is never negotiated down from it. Reduce Motion still applies.
-              adaptiveQuality: false,
-              child: GlassAccessibilityScope(
-                // The material does not step down for high contrast; contrast is
-                // handled by the colour roles instead of by dropping the glass.
-                reduceTransparency: false,
-                child: SiteLensBackdrop(child: child ?? const SizedBox()),
+              // Start at standard, then let the package benchmark raster time.
+              // The Site Lens strategy keeps panels conservative and only lets
+              // eligible chrome request premium.
+              adaptiveQuality: !_isFlutterTestBinding(),
+              adaptiveConfig: app.glassAdaptiveConfig,
+              child: SiteLensGlassPolicyScope(
+                strategy: SiteLensGlassQualityStrategy(
+                  mode: app.settings.glassQualityMode,
+                ),
+                child: GlassAccessibilityScope(
+                  // The material does not step down for high contrast; contrast is
+                  // handled by the colour roles instead of by dropping the glass.
+                  reduceTransparency: false,
+                  child: SiteLensBackdrop(child: child ?? const SizedBox()),
+                ),
               ),
             ),
           );

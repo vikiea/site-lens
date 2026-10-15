@@ -5,8 +5,8 @@
 ## 产品行为
 
 - 一级导航固定为「站点 / 浏览 / 设置」。脚本管理位于设置二级页面，浏览菜单提供当前档案与未绑定脚本入口。
-- 全局 iOS 27 液态玻璃：顶部栏、底部导航、内容面板、标签卡片、菜单、弹窗、提示条共用一套材质、圆角、间距与状态色；背景是随主题色变化的静态柔和渐变。固定使用 `liquid_glass_widgets 1.11.0` 的 `ios27Light` / `ios27Dark` 预设与 `GlassQuality.premium`，不做按设备或无障碍降级；`GlassAccessibilityScope(reduceTransparency: false)` 保证高对比度不换材质，Reduce Motion 只停动效。普通按钮、FAB、浮动把手与导航项没有额外阴影。
-- 明暗模式是外观区的行内分段选择，主题色是默认折叠的内嵌色板；提供星海蓝、雾松绿、鸢尾紫、玫瑰灰、砂岩铜、石墨蓝灰。主题 ID 用 snake_case 保存。材质不是用户偏好，因此**没有**「玻璃效果」设置。
+- 全局 iOS 27 液态玻璃：顶部栏、底部导航、内容面板、标签卡片、菜单、弹窗、提示条共用一套材质、圆角、间距与状态色；背景是随主题色变化的静态柔和渐变。使用 `liquid_glass_widgets 1.13.0` 的 `ios27Light` / `ios27Dark` 预设与独立 `SiteLensGlassQualityStrategy`。面板保持 `standard` 上限，静态 chrome 可由 `GlassAdaptiveScope` 按帧耗时争取 `premium`；WebView 上方控件使用实时 backdrop 路径。shader 或 renderer 不可用时走兼容性的裁剪半透明 Material fallback；`GlassAccessibilityScope(reduceTransparency: false)` 保证高对比度不换材质，Reduce Motion 只停动效。普通按钮、FAB、浮动把手与导航项没有额外阴影。
+- 明暗模式是外观区的行内分段选择，主题色是默认折叠的内嵌色板；提供星海蓝、雾松绿、鸢尾紫、玫瑰灰、砂岩铜、石墨蓝灰。主题 ID 用 snake_case 保存。玻璃质量提供「自动 / 标准 / 高质量」三档；用户模式只表达请求上限，实际质量仍受 role、renderer 能力和帧耗时策略约束。
 - 设置格式为 `app_settings_v2`：只接受当前格式；旧设置记录与含旧格式设置的备份都会被拒绝（本应用尚无正式用户，因此不做旧数据迁移）。
 - 底部一级导航固定单行窄胶囊，**显示图标和文字**（主体 72dp、图标 20dp、左右外边距 28dp、上下内边距 6dp）；浅色主题使用纯白实底，深色主题使用纯黑实底，选中态使用低透明度主题色胶囊。浏览工具栏固定单行七项（后退、前进、刷新、回首页、标签页、退出、更多），图标 18dp、高度 48dp、宽度等分且**不换行、不折叠、不横向滚动**；只有半透明把手可拖动并持久化位置，工具栏覆盖网页而不改变 WebView 尺寸。「更多」打开底部面板而不是浮层菜单：Android 的 `PopupMenuButton` 浮层会被原生 WebView 盖住，面板可以正确渲染在网页之上。浮在网页上的控件带 `backerColor` 压暗层（深色约 60% 黑、浅色约 65% 白），使主题极性不同的网页背景下文字与图标仍然可读。
 - 重启恢复稳定标签 ID、原始与当前地址、标题、档案引用、选择器覆盖和当前标签。选择标签时才创建 WebView；不恢复播放、脚本授权租约或 WebView host ID。
