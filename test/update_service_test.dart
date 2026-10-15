@@ -40,8 +40,11 @@ http.Response _latestRedirect({String tag = 'v0.2.0'}) => http.Response.bytes(
   },
 );
 
-http.Response _checksum({String tag = 'v0.2.0'}) =>
-    http.Response.bytes(utf8.encode('${'a' * 64}  site-lens-$tag.apk\n'), 200);
+http.Response _checksum({String tag = 'v0.2.0', String prefix = ''}) =>
+    http.Response.bytes(
+      utf8.encode('${'a' * 64}  ${prefix}site-lens-$tag.apk\n'),
+      200,
+    );
 
 void main() {
   test('parses semver tags and compares releases', () {
@@ -70,6 +73,26 @@ void main() {
     expect(release.sha256, 'a' * 64);
     expect(release.htmlUrl.toString(), contains('/releases/tag/v0.2.0'));
   });
+
+  test(
+    'accepts checksum paths that include the release staging directory',
+    () async {
+      final client = GitHubReleaseClient(
+        client: _FakeClient((request) async {
+          if (request.url.path.endsWith('/releases/latest')) {
+            return _latestRedirect();
+          }
+          return _checksum(prefix: 'dist/');
+        }),
+        latestUri: Uri.parse(
+          'https://github.com/vikiea/site-lens/releases/latest',
+        ),
+      );
+
+      final release = await client.fetchLatest();
+      expect(release.sha256, 'a' * 64);
+    },
+  );
 
   test('returns only a newer release for the current app version', () async {
     final client = GitHubReleaseClient(

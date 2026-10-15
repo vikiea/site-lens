@@ -312,12 +312,19 @@ class GitHubReleaseClient {
     final line = body
         .split(RegExp(r'\r?\n'))
         .map((line) => line.trim())
-        .firstWhere(
-          (line) => line.endsWith('  $apkName') || line.endsWith(' *$apkName'),
-          orElse: () => '',
-        );
-    final digest = line.split(RegExp(r'\s+')).first.toLowerCase();
-    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(digest)) {
+        .firstWhere((line) {
+          final match = RegExp(r'^([0-9a-fA-F]{64})\s+[*]?(.+)$')
+              .firstMatch(line);
+          if (match == null) return false;
+          final publishedPath = match.group(2)!.replaceAll('\\', '/');
+          return publishedPath == apkName ||
+              publishedPath.endsWith('/$apkName');
+        }, orElse: () => '');
+    final digest = RegExp(r'^([0-9a-fA-F]{64})\s+')
+        .firstMatch(line)
+        ?.group(1)
+        ?.toLowerCase();
+    if (digest == null) {
       throw const FormatException('SHA-256 校验文件格式错误');
     }
     return digest;

@@ -111,9 +111,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          apk="dist/site-lens-${TAG}.apk"
+          apk_name="site-lens-${TAG}.apk"
+          apk="dist/$apk_name"
           cp build/app/outputs/flutter-apk/app-release.apk "$apk"
-          sha256sum "$apk" > "$apk.sha256"
+          (cd dist && sha256sum "$apk_name") > "$apk.sha256"
           ls -lh dist
 
       - name: Create or update GitHub Release
