@@ -111,7 +111,7 @@ class SiteLensGlassQualityStrategy {
       SiteLensSurfaceRole.chrome => switch (mode) {
         SiteLensGlassQualityMode.standard => GlassQuality.standard,
         SiteLensGlassQualityMode.automatic => adaptiveQuality,
-        SiteLensGlassQualityMode.high => GlassQuality.premium,
+        SiteLensGlassQualityMode.high => adaptiveQuality,
       },
     };
     // The app intentionally keeps standard as its public and internal floor.

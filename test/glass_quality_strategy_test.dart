@@ -77,6 +77,32 @@ void main() {
     );
   });
 
+  testWidgets('high mode still follows runtime adaptive downgrade', (
+    tester,
+  ) async {
+    late BuildContext context;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: Builder(
+          builder: (value) {
+            context = value;
+            return const SizedBox();
+          },
+        ),
+      ),
+    );
+    final strategy = const SiteLensGlassQualityStrategy(
+      mode: SiteLensGlassQualityMode.high,
+      adaptiveQualityOverride: GlassQuality.standard,
+      shaderSupported: true,
+    );
+    expect(
+      strategy.resolve(context, role: SiteLensSurfaceRole.chrome).quality,
+      GlassQuality.standard,
+    );
+  });
+
   testWidgets('unsupported Android shader uses the compatibility plan', (
     tester,
   ) async {
@@ -124,6 +150,9 @@ void main() {
       expect(restored?.p95Ms, 14.2);
       expect(restored?.matches(cache.fingerprint), isTrue);
       expect(restored?.matches('different'), isFalse);
+      final fingerprint = SiteLensGlassFingerprint.current(appVersion: '1.0.0');
+      expect(fingerprint, contains('|runtime='));
+      expect(fingerprint, contains('|renderer='));
 
       await repository.clear();
       expect(await repository.read(), isNull);

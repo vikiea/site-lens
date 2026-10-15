@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform;
@@ -101,6 +102,14 @@ abstract final class SiteLensGlassFingerprint {
   static String current({required String appVersion}) {
     final platform = kIsWeb ? 'web' : defaultTargetPlatform.name;
     final shaderSupport = ui.ImageFilter.isShaderFilterSupported;
-    return '$strategyVersion|app=$appVersion|platform=$platform|shader=$shaderSupport';
+    final renderer = shaderSupport ? 'shader' : 'fallback';
+    final runtime = Platform.version.replaceAll('|', '/');
+    const engine = String.fromEnvironment(
+      'FLUTTER_ENGINE_VERSION',
+      defaultValue: 'unknown',
+    );
+    return '$strategyVersion|app=$appVersion|platform=$platform'
+        '|runtime=$runtime|engine=$engine|renderer=$renderer'
+        '|shader=$shaderSupport';
   }
 }
