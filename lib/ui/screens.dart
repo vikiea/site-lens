@@ -1075,7 +1075,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 SiteLensActionRow(
                   icon: Icons.system_update_outlined,
                   title: '软件更新',
-                  subtitle: '检查 GitHub Release 中的最新正式版本',
+                  subtitle: '检查最新版本',
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
                       builder: (_) => const SoftwareUpdateScreen(),

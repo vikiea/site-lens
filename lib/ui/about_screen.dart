@@ -60,7 +60,7 @@ class _AboutScreenState extends State<AboutScreen> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '本地优先的站点发现与浏览工具',
+                    '整理站点入口，轻松发现与浏览',
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
                 ],
@@ -72,10 +72,7 @@ class _AboutScreenState extends State<AboutScreen> {
             padding: EdgeInsets.zero,
             child: Column(
               children: [
-                _detailRow(
-                  '版本',
-                  info == null ? '读取中…' : '${info.version}+${info.buildNumber}',
-                ),
+                _detailRow('版本', info == null ? '读取中…' : info.version),
                 const Divider(height: 1, indent: 18, endIndent: 18),
                 _detailRow('正式包标识', 'dev.vikiea.site_lens'),
                 const Divider(height: 1, indent: 18, endIndent: 18),

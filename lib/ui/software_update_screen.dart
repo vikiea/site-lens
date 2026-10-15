@@ -37,7 +37,7 @@ class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen>
     WidgetsBinding.instance.addObserver(this);
     _service.packageInfo.then((info) {
       if (mounted) {
-        setState(() => _currentVersion = '${info.version}+${info.buildNumber}');
+        setState(() => _currentVersion = info.version);
       }
     });
   }
@@ -81,9 +81,7 @@ class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen>
                 leading: const Icon(Icons.phone_android_outlined),
                 title: const Text('Site Lens'),
                 subtitle: Text(
-                  _release == null
-                      ? '点击检查 GitHub Release'
-                      : '发现 ${_release!.tagName}',
+                  _release == null ? '获取最新版本信息' : '发现 ${_release!.tagName}',
                 ),
                 trailing: _checking
                     ? const SizedBox(
@@ -196,11 +194,14 @@ class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen>
       _downloadedApk = null;
     });
     try {
-      final release = await _service.checkForUpdate();
+      final result = await _service.checkForUpdate();
       if (!mounted) return;
+      final release = result.release;
       setState(() {
         _release = release;
-        _message = release == null ? '当前已是最新版本' : null;
+        _message = result.fromCache
+            ? '使用本地缓存 · 上次检查于 ${_formatCheckedAt(result.checkedAt)}'
+            : (release == null ? '当前已是最新版本' : null);
       });
     } catch (error) {
       if (!mounted) return;
@@ -277,6 +278,12 @@ class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen>
     FormatException(:final message) => message,
     _ => '更新失败，请检查网络后重试',
   };
+
+  String _formatCheckedAt(DateTime value) {
+    final local = value.toLocal();
+    String two(int number) => number.toString().padLeft(2, '0');
+    return '${local.month}月${local.day}日 ${two(local.hour)}:${two(local.minute)}';
+  }
 
   String _formatBytes(int value) {
     if (value < 1024 * 1024) return '${(value / 1024).toStringAsFixed(0)} KB';

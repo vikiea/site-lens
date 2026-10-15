@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 const siteLensRepository = 'vikiea/site-lens';
 const siteLensReleasePage =
     'https://github.com/$siteLensRepository/releases/latest';
+const updateMinCheckInterval = Duration(minutes: 1);
 
 class ReleaseInfo {
   const ReleaseInfo({
@@ -31,6 +32,36 @@ class ReleaseInfo {
   final String apkName;
   final int apkSize;
   final String sha256;
+
+  Map<String, Object?> toJson() => {
+    'tagName': tagName,
+    'version': version.toString(),
+    'body': body,
+    'htmlUrl': htmlUrl.toString(),
+    'apkUrl': apkUrl.toString(),
+    'apkName': apkName,
+    'apkSize': apkSize,
+    'sha256': sha256,
+  };
+
+  factory ReleaseInfo.fromJson(Map<String, dynamic> json) {
+    final htmlUrl = Uri.tryParse(json['htmlUrl'] as String? ?? '');
+    final apkUrl = Uri.tryParse(json['apkUrl'] as String? ?? '');
+    final apkSize = json['apkSize'];
+    if (htmlUrl == null || apkUrl == null || apkSize is! int) {
+      throw const FormatException('更新缓存格式错误');
+    }
+    return ReleaseInfo(
+      tagName: json['tagName'] as String,
+      version: AppVersion.parse(json['version'] as String),
+      body: json['body'] as String? ?? '',
+      htmlUrl: htmlUrl,
+      apkUrl: apkUrl,
+      apkName: json['apkName'] as String,
+      apkSize: apkSize,
+      sha256: json['sha256'] as String,
+    );
+  }
 }
 
 /// Stable release versions. Pre-releases are deliberately excluded.
@@ -76,26 +107,66 @@ class AppVersion implements Comparable<AppVersion> {
   int get hashCode => Object.hash(major, minor, patch);
 }
 
+class UpdateCheckResult {
+  const UpdateCheckResult({
+    required this.release,
+    required this.checkedAt,
+    required this.fromCache,
+  });
+
+  final ReleaseInfo? release;
+  final DateTime checkedAt;
+  final bool fromCache;
+}
+
+class _UpdateCacheEntry {
+  const _UpdateCacheEntry({required this.checkedAt, required this.release});
+
+  final DateTime checkedAt;
+  final ReleaseInfo release;
+
+  Map<String, Object?> toJson() => {
+    'checkedAt': checkedAt.toUtc().toIso8601String(),
+    'release': release.toJson(),
+  };
+
+  factory _UpdateCacheEntry.fromJson(Map<String, dynamic> json) {
+    final checkedAt = DateTime.tryParse(json['checkedAt'] as String? ?? '');
+    final release = json['release'];
+    if (checkedAt == null || release is! Map<String, dynamic>) {
+      throw const FormatException('更新缓存格式错误');
+    }
+    return _UpdateCacheEntry(
+      checkedAt: checkedAt.toLocal(),
+      release: ReleaseInfo.fromJson(release),
+    );
+  }
+}
+
 class GitHubReleaseClient {
   GitHubReleaseClient({http.Client? client, Uri? latestUri})
     : _client = client ?? http.Client(),
       _latestUri =
           latestUri ??
-          Uri.https(
-            'api.github.com',
-            '/repos/$siteLensRepository/releases/latest',
-          );
+          Uri.https('github.com', '/$siteLensRepository/releases/latest');
+
   final http.Client _client;
   final Uri _latestUri;
   static const _timeout = Duration(seconds: 20);
   static const _maxApkBytes = 512 * 1024 * 1024;
 
-  /// Validate every redirect, including GitHub's asset CDN redirects.
-  Future<http.StreamedResponse> _get(Uri uri) async {
+  /// Validate every redirect, including GitHub's release asset CDN redirects.
+  Future<http.StreamedResponse> _request(
+    Uri uri, {
+    String method = 'GET',
+  }) async {
     for (var hop = 0; hop <= 5; hop++) {
       _trustedUri(uri.toString());
-      final request = http.Request('GET', uri)..followRedirects = false;
-      request.headers['Accept'] = 'application/vnd.github+json';
+      final request = http.Request(method, uri)..followRedirects = false;
+      request.headers['User-Agent'] = 'SiteLens/$siteLensRepository';
+      request.headers['Accept'] = method == 'GET'
+          ? 'application/octet-stream'
+          : '*/*';
       final response = await _client.send(request).timeout(_timeout);
       if (![301, 302, 303, 307, 308].contains(response.statusCode)) {
         return response;
@@ -109,7 +180,7 @@ class GitHubReleaseClient {
   }
 
   Future<List<int>> _read(Uri uri, int maxBytes) async {
-    final response = await _get(uri);
+    final response = await _request(uri);
     if (response.statusCode != 200) {
       await response.stream.listen((_) {}).cancel();
       if (response.statusCode == 404) {
@@ -128,76 +199,64 @@ class GitHubReleaseClient {
   Future<ReleaseInfo> fetchLatest() => _fetchLatest().timeout(_timeout);
 
   Future<ReleaseInfo> _fetchLatest() async {
-    final bytes = await _read(_latestUri, 2 * 1024 * 1024);
-    final decoded = jsonDecode(utf8.decode(bytes));
-    if (decoded is! Map<String, dynamic> ||
-        decoded['draft'] != false ||
-        decoded['prerelease'] != false) {
-      throw const FormatException('正式发布信息不可用');
-    }
-    final tag = _string(decoded['tag_name']);
-    if (!RegExp(r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$').hasMatch(tag)) {
-      throw const FormatException('正式发布标签格式错误');
-    }
+    final tag = await _resolveLatestTag();
     final version = AppVersion.parse(tag);
     final page = _repositoryUri(
-      _string(decoded['html_url']),
+      'https://github.com/$siteLensRepository/releases/tag/$tag',
       '/releases/tag/$tag',
     );
     final name = 'site-lens-$tag.apk';
-    final assets = decoded['assets'];
-    if (assets is! List) throw const FormatException('发布版本缺少资产列表');
-    final matches = assets
-        .whereType<Map<String, dynamic>>()
-        .where((a) => a['name'] == name)
-        .toList();
-    if (matches.length != 1) {
-      throw const FormatException('发布版本缺少唯一的 Site Lens APK');
-    }
-    final apk = matches.single;
-    final url = _repositoryUri(
-      _string(apk['browser_download_url']),
-      '/releases/download/$tag/$name',
+    final checksumUri = _repositoryUri(
+      'https://github.com/$siteLensRepository/releases/download/$tag/$name.sha256',
+      '/releases/download/$tag/$name.sha256',
     );
-    final size = apk['size'];
-    if (size is! int || size <= 0 || size > _maxApkBytes) {
-      throw const FormatException('APK 大小无效');
-    }
-    final rawDigest = apk['digest'];
-    String digest;
-    if (rawDigest == null) {
-      final sums = assets
-          .whereType<Map<String, dynamic>>()
-          .where((a) => a['name'] == '$name.sha256')
-          .toList();
-      if (sums.length != 1) throw const FormatException('发布版本缺少 SHA-256 校验值');
-      final checksumUrl = _repositoryUri(
-        _string(sums.single['browser_download_url']),
-        '/releases/download/$tag/$name.sha256',
-      );
-      final text = utf8.decode(await _read(checksumUrl, 4096));
-      final match = RegExp(
-        r'^([0-9a-fA-F]{64}) [ *]' + RegExp.escape(name) + r'\s*$',
-      ).firstMatch(text);
-      if (match == null) throw const FormatException('SHA-256 校验文件格式错误');
-      digest = match[1]!.toLowerCase();
-    } else {
-      if (rawDigest is! String ||
-          !RegExp(r'^sha256:[0-9a-fA-F]{64}$').hasMatch(rawDigest)) {
-        throw const FormatException('SHA-256 校验值格式错误');
-      }
-      digest = rawDigest.substring(7).toLowerCase();
-    }
+    final checksum = _parseDigest(
+      utf8.decode(await _read(checksumUri, 4096)),
+      name,
+    );
     return ReleaseInfo(
       tagName: tag,
       version: version,
-      body: decoded['body'] is String ? decoded['body'] as String : '',
+      body: '',
       htmlUrl: page,
-      apkUrl: url,
+      apkUrl: _repositoryUri(
+        'https://github.com/$siteLensRepository/releases/download/$tag/$name',
+        '/releases/download/$tag/$name',
+      ),
       apkName: name,
-      apkSize: size,
-      sha256: digest,
+      apkSize: 0,
+      sha256: checksum,
     );
+  }
+
+  Future<String> _resolveLatestTag() async {
+    _trustedUri(_latestUri.toString());
+    final request = http.Request('GET', _latestUri)..followRedirects = false;
+    request.headers['User-Agent'] = 'SiteLens/$siteLensRepository';
+    request.headers['Accept'] = 'text/html';
+    final response = await _client.send(request).timeout(_timeout);
+    final location = response.headers['location'];
+    await response.stream.listen((_) {}).cancel();
+    if (response.statusCode < 300 ||
+        response.statusCode >= 400 ||
+        location == null) {
+      throw const FormatException('无法定位最新正式版本');
+    }
+    final target = _trustedUri(_latestUri.resolve(location).toString());
+    final segments = target.pathSegments;
+    final repository = siteLensRepository.split('/');
+    final prefixLength = repository.length + 3;
+    if (segments.length != prefixLength ||
+        segments.take(repository.length).join('/') != siteLensRepository ||
+        segments[repository.length] != 'releases' ||
+        segments[repository.length + 1] != 'tag') {
+      throw const FormatException('最新版本地址格式错误');
+    }
+    final tag = segments.last;
+    if (!RegExp(r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$').hasMatch(tag)) {
+      throw const FormatException('正式发布标签格式错误');
+    }
+    return tag;
   }
 
   Future<File> downloadApk(
@@ -205,33 +264,38 @@ class GitHubReleaseClient {
     Directory root, {
     void Function(int received, int? total)? onProgress,
   }) async {
-    // Per-operation directories prevent concurrent screens sharing partial files.
     await root.create(recursive: true);
     final directory = await root.createTemp('download-');
     final file = File('${directory.path}/update.apk');
     try {
-      final response = await _get(release.apkUrl);
+      final response = await _request(release.apkUrl);
       if (response.statusCode != 200) {
         await response.stream.listen((_) {}).cancel();
         throw HttpException('APK 下载返回 HTTP ${response.statusCode}');
+      }
+      final expectedSize = release.apkSize > 0
+          ? release.apkSize
+          : response.contentLength;
+      if (expectedSize != null && expectedSize > _maxApkBytes) {
+        throw const FormatException('APK 大小超过限制');
       }
       var received = 0;
       final sink = file.openWrite();
       try {
         await for (final chunk in response.stream.timeout(_timeout)) {
           received += chunk.length;
-          if (received > release.apkSize || received > _maxApkBytes) {
+          if (expectedSize != null && received > expectedSize ||
+              received > _maxApkBytes) {
             throw const FormatException('APK 大小与发布信息不符');
           }
           sink.add(chunk);
-          // Bound memory even on slow storage.
           await sink.flush();
-          onProgress?.call(received, release.apkSize);
+          onProgress?.call(received, expectedSize);
         }
       } finally {
         await sink.close();
       }
-      if (received != release.apkSize ||
+      if (expectedSize != null && received != expectedSize ||
           (await sha256File(file)) != release.sha256) {
         throw const FormatException('APK 校验失败，下载文件已删除');
       }
@@ -244,11 +308,19 @@ class GitHubReleaseClient {
 
   void close() => _client.close();
 
-  static String _string(Object? value) {
-    if (value is! String || value.isEmpty) {
-      throw const FormatException('发布信息不完整');
+  static String _parseDigest(String body, String apkName) {
+    final line = body
+        .split(RegExp(r'\r?\n'))
+        .map((line) => line.trim())
+        .firstWhere(
+          (line) => line.endsWith('  $apkName') || line.endsWith(' *$apkName'),
+          orElse: () => '',
+        );
+    final digest = line.split(RegExp(r'\s+')).first.toLowerCase();
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(digest)) {
+      throw const FormatException('SHA-256 校验文件格式错误');
     }
-    return value;
+    return digest;
   }
 
   static Uri _trustedUri(String value) {
@@ -258,7 +330,6 @@ class GitHubReleaseClient {
         uri.userInfo.isNotEmpty ||
         (uri.port != 0 && uri.port != 443) ||
         !{
-          'api.github.com',
           'github.com',
           'release-assets.githubusercontent.com',
           'objects.githubusercontent.com',
@@ -337,26 +408,75 @@ class UpdateService {
     UpdatePlatform? platform,
     this.packageInfoLoader,
     this.directoryLoader,
+    this.cacheDirectoryLoader,
+    DateTime Function()? clock,
   }) : _client = client ?? GitHubReleaseClient(),
-       platform = platform ?? MethodChannelUpdatePlatform();
+       platform = platform ?? MethodChannelUpdatePlatform(),
+       _clock = clock ?? DateTime.now;
+
   final GitHubReleaseClient _client;
   final UpdatePlatform platform;
   final Future<PackageInfo> Function()? packageInfoLoader;
   final Future<Directory> Function()? directoryLoader;
+  final Future<Directory> Function()? cacheDirectoryLoader;
+  final DateTime Function() _clock;
   PackageInfo? _info;
   File? _download;
   bool _closed = false;
 
   Future<PackageInfo> get packageInfo async =>
       _info ??= await (packageInfoLoader?.call() ?? PackageInfo.fromPlatform());
-  Future<ReleaseInfo?> checkForUpdate() async {
+
+  Future<UpdateCheckResult> checkForUpdate() async {
+    final now = _clock();
+    final current = AppVersion.parse((await packageInfo).version);
+    final cached = await _readCache();
+    if (cached != null &&
+        now.difference(cached.checkedAt) >= Duration.zero &&
+        now.difference(cached.checkedAt) < updateMinCheckInterval) {
+      return UpdateCheckResult(
+        release: cached.release.version > current ? cached.release : null,
+        checkedAt: cached.checkedAt,
+        fromCache: true,
+      );
+    }
+
     final release = await _client.fetchLatest();
-    return release.version.compareTo(
-              AppVersion.parse((await packageInfo).version),
-            ) >
-            0
-        ? release
-        : null;
+    final entry = _UpdateCacheEntry(checkedAt: now, release: release);
+    await _writeCache(entry);
+    return UpdateCheckResult(
+      release: release.version > current ? release : null,
+      checkedAt: now,
+      fromCache: false,
+    );
+  }
+
+  Future<_UpdateCacheEntry?> _readCache() async {
+    try {
+      final root =
+          await (cacheDirectoryLoader?.call() ??
+              getApplicationSupportDirectory());
+      final file = File('${root.path}/site-lens-update-cache.json');
+      if (!await file.exists()) return null;
+      final decoded = jsonDecode(await file.readAsString());
+      if (decoded is! Map<String, dynamic>) return null;
+      return _UpdateCacheEntry.fromJson(decoded);
+    } on FormatException {
+      return null;
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  Future<void> _writeCache(_UpdateCacheEntry entry) async {
+    final root =
+        await (cacheDirectoryLoader?.call() ??
+            getApplicationSupportDirectory());
+    await root.create(recursive: true);
+    final file = File('${root.path}/site-lens-update-cache.json');
+    final temporary = File('${file.path}.tmp');
+    await temporary.writeAsString(jsonEncode(entry.toJson()), flush: true);
+    await temporary.rename(file.path);
   }
 
   Future<File> download(
@@ -382,6 +502,7 @@ class UpdateService {
 
   /// Retain a verified APK after installer handoff, as Android reads it later.
   void retainForInstaller() => _download = null;
+
   Future<void> clearDownload() async {
     final file = _download;
     _download = null;

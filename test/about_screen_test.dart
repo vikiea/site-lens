@@ -18,7 +18,7 @@ void main() {
       ),
     );
     await tester.pump();
-    expect(find.text('0.2.0+42'), findsOneWidget);
+    expect(find.text('0.2.0'), findsOneWidget);
     expect(find.text('dev.vikiea.site_lens'), findsOneWidget);
     expect(find.text('GPL-3.0-or-later'), findsOneWidget);
   });
