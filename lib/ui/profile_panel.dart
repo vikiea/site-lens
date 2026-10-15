@@ -9,16 +9,18 @@ import 'glass_surface.dart';
 import 'ui_util.dart';
 import 'ui_primitives.dart';
 
-/// First screen of the product: one card per curated site profile.
+/// First screen of the product: one panel card per curated site profile.
 class ProfilesPanel extends StatelessWidget {
   const ProfilesPanel({
     super.key,
     required this.app,
     required this.onOpen,
+    this.onEnterProfile,
     required this.onResume,
   });
   final AppController app;
   final void Function(SiteProfile) onOpen;
+  final Future<void> Function(SiteProfile)? onEnterProfile;
 
   /// Returns to the running browsing session, shown as an in-page row.
   final VoidCallback onResume;
@@ -39,99 +41,46 @@ class ProfilesPanel extends StatelessWidget {
           ResumeBrowserBar(app: app, onResume: onResume),
           if (app.activeBrowser != null)
             const SizedBox(height: SiteLensMetrics.itemGap),
-          SiteLensPanel(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('我的站点', style: Theme.of(context).textTheme.titleLarge),
-                  const SizedBox(height: 8),
-                  const Text('每个档案维护自己的发布页、候选落点与脚本；进站前先跑一轮检测，按「首页就绪耗时」择优。'),
-                  const SizedBox(height: 16),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      FilledButton.icon(
-                        onPressed: () => showAddProfileDialog(context, app),
-                        icon: const Icon(Icons.add_link),
-                        label: const Text('添加站点'),
-                      ),
-                      OutlinedButton.icon(
-                        onPressed: app.profiles.isEmpty
-                            ? null
-                            : () => safely(context, () => app.detect()),
-                        icon: const Icon(Icons.radar),
-                        label: const Text('全部检测'),
-                      ),
-                      OutlinedButton.icon(
-                        onPressed: () => safely(
-                          context,
-                          () => importProfilePack(context, app),
-                        ),
-                        icon: const Icon(Icons.file_download_outlined),
-                        label: const Text('导入档案包'),
-                      ),
-                      if (app.probes.running || app.refreshing)
-                        TextButton(
-                          onPressed: () => app.cancel(),
-                          child: const Text('取消'),
-                        ),
-                    ],
-                  ),
-                  if (app.probes.running || app.refreshing) ...[
-                    const SizedBox(height: 12),
-                    const LinearProgressIndicator(),
-                  ],
-                  if (app.probes.notice != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 12),
-                      child: Text(app.probes.notice!),
-                    ),
-                  if (app.error != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 12),
-                      child: SiteLensErrorBanner(
-                        text: app.error!,
-                        onDismiss: app.clearError,
-                      ),
-                    ),
-                ],
-              ),
+          if (app.probes.running || app.refreshing)
+            const Padding(
+              padding: EdgeInsets.only(bottom: SiteLensMetrics.itemGap),
+              child: LinearProgressIndicator(),
             ),
-          ),
+          if (app.probes.notice != null) ...[
+            SiteLensNotice(
+              text: app.probes.notice!,
+              tone: SiteLensNoticeTone.info,
+            ),
+            const SizedBox(height: SiteLensMetrics.itemGap),
+          ],
+          if (app.error != null) ...[
+            SiteLensErrorBanner(text: app.error!, onDismiss: app.clearError),
+            const SizedBox(height: SiteLensMetrics.itemGap),
+          ],
           const SizedBox(height: SiteLensMetrics.itemGap),
           if (app.profiles.isEmpty)
-            // No second call to action here: the panel above already owns the
-            // primary 「添加站点」 button, and two of them only compete.
-            const SiteLensEmptyState(
+            SiteLensEmptyState(
               icon: Icons.travel_explore,
               title: '还没有站点档案',
-              message: '添加一个发布页即可开始：先跑一轮检测，再按首页就绪耗时择优。',
+              message: '添加一个发布页，先检测，再按当前可用性进入站点。',
+              action: FilledButton.icon(
+                onPressed: () => showAddProfileDialog(context, app),
+                icon: const Icon(Icons.add_link),
+                label: const Text('添加站点'),
+              ),
             ),
           for (final profile in app.profiles) ...[
-            SiteLensPanel(
-              padding: EdgeInsets.zero,
-              child: ListTile(
-                leading: CircleAvatar(
-                  child: Text(profile.name.characters.take(1).toString()),
-                ),
-                title: Text(profile.name),
-                subtitle: SiteLensCopyableText(
-                  text: profileSummary(app, profile),
-                ),
-                isThreeLine: true,
-                trailing: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    healthBadge(context, app.healthFor(profile.id).state),
-                    const Icon(Icons.chevron_right),
-                  ],
-                ),
-                onTap: () => onOpen(profile),
-              ),
+            _ProfileCard(
+              app: app,
+              profile: profile,
+              onOpen: () => onOpen(profile),
+              onEnter: () => safely(context, () async {
+                if (onEnterProfile != null) {
+                  await onEnterProfile!(profile);
+                } else {
+                  onOpen(profile);
+                }
+              }),
             ),
             const SizedBox(height: SiteLensMetrics.listGap),
           ],
@@ -139,6 +88,207 @@ class ProfilesPanel extends StatelessWidget {
       ),
     ),
   );
+}
+
+class _ProfileCard extends StatelessWidget {
+  const _ProfileCard({
+    required this.app,
+    required this.profile,
+    required this.onOpen,
+    required this.onEnter,
+  });
+  final AppController app;
+  final SiteProfile profile;
+  final VoidCallback onOpen;
+  final VoidCallback onEnter;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final colors = SiteLensColors.of(context);
+    final ledger = app.probeLedgerFor(profile.id);
+    final liveReady = ledger.live
+        ? ledger.results.where((result) => result.verified).firstOrNull
+        : null;
+    final staleReady = app.latestReadyFor(profile.id);
+    final recommended = liveReady ?? staleReady;
+    final stale = liveReady == null && recommended != null;
+    final candidates = app.sitesForProfile(profile.id);
+    final resultByCandidate = {
+      for (final result in ledger.results) result.candidateId: result,
+    };
+    final backups = candidates
+        .where((candidate) => candidate.id != recommended?.candidateId)
+        .toList();
+    final readyLabel = recommended?.finalUrl?.toString();
+    final actionLabel = profile.enabled ? (stale ? '尝试上次地址' : '进入站点') : '站点已停用';
+
+    return SiteLensPanel(
+      padding: EdgeInsets.zero,
+      child: InkWell(
+        onTap: onOpen,
+        borderRadius: BorderRadius.circular(SiteLensMetrics.panelRadius),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  CircleAvatar(
+                    backgroundColor: scheme.primary.withValues(alpha: 0.12),
+                    foregroundColor: scheme.primary,
+                    child: Text(profile.name.characters.take(1).toString()),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          profile.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 5),
+                        Row(
+                          children: [
+                            healthBadge(
+                              context,
+                              app.healthFor(profile.id).state,
+                            ),
+                            if (stale) ...[
+                              const SizedBox(width: 6),
+                              SiteLensStatusBadge(
+                                label: '上次成功',
+                                icon: Icons.history,
+                                color: colors.warning,
+                                compact: true,
+                              ),
+                            ],
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: profile.enabled,
+                    onChanged: (enabled) => safely(context, () async {
+                      await app.db.setProfileEnabled(profile.id, enabled);
+                      await app.load();
+                    }),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(0, 0, 0, 2),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(
+                      stale
+                          ? Icons.history
+                          : recommended == null
+                          ? Icons.radar
+                          : Icons.check_circle_outline,
+                      color: stale
+                          ? colors.warning
+                          : recommended == null
+                          ? scheme.onSurfaceVariant
+                          : colors.ok,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            stale
+                                ? '当前没有本轮推荐'
+                                : recommended == null
+                                ? '还没有可用落点'
+                                : '当前推荐地址',
+                            style: theme.textTheme.titleSmall,
+                          ),
+                          const SizedBox(height: 4),
+                          SiteLensCopyableText(
+                            text: readyLabel ?? '打开详情页检测候选地址',
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          if (recommended?.elapsed != null)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                '首页就绪 ${recommended!.elapsed!.inMilliseconds} ms',
+                                style: theme.textTheme.bodySmall,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Icon(
+                    Icons.alt_route,
+                    size: 18,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      backups.isEmpty
+                          ? '暂无备用地址'
+                          : '备用地址 ${backups.length} 个 · ${_backupSummary(backups, resultByCandidate)}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                  const Icon(Icons.chevron_right, size: 20),
+                ],
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: profile.enabled && recommended != null
+                      ? onEnter
+                      : onOpen,
+                  icon: Icon(
+                    profile.enabled && recommended != null
+                        ? Icons.login
+                        : Icons.open_in_new,
+                  ),
+                  label: Text(actionLabel),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _backupSummary(
+    List<Candidate> candidates,
+    Map<int, ProbeResult> resultByCandidate,
+  ) => candidates
+      .take(2)
+      .map((candidate) {
+        final result = resultByCandidate[candidate.id];
+        if (result == null) return candidate.label;
+        return '${candidate.label} · ${statusLabel(result)}';
+      })
+      .join('、');
 }
 
 String profileSummary(AppController app, SiteProfile profile) {
@@ -243,6 +393,12 @@ class ProfileDetailScreen extends StatelessWidget {
           app.profiles.where((p) => p.id == profile.id).firstOrNull ?? profile;
       final ledger = app.probeLedgerFor(live.id);
       final current = ledger.results;
+      final liveReady = ledger.live
+          ? current.where((result) => result.verified).firstOrNull
+          : null;
+      final staleReady = app.latestReadyFor(live.id);
+      final recommended = liveReady ?? staleReady;
+      final staleRecommended = liveReady == null && recommended != null;
       final candidates = app.sitesForProfile(live.id);
       final ids = candidates.map((c) => c.id).toSet();
       final history = app.history
@@ -253,16 +409,59 @@ class ProfileDetailScreen extends StatelessWidget {
         appBar: AppBar(
           title: Text(live.name),
           actions: [
-            IconButton(
-              tooltip: '删除站点档案',
-              icon: const Icon(Icons.delete_outline),
-              onPressed: () => _confirmDelete(context, app, live),
-            ),
-            IconButton(
-              tooltip: '导出档案包',
-              icon: const Icon(Icons.ios_share),
-              onPressed: () =>
-                  safely(context, () => exportProfilePack(context, app, live)),
+            PopupMenuButton<String>(
+              tooltip: '档案操作',
+              onSelected: (choice) => safely(context, () async {
+                switch (choice) {
+                  case 'detect':
+                    await app.detect(profileId: live.id);
+                  case 'verify':
+                    await app.detect(
+                      profileId: live.id,
+                      all: true,
+                      refreshSources: false,
+                    );
+                  case 'export':
+                    await exportProfilePack(context, app, live);
+                  case 'delete':
+                    await _confirmDelete(context, app, live);
+                }
+              }),
+              itemBuilder: (_) => [
+                const PopupMenuItem(
+                  value: 'detect',
+                  child: ListTile(
+                    leading: Icon(Icons.radar),
+                    title: Text('检测这一轮'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'verify',
+                  child: ListTile(
+                    leading: Icon(Icons.fact_check_outlined),
+                    title: Text('全量首页验证'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+                const PopupMenuDivider(),
+                const PopupMenuItem(
+                  value: 'export',
+                  child: ListTile(
+                    leading: Icon(Icons.ios_share),
+                    title: Text('导出档案包'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'delete',
+                  child: ListTile(
+                    leading: Icon(Icons.delete_outline),
+                    title: Text('删除站点档案'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -278,138 +477,109 @@ class ProfileDetailScreen extends StatelessWidget {
             if (app.activeBrowser != null)
               const SizedBox(height: SiteLensMetrics.itemGap),
             SiteLensPanel(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        healthBadge(context, app.healthFor(live.id).state),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            '核心 DOM 选择器：${live.readySelector}',
-                            style: Theme.of(context).textTheme.titleSmall,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        FilledButton.icon(
-                          onPressed: (app.probes.running || app.refreshing)
-                              ? null
-                              : () => safely(
-                                  context,
-                                  () => app.detect(profileId: profile.id),
-                                ),
-                          icon: const Icon(Icons.radar),
-                          label: const Text('检测这一轮'),
-                        ),
-                        FilledButton.tonalIcon(
-                          onPressed: (app.probes.running || app.refreshing)
-                              ? null
-                              : () =>
-                                    safely(context, () => onEnterProfile(live)),
-                          icon: const Icon(Icons.login),
-                          label: Text(
-                            live.lastLanding == null ? '检测后进入' : '进入站点（快路径）',
-                          ),
-                        ),
-                        OutlinedButton(
-                          onPressed: (app.probes.running || app.refreshing)
-                              ? null
-                              : () => safely(
-                                  context,
-                                  () => app.detect(
-                                    all: true,
-                                    refreshSources: false,
-                                  ),
-                                ),
-                          child: const Text('全量首页验证'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            _SectionTitle(
-              ledger.live ? '本轮择优（先看可访问性，再看耗时）' : '上一轮择优（先看可访问性，再看耗时）',
-            ),
-            if (current.isEmpty)
-              const SiteLensPanel(
-                padding: EdgeInsets.zero,
-                child: ListTile(
-                  title: Text('本轮还没有结果'),
-                  subtitle: Text('点上面的「检测这一轮」，或下拉刷新。'),
-                ),
-              )
-            else if (!ledger.live)
-              const SiteLensPanel(
-                padding: EdgeInsets.zero,
-                child: ListTile(
-                  leading: Icon(Icons.history),
-                  title: Text('这是最后一轮的落点与耗时'),
-                  subtitle: Text(
-                    '进入浏览会停止检测，所以旧结果不再参与推荐；上面的数字是本轮结束时记录的，重新检测可刷新。',
-                  ),
-                ),
-              ),
-            for (final r in current) ...[
-              _ResultTile(
-                app: app,
-                result: r,
-                onEnter: onEnter,
-                stale: !ledger.live,
-              ),
-              const SizedBox(height: SiteLensMetrics.listGap),
-            ],
-            _SectionTitle('候选落点（${candidates.length}）'),
-            for (final site in candidates) ...[
-              SiteLensPanel(
-                padding: EdgeInsets.zero,
-                child: ListTile(
-                  leading: Icon(
-                    site.enabled ? Icons.language : Icons.pause_circle_outline,
-                  ),
-                  title: Text(site.label),
-                  subtitle: SiteLensCopyableText(text: site.url.toString()),
-                  trailing: PopupMenuButton<String>(
-                    onSelected: (choice) => safely(context, () async {
-                      if (choice == 'enter') {
-                        onEnter(site);
-                        return;
-                      }
-                      if (choice == 'toggle') {
-                        await app.db.setCandidateEnabled(
-                          site.id,
-                          !site.enabled,
-                        );
-                      }
-                      if (choice == 'delete') {
-                        await app.db.deleteCandidate(site.id);
-                      }
-                      await app.load();
-                    }),
-                    itemBuilder: (_) => [
-                      const PopupMenuItem(value: 'enter', child: Text('进入')),
-                      PopupMenuItem(
-                        value: 'toggle',
-                        child: Text(site.enabled ? '禁用检测' : '启用检测'),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      healthBadge(context, app.healthFor(live.id).state),
+                      const SizedBox(width: 8),
+                      SiteLensStatusBadge(
+                        label: live.enabled ? '已启用' : '已停用',
+                        icon: live.enabled
+                            ? Icons.check_circle_outline
+                            : Icons.pause_circle_outline,
+                        color: live.enabled
+                            ? SiteLensColors.of(context).ok
+                            : Theme.of(context).colorScheme.outline,
+                        compact: true,
                       ),
-                      const PopupMenuItem(value: 'delete', child: Text('移除候选')),
+                      const Spacer(),
+                      Text(
+                        '上次检测：${clock(app.lastCheckedFor(live.id))}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
                     ],
                   ),
-                  onTap: () => onEnter(site),
-                ),
+                  const SizedBox(height: 14),
+                  SiteLensSectionHeader(
+                    title: staleRecommended
+                        ? '最近成功地址（当前结果已过期）'
+                        : recommended == null
+                        ? '当前没有可用推荐'
+                        : '当前推荐地址',
+                    subtitle: recommended == null
+                        ? '先运行一轮检测，或检查发布页与核心 DOM 选择器。'
+                        : '${recommended.finalUrl ?? recommended.entryUrl}${recommended.elapsed == null ? '' : ' · ${recommended.elapsed!.inMilliseconds} ms'}',
+                  ),
+                  if (recommended != null)
+                    DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: SiteLensColors.of(context).wellTint,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: SiteLensColors.of(context).divider,
+                        ),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Row(
+                          children: [
+                            Icon(
+                              staleRecommended
+                                  ? Icons.history
+                                  : Icons.verified_outlined,
+                              color: staleRecommended
+                                  ? SiteLensColors.of(context).warning
+                                  : SiteLensColors.of(context).ok,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: SiteLensCopyableText(
+                                text:
+                                    '${recommended.finalUrl ?? recommended.entryUrl}',
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: live.enabled && recommended != null
+                          ? () => safely(context, () => onEnterProfile(live))
+                          : live.enabled
+                          ? () => safely(context, () => onEnterProfile(live))
+                          : null,
+                      icon: const Icon(Icons.login),
+                      label: Text(
+                        live.enabled
+                            ? staleRecommended
+                                  ? '尝试上次地址'
+                                  : '进入站点'
+                            : '站点已停用',
+                      ),
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: SiteLensMetrics.listGap),
-            ],
+            ),
+            _DetectionPanel(
+              app: app,
+              ledger: ledger,
+              current: current,
+              candidates: candidates,
+              recommended: recommended,
+              staleRecommended: staleRecommended,
+              onEnter: onEnter,
+              onDetect: (app.probes.running || app.refreshing)
+                  ? null
+                  : () => safely(context, () => app.detect(profileId: live.id)),
+            ),
             _SectionTitle('历史'),
             if (history.isEmpty)
               const SiteLensPanel(
@@ -435,65 +605,293 @@ class ProfileDetailScreen extends StatelessWidget {
   );
 }
 
-class _ResultTile extends StatelessWidget {
-  const _ResultTile({
+class _DetectionPanel extends StatelessWidget {
+  const _DetectionPanel({
     required this.app,
-    required this.result,
+    required this.ledger,
+    required this.current,
+    required this.candidates,
+    required this.recommended,
+    required this.staleRecommended,
     required this.onEnter,
-    this.stale = false,
+    required this.onDetect,
   });
   final AppController app;
-  final ProbeResult result;
+  final ({int round, bool live, List<ProbeResult> results}) ledger;
+  final List<ProbeResult> current;
+  final List<Candidate> candidates;
+  final ProbeResult? recommended;
+  final bool staleRecommended;
   final void Function(Candidate) onEnter;
-
-  /// True when the row comes from a round that is no longer live, so an old
-  /// timing cannot be mistaken for this round's recommendation.
-  final bool stale;
+  final VoidCallback? onDetect;
 
   @override
   Widget build(BuildContext context) {
-    final site = app.sites.where((c) => c.id == result.candidateId).firstOrNull;
-    final ready = result.verified;
-    final scheme = Theme.of(context).colorScheme;
+    final resultByCandidate = {
+      for (final result in current) result.candidateId: result,
+    };
+    final backupCandidates = candidates
+        .where((candidate) => candidate.id != recommended?.candidateId)
+        .toList();
     return SiteLensPanel(
       padding: EdgeInsets.zero,
-      child: ListTile(
-        selected: ready && !stale,
-        selectedTileColor: scheme.primary.withValues(alpha: 0.12),
-        // A stale row is muted, not dead: the same entry is still the way into
-        // that落点, and the arrow it draws would otherwise lie.
-        textColor: stale ? scheme.onSurfaceVariant : null,
-        iconColor: stale ? scheme.onSurfaceVariant : null,
-        leading: Icon(
-          stale
-              ? Icons.history
-              : ready
-              ? Icons.verified_outlined
-              : Icons.info_outline,
-        ),
-        title: Text(site?.label ?? result.entryUrl.host),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '${stale ? '上一轮 · ' : ''}${statusLabel(result)}${result.elapsed == null ? '' : ' · ${result.elapsed!.inMilliseconds} ms'}',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 12, 12),
+            child: Row(
+              children: [
+                Icon(
+                  ledger.live ? Icons.radar : Icons.history,
+                  size: 20,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        ledger.live ? '本轮检测' : '上一轮检测',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      Text(
+                        ledger.live ? '先按可访问性，再按首页就绪耗时排序' : '结果已过期，重新检测后才会参与推荐',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                Text(
+                  '${current.length} 个结果',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(width: 8),
+                FilledButton.tonalIcon(
+                  onPressed: onDetect,
+                  icon: const Icon(Icons.radar, size: 16),
+                  label: const Text('检测'),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    minimumSize: const Size(0, 34),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+              ],
             ),
-            SiteLensCopyableText(
-              text: '${result.finalUrl ?? result.entryUrl}',
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
+          ),
+          const Divider(height: 1),
+          if (recommended != null)
+            _CurrentRecommendationRow(
+              app: app,
+              result: recommended!,
+              stale: staleRecommended,
+              onEnter: onEnter,
+            )
+          else
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+              child: Text(
+                current.isEmpty
+                    ? '本轮还没有结果；从右上角开始检测。'
+                    : '本轮没有首页已就绪的落点；可检查备用地址或发布页。',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             ),
-            if (result.reason != null)
-              Text(
-                result.reason!,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
+          if (backupCandidates.isNotEmpty) ...[
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              child: Text(
+                '备用地址 · ${backupCandidates.length}',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+            ),
+            for (final candidate in backupCandidates)
+              _CompactCandidateRow(
+                app: app,
+                candidate: candidate,
+                result: resultByCandidate[candidate.id],
+                onEnter: onEnter,
               ),
           ],
+          if (current.isNotEmpty && backupCandidates.isEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
+              child: Text(
+                '当前档案只有一个候选地址',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CurrentRecommendationRow extends StatelessWidget {
+  const _CurrentRecommendationRow({
+    required this.app,
+    required this.result,
+    required this.stale,
+    required this.onEnter,
+  });
+  final AppController app;
+  final ProbeResult result;
+  final bool stale;
+  final void Function(Candidate) onEnter;
+
+  @override
+  Widget build(BuildContext context) {
+    final candidate = app.sites
+        .where((site) => site.id == result.candidateId)
+        .firstOrNull;
+    final colors = SiteLensColors.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            stale ? Icons.history : Icons.check_circle,
+            size: 22,
+            color: stale ? colors.warning : colors.ok,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        stale ? '上次成功地址' : '当前推荐地址',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                    ),
+                    SiteLensStatusBadge(
+                      label: stale ? '过期' : '可进入',
+                      icon: stale ? Icons.history : Icons.verified_outlined,
+                      color: stale ? colors.warning : colors.ok,
+                      compact: true,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                SiteLensCopyableText(
+                  text: '${result.finalUrl ?? result.entryUrl}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  '${statusLabel(result)}${result.elapsed == null ? '' : ' · ${result.elapsed!.inMilliseconds} ms'}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilledButton(
+            onPressed: candidate == null ? null : () => onEnter(candidate),
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              minimumSize: const Size(0, 38),
+            ),
+            child: Text(stale ? '尝试' : '进入'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CompactCandidateRow extends StatelessWidget {
+  const _CompactCandidateRow({
+    required this.app,
+    required this.candidate,
+    required this.result,
+    required this.onEnter,
+  });
+  final AppController app;
+  final Candidate candidate;
+  final ProbeResult? result;
+  final void Function(Candidate) onEnter;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final ready = result?.verified == true;
+    return InkWell(
+      onTap: () => onEnter(candidate),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+        child: Row(
+          children: [
+            Icon(
+              candidate.enabled
+                  ? ready
+                        ? Icons.check_circle_outline
+                        : Icons.language_outlined
+                  : Icons.pause_circle_outline,
+              size: 20,
+              color: ready
+                  ? SiteLensColors.of(context).ok
+                  : scheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    candidate.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                  SiteLensCopyableText(
+                    text: candidate.url.toString(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  if (result != null)
+                    Text(
+                      '${statusLabel(result!)}${result!.elapsed == null ? '' : ' · ${result!.elapsed!.inMilliseconds} ms'}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                ],
+              ),
+            ),
+            PopupMenuButton<String>(
+              tooltip: '备用地址操作',
+              onSelected: (choice) => safely(context, () async {
+                if (choice == 'enter') {
+                  onEnter(candidate);
+                } else if (choice == 'toggle') {
+                  await app.db.setCandidateEnabled(
+                    candidate.id,
+                    !candidate.enabled,
+                  );
+                  await app.load();
+                } else if (choice == 'delete') {
+                  await app.db.deleteCandidate(candidate.id);
+                  await app.load();
+                }
+              }),
+              itemBuilder: (_) => [
+                const PopupMenuItem(value: 'enter', child: Text('进入')),
+                PopupMenuItem(
+                  value: 'toggle',
+                  child: Text(candidate.enabled ? '禁用检测' : '启用检测'),
+                ),
+                const PopupMenuItem(value: 'delete', child: Text('移除候选')),
+              ],
+            ),
+          ],
         ),
-        isThreeLine: true,
-        trailing: site == null ? null : const Icon(Icons.arrow_forward),
-        onTap: site == null ? null : () => onEnter(site),
       ),
     );
   }

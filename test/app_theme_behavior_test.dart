@@ -1,4 +1,6 @@
 import 'package:drift/native.dart';
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -47,13 +49,20 @@ void main() {
     expect(panel.visibility, closeTo(1, 0.001));
     expect(panel.bodyMode, GlassBodyMode.clear);
     expect(panel.glassColor.a, closeTo(0.22, 0.001));
-    expect(panel.glassColor.r, closeTo(1, 0.001));
-    expect(panel.glassColor.g, closeTo(1, 0.001));
-    expect(panel.glassColor.b, closeTo(1, 0.001));
+    final expectedLightBase = SiteLensColors.of(context).glassSurface;
+    expect(panel.glassColor.r, closeTo(expectedLightBase.r, 0.001));
+    expect(panel.glassColor.g, closeTo(expectedLightBase.g, 0.001));
+    expect(panel.glassColor.b, closeTo(expectedLightBase.b, 0.001));
     final lowAlphaProgress = (0.22 / 0.45).clamp(0.0, 1.0);
     final frostFactor =
         0.15 + 0.85 * Curves.easeOut.transform(lowAlphaProgress);
+    expect(panel.blur, greaterThan(0));
+    expect(panel.frost, greaterThan(0));
     expect(panel.frostOpacity, closeTo(0.73 * frostFactor, 0.001));
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      expect(panel.refractiveIndex, closeTo(1.08, 0.001));
+      expect(panel.shadow, isEmpty);
+    }
     expect(chrome.visibility, closeTo(1, 0.001));
     expect(chrome.bodyMode, GlassBodyMode.clear);
     expect(chrome.glassColor.a, closeTo(0.22, 0.001));
@@ -79,6 +88,8 @@ void main() {
     final fullContext = tester.element(find.byType(SizedBox));
     final fullPanel = siteLensGlassSettings(fullContext);
     expect(fullPanel.frostOpacity, closeTo(defaultPanel.frostOpacity, 0.001));
+    expect(fullPanel.blur, greaterThan(0));
+    expect(fullPanel.frost, greaterThan(0));
   });
 
   test('theme AppBar carries the matching system overlay style', () {
@@ -133,9 +144,18 @@ void main() {
         findsNothing,
         reason: 'the bottom navigation stays compact without a badge',
       );
-      expect(find.text('站点'), findsOneWidget);
-      expect(find.text('浏览'), findsOneWidget);
-      expect(find.text('设置'), findsOneWidget);
+      expect(
+        find.descendant(of: navigation, matching: find.text('站点')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: navigation, matching: find.text('浏览')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: navigation, matching: find.text('设置')),
+        findsOneWidget,
+      );
       expect(tester.getSize(navigation).height, 60);
       await tester.tap(find.text('设置'));
       await tester.pumpAndSettle();

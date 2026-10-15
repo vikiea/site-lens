@@ -20,6 +20,8 @@ dependencies:
   package_info_plus: ^10.2.2
   url_launcher: ^6.3.3
   http: ^1.6.0
+  re_editor: ^0.10.0
+  re_highlight: ^0.0.3
 dev_dependencies:
   flutter_test:
     sdk: flutter

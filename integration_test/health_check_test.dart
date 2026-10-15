@@ -54,7 +54,7 @@ void main() {
       );
       await waitFor(
         tester,
-        () => find.text('我的站点').evaluate().isNotEmpty,
+        () => find.byTooltip('添加站点').evaluate().isNotEmpty,
         'home panel',
       );
       final container = ProviderScope.containerOf(

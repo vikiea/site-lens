@@ -73,7 +73,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     hosts.changed.addListener(_hostMetadataChanged);
     packs = ProfilePacks(db);
     probes = ProbeCoordinator(
-      candidates: db.candidates,
+      candidates: _enabledCandidates,
       httpProbe: httpProbe ?? HttpProbe(),
       verifier: homepageVerifier ?? NativeHomepageVerifier(hosts),
       save: db.saveProbe,
@@ -697,6 +697,19 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  Future<List<Candidate>> _enabledCandidates() async {
+    final profiles = await db.profiles();
+    final enabledProfiles = profiles
+        .where((p) => p.enabled)
+        .map((p) => p.id)
+        .toSet();
+    final candidates = await db.candidates();
+    return candidates.where((candidate) {
+      final profileId = candidate.profileId;
+      return profileId == null || enabledProfiles.contains(profileId);
+    }).toList();
+  }
+
   Future<DetectionOutcome> detect({
     bool all = false,
     bool refreshSources = true,
@@ -1047,6 +1060,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   /// path, then silently fall back to a fresh detection round. A failed tab is
   /// kept visible rather than being replaced.
   Future<ActiveBrowserSession?> enterProfile(SiteProfile profile) async {
+    if (!profile.enabled) {
+      error = '该站点档案已停用，请先在站点首页启用';
+      notifyListeners();
+      return null;
+    }
     final landing = profile.lastLanding;
     if (landing != null) {
       final session = await openUrl(

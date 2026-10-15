@@ -18,12 +18,19 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ProfilesPanel(app: app, onOpen: (_) {}, onResume: () {}),
+          body: Column(
+            children: [
+              Expanded(
+                child: ProfilesPanel(app: app, onOpen: (_) {}, onResume: () {}),
+              ),
+            ],
+          ),
         ),
       ),
     );
-    expect(find.text('我的站点'), findsOneWidget);
+    expect(find.text('我的站点'), findsNothing);
     expect(find.textContaining('还没有站点档案'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, '添加站点'), findsOneWidget);
 
     await tester.tap(find.widgetWithText(FilledButton, '添加站点'));
     await tester.pumpAndSettle();
@@ -101,6 +108,42 @@ void main() {
       await db.close();
     },
   );
+
+  testWidgets('site cards expose disabled state and script editor actions', (
+    tester,
+  ) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final app = AppController(db);
+    await app.load();
+    final profileId = await app.db.createProfile('停用档案');
+    await app.db.setProfileEnabled(profileId, false);
+    await app.load();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ProfilesPanel(app: app, onOpen: (_) {}, onResume: () {}),
+        ),
+      ),
+    );
+    expect(find.text('站点已停用'), findsOneWidget);
+    expect(find.byType(Switch), findsOneWidget);
+    expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+
+    await tester.pumpWidget(
+      MaterialApp(home: ScriptManagementScreen(app: app)),
+    );
+    expect(find.text('脚本状态'), findsOneWidget);
+    expect(find.byTooltip('导入 .user.js'), findsOneWidget);
+    expect(find.byTooltip('新建或粘贴脚本'), findsOneWidget);
+    await tester.tap(find.byTooltip('新建或粘贴脚本'));
+    await tester.pumpAndSettle();
+    expect(find.text('脚本元数据'), findsOneWidget);
+    expect(find.text('保存后会撤销当前确认摘要；重新启用时需要再次确认权限和固定依赖。'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+    await app.shutdown();
+    await db.close();
+  });
 
   testWidgets('browser tab page and resume row are inert without a session', (
     tester,

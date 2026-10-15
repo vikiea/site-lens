@@ -101,7 +101,8 @@ void main() {
           child: const SiteLensApp(),
         ),
       );
-      await pumpUntil(tester, find.text('添加站点'));
+      await pumpUntil(tester, find.byTooltip('添加站点'));
+      expect(find.widgetWithText(FilledButton, '添加站点'), findsOneWidget);
 
       final container = ProviderScope.containerOf(
         tester.element(find.byType(HomeScreen)),
@@ -118,7 +119,7 @@ void main() {
       expect(controller.capabilities!.documentStart, isTrue);
 
       // Default entry: paste a URL, let the app reconnoitre, then confirm.
-      await tester.tap(find.widgetWithText(FilledButton, '添加站点'));
+      await tester.tap(find.byTooltip('添加站点'));
       await pumpUntil(tester, find.text('添加站点档案'));
       await tester.enterText(
         find.byType(TextField).first,
@@ -136,8 +137,8 @@ void main() {
 
       // Open the profile and run a round of discovery + verification.
       await tester.tap(find.text('闭环站点').first);
-      await pumpUntil(tester, find.text('检测这一轮'));
-      await tester.tap(find.widgetWithText(FilledButton, '检测这一轮'));
+      await pumpUntil(tester, find.widgetWithText(FilledButton, '检测'));
+      await tester.tap(find.widgetWithText(FilledButton, '检测'));
       try {
         await pumpUntil(
           tester,
@@ -306,7 +307,7 @@ void main() {
       await waitForBrowserActionOrMore(tester, browserExitTooltip);
       await tapBrowserAction(tester, browserExitTooltip);
       // Exiting the browser returns to the profile detail; go back to the panel.
-      await pumpUntil(tester, find.text('检测这一轮'));
+      await pumpUntil(tester, find.widgetWithText(FilledButton, '检测'));
       await tester.pageBack();
       // Both the site panel and the profile detail carry a "切回" float; wait
       // for the detail route to finish popping before tapping a single one.

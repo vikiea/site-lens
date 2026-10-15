@@ -1,4 +1,5 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart'
+    show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
@@ -80,15 +81,22 @@ LiquidGlassSettings siteLensGlassSettings(
   // The user preference controls the fill of every Flutter glass surface.
   // Keep blur, refraction, frost and rim treatment at full strength. Controls
   // over a native WebView retain their polarity-matched backer for contrast.
-  final glassFillAlpha =
+  final requestedGlassFillAlpha =
       Theme.of(context).extension<SiteLensGlassTheme>()?.backgroundAlpha ??
       0.45;
-  // A light glass fill must contrast with the pale backdrop. Reusing
-  // backdropTop here makes alpha changes visually disappear because the fill
-  // and the pixels behind it are effectively the same color.
-  final glassFill =
-      (dark ? SiteLensColors.of(context).backdropBottom : Colors.white)
-          .withValues(alpha: glassFillAlpha);
+  // Android's lightweight renderer needs a translucent ceiling to keep the
+  // backdrop and adjacent panels visually connected. A stored value of 100
+  // otherwise becomes a flat white slab on high-density vendor devices.
+  final glassFillAlpha = defaultTargetPlatform == TargetPlatform.android
+      ? requestedGlassFillAlpha <= 0.45
+            ? requestedGlassFillAlpha
+            : 0.45 + (requestedGlassFillAlpha - 0.45) * 0.49
+      : requestedGlassFillAlpha;
+  // The fill and edge belong to the same global neutral surface token. Theme
+  // color remains reserved for the backdrop, selected state and status UI.
+  final colors = SiteLensColors.of(context);
+  final globalSurfaceBase = colors.glassSurface;
+  final glassFill = globalSurfaceBase.withValues(alpha: glassFillAlpha);
   // Keep the material baseline unchanged from the default value upward.
   // Only low fill alpha needs a limited frost reduction; otherwise the
   // preference would also change the glass character at ordinary values.
@@ -97,16 +105,27 @@ LiquidGlassSettings siteLensGlassSettings(
   final frostFactor = glassFillAlpha >= defaultFillAlpha
       ? 1.0
       : 0.15 + 0.85 * Curves.easeOut.transform(lowAlphaProgress);
+  final isAndroid = defaultTargetPlatform == TargetPlatform.android;
   final adjusted = role == SiteLensSurfaceRole.platformView
       ? base
       : base.copyWith(
           visibility: 1,
           bodyMode: GlassBodyMode.clear,
           glassColor: glassFill,
-          // The frost veil is material, not the user's fill alpha. Keep a
-          // small floor so low opacity remains glass-like, and use a gentle
-          // curve so the 45-100 range keeps the iOS material character.
+          // Standard translates the iOS frost cloud into its compatible blur
+          // path while keeping the child composited. Keep the optical depth
+          // subtle on Android so the structural rim never becomes a second
+          // bright panel, while the frost/tint still reads as glass.
+          blur: base.blur,
+          frost: base.frost,
           frostOpacity: base.frostOpacity * frostFactor,
+          thickness: isAndroid ? 12 : base.thickness,
+          refractiveIndex: isAndroid ? 1.08 : base.refractiveIndex,
+          lightIntensity: isAndroid ? 0 : base.lightIntensity,
+          rimLight: isAndroid ? 0 : base.rimLight,
+          rimShade: isAndroid ? 0 : base.rimShade,
+          edgeAbsorption: isAndroid ? 0 : base.edgeAbsorption,
+          shadow: isAndroid ? const <BoxShadow>[] : base.shadow,
         );
   if (role != SiteLensSurfaceRole.platformView) return adjusted;
   return adjusted.copyWith(
@@ -116,9 +135,9 @@ LiquidGlassSettings siteLensGlassSettings(
 
 /// One material boundary for the whole app.
 ///
-/// Quality is fixed at [GlassQuality.premium]: the material is a product
-/// decision, not a device-dependent fallback. Reduce Motion still stops the
-/// animations; high contrast never swaps the material out.
+/// Uses the premium material where the renderer is stable and the child-safe
+/// frosted compatibility path on Android. Both paths share the same theme
+/// tokens and Material semantics.
 class SiteLensGlassSurface extends StatelessWidget {
   const SiteLensGlassSurface({
     super.key,
@@ -141,10 +160,18 @@ class SiteLensGlassSurface extends StatelessWidget {
       type: MaterialType.transparency,
       child: padding == null ? child : Padding(padding: padding!, child: child),
     );
+    final settings = siteLensGlassSettings(context, role: role);
     return AdaptiveGlass(
       shape: LiquidRoundedSuperellipse(borderRadius: radius),
-      settings: siteLensGlassSettings(context, role: role),
-      quality: GlassQuality.premium,
+      settings: settings,
+      // Android devices can report Impeller support while the premium
+      // own-layer path still drops child content on some vendor renderers.
+      // Standard keeps the child composited and retains the frost/blur glass
+      // material; Android settings above reduce its independent rim. iOS and
+      // desktop retain the full premium path.
+      quality: defaultTargetPlatform == TargetPlatform.android
+          ? GlassQuality.standard
+          : GlassQuality.premium,
       platformViewBackdrop: role == SiteLensSurfaceRole.platformView,
       // Chrome and panels both provide the backdrop for their children: glass
       // inside a bar is a nested surface and would only double the blur.

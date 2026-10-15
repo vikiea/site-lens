@@ -111,6 +111,27 @@ void main() {
     await heldApp.shutdown();
   });
 
+  test(
+    'disabled profile candidates are excluded from detection inputs',
+    () async {
+      final enabled = await db.createProfile('启用档案');
+      final disabled = await db.createProfile('停用档案');
+      await db.addCandidate(
+        Uri.parse('https://enabled.example/'),
+        profileId: enabled,
+      );
+      await db.addCandidate(
+        Uri.parse('https://disabled.example/'),
+        profileId: disabled,
+      );
+      await db.setProfileEnabled(disabled, false);
+      final candidates = await app.probes.candidates();
+      expect(candidates.map((candidate) => candidate.url.host), [
+        'enabled.example',
+      ]);
+    },
+  );
+
   test('currentRoundReadyFor ignores historical ready results', () async {
     final id = await db.createProfile('P');
     await db.addCandidate(Uri.parse('https://a.example/'), profileId: id);

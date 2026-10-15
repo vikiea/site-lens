@@ -6,7 +6,7 @@ import 'package:site_lens/ui/glass_surface.dart';
 import 'package:site_lens/ui/ui_primitives.dart';
 
 void main() {
-  testWidgets('bottom navigation is a liquid glass chrome surface', (
+  testWidgets('bottom navigation keeps one shared chrome surface', (
     tester,
   ) async {
     await tester.pumpWidget(

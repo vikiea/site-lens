@@ -7,6 +7,10 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:re_editor/re_editor.dart';
+import 'package:re_highlight/languages/javascript.dart';
+import 'package:re_highlight/styles/atom-one-dark.dart';
+import 'package:re_highlight/styles/atom-one-light.dart';
 
 import '../domain/models.dart';
 import '../network/transport.dart';
@@ -198,7 +202,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           child: Scaffold(
             appBar: AppBar(
               title: Text(switch (destination) {
-                AppDestination.sites => '择站',
+                AppDestination.sites => '站点',
                 AppDestination.browser => '浏览',
                 AppDestination.settings => '设置',
               }),
@@ -209,13 +213,89 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 radius: 0,
                 child: SizedBox.shrink(),
               ),
-              actions: const [],
+              actions: switch (destination) {
+                AppDestination.sites => [
+                  IconButton(
+                    tooltip: '添加站点',
+                    icon: const Icon(Icons.add_link),
+                    onPressed: () => showAddProfileDialog(context, app),
+                  ),
+                  PopupMenuButton<String>(
+                    tooltip: '站点操作',
+                    onSelected: (choice) => safely(context, () async {
+                      switch (choice) {
+                        case 'import':
+                          await importProfilePack(context, app);
+                        case 'detect':
+                          await app.detect();
+                        case 'cancel':
+                          app.cancel();
+                      }
+                    }),
+                    itemBuilder: (_) => [
+                      const PopupMenuItem(
+                        value: 'import',
+                        child: ListTile(
+                          leading: Icon(Icons.file_download_outlined),
+                          title: Text('导入档案包'),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'detect',
+                        enabled: app.profiles.any((profile) => profile.enabled),
+                        child: const ListTile(
+                          leading: Icon(Icons.radar),
+                          title: Text('全部检测'),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+                      if (app.probes.running || app.refreshing)
+                        const PopupMenuItem(
+                          value: 'cancel',
+                          child: ListTile(
+                            leading: Icon(Icons.stop_circle_outlined),
+                            title: Text('取消检测'),
+                            contentPadding: EdgeInsets.zero,
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
+                AppDestination.browser => [
+                  IconButton(
+                    tooltip: '新建标签页',
+                    icon: const Icon(Icons.add),
+                    onPressed: () =>
+                        safely(context, () => promptNewTab(context, app)),
+                  ),
+                  PopupMenuButton<String>(
+                    tooltip: '标签页操作',
+                    onSelected: (choice) => safely(context, () async {
+                      if (choice == 'closeAll') await app.closeAllTabs();
+                    }),
+                    itemBuilder: (_) => [
+                      PopupMenuItem(
+                        value: 'closeAll',
+                        enabled: app.browserTabs.isNotEmpty,
+                        child: const ListTile(
+                          leading: Icon(Icons.close),
+                          title: Text('全部关闭'),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+                AppDestination.settings => const <Widget>[],
+              },
             ),
             body: SafeArea(
               child: switch (destination) {
                 AppDestination.sites => ProfilesPanel(
                   app: app,
                   onOpen: (profile) => _openProfile(app, profile),
+                  onEnterProfile: (profile) => _enterProfile(app, profile),
                   onResume: () => _resume(app),
                 ),
                 AppDestination.browser => BrowserTabsPage(
@@ -350,6 +430,27 @@ class ScriptManagementScreen extends StatelessWidget {
   const ScriptManagementScreen({super.key, required this.app, this.profileId});
   final AppController app;
   final int? profileId;
+
+  Future<void> _importScript(BuildContext context) async {
+    await safely(context, () async {
+      final result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['js'],
+      );
+      if (result.isEmpty) return;
+      final file = result.single;
+      if (!file.name.endsWith('.user.js')) {
+        throw const FormatException('请选择 .user.js 文件');
+      }
+      if ((await file.length() ?? 0) > maxScriptBytes) {
+        throw const FormatException('脚本超过 16 MiB 运行上限');
+      }
+      final bytes = await file.readAsBytes();
+      await app.scripts.save(utf8.decode(bytes));
+      await app.load();
+    });
+  }
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: app,
@@ -358,7 +459,12 @@ class ScriptManagementScreen extends StatelessWidget {
         title: const Text('脚本管理'),
         actions: [
           IconButton(
-            tooltip: '粘贴新脚本',
+            tooltip: '导入 .user.js',
+            icon: const Icon(Icons.file_upload_outlined),
+            onPressed: () => _importScript(context),
+          ),
+          IconButton(
+            tooltip: '新建或粘贴脚本',
             icon: const Icon(Icons.add),
             onPressed: () => editScript(context, app),
           ),
@@ -377,148 +483,117 @@ class ScriptsPage extends StatelessWidget {
   final int? profileId;
 
   @override
-  Widget build(BuildContext context) => ListView(
-    padding: const EdgeInsets.fromLTRB(
-      SiteLensMetrics.pagePadding,
-      4,
-      SiteLensMetrics.pagePadding,
-      32,
-    ),
-    children: [
-      SiteLensPanel(
-        padding: EdgeInsets.zero,
-        child: SwitchListTile(
-          title: const Text('全局关闭脚本'),
-          subtitle: const Text('故障恢复入口：撤销当前桥并重载浏览页'),
-          value: app.scriptsDisabled,
-          onChanged: (value) =>
-              safely(context, () => app.disableAllScripts(value)),
-        ),
+  Widget build(BuildContext context) {
+    final parsed = app.installed
+        .map((script) => ScriptMetadata.parse(script.source))
+        .toList();
+    final errorCount = parsed
+        .where((metadata) => metadata.errors.isNotEmpty)
+        .length;
+    final enabledCount = app.installed.where((script) => script.enabled).length;
+    final groups = scriptGroups(app, profileId: profileId);
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(
+        SiteLensMetrics.pagePadding,
+        4,
+        SiteLensMetrics.pagePadding,
+        32,
       ),
-      OutlinedButton.icon(
-        onPressed: () => safely(context, () async {
-          final result = await FilePicker.pickFiles(
-            type: FileType.custom,
-            allowedExtensions: ['js'],
-          );
-          if (result.isEmpty) return;
-          final file = result.single;
-          if (!file.name.endsWith('.user.js')) {
-            throw const FormatException('请选择 .user.js 文件');
-          }
-          if ((await file.length() ?? 0) > maxScriptBytes) {
-            throw const FormatException('脚本超过 16 MiB 运行上限');
-          }
-          final bytes = await file.readAsBytes();
-          await app.scripts.save(utf8.decode(bytes));
-          await app.load();
-        }),
-        icon: const Icon(Icons.file_upload_outlined),
-        label: const Text('导入 .user.js（默认关闭）'),
-      ),
-      Padding(
-        padding: const EdgeInsets.symmetric(vertical: 16),
-        child: Text(
-          '主框架限定；不是完整 Tampermonkey。网络不附带登录 Cookie。修改脚本后必须重新确认。',
-          style: Theme.of(context).textTheme.bodySmall,
+      children: [
+        _ScriptOverviewPanel(
+          total: app.installed.length,
+          enabled: enabledCount,
+          errors: errorCount,
+          disabled: app.scriptsDisabled,
         ),
-      ),
-      if (app.installed.isEmpty)
-        const SiteLensEmptyState(
-          icon: Icons.code,
-          title: '还没有脚本',
-          message: '点击右上角粘贴，或从文件导入一个 .user.js。',
+        const SizedBox(height: SiteLensMetrics.itemGap),
+        _GlobalScriptSwitchPanel(app: app),
+        const SizedBox(height: SiteLensMetrics.itemGap),
+        SiteLensNotice(
+          text: '主框架限定；不是完整 Tampermonkey。网络不附带登录 Cookie。修改脚本后必须重新确认。',
+          tone: SiteLensNoticeTone.info,
         ),
-      for (final group in scriptGroups(app, profileId: profileId)) ...[
-        _ScriptGroupHeader(label: group.$1, note: group.$2),
-        if (group.$3.isEmpty)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Text(
-              '（这一组还没有脚本）',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
+        const SizedBox(height: SiteLensMetrics.itemGap),
+        if (app.installed.isEmpty)
+          const SiteLensEmptyState(
+            icon: Icons.code,
+            title: '还没有脚本',
+            message: '使用右上角导入或新建按钮添加一个 .user.js。',
           ),
-        for (final script in group.$3) ...[
-          _scriptCard(context, script),
-          const SizedBox(height: SiteLensMetrics.itemGap),
+        for (final group in groups) ...[
+          SiteLensSectionHeader(title: group.$1, subtitle: group.$2),
+          if (group.$3.isEmpty)
+            SiteLensPanel(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Text(
+                '这一组还没有脚本',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+          for (final script in group.$3) ...[
+            _ScriptCard(app: app, script: script),
+            const SizedBox(height: SiteLensMetrics.itemGap),
+          ],
         ],
       ],
-    ],
-  );
+    );
+  }
+}
 
-  Widget _scriptCard(BuildContext context, InstalledScript script) {
-    final meta = ScriptMetadata.parse(script.source);
-    final environment = meta.pageWorld
-        ? (meta.grants.contains('unsafeWindow')
-              ? '网页环境 · unsafeWindow 可用 · 无原生存储/网络权限'
-              : '网页环境 · 无原生存储/网络权限')
-        : '隔离环境 · 已声明权限';
-    final issue = meta.errors.isEmpty ? '' : ' · 不可启用：${meta.errors.first}';
+class _ScriptOverviewPanel extends StatelessWidget {
+  const _ScriptOverviewPanel({
+    required this.total,
+    required this.enabled,
+    required this.errors,
+    required this.disabled,
+  });
+  final int total;
+  final int enabled;
+  final int errors;
+  final bool disabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final colors = SiteLensColors.of(context);
     return SiteLensPanel(
-      padding: EdgeInsets.zero,
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SwitchListTile(
-            title: Text(meta.name),
-            subtitle: Text('$environment$issue'),
-            value: script.enabled,
-            onChanged: (enabled) => safely(context, () async {
-              if (!enabled) {
-                await app.db.setScriptEnabled(script.id, false);
-              } else {
-                if (!context.mounted ||
-                    !await confirmScript(context, app, script)) {
-                  return;
-                }
-                await app.scripts.enable(script, Cancellation());
-              }
-              await app.load();
-            }),
-          ),
+          Text('脚本状态', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 14),
           Row(
-            mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              TextButton(
-                onPressed: () => editScript(context, app, script: script),
-                child: const Text('编辑'),
+              Expanded(
+                child: _ScriptMetric(
+                  icon: Icons.code,
+                  label: '全部',
+                  value: '$total',
+                  color: scheme.primary,
+                ),
               ),
-              TextButton(
-                onPressed: () => editScriptOwnership(context, app, script),
-                child: const Text('归属档案'),
+              Expanded(
+                child: _ScriptMetric(
+                  icon: Icons.play_circle_outline,
+                  label: '已启用',
+                  value: '$enabled',
+                  color: colors.ok,
+                ),
               ),
-              TextButton(
-                onPressed: () => scriptDetails(context, app, script),
-                child: const Text('权限与错误'),
-              ),
-              IconButton(
-                tooltip: '删除脚本及其存储',
-                onPressed: () => safely(context, () async {
-                  final confirmed = await showDialog<bool>(
-                    context: context,
-                    builder: (c) => SiteLensAlertDialog(
-                      title: const Text('删除脚本？'),
-                      content: const Text('该脚本的本地存储与固定依赖也将删除，无法撤销。'),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(c, false),
-                          child: const Text('取消'),
-                        ),
-                        TextButton(
-                          onPressed: () => Navigator.pop(c, true),
-                          child: const Text('删除'),
-                        ),
-                      ],
-                    ),
-                  );
-                  if (confirmed == true) {
-                    await app.db.deleteScript(script.id);
-                    await app.load();
-                  }
-                }),
-                icon: const Icon(Icons.delete_outline),
+              Expanded(
+                child: _ScriptMetric(
+                  icon: Icons.error_outline,
+                  label: '异常',
+                  value: '$errors',
+                  color: errors == 0 ? scheme.onSurfaceVariant : colors.danger,
+                ),
               ),
             ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            disabled ? '当前运行状态：全局关闭' : '当前运行状态：按脚本权限和 @match 生效',
+            style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
       ),
@@ -526,23 +601,302 @@ class ScriptsPage extends StatelessWidget {
   }
 }
 
-class _ScriptGroupHeader extends StatelessWidget {
-  const _ScriptGroupHeader({required this.label, required this.note});
+class _ScriptMetric extends StatelessWidget {
+  const _ScriptMetric({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+  final IconData icon;
   final String label;
-  final String note;
+  final String value;
+  final Color color;
+
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(top: 12, bottom: 4),
-    child: Row(
-      children: [
-        Text(label, style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(note, style: Theme.of(context).textTheme.bodySmall),
-        ),
-      ],
-    ),
+  Widget build(BuildContext context) => Row(
+    children: [
+      Icon(icon, size: 20, color: color),
+      const SizedBox(width: 8),
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(value, style: Theme.of(context).textTheme.titleMedium),
+          Text(label, style: Theme.of(context).textTheme.bodySmall),
+        ],
+      ),
+    ],
   );
+}
+
+class _InlineSurfaceNotice extends StatelessWidget {
+  const _InlineSurfaceNotice({required this.text, required this.tone});
+  final String text;
+  final SiteLensNoticeTone tone;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = SiteLensColors.of(context);
+    final (color, icon) = switch (tone) {
+      SiteLensNoticeTone.info => (
+        Theme.of(context).colorScheme.primary,
+        Icons.info_outline,
+      ),
+      SiteLensNoticeTone.warning => (colors.warning, Icons.warning_amber),
+      SiteLensNoticeTone.error => (colors.danger, Icons.error_outline),
+    };
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.wellTint,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.28)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, size: 18, color: color),
+            const SizedBox(width: 8),
+            Expanded(child: Text(text)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _GlobalScriptSwitchPanel extends StatelessWidget {
+  const _GlobalScriptSwitchPanel({required this.app});
+  final AppController app;
+
+  @override
+  Widget build(BuildContext context) {
+    final disabled = app.scriptsDisabled;
+    return SiteLensPanel(
+      padding: EdgeInsets.zero,
+      child: Column(
+        children: [
+          SwitchListTile(
+            secondary: Icon(
+              disabled ? Icons.pause_circle : Icons.play_circle_outline,
+              color: disabled
+                  ? SiteLensColors.of(context).warning
+                  : Theme.of(context).colorScheme.primary,
+            ),
+            title: const Text('全局关闭脚本'),
+            subtitle: Text(
+              disabled
+                  ? '所有浏览页脚本均已停用，关闭开关后会重新加载当前会话'
+                  : '故障恢复入口：关闭后会撤销脚本桥并重载浏览页',
+            ),
+            value: disabled,
+            onChanged: (value) =>
+                safely(context, () => app.disableAllScripts(value)),
+          ),
+          if (disabled)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: _InlineSurfaceNotice(
+                text: '当前页面不会运行任何已安装脚本。脚本本身的启用状态仍会保留。',
+                tone: SiteLensNoticeTone.warning,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ScriptCard extends StatelessWidget {
+  const _ScriptCard({required this.app, required this.script});
+  final AppController app;
+  final InstalledScript script;
+
+  @override
+  Widget build(BuildContext context) {
+    final meta = ScriptMetadata.parse(script.source);
+    final environment = meta.pageWorld
+        ? (meta.grants.contains('unsafeWindow')
+              ? '网页环境 · unsafeWindow · 无原生存储/网络权限'
+              : '网页环境 · 无原生存储/网络权限')
+        : '隔离环境 · 已声明权限';
+    final issue = meta.errors.isEmpty ? null : meta.errors.first;
+    final matchSummary = meta.matches.isEmpty
+        ? '没有 @match 规则'
+        : meta.matches.take(2).map((rule) => rule.pattern).join('、');
+    final statusColor = script.enabled
+        ? SiteLensColors.of(context).ok
+        : Theme.of(context).colorScheme.onSurfaceVariant;
+
+    return SiteLensPanel(
+      padding: const EdgeInsets.fromLTRB(16, 14, 10, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.code, color: statusColor),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      meta.name,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      environment,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              Switch(
+                value: script.enabled,
+                onChanged: (enabled) => _toggle(context, enabled),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            matchSummary,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              _ScriptTag(icon: Icons.schedule, label: meta.runAt),
+              _ScriptTag(
+                icon: Icons.lock_outline,
+                label: '${meta.grants.length} 项权限',
+              ),
+              if (meta.connect.isNotEmpty)
+                _ScriptTag(
+                  icon: Icons.public,
+                  label: '${meta.connect.length} 个网络域名',
+                ),
+              if (issue != null)
+                _ScriptTag(
+                  icon: Icons.error_outline,
+                  label: '不可启用',
+                  color: SiteLensColors.of(context).danger,
+                ),
+            ],
+          ),
+          if (issue != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                issue,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(color: SiteLensColors.of(context).danger),
+              ),
+            ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: PopupMenuButton<String>(
+              tooltip: '脚本操作',
+              onSelected: (choice) => _menu(context, choice),
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'edit', child: Text('编辑脚本')),
+                PopupMenuItem(value: 'ownership', child: Text('归属档案')),
+                PopupMenuItem(value: 'details', child: Text('权限与错误')),
+                PopupMenuItem(value: 'delete', child: Text('删除脚本')),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _toggle(BuildContext context, bool enabled) async {
+    await safely(context, () async {
+      if (!enabled) {
+        await app.db.setScriptEnabled(script.id, false);
+      } else {
+        if (!context.mounted || !await confirmScript(context, app, script)) {
+          return;
+        }
+        await app.scripts.enable(script, Cancellation());
+      }
+      await app.load();
+    });
+  }
+
+  Future<void> _menu(BuildContext context, String choice) async {
+    switch (choice) {
+      case 'edit':
+        await editScript(context, app, script: script);
+      case 'ownership':
+        await editScriptOwnership(context, app, script);
+      case 'details':
+        await scriptDetails(context, app, script);
+      case 'delete':
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (c) => SiteLensAlertDialog(
+            title: const Text('删除脚本？'),
+            content: const Text('该脚本的本地存储与固定依赖也将删除，无法撤销。'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(c, false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(c, true),
+                child: const Text('删除'),
+              ),
+            ],
+          ),
+        );
+        if (confirmed == true) {
+          await app.db.deleteScript(script.id);
+          await app.load();
+        }
+    }
+  }
+}
+
+class _ScriptTag extends StatelessWidget {
+  const _ScriptTag({required this.icon, required this.label, this.color});
+  final IconData icon;
+  final String label;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final foreground = color ?? Theme.of(context).colorScheme.onSurfaceVariant;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: foreground.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: foreground),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelSmall
+                ?.copyWith(color: foreground),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// Bind or unbind [script] across profiles. Binding is ownership metadata (it
@@ -715,75 +1069,265 @@ class ScriptEditor extends StatefulWidget {
 }
 
 class _ScriptEditorState extends State<ScriptEditor> {
-  late final TextEditingController source = TextEditingController(
-    text: widget.script?.source ?? '// ==UserScript==\n// @name        我的样式脚本\n// @match       https://example.com/*\n// @run-at      document-end\n// @grant       GM_addStyle\n// ==/UserScript==\n\nGM_addStyle("body { line-height: 1.6; }");\n',
-  );
+  static const _newScript =
+      '// ==UserScript==\n'
+      '// @name        我的样式脚本\n'
+      '// @match       https://example.com/*\n'
+      '// @run-at      document-end\n'
+      '// @grant       GM_addStyle\n'
+      '// ==/UserScript==\n\n'
+      'GM_addStyle("body { line-height: 1.6; }");\n';
+
+  late final CodeLineEditingController source =
+      CodeLineEditingController.fromText(widget.script?.source ?? _newScript);
+  late ScriptMetadata metadata = ScriptMetadata.parse(source.text);
   bool saving = false;
+  bool _editorReady = false;
+
+  @override
+  void initState() {
+    super.initState();
+    source.addListener(_onSourceChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _editorReady = true;
+    });
+  }
+
   @override
   void dispose() {
+    source.removeListener(_onSourceChanged);
     source.dispose();
     super.dispose();
   }
 
+  void _onSourceChanged() {
+    final next = ScriptMetadata.parse(source.text);
+    metadata = next;
+    if (!mounted || !_editorReady) return;
+    setState(() {});
+  }
+
+  bool _isHardError(String error) =>
+      error.contains('UserScript 元数据区') ||
+      error.contains('缺少完整') ||
+      error.contains('至少需要一个有效 @match') ||
+      error.contains('超过 16 MiB');
+
+  Future<void> _save() async {
+    if (saving) return;
+    final current = ScriptMetadata.parse(source.text);
+    final hardErrors = current.errors.where(_isHardError).toList();
+    if (hardErrors.isNotEmpty) {
+      setState(() => metadata = current);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(hardErrors.first)));
+      return;
+    }
+    await safely(context, () async {
+      setState(() => saving = true);
+      try {
+        await widget.app.scripts.save(source.text, id: widget.script?.id);
+        await widget.app.load();
+        if (!mounted) return;
+        if (current.errors.isNotEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('已保存，但当前脚本仍无法启用：${current.errors.first}'),
+              duration: const Duration(seconds: 6),
+            ),
+          );
+        }
+        Navigator.pop(context);
+      } finally {
+        if (mounted) setState(() => saving = false);
+      }
+    });
+  }
+
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('脚本编辑'),
-      actions: [
-        TextButton(
-          onPressed: saving
-              ? null
-              : () => safely(context, () async {
-                  setState(() => saving = true);
-                  try {
-                    final metadata = ScriptMetadata.parse(source.text);
-                    await widget.app.scripts.save(
-                      source.text,
-                      id: widget.script?.id,
-                    );
-                    await widget.app.load();
-                    if (context.mounted && metadata.errors.isNotEmpty) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(metadata.errors.first),
-                          duration: const Duration(seconds: 6),
-                        ),
-                      );
-                    }
-                    if (context.mounted) Navigator.pop(context);
-                  } finally {
-                    if (mounted) setState(() => saving = false);
-                  }
-                }),
-          child: const Text('保存并关闭'),
-        ),
-      ],
-    ),
-    body: SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final dark = theme.brightness == Brightness.dark;
+    final colors = SiteLensColors.of(context);
+    final hardErrors = metadata.errors.where(_isHardError).toList();
+    final codeTheme = CodeHighlightTheme(
+      languages: {'javascript': langJavascript.themeMode},
+      theme: dark ? atomOneDarkTheme : atomOneLightTheme,
+    );
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.script == null ? '新建脚本' : '脚本编辑'),
+        actions: [
+          IconButton(
+            tooltip: saving ? '保存中' : '保存并关闭',
+            icon: saving
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save_outlined),
+            onPressed: saving ? null : _save,
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(
+            SiteLensMetrics.pagePadding,
+            4,
+            SiteLensMetrics.pagePadding,
+            32,
+          ),
           children: [
-            const Text('保存后默认关闭，需要重新确认权限和依赖。'),
-            const SizedBox(height: 12),
-            Expanded(
-              child: TextField(
-                controller: source,
-                maxLines: null,
-                expands: true,
-                textAlignVertical: TextAlignVertical.top,
-                autocorrect: false,
-                enableSuggestions: false,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: '粘贴完整 .user.js：必须包含 // ==/UserScript==、@match 和脚本主体；大脚本建议导入文件',
+            SiteLensNotice(
+              text: '保存后会撤销当前确认摘要；重新启用时需要再次确认权限和固定依赖。',
+              tone: SiteLensNoticeTone.info,
+            ),
+            const SizedBox(height: SiteLensMetrics.itemGap),
+            SiteLensPanel(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('脚本元数据', style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 10),
+                  Text(metadata.name, style: theme.textTheme.titleSmall),
+                  const SizedBox(height: 8),
+                  _EditorMetadataRow(
+                    label: '@match',
+                    value: metadata.matches.isEmpty
+                        ? '未声明'
+                        : metadata.matches
+                              .map((rule) => rule.pattern)
+                              .join('、'),
+                  ),
+                  _EditorMetadataRow(
+                    label: '@exclude',
+                    value: metadata.excludes.isEmpty
+                        ? '无'
+                        : metadata.excludes
+                              .map((rule) => rule.pattern)
+                              .join('、'),
+                  ),
+                  _EditorMetadataRow(label: '@run-at', value: metadata.runAt),
+                  _EditorMetadataRow(
+                    label: '@grant',
+                    value: metadata.grants.isEmpty
+                        ? 'none'
+                        : metadata.grants.join('、'),
+                  ),
+                  _EditorMetadataRow(
+                    label: '@connect',
+                    value: metadata.connect.isEmpty
+                        ? '无'
+                        : metadata.connect.join('、'),
+                  ),
+                  _EditorMetadataRow(
+                    label: '固定内容',
+                    value:
+                        '${metadata.requires.length} 个依赖 · ${metadata.resources.length} 个资源',
+                  ),
+                  if (metadata.errors.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    _InlineSurfaceNotice(
+                      text: hardErrors.isNotEmpty
+                          ? '保存前需要修复：${hardErrors.first}'
+                          : '保存后仍需修复才能启用：${metadata.errors.first}',
+                      tone: hardErrors.isNotEmpty
+                          ? SiteLensNoticeTone.error
+                          : SiteLensNoticeTone.warning,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: SiteLensMetrics.itemGap),
+            SiteLensPanel(
+              padding: EdgeInsets.zero,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(
+                  SiteLensMetrics.panelRadius,
+                ),
+                child: SizedBox(
+                  height: MediaQuery.sizeOf(context).height * 0.58,
+                  child: CodeEditor(
+                    controller: source,
+                    wordWrap: false,
+                    padding: const EdgeInsets.fromLTRB(12, 14, 12, 18),
+                    indicatorBuilder:
+                        (
+                          context,
+                          editingController,
+                          chunkController,
+                          notifier,
+                        ) => Row(
+                          children: [
+                            DefaultCodeLineNumber(
+                              controller: editingController,
+                              notifier: notifier,
+                              textStyle: theme.textTheme.bodySmall?.copyWith(
+                                fontFamily: 'monospace',
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                            DefaultCodeChunkIndicator(
+                              width: 18,
+                              controller: chunkController,
+                              notifier: notifier,
+                            ),
+                          ],
+                        ),
+                    style: CodeEditorStyle(
+                      fontSize: 13,
+                      fontFamily: 'monospace',
+                      fontHeight: 1.45,
+                      textColor: theme.colorScheme.onSurface,
+                      backgroundColor: colors.wellTint,
+                      selectionColor: theme.colorScheme.primary.withValues(
+                        alpha: 0.22,
+                      ),
+                      cursorColor: theme.colorScheme.primary,
+                      cursorLineColor: theme.colorScheme.primary.withValues(
+                        alpha: 0.08,
+                      ),
+                      codeTheme: codeTheme,
+                    ),
+                  ),
                 ),
               ),
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _EditorMetadataRow extends StatelessWidget {
+  const _EditorMetadataRow({required this.label, required this.value});
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 6),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 72,
+          child: Text(label, style: Theme.of(context).textTheme.bodySmall),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+        ),
+      ],
     ),
   );
 }

@@ -168,6 +168,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
     required this.backdropTop,
     required this.backdropBottom,
     required this.backdropTint,
+    required this.glassSurface,
     required this.panelTint,
     required this.surfaceOpaque,
     required this.wellTint,
@@ -182,6 +183,10 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
   final Color backdropTop;
   final Color backdropBottom;
   final Color backdropTint;
+
+  /// Neutral base color shared by every glass surface. Theme colors tint the
+  /// backdrop and selected controls rather than changing the material itself.
+  final Color glassSurface;
 
   /// Translucent fill for controls that sit *on* glass (chips, segmented
   /// tracks, selected rows).
@@ -210,10 +215,11 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
         backdropTop: const Color(0xff0e131c),
         backdropBottom: const Color(0xff1a2230),
         backdropTint: seed.withValues(alpha: 0.22),
+        glassSurface: const Color(0xff18202c),
         panelTint: const Color(0x14FFFFFF),
         surfaceOpaque: const Color(0xf21a2230),
         wellTint: const Color(0x24FFFFFF),
-        panelBorder: const Color(0x24FFFFFF),
+        panelBorder: const Color(0x3218202c),
         divider: const Color(0x1FFFFFFF),
         sectionLabel: const Color(0xffb9c6d8),
         ok: const Color(0xff57d68f),
@@ -225,10 +231,11 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
       backdropTop: const Color(0xfff5f7fb),
       backdropBottom: const Color(0xffe7edf6),
       backdropTint: seed.withValues(alpha: 0.12),
-      panelTint: const Color(0xb8FFFFFF),
+      glassSurface: const Color(0xfff0f4fa),
+      panelTint: const Color(0x4df0f4fa),
       surfaceOpaque: const Color(0xf2fbfcfe),
       wellTint: const Color(0x12000000),
-      panelBorder: const Color(0x66FFFFFF),
+      panelBorder: const Color(0x45f0f4fa),
       divider: const Color(0x1F000000),
       sectionLabel: const Color(0xff4a5568),
       ok: const Color(0xff1c8a56),
@@ -246,6 +253,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
     Color? backdropTop,
     Color? backdropBottom,
     Color? backdropTint,
+    Color? glassSurface,
     Color? panelTint,
     Color? surfaceOpaque,
     Color? wellTint,
@@ -259,6 +267,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
     backdropTop: backdropTop ?? this.backdropTop,
     backdropBottom: backdropBottom ?? this.backdropBottom,
     backdropTint: backdropTint ?? this.backdropTint,
+    glassSurface: glassSurface ?? this.glassSurface,
     panelTint: panelTint ?? this.panelTint,
     surfaceOpaque: surfaceOpaque ?? this.surfaceOpaque,
     wellTint: wellTint ?? this.wellTint,
@@ -277,6 +286,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
       backdropTop: Color.lerp(backdropTop, other.backdropTop, t)!,
       backdropBottom: Color.lerp(backdropBottom, other.backdropBottom, t)!,
       backdropTint: Color.lerp(backdropTint, other.backdropTint, t)!,
+      glassSurface: Color.lerp(glassSurface, other.glassSurface, t)!,
       panelTint: Color.lerp(panelTint, other.panelTint, t)!,
       surfaceOpaque: Color.lerp(surfaceOpaque, other.surfaceOpaque, t)!,
       wellTint: Color.lerp(wellTint, other.wellTint, t)!,

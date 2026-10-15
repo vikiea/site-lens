@@ -92,7 +92,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
         Text('把档案、脚本与偏好带到新设备', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 10),
         Text(
-          '完整备份包含发布页、候选站点、检测记录、脚本及其值与资源、设置和标签列表。Cookie、网页缓存及网站存储不在备份内。',
+          '一个档案包含发布页、候选站点、动态检测结果和关联脚本。完整备份会带走这些业务数据与偏好；Cookie、网页缓存及网站存储不会迁移。',
           style: Theme.of(context).textTheme.bodyMedium,
         ),
         const SizedBox(height: SiteLensMetrics.sectionGap),

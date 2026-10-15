@@ -304,27 +304,9 @@ class BrowserTabsPage extends StatelessWidget {
           32,
         ),
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  '打开的标签页 ${tabs.length}/${AppPolicy.maxBrowserTabs}',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-              ),
-              TextButton.icon(
-                onPressed: onNewTab,
-                icon: const Icon(Icons.add, size: 18),
-                label: const Text('新建'),
-              ),
-              // Closing every tab lives here, with the other tab management,
-              // instead of floating over the site list.
-              TextButton.icon(
-                onPressed: () => safely(context, app.closeAllTabs),
-                icon: const Icon(Icons.close, size: 18),
-                label: const Text('全部关闭'),
-              ),
-            ],
+          Text(
+            '打开的标签页 ${tabs.length}/${AppPolicy.maxBrowserTabs}',
+            style: Theme.of(context).textTheme.titleMedium,
           ),
           const SizedBox(height: SiteLensMetrics.itemGap),
           for (final tab in tabs) ...[

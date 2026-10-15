@@ -303,7 +303,15 @@ class PublishingDiscovery {
   final NativeHosts hosts;
   Future<int> refresh(Cancellation cancel, {int? profileId}) async {
     final configured = await db.profilePages(profileId: profileId);
-    final pages = configured.where((p) => p.enabled).toList();
+    final enabledProfileIds = (await db.profiles())
+        .where((profile) => profile.enabled)
+        .map((profile) => profile.id)
+        .toSet();
+    final pages = configured
+        .where(
+          (page) => page.enabled && enabledProfileIds.contains(page.profileId),
+        )
+        .toList();
     // Deny *every* configured publishing host, even when only one profile is
     // being rescanned, so a page cannot import another profile's own source.
     final publishingHosts = (await db.profilePages())
