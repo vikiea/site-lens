@@ -77,9 +77,7 @@ void main() {
     );
   });
 
-  testWidgets('high mode still follows runtime adaptive downgrade', (
-    tester,
-  ) async {
+  testWidgets('high mode can apply premium to content panels', (tester) async {
     late BuildContext context;
     await tester.pumpWidget(
       MaterialApp(
@@ -92,15 +90,130 @@ void main() {
         ),
       ),
     );
-    final strategy = const SiteLensGlassQualityStrategy(
+    const strategy = SiteLensGlassQualityStrategy(
       mode: SiteLensGlassQualityMode.high,
-      adaptiveQualityOverride: GlassQuality.standard,
+      allSurfacesHighQuality: true,
+      adaptiveQualityOverride: GlassQuality.premium,
       shaderSupported: true,
     );
     expect(
-      strategy.resolve(context, role: SiteLensSurfaceRole.chrome).quality,
+      strategy.resolve(context, role: SiteLensSurfaceRole.panel).quality,
+      GlassQuality.premium,
+    );
+    expect(
+      strategy.resolve(context, role: SiteLensSurfaceRole.platformView).quality,
       GlassQuality.standard,
     );
+  });
+
+  testWidgets(
+    'high mode requests premium even when adaptive quality is standard',
+    (tester) async {
+      late BuildContext context;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+          home: Builder(
+            builder: (value) {
+              context = value;
+              return const SizedBox();
+            },
+          ),
+        ),
+      );
+      final strategy = const SiteLensGlassQualityStrategy(
+        mode: SiteLensGlassQualityMode.high,
+        adaptiveQualityOverride: GlassQuality.standard,
+        shaderSupported: true,
+      );
+      expect(
+        strategy.resolve(context, role: SiteLensSurfaceRole.chrome).quality,
+        GlassQuality.premium,
+      );
+    },
+  );
+
+  testWidgets('high quality panels share the premium optical treatment', (
+    tester,
+  ) async {
+    final previous = debugDefaultTargetPlatformOverride;
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    try {
+      late BuildContext context;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+          home: Builder(
+            builder: (value) {
+              context = value;
+              return const SizedBox();
+            },
+          ),
+        ),
+      );
+      final standard = const SiteLensGlassQualityStrategy(
+        mode: SiteLensGlassQualityMode.standard,
+        shaderSupported: true,
+      ).resolve(context, role: SiteLensSurfaceRole.panel);
+      final highPanel = const SiteLensGlassQualityStrategy(
+        mode: SiteLensGlassQualityMode.high,
+        allSurfacesHighQuality: true,
+        shaderSupported: true,
+      ).resolve(context, role: SiteLensSurfaceRole.panel);
+      final highChrome = const SiteLensGlassQualityStrategy(
+        mode: SiteLensGlassQualityMode.high,
+        shaderSupported: true,
+      ).resolve(context, role: SiteLensSurfaceRole.chrome);
+
+      expect(highPanel.quality, GlassQuality.premium);
+      expect(highPanel.settings.thickness, highChrome.settings.thickness);
+      expect(highPanel.settings.rimLight, highChrome.settings.rimLight);
+      expect(
+        highPanel.settings.thickness,
+        greaterThan(standard.settings.thickness),
+      );
+      expect(
+        highPanel.settings.rimLight,
+        greaterThan(standard.settings.rimLight),
+      );
+    } finally {
+      debugDefaultTargetPlatformOverride = previous;
+    }
+  });
+
+  testWidgets('high Android chrome keeps premium optical parameters', (
+    tester,
+  ) async {
+    final previous = debugDefaultTargetPlatformOverride;
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    try {
+      late BuildContext context;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+          home: Builder(
+            builder: (value) {
+              context = value;
+              return const SizedBox();
+            },
+          ),
+        ),
+      );
+      final standard = const SiteLensGlassQualityStrategy(
+        mode: SiteLensGlassQualityMode.standard,
+        shaderSupported: true,
+      ).resolve(context, role: SiteLensSurfaceRole.chrome);
+      final high = const SiteLensGlassQualityStrategy(
+        mode: SiteLensGlassQualityMode.high,
+        shaderSupported: true,
+      ).resolve(context, role: SiteLensSurfaceRole.chrome);
+
+      expect(high.quality, GlassQuality.premium);
+      expect(high.settings.thickness, greaterThan(standard.settings.thickness));
+      expect(high.settings.rimLight, greaterThan(standard.settings.rimLight));
+    } finally {
+      debugDefaultTargetPlatformOverride = previous;
+    }
   });
 
   testWidgets('unsupported Android shader uses the compatibility plan', (
@@ -123,8 +236,18 @@ void main() {
       );
       final plan = const SiteLensGlassQualityStrategy(shaderSupported: false)
           .resolve(context, role: SiteLensSurfaceRole.panel);
+      final highPanel = const SiteLensGlassQualityStrategy(
+        mode: SiteLensGlassQualityMode.high,
+        allSurfacesHighQuality: true,
+        shaderSupported: false,
+      ).resolve(context, role: SiteLensSurfaceRole.panel);
+      final chrome = const SiteLensGlassQualityStrategy(shaderSupported: false)
+          .resolve(context, role: SiteLensSurfaceRole.chrome);
       expect(plan.quality, GlassQuality.standard);
       expect(plan.useCompatibilityFallback, isTrue);
+      expect(highPanel.quality, GlassQuality.premium);
+      expect(highPanel.useCompatibilityFallback, isFalse);
+      expect(chrome.useCompatibilityFallback, isFalse);
     } finally {
       debugDefaultTargetPlatformOverride = previous;
     }

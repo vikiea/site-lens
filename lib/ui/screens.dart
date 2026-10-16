@@ -1394,21 +1394,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   leading: const Icon(Icons.opacity_outlined, size: 20),
                   title: const Text('不透明度'),
                   subtitle: Text('${app.settings.glassOpacity} / 100'),
-                  trailing: SizedBox(
-                    width: 170,
-                    child: Slider(
-                      min: 1,
-                      max: 100,
-                      divisions: 99,
-                      value: app.settings.glassOpacity.toDouble(),
-                      label: '${app.settings.glassOpacity}',
-                      onChanged: (value) => safely(
-                        context,
-                        () =>
-                            app.updateSettings({'glassOpacity': value.round()}),
-                      ),
-                    ),
-                  ),
+                  trailing: _GlassOpacitySlider(app: app),
                 ),
                 Divider(height: 1, indent: 18, endIndent: 18),
                 _rowTitle(context, Icons.speed_outlined, '玻璃质量'),
@@ -1440,6 +1426,17 @@ class _SettingsPageState extends State<SettingsPage> {
                   title: const Text('当前有效质量'),
                   subtitle: Text(app.effectiveGlassQuality.label),
                 ),
+                if (app.settings.glassQualityMode ==
+                    SiteLensGlassQualityMode.high)
+                  SwitchListTile(
+                    title: const Text('高质量覆盖全部面板'),
+                    subtitle: const Text('仅在高质量模式下应用于内容面板'),
+                    value: app.settings.highQualityAllSurfaces,
+                    onChanged: (value) => safely(
+                      context,
+                      () => app.setHighQualityAllSurfaces(value),
+                    ),
+                  ),
                 Divider(height: 1, indent: 18, endIndent: 18),
                 // The presets stay out of the way until asked for: one collapsed
                 // block instead of a bottom sheet over the page.
@@ -1793,6 +1790,73 @@ class _ThemePresetChip extends StatelessWidget {
 /// One row of mutually exclusive choices, styled as part of the glass language
 /// rather than as a Material box: a translucent track with a pill for the
 /// current value, equal widths and no inner dividers.
+class _GlassOpacitySlider extends StatelessWidget {
+  const _GlassOpacitySlider({required this.app});
+
+  final AppController app;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 170,
+    child: LayoutBuilder(
+      builder: (context, constraints) {
+        const markerWidth = 24.0;
+        final ratio = AppPolicy.defaultGlassOpacity / 100;
+        final markerLeft = (constraints.maxWidth * ratio - markerWidth / 2)
+            .clamp(0.0, constraints.maxWidth - markerWidth)
+            .toDouble();
+        return Stack(
+          children: [
+            Slider(
+              min: 0,
+              max: 100,
+              divisions: 100,
+              value: app.settings.glassOpacity.toDouble(),
+              label: '${app.settings.glassOpacity}',
+              onChanged: (value) => safely(
+                context,
+                () => app.updateSettings({'glassOpacity': value.round()}),
+              ),
+            ),
+            Positioned(
+              left: markerLeft,
+              top: 14,
+              width: markerWidth,
+              height: 20,
+              child: Tooltip(
+                message: '默认 ${AppPolicy.defaultGlassOpacity}',
+                child: Semantics(
+                  key: const ValueKey('default-glass-opacity-marker'),
+                  button: true,
+                  label: '恢复默认不透明度 ${AppPolicy.defaultGlassOpacity}',
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => safely(
+                      context,
+                      () => app.updateSettings({
+                        'glassOpacity': AppPolicy.defaultGlassOpacity,
+                      }),
+                    ),
+                    child: Center(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.primary,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                        child: const SizedBox(width: 3, height: 10),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+}
+
 class SiteLensSegmented<T> extends StatelessWidget {
   const SiteLensSegmented({
     super.key,

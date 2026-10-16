@@ -37,13 +37,14 @@ Use `SiteLensMetrics`, `SiteLensColors`, `Theme.of(context).colorScheme`, and `T
 - Bottom navigation: `SiteLensMetrics.navBarHeight`, `navRadius`, `navHorizontalInset`, and `navCapsuleInset`. Keep the rendered capsule radius at or below half its post-inset height; an oversized superellipse radius produces a visibly jagged anti-aliased edge.
 - Browser toolbar: `toolbarHeight`, `toolbarIconSize`, `toolbarInset`, and `toolbarRadius`.
 
-Use `SiteLensColors.of(context)` for backdrop, panel, navigation, divider, section-label, success, warning, and danger roles. Do not use a raw `Colors.*` value in a screen unless it is a platform or asset color with an explicit reason.
+Use `SiteLensColors.of(context)` for backdrop, panel, navigation, divider, section-label, success, warning, and danger roles. The glass fill token must remain visually separated from the static backdrop in both appearances; current defaults are neutral light gray `#E7EAEE` in light mode and neutral charcoal `#25272B` in dark mode. Do not use a raw `Colors.*` value in a screen unless it is a platform or asset color with an explicit reason.
 
 ## Component rules
 
 - Bottom navigation: custom `SiteLensBottomNavigation` inside the liquid-glass `SiteLensNavigationSurface`; one row, always-visible labels, selected icon/label capsule, no nested solid slab.
 - Browser toolbar: fixed equal-width row using `SiteLensSurfaceRole.platformView`; no wrapping or per-button surfaces.
 - Panels: `SiteLensPanel` or `SiteLensGlassSurface`, with content padding from tokens. Segmented tracks inside a light glass panel use the recessed well tint so the track and selected pill remain distinct from a white panel surface.
+- Composite information panels: related sections such as detection results, backup addresses, and history may share one `SiteLensPanel`; separate sections use `Divider(height: 1)` and foldable `ExpansionTile` rows inside that single glass boundary. Use `SiteLensMetrics.itemGap` only between separate semantic panels, never between sections that have been intentionally merged.
 - Rows: use shared action/status row primitives when several pages need the same icon-title-description-trailing layout.
 - Feedback: use the shared notice/error surface for persistent page feedback; reserve snack bars for short-lived confirmation.
 - Dialogs and sheets: keep Material semantics and actions, but use the themed opaque overlay or a liquid-glass wrapper. Do not restore default elevation or default opaque blue/grey surfaces.
@@ -67,7 +68,9 @@ Use `SiteLensColors.of(context)` for backdrop, panel, navigation, divider, secti
 
 ## Glass surface opacity
 
-- Label the setting `不透明度`; show only the numeric value, without explanatory notes. The value is absolute body alpha for Flutter liquid-glass surfaces: 100 is fully opaque and 1 is almost transparent. Do not multiply by the library preset alpha. Keep frost at the material baseline for values at or above the default 45; only use a non-linear curve with a small minimum floor below 45, so low opacity remains glass-like while blur, refraction and rim treatment remain active. Use a fill color that contrasts with the static backdrop in light mode; the backdrop itself stays opaque and controls over a native WebView retain their polarity-matched contrast backer.
+- Label the setting `不透明度`; show only the numeric value, without explanatory notes. The value is absolute body alpha for Flutter liquid-glass surfaces: 100 is fully opaque and 0 is transparent fill. The default is `55`, and the slider exposes a clickable default marker that restores `55`. Do not multiply by the library preset alpha. Keep frost at the material baseline for values at or above the default 55; keep the selected body alpha linear so the slider remains predictable, and use the neutral fill tokens to preserve contrast at low values while blur, refraction and rim treatment remain active. Chrome surfaces must retain a visible AdaptiveGlass material floor at 0 so navigation controls remain legible. Content panels retain the exact selected alpha; their neutral fill tokens provide contrast even near the low end. The backdrop itself stays opaque and controls over a native WebView retain their polarity-matched contrast backer.
+
+- The setting `高质量覆盖全部面板` is a manual high-quality scope override. It is shown only while `玻璃质量` is `高质量`, and affects Flutter content panels, dialogs, sheets, and glass cards only in that mode; `platformView` surfaces retain their live backdrop path.
 
 ## Settings diagnostics and theme presets
 

@@ -215,7 +215,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
         backdropTop: const Color(0xff0e131c),
         backdropBottom: const Color(0xff1a2230),
         backdropTint: seed.withValues(alpha: 0.22),
-        glassSurface: const Color(0xff18202c),
+        glassSurface: const Color(0xff25272b),
         panelTint: const Color(0x14FFFFFF),
         surfaceOpaque: const Color(0xf21a2230),
         wellTint: const Color(0x24FFFFFF),
@@ -231,7 +231,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
       backdropTop: const Color(0xfff5f7fb),
       backdropBottom: const Color(0xffe7edf6),
       backdropTint: seed.withValues(alpha: 0.12),
-      glassSurface: const Color(0xfff0f4fa),
+      glassSurface: const Color(0xffe7eaee),
       panelTint: const Color(0x4df0f4fa),
       surfaceOpaque: const Color(0xf2fbfcfe),
       wellTint: const Color(0x12000000),
@@ -360,7 +360,7 @@ class SiteLensGlassTheme extends ThemeExtension<SiteLensGlassTheme> {
 ThemeData buildSiteLensTheme(
   ThemePresetId preset,
   Brightness brightness, {
-  int glassOpacity = 45,
+  int glassOpacity = AppPolicy.defaultGlassOpacity,
 }) {
   final scheme = ColorScheme.fromSeed(
     seedColor: preset.seed,
@@ -384,7 +384,7 @@ ThemeData buildSiteLensTheme(
     splashFactory: InkSparkle.splashFactory,
     extensions: [
       colors,
-      SiteLensGlassTheme(backgroundAlpha: glassOpacity.clamp(1, 100) / 100),
+      SiteLensGlassTheme(backgroundAlpha: glassOpacity.clamp(0, 100) / 100),
     ],
     pageTransitionsTheme: const PageTransitionsTheme(
       builders: {

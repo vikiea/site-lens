@@ -400,6 +400,9 @@ class ProfileDetailScreen extends StatelessWidget {
       final recommended = liveReady ?? staleReady;
       final staleRecommended = liveReady == null && recommended != null;
       final candidates = app.sitesForProfile(live.id);
+      final backupCandidates = candidates
+          .where((candidate) => candidate.id != recommended?.candidateId)
+          .toList();
       final ids = candidates.map((c) => c.id).toSet();
       final history = app.history
           .where((r) => ids.contains(r.candidateId))
@@ -503,11 +506,7 @@ class ProfileDetailScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 14),
                   SiteLensSectionHeader(
-                    title: staleRecommended
-                        ? '最近成功地址（当前结果已过期）'
-                        : recommended == null
-                        ? '当前没有可用推荐'
-                        : '当前推荐地址',
+                    title: recommended == null ? '当前没有可用推荐' : '推荐落点',
                     subtitle: recommended == null
                         ? '先运行一轮检测，或检查发布页与核心 DOM 选择器。'
                         : '${recommended.finalUrl ?? recommended.entryUrl}${recommended.elapsed == null ? '' : ' · ${recommended.elapsed!.inMilliseconds} ms'}',
@@ -568,34 +567,19 @@ class ProfileDetailScreen extends StatelessWidget {
                 ],
               ),
             ),
+            const SizedBox(height: SiteLensMetrics.itemGap),
             _DetectionPanel(
               app: app,
               ledger: ledger,
               current: current,
-              candidates: candidates,
-              recommended: recommended,
-              staleRecommended: staleRecommended,
+              backupCandidates: backupCandidates,
+              history: history,
               onEnter: onEnter,
               onDetect: (app.probes.running || app.refreshing)
                   ? null
                   : () => safely(context, () => app.detect(profileId: live.id)),
             ),
-            _SectionTitle('历史'),
-            if (history.isEmpty)
-              const SiteLensPanel(
-                padding: EdgeInsets.zero,
-                child: ListTile(title: Text('暂无历史记录')),
-              ),
-            for (final r in history)
-              ListTile(
-                dense: true,
-                title: Text('${statusLabel(r)} · ${clock(r.checkedAt)}'),
-                subtitle: SiteLensCopyableText(
-                  text:
-                      '${r.finalUrl ?? r.entryUrl}${r.elapsed == null ? '' : ' · ${r.elapsed!.inMilliseconds} ms'}',
-                ),
-              ),
-            const SizedBox(height: 8),
+            const SizedBox(height: SiteLensMetrics.itemGap),
             _AdvancedArea(app: app, profile: live),
             const SizedBox(height: 24),
           ],
@@ -605,34 +589,59 @@ class ProfileDetailScreen extends StatelessWidget {
   );
 }
 
+class _HistoryPanel extends StatelessWidget {
+  const _HistoryPanel({required this.history});
+
+  final List<ProbeResult> history;
+
+  @override
+  Widget build(BuildContext context) => ExpansionTile(
+    key: const ValueKey('profile-history'),
+    initiallyExpanded: true,
+    tilePadding: const EdgeInsets.fromLTRB(16, 0, 12, 0),
+    childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+    title: const Text('历史'),
+    subtitle: Text(history.isEmpty ? '暂无历史记录' : '最近 ${history.length} 条检测记录'),
+    children: [
+      if (history.isEmpty)
+        const ListTile(contentPadding: EdgeInsets.zero, title: Text('暂无历史记录')),
+      for (final result in history)
+        ListTile(
+          key: ValueKey<String>(
+            'profile-history-entry-${result.candidateId}-${result.checkedAt.toIso8601String()}',
+          ),
+          contentPadding: EdgeInsets.zero,
+          dense: true,
+          title: Text('${statusLabel(result)} · ${clock(result.checkedAt)}'),
+          subtitle: SiteLensCopyableText(
+            text:
+                '${result.finalUrl ?? result.entryUrl}${result.elapsed == null ? '' : ' · ${result.elapsed!.inMilliseconds} ms'}',
+          ),
+        ),
+    ],
+  );
+}
+
 class _DetectionPanel extends StatelessWidget {
   const _DetectionPanel({
     required this.app,
     required this.ledger,
     required this.current,
-    required this.candidates,
-    required this.recommended,
-    required this.staleRecommended,
+    required this.backupCandidates,
+    required this.history,
     required this.onEnter,
     required this.onDetect,
   });
   final AppController app;
   final ({int round, bool live, List<ProbeResult> results}) ledger;
   final List<ProbeResult> current;
-  final List<Candidate> candidates;
-  final ProbeResult? recommended;
-  final bool staleRecommended;
+  final List<Candidate> backupCandidates;
+  final List<ProbeResult> history;
   final void Function(Candidate) onEnter;
   final VoidCallback? onDetect;
 
   @override
   Widget build(BuildContext context) {
-    final resultByCandidate = {
-      for (final result in current) result.candidateId: result,
-    };
-    final backupCandidates = candidates
-        .where((candidate) => candidate.id != recommended?.candidateId)
-        .toList();
     return SiteLensPanel(
       padding: EdgeInsets.zero,
       child: Column(
@@ -657,7 +666,9 @@ class _DetectionPanel extends StatelessWidget {
                         style: Theme.of(context).textTheme.titleSmall,
                       ),
                       Text(
-                        ledger.live ? '先按可访问性，再按首页就绪耗时排序' : '结果已过期，重新检测后才会参与推荐',
+                        ledger.live
+                            ? '先按可访问性，再按首页就绪耗时排序'
+                            : '结果来自上一轮检测，重新检测后会更新推荐',
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
                     ],
@@ -682,128 +693,68 @@ class _DetectionPanel extends StatelessWidget {
             ),
           ),
           const Divider(height: 1),
-          if (recommended != null)
-            _CurrentRecommendationRow(
-              app: app,
-              result: recommended!,
-              stale: staleRecommended,
-              onEnter: onEnter,
-            )
-          else
+          if (current.isEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
               child: Text(
-                current.isEmpty
-                    ? '本轮还没有结果；从右上角开始检测。'
-                    : '本轮没有首页已就绪的落点；可检查备用地址或发布页。',
+                '本轮还没有结果；从右上角开始检测。',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
           if (backupCandidates.isNotEmpty) ...[
             const Divider(height: 1),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-              child: Text(
-                '备用地址 · ${backupCandidates.length}',
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
+            _BackupAddressesPanel(
+              app: app,
+              candidates: backupCandidates,
+              current: current,
+              onEnter: onEnter,
             ),
-            for (final candidate in backupCandidates)
-              _CompactCandidateRow(
-                app: app,
-                candidate: candidate,
-                result: resultByCandidate[candidate.id],
-                onEnter: onEnter,
-              ),
           ],
-          if (current.isNotEmpty && backupCandidates.isEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
-              child: Text(
-                '当前档案只有一个候选地址',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ),
+          const Divider(height: 1),
+          _HistoryPanel(history: history),
         ],
       ),
     );
   }
 }
 
-class _CurrentRecommendationRow extends StatelessWidget {
-  const _CurrentRecommendationRow({
+class _BackupAddressesPanel extends StatelessWidget {
+  const _BackupAddressesPanel({
     required this.app,
-    required this.result,
-    required this.stale,
+    required this.candidates,
+    required this.current,
     required this.onEnter,
   });
+
   final AppController app;
-  final ProbeResult result;
-  final bool stale;
+  final List<Candidate> candidates;
+  final List<ProbeResult> current;
   final void Function(Candidate) onEnter;
 
   @override
   Widget build(BuildContext context) {
-    final candidate = app.sites
-        .where((site) => site.id == result.candidateId)
-        .firstOrNull;
-    final colors = SiteLensColors.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(
-            stale ? Icons.history : Icons.check_circle,
-            size: 22,
-            color: stale ? colors.warning : colors.ok,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        stale ? '上次成功地址' : '当前推荐地址',
-                        style: Theme.of(context).textTheme.titleSmall,
-                      ),
-                    ),
-                    SiteLensStatusBadge(
-                      label: stale ? '过期' : '可进入',
-                      icon: stale ? Icons.history : Icons.verified_outlined,
-                      color: stale ? colors.warning : colors.ok,
-                      compact: true,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                SiteLensCopyableText(
-                  text: '${result.finalUrl ?? result.entryUrl}',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  '${statusLabel(result)}${result.elapsed == null ? '' : ' · ${result.elapsed!.inMilliseconds} ms'}',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          FilledButton(
-            onPressed: candidate == null ? null : () => onEnter(candidate),
-            style: FilledButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              minimumSize: const Size(0, 38),
-            ),
-            child: Text(stale ? '尝试' : '进入'),
-          ),
-        ],
+    final resultByCandidate = {
+      for (final result in current) result.candidateId: result,
+    };
+    return ExpansionTile(
+      key: const ValueKey('profile-backup-addresses'),
+      initiallyExpanded: true,
+      tilePadding: const EdgeInsets.fromLTRB(16, 0, 12, 0),
+      childrenPadding: EdgeInsets.zero,
+      title: Text(
+        '备用地址 · ${candidates.length}',
+        style: Theme.of(context).textTheme.titleSmall,
       ),
+      subtitle: const Text('当前推荐之外的候选地址'),
+      children: [
+        for (final candidate in candidates)
+          _CompactCandidateRow(
+            app: app,
+            candidate: candidate,
+            result: resultByCandidate[candidate.id],
+            onEnter: onEnter,
+          ),
+      ],
     );
   }
 }
@@ -988,13 +939,6 @@ class _AdvancedArea extends StatelessWidget {
     await app.db.setProfileReadySelector(profile.id, value);
     await app.load();
   }
-}
-
-class _SectionTitle extends StatelessWidget {
-  const _SectionTitle(this.text);
-  final String text;
-  @override
-  Widget build(BuildContext context) => SiteLensSectionHeader(title: text);
 }
 
 class _NewProfile {

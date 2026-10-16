@@ -53,8 +53,9 @@ class AppSettings {
   const AppSettings({
     this.themeMode = ThemeModePreference.system,
     this.themePreset = ThemePresetId.oceanBlue,
-    this.glassOpacity = 45,
+    this.glassOpacity = AppPolicy.defaultGlassOpacity,
     this.glassQualityMode = SiteLensGlassQualityMode.automatic,
+    this.highQualityAllSurfaces = false,
     this.autoHideBrowserControls = true,
     this.allowBackgroundPlayback = false,
     this.restoreBrowserSessions = true,
@@ -71,6 +72,7 @@ class AppSettings {
   /// Absolute panel background fill opacity; no effect on content or optics.
   final int glassOpacity;
   final SiteLensGlassQualityMode glassQualityMode;
+  final bool highQualityAllSurfaces;
   final bool autoHideBrowserControls;
   final bool allowBackgroundPlayback;
   final bool restoreBrowserSessions;
@@ -87,6 +89,7 @@ class AppSettings {
     'themePreset': themePreset.wireId,
     'glassOpacity': glassOpacity,
     'glassQualityMode': glassQualityMode.name,
+    'highQualityAllSurfaces': highQualityAllSurfaces,
     'autoHideBrowserControls': autoHideBrowserControls,
     'allowBackgroundPlayback': allowBackgroundPlayback,
     'restoreBrowserSessions': restoreBrowserSessions,
@@ -115,7 +118,7 @@ class AppSettings {
     int percentage(String key, int fallback) {
       final value = json[key];
       return value is num && value.isFinite
-          ? value.round().clamp(1, 100)
+          ? value.round().clamp(0, 100)
           : fallback;
     }
 
@@ -138,16 +141,17 @@ class AppSettings {
               .firstOrNull ??
           ThemePresetId.oceanBlue,
       glassOpacity: json.containsKey('glassOpacity')
-          ? percentage('glassOpacity', 45)
+          ? percentage('glassOpacity', AppPolicy.defaultGlassOpacity)
           : json['glassTransparency'] is num &&
                 (json['glassTransparency'] as num).isFinite
-          ? (100 - percentage('glassTransparency', 45)).clamp(1, 100)
-          : 45,
+          ? (100 - percentage('glassTransparency', 55)).clamp(0, 100)
+          : AppPolicy.defaultGlassOpacity,
       glassQualityMode: choice(
         'glassQualityMode',
         SiteLensGlassQualityMode.values,
         SiteLensGlassQualityMode.automatic,
       ),
+      highQualityAllSurfaces: flag('highQualityAllSurfaces', false),
       autoHideBrowserControls: flag('autoHideBrowserControls', true),
       allowBackgroundPlayback: flag('allowBackgroundPlayback', false),
       restoreBrowserSessions: flag('restoreBrowserSessions', true),
@@ -169,6 +173,7 @@ class AppSettings {
       'themePreset',
       'glassOpacity',
       'glassQualityMode',
+      'highQualityAllSurfaces',
       'autoHideBrowserControls',
       'allowBackgroundPlayback',
       'restoreBrowserSessions',
@@ -207,8 +212,8 @@ class AppSettings {
       }
       if (entry.key == 'glassOpacity') {
         final value = entry.value;
-        if (value is! num || !value.isFinite || value < 1 || value > 100) {
-          throw const FormatException('不透明度必须在 1 到 100 之间');
+        if (value is! num || !value.isFinite || value < 0 || value > 100) {
+          throw const FormatException('不透明度必须在 0 到 100 之间');
         }
       } else if (entry.key.startsWith('controls')) {
         final value = entry.value;
@@ -224,6 +229,7 @@ class AppSettings {
 }
 
 abstract final class AppPolicy {
+  static const defaultGlassOpacity = 55;
   static const maxBrowserTabs = 8;
   static const hideControlsAfter = Duration(seconds: 3);
   static const settingsKey = 'app_settings_v2';

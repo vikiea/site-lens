@@ -1,6 +1,9 @@
 import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart'
-    show defaultTargetPlatform, TargetPlatform;
+    show
+        debugDefaultTargetPlatformOverride,
+        defaultTargetPlatform,
+        TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -53,7 +56,7 @@ void main() {
     expect(panel.glassColor.r, closeTo(expectedLightBase.r, 0.001));
     expect(panel.glassColor.g, closeTo(expectedLightBase.g, 0.001));
     expect(panel.glassColor.b, closeTo(expectedLightBase.b, 0.001));
-    final lowAlphaProgress = (0.22 / 0.45).clamp(0.0, 1.0);
+    final lowAlphaProgress = (0.22 / 0.55).clamp(0.0, 1.0);
     final frostFactor =
         0.15 + 0.85 * Curves.easeOut.transform(lowAlphaProgress);
     expect(panel.blur, greaterThan(0));
@@ -90,6 +93,50 @@ void main() {
     expect(fullPanel.frostOpacity, closeTo(defaultPanel.frostOpacity, 0.001));
     expect(fullPanel.blur, greaterThan(0));
     expect(fullPanel.frost, greaterThan(0));
+  });
+
+  testWidgets('glass opacity remains exact on Android surfaces', (
+    tester,
+  ) async {
+    final previous = debugDefaultTargetPlatformOverride;
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    try {
+      Future<void> pumpOpacity(int opacity) => tester.pumpWidget(
+        MaterialApp(
+          theme: buildSiteLensTheme(
+            ThemePresetId.oceanBlue,
+            Brightness.light,
+            glassOpacity: opacity,
+          ),
+          home: Builder(
+            builder: (_) => SizedBox(key: ValueKey<String>('opacity-$opacity')),
+          ),
+        ),
+      );
+
+      await pumpOpacity(100);
+      await tester.pumpAndSettle();
+      final fullContext = tester.element(
+        find.byKey(const ValueKey<String>('opacity-100')),
+      );
+      final fullPanel = siteLensGlassSettings(fullContext);
+      expect(fullPanel.glassColor.a, closeTo(1.0, 0.001));
+
+      await pumpOpacity(0);
+      await tester.pumpAndSettle();
+      final clearContext = tester.element(
+        find.byKey(const ValueKey<String>('opacity-0')),
+      );
+      final clearPanel = siteLensGlassSettings(clearContext);
+      expect(clearPanel.glassColor.a, closeTo(0.0, 0.001));
+      final clearChrome = siteLensGlassSettings(
+        clearContext,
+        role: SiteLensSurfaceRole.chrome,
+      );
+      expect(clearChrome.glassColor.a, closeTo(0.16, 0.001));
+    } finally {
+      debugDefaultTargetPlatformOverride = previous;
+    }
   });
 
   test('theme AppBar carries the matching system overlay style', () {

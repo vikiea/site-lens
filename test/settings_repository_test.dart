@@ -44,6 +44,7 @@ void main() {
       await settings.update({
         'glassOpacity': 72,
         'glassQualityMode': 'high',
+        'highQualityAllSurfaces': true,
         'replaceSameSiteTabs': true,
         'themePreset': 'aurora_cyan',
       });
@@ -52,6 +53,7 @@ void main() {
       ) as Map<String, dynamic>;
       expect(decoded['glassOpacity'], 72);
       expect(decoded['glassQualityMode'], 'high');
+      expect(decoded['highQualityAllSurfaces'], isTrue);
       expect(decoded['replaceSameSiteTabs'], isTrue);
       expect(decoded['themePreset'], 'aurora_cyan');
       expect(await db.setting('glassOpacity'), isNull);
@@ -60,16 +62,13 @@ void main() {
   );
 
   test(
-    'glass transparency is clamped when reading and rejected when writing',
+    'glass opacity accepts 0..100 and rejects values outside the range',
     () async {
       final low = AppSettings.fromJson({'glassOpacity': 0});
       final high = AppSettings.fromJson({'glassOpacity': 101});
-      expect(low.glassOpacity, 1);
+      expect(low.glassOpacity, 0);
       expect(high.glassOpacity, 100);
-      await expectLater(
-        settings.update({'glassOpacity': 0}),
-        throwsA(isA<FormatException>()),
-      );
+      await expectLater(settings.update({'glassOpacity': 0}), completes);
       await expectLater(
         settings.update({'glassOpacity': 101}),
         throwsA(isA<FormatException>()),
@@ -92,7 +91,8 @@ void main() {
           jsonDecode((await db.setting(AppPolicy.settingsKey))!) as Map;
       expect(json['glassOpacity'], 28);
       expect(json.containsKey('glassTransparency'), false);
-      expect(const AppSettings().glassOpacity, 45);
+      expect(const AppSettings().glassOpacity, 55);
+      expect(const AppSettings().highQualityAllSurfaces, isFalse);
     },
   );
 

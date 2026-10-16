@@ -72,13 +72,14 @@ class SiteLensApp extends ConsumerWidget {
             child: LiquidGlassWidgets.wrap(
               brightnessResolver: Theme.maybeBrightnessOf,
               // Start at standard, then let the package benchmark raster time.
-              // The Site Lens strategy keeps panels conservative and only lets
-              // eligible chrome request premium.
+              // The Site Lens strategy keeps content panels conservative unless
+              // the manual high-quality all-surfaces override is enabled.
               adaptiveQuality: !_isFlutterTestBinding(),
               adaptiveConfig: app.glassAdaptiveConfig,
               child: SiteLensGlassPolicyScope(
                 strategy: SiteLensGlassQualityStrategy(
                   mode: app.settings.glassQualityMode,
+                  allSurfacesHighQuality: app.settings.highQualityAllSurfaces,
                 ),
                 child: GlassAccessibilityScope(
                   // The material does not step down for high contrast; contrast is

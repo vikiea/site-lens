@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,7 @@ from validation_runner import (
     cache_key,
     classify_paths,
     execute_plan,
+    manual_evidence_template,
     preflight_tcp_device,
 )
 
@@ -95,6 +97,34 @@ class ValidationPlannerTests(unittest.TestCase):
         self.assertEqual(report.exit_code, 2)
         self.assertEqual(report.results[0].status, "passed")
         self.assertEqual(report.results[1].status, "blocked")
+
+    def test_passed_manual_evidence_replaces_required_device_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evidence_path = Path(directory) / "manual.json"
+            plan = build_plan(
+                ["pigeons/web_host.dart"],
+                requested_level="L2",
+                manual_evidence=evidence_path,
+            )
+            evidence = manual_evidence_template("L2", None, plan.paths)
+            evidence["status"] = "passed"
+            for check in evidence["checks"]:
+                check["passed"] = True
+            evidence_path.write_text(json.dumps(evidence))
+
+            calls: list[tuple[str, ...]] = []
+
+            def runner(command):
+                calls.append(tuple(command))
+                return subprocess.CompletedProcess(command, 0, "pass\n", "")
+
+            report = execute_plan(plan, Path(directory) / "cache", runner=runner)
+
+        self.assertEqual(report.exit_code, 0)
+        self.assertEqual(report.results[0].status, "passed")
+        self.assertEqual(report.results[1].status, "passed")
+        self.assertIn("manual evidence", report.results[1].detail)
+        self.assertEqual(len(calls), 1)
 
     def test_device_preflight_failure_runs_no_stage(self):
         plan = build_plan(["pigeons/web_host.dart"], requested_level="L2", device="emulator-5554")

@@ -98,6 +98,33 @@ make acceptance DEVICE=<adb-serial>
 make build-release
 ```
 
+### Manual device evidence
+
+When a developer has manually verified the app on a real device, the manual result can satisfy the required device stage without replaying the emulator or Android acceptance runner. The evidence is bound to the current changed paths and complete worktree fingerprint, so it becomes stale after any source change.
+
+Create the checklist after the local code is ready:
+
+```sh
+make manual-evidence-template LEVEL=L2 DEVICE=<adb-serial> \
+  EVIDENCE=.ci_cache/site-lens-manual-L2.json
+```
+
+Run the app and complete every checklist item. Then approve the checklist interactively:
+
+```sh
+make manual-evidence-approve \
+  EVIDENCE=.ci_cache/site-lens-manual-L2.json
+```
+
+Use the passed evidence with the validation runner:
+
+```sh
+python3 tool/verify_level.py --level L2 \
+  --manual-evidence .ci_cache/site-lens-manual-L2.json
+```
+
+The runner still executes all local checks. It records the Android stage as passed from the auditable manual evidence and skips the automatic device command. Changing tracked or untracked project files invalidates the evidence and requires a new checklist.
+
 `make acceptance` is the canonical Android device flow. It handles the debug package identity, database backup and restore, the combined integration suite, media/system controls, and restoration of the normal debug APK. Do not substitute an ad hoc `flutter test` on a device containing user data.
 
 `make build-release` additionally requires the formal signing properties outside the repository. `make doctor` reports missing signing configuration as a warning because it does not affect debug checks or local widget tests.

@@ -11,6 +11,7 @@ import selectors
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -18,6 +19,30 @@ from typing import Callable, Iterable, Sequence
 ROOT = Path(__file__).resolve().parent.parent
 LEVELS = ("L0", "L1", "L2", "L3", "L4")
 IGNORED_DIRS = {".git", ".dart_tool", "build", "coverage", ".ci_cache"}
+
+MANUAL_CHECKLISTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "L0": (("local", "目标行为或文档变更已人工检查"),),
+    "L1": (("local", "本地应用行为与目标变更已人工检查"),),
+    "L2": (
+        ("launch", "应用可启动并进入站点首页"),
+        ("opacity", "设置页在浅色与深色下不透明度 0、55、100 三档有可见差异"),
+        ("quality", "选择高质量后当前有效质量显示为高质量，且覆盖开关仅在高质量页签显示"),
+        (
+            "profile_sections",
+            "站点详情页备用地址和历史均可折叠、展开，面板之间有间距且没有重复地址文案",
+        ),
+        ("browser_overlay", "浏览工具栏覆盖 WebView 时仍可操作且显示正常"),
+    ),
+    "L3": (
+        ("launch", "应用可启动并进入站点首页"),
+        ("core_flow", "目标端到端流程人工通过"),
+        ("lifecycle", "切后台、回前台和退出恢复行为正常"),
+    ),
+    "L4": (
+        ("package", "目标 APK 包名、版本和签名身份符合预期"),
+        ("release_flow", "目标发布流程人工通过"),
+    ),
+}
 
 
 class ValidationConfigurationError(ValueError):
@@ -56,6 +81,7 @@ class ValidationPlan:
     stages: list[StagePlan]
     device: str | None = None
     strict_device: bool = False
+    manual_evidence: Path | None = None
 
 
 @dataclass
@@ -108,7 +134,10 @@ def is_tcp_endpoint(device: str) -> bool:
 
 
 def _normalise_path(path: str) -> str:
-    return path.replace("\\", "/").lstrip("./")
+    normalised = path.replace("\\", "/")
+    while normalised.startswith("./"):
+        normalised = normalised[2:]
+    return normalised
 
 
 def _is_ignored(path: str) -> bool:
@@ -310,6 +339,7 @@ def build_plan(
     paths: Sequence[str],
     requested_level: str | None = None,
     device: str | None = None,
+    manual_evidence: Path | None = None,
     root: Path = ROOT,
 ) -> ValidationPlan:
     recommended, reasons = classify_paths(paths, root=root)
@@ -388,7 +418,91 @@ def build_plan(
         stages=stages,
         device=device,
         strict_device=strict_device,
+        manual_evidence=manual_evidence,
     )
+
+
+def manual_evidence_template(
+    level: str,
+    device: str | None,
+    paths: Sequence[str],
+    root: Path = ROOT,
+) -> dict[str, object]:
+    if level not in LEVELS:
+        raise ValidationConfigurationError(
+            f"invalid manual evidence level: {level}; expected L0-L4"
+        )
+    checks = [
+        {"id": check_id, "label": label, "passed": False}
+        for check_id, label in MANUAL_CHECKLISTS[level]
+    ]
+    return {
+        "schema": 1,
+        "status": "pending",
+        "level": level,
+        "device": device,
+        "paths": list(paths),
+        "content_fingerprint": content_fingerprint(paths, root=root),
+        "worktree_fingerprint": worktree_fingerprint(root=root),
+        "verified_at": None,
+        "operator": None,
+        "notes": "",
+        "checks": checks,
+    }
+
+
+def _level_at_least(actual: str, required: str) -> bool:
+    return LEVELS.index(actual) >= LEVELS.index(required)
+
+
+def validate_manual_evidence(
+    path: Path,
+    plan: ValidationPlan,
+    root: Path = ROOT,
+) -> dict[str, object]:
+    try:
+        evidence = json.loads(path.read_text())
+    except FileNotFoundError as exc:
+        raise ValidationConfigurationError(
+            f"manual evidence file does not exist: {path}"
+        ) from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValidationConfigurationError(
+            f"manual evidence is not valid JSON: {path}"
+        ) from exc
+    if not isinstance(evidence, dict) or evidence.get("schema") != 1:
+        raise ValidationConfigurationError("manual evidence schema must be 1")
+    evidence_level = evidence.get("level")
+    if not isinstance(evidence_level, str) or evidence_level not in LEVELS:
+        raise ValidationConfigurationError("manual evidence has an invalid level")
+    if not _level_at_least(evidence_level, plan.requested_level):
+        raise ValidationConfigurationError(
+            f"manual evidence level {evidence_level} is below requested {plan.requested_level}"
+        )
+    if evidence.get("status") != "passed":
+        raise ValidationConfigurationError("manual evidence status is not passed")
+    if evidence.get("paths") != plan.paths:
+        raise ValidationConfigurationError(
+            "manual evidence paths do not match the current worktree"
+        )
+    if evidence.get("content_fingerprint") != content_fingerprint(plan.paths, root=root):
+        raise ValidationConfigurationError(
+            "manual evidence content fingerprint does not match the current worktree"
+        )
+    if evidence.get("worktree_fingerprint") != worktree_fingerprint(root=root):
+        raise ValidationConfigurationError(
+            "manual evidence worktree fingerprint is stale"
+        )
+    if plan.device and evidence.get("device") not in {None, plan.device}:
+        raise ValidationConfigurationError(
+            "manual evidence device does not match the requested device"
+        )
+    checks = evidence.get("checks")
+    if not isinstance(checks, list) or not checks:
+        raise ValidationConfigurationError("manual evidence has no checks")
+    if any(not isinstance(check, dict) or check.get("passed") is not True for check in checks):
+        raise ValidationConfigurationError("every manual evidence check must pass")
+    return evidence
 
 
 def _run_capture(
@@ -675,9 +789,21 @@ def execute_plan(
     report = ValidationReport(plan=plan, environment=environment_fingerprint(plan.device))
     cache_root = cache_dir or Path(os.environ.get("SITE_LENS_VALIDATION_CACHE", ROOT / ".ci_cache"))
 
-    needs_current_device = any(stage.requires_device for stage in plan.stages) and bool(plan.device)
+    manual_evidence: dict[str, object] | None = None
+    if plan.manual_evidence is not None:
+        manual_evidence = validate_manual_evidence(plan.manual_evidence, plan)
+        report.device_status = (
+            "accepted: manual evidence "
+            f"{plan.manual_evidence} ({manual_evidence['level']})"
+        )
+
+    needs_current_device = (
+        manual_evidence is None
+        and any(stage.requires_device for stage in plan.stages)
+        and bool(plan.device)
+    )
     device_unavailable = False
-    if needs_current_device:
+    if manual_evidence is None and needs_current_device:
         recovery_attempted = False
 
         def recover_once(adb_path: str, device: str) -> None:
@@ -716,7 +842,7 @@ def execute_plan(
         )
         if recovery_attempted:
             report.device_status += " after one adb-server recovery"
-    elif any(stage.requires_device for stage in plan.stages):
+    elif manual_evidence is None and any(stage.requires_device for stage in plan.stages):
         if not plan.device:
             report.device_status = "missing: DEVICE is required"
         else:
@@ -725,6 +851,16 @@ def execute_plan(
     missing_device = any(stage.requires_device for stage in plan.stages) and not plan.device
 
     for stage in plan.stages:
+        if stage.requires_device and manual_evidence is not None:
+            report.results.append(
+                StageResult(
+                    stage.name,
+                    stage.command,
+                    "passed",
+                    "accepted manual evidence; automatic device stage skipped",
+                )
+            )
+            continue
         if stage.requires_device and (not plan.device or device_unavailable):
             detail = "DEVICE is required" if not plan.device else "current device preflight failed"
             report.results.append(StageResult(stage.name, stage.command, "blocked", detail))
@@ -787,7 +923,10 @@ def execute_plan(
             report.exit_code = 1
             return report
 
-    if missing_device or any(result.status in {"blocked", "failed"} for result in report.results):
+    if (
+        (missing_device and manual_evidence is None)
+        or any(result.status in {"blocked", "failed"} for result in report.results)
+    ):
         report.final_status = "required validation incomplete"
         report.exit_code = 2
     else:

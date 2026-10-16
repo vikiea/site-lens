@@ -24,6 +24,11 @@ def parse_args() -> argparse.Namespace:
     group.add_argument("--level", choices=LEVELS, help="explicit requested validation level")
     parser.add_argument("--paths", nargs="+", help="paths to classify instead of the whole worktree")
     parser.add_argument("--device", help="Android device id or strict IP:port endpoint")
+    parser.add_argument(
+        "--manual-evidence",
+        type=Path,
+        help="accept a current, passed manual evidence file for required device stages",
+    )
     parser.add_argument("--report", type=Path, help="write the terminal report to this path")
     parser.add_argument("--cache-dir", type=Path, help="override the .ci_cache directory")
     return parser.parse_args()
@@ -33,7 +38,12 @@ def main() -> int:
     args = parse_args()
     try:
         paths = collect_changed_paths(ROOT, args.paths)
-        plan = build_plan(paths, requested_level=args.level, device=args.device)
+        plan = build_plan(
+            paths,
+            requested_level=args.level,
+            device=args.device,
+            manual_evidence=args.manual_evidence,
+        )
         report = execute_plan(plan, cache_dir=args.cache_dir)
     except ValidationConfigurationError as exc:
         print(f"validation runner configuration error: {exc}", file=sys.stderr)

@@ -97,7 +97,7 @@ APK_RELEASE := build/app/outputs/flutter-apk/app-release.apk
 BUILD_NAME ?=
 BUILD_NUMBER ?=
 
-.PHONY: help setup setup-system setup-agent doctor deps analyze format test check verify-level build build-debug build-release \
+.PHONY: help setup setup-system setup-agent doctor deps analyze format test check verify-level manual-evidence-template manual-evidence-approve build build-debug build-release \
         devices emulator-check connect install install-debug install-release acceptance acceptance-per-file \
         restore-device verify-script clean clean-flutter-cache clean-flutter-cache-preview require-device require-backup
 
@@ -116,6 +116,8 @@ help:
 	  '  make test                  unit/widget tests' \
 	  '  make check                 analyze + Flutter tests + JS/tooling contracts' \
 	  '  make verify-level         choose and run the smallest validation level' \
+	  '  make manual-evidence-template LEVEL=L2 EVIDENCE=...  create a manual validation checklist' \
+	  '  make manual-evidence-approve EVIDENCE=...            approve every manual checklist item' \
 	  '  make build                 build debug and release APKs' \
 	  '  make clean                 flutter clean (remove all generated state)' \
 	  '  make clean-flutter-cache   remove old .dart_tool/flutter_build caches' \
@@ -183,6 +185,19 @@ check:
 
 verify-level:
 	python3 tool/verify_level.py $(ARGS)
+
+LEVEL ?= L2
+EVIDENCE ?= .ci_cache/site-lens-manual-$(LEVEL).json
+
+manual-evidence-template:
+	python3 tool/manual_validation.py template \
+		--level "$(LEVEL)" \
+		$(if $(DEVICE),--device "$(DEVICE)",) \
+		--output "$(EVIDENCE)"
+
+manual-evidence-approve:
+	@test -n "$(EVIDENCE)" || (printf '%s\n' 'EVIDENCE is required' >&2; exit 2)
+	python3 tool/manual_validation.py approve --evidence "$(EVIDENCE)"
 
 build-debug:
 	"$(FLUTTER_BIN_DIR)/flutter" build apk --debug

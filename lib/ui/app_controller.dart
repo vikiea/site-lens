@@ -258,15 +258,21 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         cached != null && cached.matches(glassQualityFingerprint)
         ? cached.quality
         : null;
+    final manualHigh = mode == SiteLensGlassQualityMode.high;
+    final manualStandard = mode == SiteLensGlassQualityMode.standard;
     return GlassAdaptiveScopeConfig(
-      minQuality: GlassQuality.standard,
-      maxQuality: mode == SiteLensGlassQualityMode.standard
-          ? GlassQuality.standard
-          : GlassQuality.premium,
-      initialQuality: mode == SiteLensGlassQualityMode.standard
+      // Manual modes are explicit locks. Automatic mode is the only mode that
+      // may move between the standard floor and premium ceiling.
+      minQuality: manualHigh || manualStandard
+          ? (manualHigh ? GlassQuality.premium : GlassQuality.standard)
+          : GlassQuality.standard,
+      maxQuality: manualStandard ? GlassQuality.standard : GlassQuality.premium,
+      initialQuality: manualHigh
+          ? GlassQuality.premium
+          : manualStandard
           ? GlassQuality.standard
           : cachedQuality ?? GlassQuality.standard,
-      allowStepUp: true,
+      allowStepUp: !manualHigh && !manualStandard,
       onQualityChanged: (_, to) => effectiveGlassQuality = to,
       onDiagnostic: (diagnostic) =>
           unawaited(recordGlassQualityDiagnostic(diagnostic)),
@@ -312,6 +318,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     settings = await settingsRepository.update(patch);
     if (patch.containsKey('glassQualityMode')) {
       await _clearGlassQualityCache();
+      effectiveGlassQuality =
+          settings.glassQualityMode == SiteLensGlassQualityMode.high
+          ? GlassQuality.premium
+          : GlassQuality.standard;
     }
     if (!settings.restoreBrowserSessions) await sessionStore.clear();
     _applySettings();
@@ -337,6 +347,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       updateSettings({'themePreset': value.wireId});
   Future<void> setGlassQualityMode(SiteLensGlassQualityMode value) =>
       updateSettings({'glassQualityMode': value.name});
+  Future<void> setHighQualityAllSurfaces(bool value) =>
+      updateSettings({'highQualityAllSurfaces': value});
   Future<void> setRestoreBrowserSessions(bool value) async {
     await updateSettings({'restoreBrowserSessions': value});
     await _persistSessions();
@@ -483,9 +495,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final cached = glassQualityCache;
     if (cached == null || !cached.matches(glassQualityFingerprint)) {
       glassQualityCache = null;
-    } else {
-      effectiveGlassQuality = cached.quality;
     }
+    effectiveGlassQuality = switch (settings.glassQualityMode) {
+      SiteLensGlassQualityMode.high => GlassQuality.premium,
+      SiteLensGlassQualityMode.standard => GlassQuality.standard,
+      SiteLensGlassQualityMode.automatic =>
+        glassQualityCache?.quality ?? GlassQuality.standard,
+    };
     _applySettings();
     await hosts.applyPreferences(hostPreferences);
     await syncMediaPolicy();

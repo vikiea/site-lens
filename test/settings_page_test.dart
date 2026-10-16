@@ -60,7 +60,19 @@ void main() {
     expect(find.text('不透明度'), findsOneWidget);
     expect(find.textContaining('只影响面板背景填充'), findsNothing);
     expect(find.text('透明度'), findsNothing);
-    expect(find.textContaining('45 / 100'), findsOneWidget);
+    expect(find.textContaining('55 / 100'), findsOneWidget);
+    expect(find.text('高质量覆盖全部面板'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('default-glass-opacity-marker')),
+      findsOneWidget,
+    );
+    await app.updateSettings({'glassOpacity': 22});
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('default-glass-opacity-marker')),
+    );
+    await tester.pumpAndSettle();
+    expect(app.settings.glassOpacity, 55);
     final segmented = find.byType(SiteLensSegmented<ThemeModePreference>);
     expect(segmented, findsOneWidget);
     expect(tester.getSize(segmented).height, SiteLensMetrics.segmentedHeight);
@@ -135,6 +147,48 @@ void main() {
     );
   });
 
+  testWidgets('manual high quality updates the effective glass quality', (
+    tester,
+  ) async {
+    await pumpSettings(tester, app);
+    await tester.tap(find.text('高质量'));
+    await tester.pumpAndSettle();
+
+    expect(app.settings.glassQualityMode, SiteLensGlassQualityMode.high);
+    expect(app.effectiveGlassQuality, GlassQuality.premium);
+    expect(find.text('当前有效质量'), findsOneWidget);
+    expect(find.text('高质量'), findsWidgets);
+    final allSurfaces = find.text('高质量覆盖全部面板');
+    expect(allSurfaces, findsOneWidget);
+    final switchTile = find.ancestor(
+      of: allSurfaces,
+      matching: find.byType(SwitchListTile),
+    );
+    expect(switchTile, findsOneWidget);
+    expect(tester.widget<SwitchListTile>(switchTile).onChanged, isNotNull);
+
+    await tester.tap(allSurfaces);
+    await tester.pumpAndSettle();
+    expect(app.settings.highQualityAllSurfaces, isTrue);
+
+    await tester.tap(find.text('标准'));
+    await tester.pumpAndSettle();
+    expect(find.text('高质量覆盖全部面板'), findsNothing);
+
+    await tester.tap(find.text('高质量'));
+    await tester.pumpAndSettle();
+    final restoredSwitch = find.ancestor(
+      of: find.text('高质量覆盖全部面板'),
+      matching: find.byType(SwitchListTile),
+    );
+    expect(restoredSwitch, findsOneWidget);
+    expect(tester.widget<SwitchListTile>(restoredSwitch).value, isTrue);
+
+    await tester.tap(find.text('自动'));
+    await tester.pumpAndSettle();
+    expect(find.text('高质量覆盖全部面板'), findsNothing);
+  });
+
   testWidgets(
     'capability results have one readable summary without raw diagnostics',
     (tester) async {
@@ -202,6 +256,11 @@ void main() {
       await pumpSettings(tester, app);
       expect(find.text('入口跨域跳转后保留脚本'), findsNothing);
       expect(find.text('全局关闭脚本'), findsNothing);
+      await tester.scrollUntilVisible(
+        find.text('脚本管理'),
+        300,
+        scrollable: find.byType(Scrollable),
+      );
       expect(find.text('脚本管理'), findsOneWidget);
       await tester.scrollUntilVisible(
         find.text('同站点标签页互相替换'),
