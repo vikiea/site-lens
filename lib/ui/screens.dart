@@ -15,6 +15,7 @@ import 'package:re_highlight/styles/atom-one-light.dart';
 import '../domain/models.dart';
 import '../network/transport.dart';
 import '../scripts/metadata.dart';
+import '../update/update_controller.dart';
 import '../web_host/native_hosts.dart';
 import '../web_host/web_host.g.dart';
 import 'app_controller.dart';
@@ -1643,16 +1644,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
                 Divider(height: 1, indent: 18, endIndent: 18),
-                SiteLensActionRow(
-                  icon: Icons.system_update_outlined,
-                  title: '软件更新',
-                  subtitle: '检查最新版本',
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const SoftwareUpdateScreen(),
-                    ),
-                  ),
-                ),
+                const _UpdateEntryRow(),
               ],
             ),
           ),
@@ -1719,6 +1711,26 @@ class _SettingsPageState extends State<SettingsPage> {
 
 /// One theme preset in the collapsed 主题色 block: a swatch, a name and the
 /// current selection. No bottom sheet stands between the tap and the change.
+class _UpdateEntryRow extends ConsumerWidget {
+  const _UpdateEntryRow();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final controller = ref.watch(updateControllerProvider);
+    return ListenableBuilder(
+      listenable: controller,
+      builder: (context, _) => SiteLensActionRow(
+        icon: Icons.system_update_outlined,
+        title: '软件更新',
+        subtitle: updateEntrySubtitle(controller),
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute<void>(builder: (_) => const SoftwareUpdateScreen()),
+        ),
+      ),
+    );
+  }
+}
+
 class _ThemePresetChip extends StatelessWidget {
   const _ThemePresetChip({
     required this.preset,

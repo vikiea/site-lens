@@ -1,76 +1,44 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
-import 'package:package_info_plus/package_info_plus.dart';
 import 'package:site_lens/update/update_service.dart';
 
-class _FakeClient extends http.BaseClient {
-  _FakeClient(this.handler);
-
-  final FutureOr<http.Response> Function(http.BaseRequest request) handler;
-
-  @override
-  Future<http.StreamedResponse> send(http.BaseRequest request) async {
-    final response = await handler(request);
-    return http.StreamedResponse(
-      Stream<List<int>>.value(response.bodyBytes),
-      response.statusCode,
-      headers: response.headers,
-      reasonPhrase: response.reasonPhrase,
-      request: request,
-    );
-  }
-}
-
-PackageInfo _package(String version) => PackageInfo(
-  appName: 'Site Lens',
-  packageName: 'dev.vikiea.site_lens',
-  version: version,
-  buildNumber: '1',
-);
-
-http.Response _latestRedirect({String tag = 'v0.2.0'}) => http.Response.bytes(
-  const [],
-  302,
-  headers: {
-    'location': 'https://github.com/vikiea/site-lens/releases/tag/$tag',
-  },
-);
-
-http.Response _checksum({String tag = 'v0.2.0', String prefix = ''}) =>
-    http.Response.bytes(
-      utf8.encode('${'a' * 64}  ${prefix}site-lens-$tag.apk\n'),
-      200,
-    );
+import 'fake_update_platform.dart';
 
 void main() {
+  late Directory work;
+  late Directory handoff;
+
+  setUp(() async {
+    work = await Directory.systemTemp.createTemp('site-lens-update-work-');
+    handoff = await Directory.systemTemp.createTemp(
+      'site-lens-update-handoff-',
+    );
+  });
+
+  tearDown(() async {
+    if (await work.exists()) await work.delete(recursive: true);
+    if (await handoff.exists()) await handoff.delete(recursive: true);
+  });
+
   test('parses semver tags and compares releases', () {
     expect(AppVersion.parse('v1.2.3'), const AppVersion(1, 2, 3));
+    expect(AppVersion.parse('1.2.3+4'), const AppVersion(1, 2, 3));
     expect(() => AppVersion.parse('1.2.3-beta.1'), throwsFormatException);
     expect(AppVersion.parse('v1.3.0') > AppVersion.parse('1.2.9'), isTrue);
     expect(() => AppVersion.parse('v1.2'), throwsFormatException);
   });
 
   test('resolves latest release without the GitHub API', () async {
-    final client = GitHubReleaseClient(
-      client: _FakeClient((request) async {
-        if (request.url.path.endsWith('/releases/latest')) {
-          return _latestRedirect();
-        }
-        return _checksum();
-      }),
-      latestUri: Uri.parse(
-        'https://github.com/vikiea/site-lens/releases/latest',
-      ),
-    );
+    final server = FakeAssetServer(bytes: fixtureBytes(32));
+    final client = GitHubReleaseClient(client: FakeUpdateHttpClient(server));
 
     final release = await client.fetchLatest();
     expect(release.tagName, 'v0.2.0');
     expect(release.apkName, 'site-lens-v0.2.0.apk');
-    expect(release.sha256, 'a' * 64);
+    expect(release.sha256, server.sha256Hex);
     expect(release.htmlUrl.toString(), contains('/releases/tag/v0.2.0'));
   });
 
@@ -78,12 +46,7 @@ void main() {
     'accepts checksum paths that include the release staging directory',
     () async {
       final client = GitHubReleaseClient(
-        client: _FakeClient((request) async {
-          if (request.url.path.endsWith('/releases/latest')) {
-            return _latestRedirect();
-          }
-          return _checksum(prefix: 'dist/');
-        }),
+        client: _ChecksumOnlyClient(prefix: 'dist/'),
         latestUri: Uri.parse(
           'https://github.com/vikiea/site-lens/releases/latest',
         ),
@@ -95,26 +58,11 @@ void main() {
   );
 
   test('returns only a newer release for the current app version', () async {
-    final client = GitHubReleaseClient(
-      client: _FakeClient((request) async {
-        if (request.url.path.endsWith('/releases/latest')) {
-          return _latestRedirect();
-        }
-        return _checksum();
-      }),
-      latestUri: Uri.parse(
-        'https://github.com/vikiea/site-lens/releases/latest',
-      ),
-    );
-    final cacheDirectory = await Directory.systemTemp.createTemp(
-      'site-lens-update-test-',
-    );
-    addTearDown(() => cacheDirectory.delete(recursive: true));
-    final service = UpdateService(
-      client: client,
-      packageInfoLoader: () async => _package('0.1.0'),
-      cacheDirectoryLoader: () async => cacheDirectory,
-      clock: () => DateTime(2026, 10, 15, 10),
+    final server = FakeAssetServer(bytes: fixtureBytes(32));
+    final service = fakeUpdateService(
+      server: server,
+      work: work,
+      handoff: handoff,
     );
 
     expect(
@@ -125,48 +73,27 @@ void main() {
   });
 
   test('uses the cached result within the one-minute interval', () async {
-    var requests = 0;
-    final client = GitHubReleaseClient(
-      client: _FakeClient((request) async {
-        requests++;
-        if (request.url.path.endsWith('/releases/latest')) {
-          return _latestRedirect();
-        }
-        return _checksum();
-      }),
-      latestUri: Uri.parse(
-        'https://github.com/vikiea/site-lens/releases/latest',
-      ),
-    );
-    final cacheDirectory = await Directory.systemTemp.createTemp(
-      'site-lens-update-cache-test-',
-    );
-    addTearDown(() => cacheDirectory.delete(recursive: true));
+    final server = FakeAssetServer(bytes: fixtureBytes(32));
     var now = DateTime(2026, 10, 15, 10);
-    final service = UpdateService(
-      client: client,
-      packageInfoLoader: () async => _package('0.1.0'),
-      cacheDirectoryLoader: () async => cacheDirectory,
+    final service = fakeUpdateService(
+      server: server,
+      work: work,
+      handoff: handoff,
       clock: () => now,
     );
 
     expect((await service.checkForUpdate()).fromCache, isFalse);
     expect((await service.checkForUpdate()).fromCache, isTrue);
-    expect(requests, 2);
+    expect(server.paths, hasLength(2));
     now = now.add(const Duration(minutes: 1));
     expect((await service.checkForUpdate()).fromCache, isFalse);
-    expect(requests, 4);
+    expect(server.paths, hasLength(4));
     await service.close();
   });
 
   test('rejects a release without a checksum asset', () async {
     final client = GitHubReleaseClient(
-      client: _FakeClient((request) async {
-        if (request.url.path.endsWith('/releases/latest')) {
-          return _latestRedirect();
-        }
-        return http.Response.bytes(const [], 404);
-      }),
+      client: _ChecksumOnlyClient(status: 404),
       latestUri: Uri.parse(
         'https://github.com/vikiea/site-lens/releases/latest',
       ),
@@ -174,4 +101,479 @@ void main() {
 
     expect(client.fetchLatest(), throwsFormatException);
   });
+
+  test('downloads, verifies and hands the APK over for install', () async {
+    final bytes = fixtureBytes();
+    final server = FakeAssetServer(bytes: bytes);
+    final platform = FakeUpdatePlatform();
+    final service = fakeUpdateService(
+      server: server,
+      work: work,
+      handoff: handoff,
+      platform: platform,
+    );
+    final release = server.release();
+
+    final progress = <int>[];
+    final download = await service.startDownload(
+      release,
+      onProgress: (received, _) => progress.add(received),
+    );
+    final result = await download.done;
+
+    expect(result.isCompleted, isTrue);
+    expect(result.file!.path, handoffPath(handoff, release.apkName));
+    expect(await result.file!.length(), bytes.length);
+    expect(await sha256File(result.file!), release.sha256);
+    expect(server.ranges.single, isNull);
+    expect(progress.last, bytes.length);
+    expect(await File(partialPath(work, release.tagName)).exists(), isFalse);
+    await service.close();
+  });
+
+  test('resumes a fragment with a Range and If-Range request', () async {
+    final bytes = fixtureBytes();
+    final server = FakeAssetServer(bytes: bytes);
+    final service = fakeUpdateService(
+      server: server,
+      work: work,
+      handoff: handoff,
+    );
+    final release = server.release();
+    await writePartial(
+      work,
+      release: release,
+      prefix: bytes.sublist(0, 20000),
+      etag: server.etag,
+    );
+
+    final download = await service.startDownload(release);
+    final result = await download.done;
+
+    expect(result.isCompleted, isTrue);
+    expect(server.ranges.single, 'bytes=20000-');
+    expect(server.ifRanges.single, server.etag);
+    expect(await result.file!.length(), bytes.length);
+    expect(await sha256File(result.file!), release.sha256);
+    await service.close();
+  });
+
+  test(
+    'restarts from zero when the asset changed under the same tag',
+    () async {
+      final bytes = fixtureBytes();
+      final server = FakeAssetServer(bytes: bytes, etag: '"etag-2"');
+      final service = fakeUpdateService(
+        server: server,
+        work: work,
+        handoff: handoff,
+      );
+      final release = server.release();
+      await writePartial(
+        work,
+        release: release,
+        prefix: wrongBytes(20000),
+        etag: '"etag-1"',
+      );
+
+      final download = await service.startDownload(release);
+      final result = await download.done;
+
+      expect(result.isCompleted, isTrue);
+      expect(server.ranges.single, 'bytes=20000-');
+      expect(server.ifRanges.single, '"etag-1"');
+      expect(await result.file!.length(), bytes.length);
+      expect(await sha256File(result.file!), release.sha256);
+      await service.close();
+    },
+  );
+
+  test('restarts from zero when the server answers 416', () async {
+    final bytes = fixtureBytes();
+    final server = FakeAssetServer(bytes: bytes);
+    final service = fakeUpdateService(
+      server: server,
+      work: work,
+      handoff: handoff,
+    );
+    final release = server.release();
+    // A fragment claiming exactly the whole file, with a larger expected size,
+    // makes the range request unsatisfiable.
+    await writePartial(
+      work,
+      release: release,
+      prefix: bytes.sublist(0, bytes.length),
+      total: bytes.length + 4096,
+      etag: server.etag,
+    );
+
+    final download = await service.startDownload(release);
+    final result = await download.done;
+
+    expect(result.isCompleted, isTrue);
+    expect(server.ranges, ['bytes=${bytes.length}-', isNull]);
+    expect(await sha256File(result.file!), release.sha256);
+    await service.close();
+  });
+
+  test('cancelling keeps the fragment and resumes from it', () async {
+    final bytes = fixtureBytes();
+    final server = FakeAssetServer(
+      bytes: bytes,
+      chunkSize: 1024,
+      chunkDelay: const Duration(milliseconds: 5),
+    );
+    final service = fakeUpdateService(
+      server: server,
+      work: work,
+      handoff: handoff,
+    );
+    final release = server.release();
+
+    final download = await service.startDownload(release);
+    final partialFile = File(partialPath(work, release.tagName));
+    while (!await partialFile.exists() || await partialFile.length() < 8192) {
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+    download.cancel();
+    final paused = await download.done;
+
+    expect(paused.isCompleted, isFalse);
+    final partial = paused.partial!;
+    expect(partial.pausedByUser, isTrue);
+    expect(partial.received, await partialFile.length());
+    expect(partial.received, greaterThan(0));
+    expect(partial.received, lessThan(bytes.length));
+
+    final resumed = await service.startDownload(release);
+    final result = await resumed.done;
+    expect(result.isCompleted, isTrue);
+    expect(server.ranges.last, 'bytes=${partial.received}-');
+    expect(await sha256File(result.file!), release.sha256);
+    await service.close();
+  });
+
+  test('retries a dropped connection with the retained prefix', () async {
+    final bytes = fixtureBytes();
+    final server = FakeAssetServer(
+      bytes: bytes,
+      chunkSize: 1024,
+      failAfterChunks: 4,
+      failTimes: 1,
+    );
+    final service = fakeUpdateService(
+      server: server,
+      work: work,
+      handoff: handoff,
+      retryDelays: const [Duration.zero],
+    );
+    final release = server.release();
+
+    final download = await service.startDownload(release);
+    final result = await download.done;
+
+    expect(result.isCompleted, isTrue);
+    expect(server.ranges.first, isNull);
+    expect(server.ranges.last, 'bytes=4096-');
+    expect(await sha256File(result.file!), release.sha256);
+    await service.close();
+  });
+
+  test('exhausted retries keep the fragment for a manual resume', () async {
+    final bytes = fixtureBytes();
+    final server = FakeAssetServer(
+      bytes: bytes,
+      chunkSize: 1024,
+      failAfterChunks: 2,
+      failTimes: 10,
+    );
+    final service = fakeUpdateService(
+      server: server,
+      work: work,
+      handoff: handoff,
+      retryDelays: const [Duration.zero, Duration.zero],
+    );
+    final release = server.release();
+
+    final download = await service.startDownload(release);
+    final result = await download.done;
+
+    expect(result.isCompleted, isFalse);
+    expect(result.partial!.pausedByUser, isFalse);
+    expect(result.partial!.received, greaterThan(0));
+    expect(await File(partialPath(work, release.tagName)).exists(), isTrue);
+    await service.close();
+  });
+
+  test('deletes the fragment when the checksum does not match', () async {
+    final bytes = fixtureBytes();
+    final server = FakeAssetServer(bytes: bytes, tag: 'v0.3.0');
+    final service = fakeUpdateService(
+      server: server,
+      work: work,
+      handoff: handoff,
+    );
+    final release = server.release(sha256: 'b' * 64);
+
+    final download = await service.startDownload(release);
+    await expectLater(download.done, throwsFormatException);
+    expect(await File(partialPath(work, release.tagName)).exists(), isFalse);
+    expect(
+      await File(partialMetaPath(work, release.tagName)).exists(),
+      isFalse,
+    );
+    await service.close();
+  });
+
+  test('restarts when a fragment total no longer matches the asset', () async {
+    final bytes = fixtureBytes(4096);
+    final server = FakeAssetServer(bytes: bytes);
+    final service = fakeUpdateService(
+      server: server,
+      work: work,
+      handoff: handoff,
+    );
+    final release = server.release();
+    await writePartial(
+      work,
+      release: release,
+      prefix: bytes.sublist(0, 1024),
+      total: bytes.length + 4096,
+      etag: server.etag,
+    );
+
+    final download = await service.startDownload(release);
+    final result = await download.done;
+
+    expect(result.isCompleted, isTrue);
+    expect(await sha256File(result.file!), release.sha256);
+    await service.close();
+  });
+
+  test('rejects an asset whose advertised size exceeds the limit', () async {
+    final bytes = fixtureBytes(4096);
+    final server = FakeAssetServer(
+      bytes: bytes,
+      totalOverride: 512 * 1024 * 1024 + 1,
+    );
+    final service = fakeUpdateService(
+      server: server,
+      work: work,
+      handoff: handoff,
+    );
+    final release = server.release();
+
+    final download = await service.startDownload(release);
+    await expectLater(download.done, throwsFormatException);
+    expect(await File(partialPath(work, release.tagName)).exists(), isFalse);
+    await service.close();
+  });
+
+  test('reports partials and cleans the ones for other releases', () async {
+    final bytes = fixtureBytes(4096);
+    final server = FakeAssetServer(bytes: bytes);
+    final service = fakeUpdateService(
+      server: server,
+      work: work,
+      handoff: handoff,
+    );
+    final current = server.release();
+    final older = ReleaseInfo(
+      tagName: 'v0.1.0',
+      version: const AppVersion(0, 1, 0),
+      body: '',
+      htmlUrl: current.htmlUrl,
+      apkUrl: Uri.parse(
+        'https://github.com/vikiea/site-lens/releases/download/v0.1.0/site-lens-v0.1.0.apk',
+      ),
+      apkName: 'site-lens-v0.1.0.apk',
+      apkSize: 4096,
+      sha256: 'c' * 64,
+    );
+    await writePartial(
+      work,
+      release: current,
+      prefix: bytes.sublist(0, 512),
+      etag: server.etag,
+    );
+    await writePartial(work, release: older, prefix: bytes.sublist(0, 256));
+
+    final partials = await service.listPartials();
+    expect(
+      partials.map((partial) => partial.tagName),
+      containsAll(['v0.2.0', 'v0.1.0']),
+    );
+
+    await service.deleteStalePartials(current.tagName);
+    final remaining = await service.listPartials();
+    expect(remaining, hasLength(1));
+    expect(remaining.single.tagName, current.tagName);
+    await service.close();
+  });
+
+  test('restarts when the server returns an unusable range', () async {
+    final bytes = fixtureBytes();
+    final server = FakeAssetServer(bytes: bytes, rangeStartOverride: 99);
+    final service = fakeUpdateService(
+      server: server,
+      work: work,
+      handoff: handoff,
+    );
+    final release = server.release();
+    await writePartial(
+      work,
+      release: release,
+      prefix: bytes.sublist(0, 20000),
+      etag: server.etag,
+    );
+
+    final download = await service.startDownload(release);
+    final result = await download.done;
+
+    expect(result.isCompleted, isTrue);
+    expect(server.ranges, ['bytes=20000-', isNull]);
+    expect(await sha256File(result.file!), release.sha256);
+    await service.close();
+  });
+
+  test(
+    'a failed handoff fails once instead of restarting the transfer',
+    () async {
+      final bytes = fixtureBytes(8192);
+      final server = FakeAssetServer(bytes: bytes);
+      final service = fakeUpdateService(
+        server: server,
+        work: work,
+        handoff: handoff,
+      );
+      final release = server.release();
+      // A directory where the ready marker must be written makes the handoff
+      // fail after the bytes arrived.
+      await Directory('${handoffPath(handoff, release.apkName)}.json')
+          .create(recursive: true);
+
+      final download = await service.startDownload(release);
+      await expectLater(download.done, throwsFormatException);
+      expect(server.assetRequests, 1);
+      await service.close();
+    },
+  );
+
+  test('throttles progress and always reports the final position', () async {
+    final bytes = fixtureBytes(64 * 1024);
+    final server = FakeAssetServer(bytes: bytes, chunkSize: 512);
+    final service = UpdateService(
+      client: GitHubReleaseClient(
+        client: FakeUpdateHttpClient(server),
+        latestUri: Uri.parse(
+          'https://github.com/vikiea/site-lens/releases/latest',
+        ),
+      ),
+      platform: FakeUpdatePlatform(),
+      packageInfoLoader: () async => fakePackageInfo('0.1.0'),
+      workDirectoryLoader: () async => work,
+      handoffDirectoryLoader: () async => handoff,
+      retryDelays: const [],
+      progressMinBytes: 4096,
+      progressMinInterval: const Duration(seconds: 30),
+    );
+    final release = server.release();
+
+    final reported = <int>[];
+    final download = await service.startDownload(
+      release,
+      onProgress: (received, _) => reported.add(received),
+    );
+    final result = await download.done;
+
+    expect(result.isCompleted, isTrue);
+    // 128 chunks must not become 128 notifications, but the final position is
+    // always delivered.
+    expect(reported, hasLength(lessThanOrEqualTo(2)));
+    expect(reported.last, bytes.length);
+    await service.close();
+  });
+
+  test('production retry and progress defaults stay bounded', () {
+    final service = UpdateService();
+    expect(service.retryDelays, const [
+      Duration(seconds: 2),
+      Duration(seconds: 5),
+      Duration(seconds: 10),
+    ]);
+    expect(service.progressMinBytes, 256 * 1024);
+    expect(service.progressMinInterval, const Duration(milliseconds: 200));
+  });
+
+  test('reuses a verified APK that survived a restart', () async {
+    final bytes = fixtureBytes(8192);
+    final server = FakeAssetServer(bytes: bytes);
+    final service = fakeUpdateService(
+      server: server,
+      work: work,
+      handoff: handoff,
+    );
+    final release = server.release();
+
+    final first = await service.startDownload(release);
+    final result = await first.done;
+    expect(result.isCompleted, isTrue);
+
+    final reused = await service.existingDownload(release);
+    expect(reused?.path, result.file!.path);
+
+    // A marker that no longer matches the release retires the stale APK.
+    final other = server.release(sha256: 'd' * 64);
+    expect(await service.existingDownload(other), isNull);
+    expect(await result.file!.exists(), isFalse);
+    await service.close();
+  });
+}
+
+/// The wrong bytes for the "asset republished" case.
+List<int> wrongBytes(int length) =>
+    List<int>.generate(length, (index) => (index * 7) % 253);
+
+class _ChecksumOnlyClient extends http.BaseClient {
+  _ChecksumOnlyClient({this.prefix = '', this.status = 200});
+
+  final String prefix;
+  final int status;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    if (request.url.path.endsWith('/releases/latest')) {
+      return _response(
+        http.Response.bytes(
+          const [],
+          302,
+          headers: {
+            'location':
+                'https://github.com/vikiea/site-lens/releases/tag/v0.2.0',
+          },
+        ),
+        request,
+      );
+    }
+    if (status != 200) {
+      return _response(http.Response.bytes(const [], status), request);
+    }
+    return _response(
+      http.Response.bytes(
+        utf8.encode('${'a' * 64}  ${prefix}site-lens-v0.2.0.apk\n'),
+        200,
+      ),
+      request,
+    );
+  }
+
+  static http.StreamedResponse _response(
+    http.Response response,
+    http.BaseRequest request,
+  ) => http.StreamedResponse(
+    Stream<List<int>>.value(response.bodyBytes),
+    response.statusCode,
+    headers: response.headers,
+    request: request,
+  );
 }

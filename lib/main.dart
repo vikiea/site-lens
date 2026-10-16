@@ -12,6 +12,7 @@ import 'ui/app_theme.dart';
 import 'ui/glass_surface.dart';
 import 'ui/navigation_observer.dart';
 import 'ui/screens.dart';
+import 'ui/update_notice.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -52,6 +53,7 @@ class SiteLensApp extends ConsumerWidget {
       listenable: app,
       builder: (context, _) => MaterialApp(
         title: '择站 · Site Lens',
+        navigatorKey: siteLensNavigatorKey,
         debugShowCheckedModeBanner: false,
         scrollBehavior: const SiteLensScrollBehavior(),
         theme: buildSiteLensTheme(
@@ -85,7 +87,13 @@ class SiteLensApp extends ConsumerWidget {
                   // The material does not step down for high contrast; contrast is
                   // handled by the colour roles instead of by dropping the glass.
                   reduceTransparency: false,
-                  child: SiteLensBackdrop(child: child ?? const SizedBox()),
+                  // The update notice sits above the navigator so a completed
+                  // download can surface on any page, WebView included.
+                  child: SiteLensBackdrop(
+                    child: SiteLensUpdateNoticeLayer(
+                      child: child ?? const SizedBox(),
+                    ),
+                  ),
                 ),
               ),
             ),

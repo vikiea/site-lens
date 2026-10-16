@@ -1,12 +1,17 @@
 import 'package:site_lens/settings/settings_repository.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:site_lens/update/update_controller.dart';
+import 'package:site_lens/update/update_service.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/browser_entry.dart';
 import 'package:site_lens/ui/profile_panel.dart';
 import 'package:site_lens/ui/screens.dart';
+
+import 'fake_update_platform.dart';
 
 void main() {
   testWidgets('empty product invites adding a profile and can create one', (
@@ -74,9 +79,16 @@ void main() {
       // The script has no binding yet, so it lives in the 未绑定 group.
       expect(app.unboundScripts, hasLength(1));
 
+      final update = UpdateController(
+        service: UpdateService(platform: FakeUpdatePlatform()),
+      );
+      addTearDown(update.dispose);
       await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(body: SettingsPage(app: app)),
+        ProviderScope(
+          overrides: [updateControllerProvider.overrideWithValue(update)],
+          child: MaterialApp(
+            home: Scaffold(body: SettingsPage(app: app)),
+          ),
         ),
       );
       await tester.scrollUntilVisible(

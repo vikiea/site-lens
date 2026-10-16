@@ -1,6 +1,11 @@
+import 'dart:io';
+
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:site_lens/update/update_controller.dart';
+import 'package:site_lens/update/update_service.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/settings/app_settings.dart';
 import 'package:site_lens/settings/settings_repository.dart';
@@ -11,17 +16,39 @@ import 'package:site_lens/ui/app_theme.dart';
 import 'package:site_lens/ui/screens.dart';
 import 'package:site_lens/web_host/web_host.g.dart';
 
+import 'fake_update_platform.dart';
 import 'fake_web_host_api.dart';
 
-Future<void> pumpSettings(WidgetTester tester, AppController app) async {
-  await tester.pumpWidget(
-    MaterialApp(
-      home: ListenableBuilder(
-        listenable: app,
-        builder: (context, _) => Scaffold(body: SettingsPage(app: app)),
-      ),
+/// The update row subscribes to [updateControllerProvider]; the page is pumped
+/// inside a scope with a controller that never touches the network.
+UpdateController quietUpdateController() {
+  final controller = UpdateController(
+    service: UpdateService(
+      platform: FakeUpdatePlatform(),
+      workDirectoryLoader: () async =>
+          Directory.systemTemp.createTemp('site-lens-quiet-work-'),
     ),
   );
+  addTearDown(controller.dispose);
+  return controller;
+}
+
+Widget settingsApp(AppController app, UpdateController update) => ProviderScope(
+  overrides: [updateControllerProvider.overrideWithValue(update)],
+  child: MaterialApp(
+    home: ListenableBuilder(
+      listenable: app,
+      builder: (context, _) => Scaffold(body: SettingsPage(app: app)),
+    ),
+  ),
+);
+
+Future<void> pumpSettings(
+  WidgetTester tester,
+  AppController app, {
+  UpdateController? update,
+}) async {
+  await tester.pumpWidget(settingsApp(app, update ?? quietUpdateController()));
   await tester.pumpAndSettle();
 }
 

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
@@ -9,9 +10,12 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
 const siteLensRepository = 'vikiea/site-lens';
-const siteLensReleasePage =
-    'https://github.com/$siteLensRepository/releases/latest';
 const updateMinCheckInterval = Duration(minutes: 1);
+
+/// Working directory (partial data, sidecar metadata and the release check
+/// cache). It is app-private and survives process death, unlike the cache
+/// directory Android may reclaim at any time.
+const updateWorkDirectoryName = 'site-lens-updates';
 
 class ReleaseInfo {
   const ReleaseInfo({
@@ -143,6 +147,153 @@ class _UpdateCacheEntry {
   }
 }
 
+/// A resumable download fragment plus the metadata needed to continue it.
+///
+/// The fragment file length is the only authority for the resume offset: the
+/// sidecar only carries the facts that cannot be recovered from disk (release
+/// identity, total size and the asset validators).
+class UpdatePartial {
+  const UpdatePartial({
+    required this.tagName,
+    required this.sha256,
+    required this.apkUrl,
+    required this.received,
+    required this.total,
+    required this.updatedAt,
+    this.etag,
+    this.lastModified,
+    this.pausedByUser = false,
+  });
+
+  final String tagName;
+  final String sha256;
+  final Uri apkUrl;
+  final int received;
+  final int total;
+  final DateTime updatedAt;
+  final String? etag;
+  final String? lastModified;
+  final bool pausedByUser;
+
+  double? get fraction => total <= 0 ? null : received / total;
+
+  bool matches(ReleaseInfo release) =>
+      tagName == release.tagName && sha256 == release.sha256;
+
+  UpdatePartial copyWith({
+    int? received,
+    int? total,
+    String? etag,
+    String? lastModified,
+    bool? pausedByUser,
+    DateTime? updatedAt,
+  }) => UpdatePartial(
+    tagName: tagName,
+    sha256: sha256,
+    apkUrl: apkUrl,
+    received: received ?? this.received,
+    total: total ?? this.total,
+    updatedAt: updatedAt ?? this.updatedAt,
+    etag: etag ?? this.etag,
+    lastModified: lastModified ?? this.lastModified,
+    pausedByUser: pausedByUser ?? this.pausedByUser,
+  );
+
+  Map<String, Object?> toJson() => {
+    'tagName': tagName,
+    'sha256': sha256,
+    'apkUrl': apkUrl.toString(),
+    'received': received,
+    'total': total,
+    'updatedAt': updatedAt.toUtc().toIso8601String(),
+    'etag': etag,
+    'lastModified': lastModified,
+    'pausedByUser': pausedByUser,
+  };
+
+  factory UpdatePartial.fromJson(Map<String, dynamic> json) {
+    final apkUrl = Uri.tryParse(json['apkUrl'] as String? ?? '');
+    final updatedAt = DateTime.tryParse(json['updatedAt'] as String? ?? '');
+    final received = json['received'];
+    final total = json['total'];
+    if (apkUrl == null ||
+        updatedAt == null ||
+        received is! int ||
+        total is! int) {
+      throw const FormatException('断点信息格式错误');
+    }
+    return UpdatePartial(
+      tagName: json['tagName'] as String,
+      sha256: json['sha256'] as String,
+      apkUrl: apkUrl,
+      received: received,
+      total: total,
+      updatedAt: updatedAt.toLocal(),
+      etag: json['etag'] as String?,
+      lastModified: json['lastModified'] as String?,
+      pausedByUser: json['pausedByUser'] as bool? ?? false,
+    );
+  }
+}
+
+/// The outcome of one download attempt.
+///
+/// [completed] carries the verified APK handed over to the installer;
+/// [paused] carries the retained fragment, whose [UpdatePartial.pausedByUser]
+/// separates a user pause from a network pause.
+class UpdateDownloadResult {
+  const UpdateDownloadResult.completed(File this.file) : partial = null;
+  const UpdateDownloadResult.paused(UpdatePartial this.partial) : file = null;
+
+  final File? file;
+  final UpdatePartial? partial;
+  bool get isCompleted => file != null;
+}
+
+/// A running download. `cancel()` stops the transfer and retains the
+/// fragment; the result is reported through [done].
+class UpdateDownload {
+  UpdateDownload({required this.done, required this.stop});
+
+  final Future<UpdateDownloadResult> done;
+
+  /// Stops the transfer without deleting the retained fragment. `byUser`
+  /// separates a deliberate pause from an app shutdown, which must stay
+  /// resumable.
+  final void Function(bool byUser) stop;
+  bool _stopped = false;
+
+  bool get stopped => _stopped;
+
+  void cancel({bool byUser = true}) {
+    if (_stopped) return;
+    _stopped = true;
+    stop(byUser);
+  }
+}
+
+class _StopSignal {
+  bool stopped = false;
+  bool byUser = true;
+
+  void stop(bool userInitiated) {
+    stopped = true;
+    byUser = userInitiated;
+  }
+}
+
+/// Parsed `Content-Range` response header.
+class _ContentRange {
+  const _ContentRange({
+    required this.start,
+    required this.end,
+    required this.total,
+  });
+  final int start;
+  final int end;
+  final int total;
+}
+
 class GitHubReleaseClient {
   GitHubReleaseClient({http.Client? client, Uri? latestUri})
     : _client = client ?? http.Client(),
@@ -153,12 +304,12 @@ class GitHubReleaseClient {
   final http.Client _client;
   final Uri _latestUri;
   static const _timeout = Duration(seconds: 20);
-  static const _maxApkBytes = 512 * 1024 * 1024;
 
   /// Validate every redirect, including GitHub's release asset CDN redirects.
   Future<http.StreamedResponse> _request(
     Uri uri, {
     String method = 'GET',
+    Map<String, String> headers = const {},
   }) async {
     for (var hop = 0; hop <= 5; hop++) {
       _trustedUri(uri.toString());
@@ -167,6 +318,7 @@ class GitHubReleaseClient {
       request.headers['Accept'] = method == 'GET'
           ? 'application/octet-stream'
           : '*/*';
+      request.headers.addAll(headers);
       final response = await _client.send(request).timeout(_timeout);
       if (![301, 302, 303, 307, 308].contains(response.statusCode)) {
         return response;
@@ -229,6 +381,24 @@ class GitHubReleaseClient {
     );
   }
 
+  /// Opens the release asset, resuming from [offset] when it is greater than
+  /// zero. [ifRange] is sent as `If-Range` so a republished asset makes the
+  /// server answer with the whole body instead of a stale range.
+  Future<http.StreamedResponse> openApk(
+    ReleaseInfo release, {
+    int offset = 0,
+    String? ifRange,
+  }) {
+    final headers = <String, String>{};
+    if (offset > 0) {
+      headers['Range'] = 'bytes=$offset-';
+      if (ifRange != null && ifRange.isNotEmpty) {
+        headers['If-Range'] = ifRange;
+      }
+    }
+    return _request(release.apkUrl, headers: headers);
+  }
+
   Future<String> _resolveLatestTag() async {
     _trustedUri(_latestUri.toString());
     final request = http.Request('GET', _latestUri)..followRedirects = false;
@@ -257,53 +427,6 @@ class GitHubReleaseClient {
       throw const FormatException('正式发布标签格式错误');
     }
     return tag;
-  }
-
-  Future<File> downloadApk(
-    ReleaseInfo release,
-    Directory root, {
-    void Function(int received, int? total)? onProgress,
-  }) async {
-    await root.create(recursive: true);
-    final directory = await root.createTemp('download-');
-    final file = File('${directory.path}/update.apk');
-    try {
-      final response = await _request(release.apkUrl);
-      if (response.statusCode != 200) {
-        await response.stream.listen((_) {}).cancel();
-        throw HttpException('APK 下载返回 HTTP ${response.statusCode}');
-      }
-      final expectedSize = release.apkSize > 0
-          ? release.apkSize
-          : response.contentLength;
-      if (expectedSize != null && expectedSize > _maxApkBytes) {
-        throw const FormatException('APK 大小超过限制');
-      }
-      var received = 0;
-      final sink = file.openWrite();
-      try {
-        await for (final chunk in response.stream.timeout(_timeout)) {
-          received += chunk.length;
-          if (expectedSize != null && received > expectedSize ||
-              received > _maxApkBytes) {
-            throw const FormatException('APK 大小与发布信息不符');
-          }
-          sink.add(chunk);
-          await sink.flush();
-          onProgress?.call(received, expectedSize);
-        }
-      } finally {
-        await sink.close();
-      }
-      if (expectedSize != null && received != expectedSize ||
-          (await sha256File(file)) != release.sha256) {
-        throw const FormatException('APK 校验失败，下载文件已删除');
-      }
-      return file;
-    } catch (_) {
-      if (await directory.exists()) await directory.delete(recursive: true);
-      rethrow;
-    }
   }
 
   void close() => _client.close();
@@ -409,26 +532,52 @@ class MethodChannelUpdatePlatform implements UpdatePlatform {
   }
 }
 
+/// The update engine: release checks, resumable downloads and installer
+/// handoff. It never owns UI state, so a download keeps running after the
+/// update page is gone.
 class UpdateService {
   UpdateService({
     GitHubReleaseClient? client,
     UpdatePlatform? platform,
     this.packageInfoLoader,
-    this.directoryLoader,
-    this.cacheDirectoryLoader,
+    this.workDirectoryLoader,
+    this.handoffDirectoryLoader,
     DateTime Function()? clock,
+    List<Duration>? retryDelays,
+    this.progressMinBytes = 256 * 1024,
+    this.progressMinInterval = const Duration(milliseconds: 200),
   }) : _client = client ?? GitHubReleaseClient(),
        platform = platform ?? MethodChannelUpdatePlatform(),
+       retryDelays =
+           retryDelays ??
+           const [
+             Duration(seconds: 2),
+             Duration(seconds: 5),
+             Duration(seconds: 10),
+           ],
        _clock = clock ?? DateTime.now;
 
   final GitHubReleaseClient _client;
   final UpdatePlatform platform;
   final Future<PackageInfo> Function()? packageInfoLoader;
-  final Future<Directory> Function()? directoryLoader;
-  final Future<Directory> Function()? cacheDirectoryLoader;
+
+  /// Partial data, sidecar metadata and the check cache. Defaults to the
+  /// app-private support directory.
+  final Future<Directory> Function()? workDirectoryLoader;
+
+  /// Where the verified APK is handed to the installer. Defaults to the cache
+  /// directory, which is what the Android FileProvider exposes.
+  final Future<Directory> Function()? handoffDirectoryLoader;
+  final List<Duration> retryDelays;
+  final int progressMinBytes;
+  final Duration progressMinInterval;
   final DateTime Function() _clock;
+
+  static const _maxApkBytes = 512 * 1024 * 1024;
+  static const _streamTimeout = Duration(seconds: 20);
+  static const _flushBytes = 1024 * 1024;
+
   PackageInfo? _info;
-  File? _download;
   bool _closed = false;
 
   Future<PackageInfo> get packageInfo async =>
@@ -458,10 +607,186 @@ class UpdateService {
     );
   }
 
+  /// Every retained fragment, newest first. Fragments for a tag the user no
+  /// longer targets are reported as stale so the UI can offer a cleanup.
+  Future<List<UpdatePartial>> listPartials() async {
+    final directory = await _workDirectory();
+    if (!await directory.exists()) return const [];
+    final partials = <UpdatePartial>[];
+    await for (final entity in directory.list()) {
+      if (entity is! File || !entity.path.endsWith('.part.json')) continue;
+      final partial = await _readPartialMeta(File(entity.path));
+      if (partial == null) continue;
+      // A sidecar without its fragment (or with an empty one) is not a
+      // resumable download and must not be offered as one.
+      final fragment = File(entity.path.substring(0, entity.path.length - 5));
+      if (!await fragment.exists() || await fragment.length() == 0) continue;
+      partials.add(partial);
+    }
+    partials.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return partials;
+  }
+
+  /// The verified APK for [release] when it is already on disk, so a completed
+  /// download survives a restart and does not repeat the transfer.
+  Future<File?> existingDownload(ReleaseInfo release) async {
+    final file = await _handoffFile(release);
+    if (!await file.exists()) return null;
+    final marker = await _readReadyMarker(file);
+    if (marker == null ||
+        marker['sha256'] != release.sha256 ||
+        marker['tagName'] != release.tagName) {
+      await _deleteIfExists(file);
+      await _deleteIfExists(await _readyMarkerFile(file));
+      return null;
+    }
+    if (await file.length() != marker['size']) {
+      await _deleteIfExists(file);
+      await _deleteIfExists(await _readyMarkerFile(file));
+      return null;
+    }
+    return file;
+  }
+
+  /// Starts (or resumes) the download of [release].
+  ///
+  /// [restart] throws away an existing fragment. [onVerifying] fires right
+  /// before the final SHA-256 verification.
+  Future<UpdateDownload> startDownload(
+    ReleaseInfo release, {
+    void Function(int received, int? total)? onProgress,
+    void Function()? onVerifying,
+    bool restart = false,
+  }) async {
+    final directory = await _workDirectory();
+    await directory.create(recursive: true);
+    final file = _partialFile(directory, release.tagName);
+    final metaFile = _partialMetaFile(directory, release.tagName);
+    if (restart) await _discardPartial(file, metaFile);
+    var retained = restart ? null : await _loadPartial(file, metaFile);
+    if (retained != null && !retained.matches(release)) {
+      await _discardPartial(file, metaFile);
+      retained = null;
+    }
+    final stop = _StopSignal();
+    final progress = _ProgressThrottle(
+      onProgress,
+      _clock,
+      minBytes: progressMinBytes,
+      minInterval: progressMinInterval,
+    );
+    final done = _runDownload(
+      release: release,
+      file: file,
+      metaFile: metaFile,
+      retained: retained,
+      stop: stop,
+      progress: progress,
+      onVerifying: onVerifying,
+    );
+    return UpdateDownload(done: done, stop: stop.stop);
+  }
+
+  /// Removes the fragment and any verified APK for [release].
+  Future<void> deleteDownload(ReleaseInfo release) async {
+    final directory = await _workDirectory();
+    await _discardPartial(
+      _partialFile(directory, release.tagName),
+      _partialMetaFile(directory, release.tagName),
+    );
+    final file = await _handoffFile(release);
+    await _deleteIfExists(file);
+    await _deleteIfExists(await _readyMarkerFile(file));
+  }
+
+  /// Removes fragments that do not belong to [keepTag].
+  Future<void> deleteStalePartials(String keepTag) async {
+    final directory = await _workDirectory();
+    if (!await directory.exists()) return;
+    for (final partial in await listPartials()) {
+      if (partial.tagName == keepTag) continue;
+      await _discardPartial(
+        _partialFile(directory, partial.tagName),
+        _partialMetaFile(directory, partial.tagName),
+      );
+    }
+  }
+
+  Future<Directory> _workDirectory() async {
+    final root =
+        await (workDirectoryLoader?.call() ?? getApplicationSupportDirectory());
+    final directory = Directory('${root.path}/$updateWorkDirectoryName');
+    await directory.create(recursive: true);
+    return directory;
+  }
+
+  Future<Directory> _handoffDirectory() async {
+    final root =
+        await (handoffDirectoryLoader?.call() ?? getTemporaryDirectory());
+    final directory = Directory('${root.path}/$updateWorkDirectoryName');
+    await directory.create(recursive: true);
+    return directory;
+  }
+
+  Future<File> _handoffFile(ReleaseInfo release) async =>
+      File('${(await _handoffDirectory()).path}/${release.apkName}');
+
+  Future<File> _readyMarkerFile(File apk) async => File('${apk.path}.json');
+
+  File _partialFile(Directory directory, String tag) =>
+      File('${directory.path}/site-lens-$tag.apk.part');
+
+  File _partialMetaFile(Directory directory, String tag) =>
+      File('${_partialFile(directory, tag).path}.json');
+
+  Future<void> _deleteIfExists(File file) async {
+    if (await file.exists()) await file.delete();
+  }
+
+  Future<void> _discardPartial(File file, File metaFile) async {
+    await _deleteIfExists(file);
+    await _deleteIfExists(metaFile);
+  }
+
+  Future<UpdatePartial?> _loadPartial(File file, File metaFile) async {
+    final stored = await _readPartialMeta(metaFile);
+    if (stored == null) return null;
+    if (!await file.exists()) {
+      await _deleteIfExists(metaFile);
+      return null;
+    }
+    final length = await file.length();
+    if (length == 0 || (stored.total > 0 && length > stored.total)) {
+      await _discardPartial(file, metaFile);
+      return null;
+    }
+    return stored.copyWith(received: length, updatedAt: _clock());
+  }
+
+  Future<UpdatePartial?> _readPartialMeta(File metaFile) async {
+    try {
+      if (!await metaFile.exists()) return null;
+      final decoded = jsonDecode(await metaFile.readAsString());
+      if (decoded is! Map<String, dynamic>) return null;
+      return UpdatePartial.fromJson(decoded);
+    } on FormatException {
+      return null;
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  Future<void> _writePartialMeta(File metaFile, UpdatePartial partial) async {
+    await metaFile.parent.create(recursive: true);
+    final temporary = File('${metaFile.path}.tmp');
+    await temporary.writeAsString(jsonEncode(partial.toJson()), flush: true);
+    await temporary.rename(metaFile.path);
+  }
+
   Future<_UpdateCacheEntry?> _readCache() async {
     try {
       final root =
-          await (cacheDirectoryLoader?.call() ??
+          await (workDirectoryLoader?.call() ??
               getApplicationSupportDirectory());
       final file = File('${root.path}/site-lens-update-cache.json');
       if (!await file.exists()) return null;
@@ -477,8 +802,7 @@ class UpdateService {
 
   Future<void> _writeCache(_UpdateCacheEntry entry) async {
     final root =
-        await (cacheDirectoryLoader?.call() ??
-            getApplicationSupportDirectory());
+        await (workDirectoryLoader?.call() ?? getApplicationSupportDirectory());
     await root.create(recursive: true);
     final file = File('${root.path}/site-lens-update-cache.json');
     final temporary = File('${file.path}.tmp');
@@ -486,41 +810,341 @@ class UpdateService {
     await temporary.rename(file.path);
   }
 
-  Future<File> download(
-    ReleaseInfo release, {
-    void Function(int, int?)? onProgress,
+  Future<UpdateDownloadResult> _runDownload({
+    required ReleaseInfo release,
+    required File file,
+    required File metaFile,
+    required UpdatePartial? retained,
+    required _StopSignal stop,
+    required _ProgressThrottle progress,
+    required void Function()? onVerifying,
   }) async {
-    final root = await (directoryLoader?.call() ?? getTemporaryDirectory());
-    final file = await _client.downloadApk(
-      release,
-      Directory('${root.path}/site-lens-updates'),
-      onProgress: onProgress,
-    );
+    var received = retained?.received ?? 0;
+    var total = retained?.total ?? (release.apkSize > 0 ? release.apkSize : 0);
+    var etag = retained?.etag;
+    var lastModified = retained?.lastModified;
+    var attempt = 0;
+    var transferred = false;
+
+    Future<UpdateDownloadResult> pause({required bool byUser}) => _persistPause(
+      file: file,
+      metaFile: metaFile,
+      release: release,
+      received: received,
+      total: total,
+      etag: etag,
+      lastModified: lastModified,
+      pausedByUser: byUser,
+    ).then(UpdateDownloadResult.paused);
+
+    /// Keeps only the transport inside the retry boundary: the fragment is
+    /// dropped and the transfer restarts.
+    void restartFromZero([int? knownTotal]) {
+      received = 0;
+      total = knownTotal ?? (release.apkSize > 0 ? release.apkSize : 0);
+      etag = null;
+      lastModified = null;
+      attempt = 0;
+    }
+
+    while (!transferred) {
+      if (stop.stopped) return await pause(byUser: stop.byUser);
+      // The bytes on disk are the resume offset: a process kill can drop the
+      // tail that was appended but never flushed.
+      try {
+        received = await file.exists() ? await file.length() : 0;
+      } on FileSystemException {
+        /* keep the tracked offset */
+      }
+      if (total > 0 && received > total) {
+        await _discardPartial(file, metaFile);
+        restartFromZero();
+      }
+      try {
+        final response = await _client.openApk(
+          release,
+          offset: received,
+          ifRange: etag,
+        );
+        if (response.statusCode == 416) {
+          await response.stream.listen((_) {}).cancel();
+          await _discardPartial(file, metaFile);
+          restartFromZero();
+          continue;
+        }
+        if (response.statusCode == 206 && received > 0) {
+          final range = _parseContentRange(response.headers['content-range']);
+          if (range == null || range.start != received) {
+            // The server answered a range the fragment cannot explain: start
+            // over rather than appending at the wrong offset.
+            await response.stream.listen((_) {}).cancel();
+            await _discardPartial(file, metaFile);
+            restartFromZero();
+            continue;
+          }
+          if (total > 0 && range.total != total) {
+            // The tag was republished with different bytes: start over.
+            await response.stream.listen((_) {}).cancel();
+            await _discardPartial(file, metaFile);
+            final republishedTotal = range.total;
+            restartFromZero(republishedTotal);
+            etag = response.headers['etag'];
+            lastModified = response.headers['last-modified'];
+            continue;
+          }
+          total = range.total;
+          etag = response.headers['etag'] ?? etag;
+          lastModified = response.headers['last-modified'] ?? lastModified;
+        } else if (response.statusCode == 200 || response.statusCode == 206) {
+          if (received > 0) {
+            // The server ignored the range, or the If-Range guard rejected the
+            // fragment because the asset changed. The body is the whole file,
+            // and it is consumed below: do not cancel the stream here.
+            await _discardPartial(file, metaFile);
+            received = 0;
+          }
+          total =
+              response.contentLength ??
+              (release.apkSize > 0 ? release.apkSize : 0);
+          etag = response.headers['etag'];
+          lastModified = response.headers['last-modified'];
+        } else if (response.statusCode == 404) {
+          await response.stream.listen((_) {}).cancel();
+          throw const FormatException('更新包地址不可用，请稍后重试');
+        } else {
+          await response.stream.listen((_) {}).cancel();
+          throw HttpException('APK 下载返回 HTTP ${response.statusCode}');
+        }
+
+        if (total > _maxApkBytes) {
+          await response.stream.listen((_) {}).cancel();
+          await _discardPartial(file, metaFile);
+          throw const FormatException('APK 大小超过限制');
+        }
+
+        await _writePartialMeta(
+          metaFile,
+          UpdatePartial(
+            tagName: release.tagName,
+            sha256: release.sha256,
+            apkUrl: release.apkUrl,
+            received: received,
+            total: total,
+            updatedAt: _clock(),
+            etag: etag,
+            lastModified: lastModified,
+          ),
+        );
+
+        final sink = file.openWrite(
+          mode: received > 0 ? FileMode.append : FileMode.write,
+        );
+        var flushed = received;
+        try {
+          await for (final chunk in response.stream.timeout(_streamTimeout)) {
+            if (stop.stopped) break;
+            received += chunk.length;
+            if (received > _maxApkBytes || (total > 0 && received > total)) {
+              throw const FormatException('APK 大小与发布信息不符');
+            }
+            sink.add(chunk);
+            if (received - flushed >= _flushBytes) {
+              await sink.flush();
+              flushed = received;
+            }
+            progress.report(received, total > 0 ? total : null);
+          }
+        } finally {
+          await sink.flush();
+          await sink.close();
+        }
+
+        if (stop.stopped) return await pause(byUser: stop.byUser);
+        if (total > 0 && received < total) {
+          throw const FormatException('下载连接中断');
+        }
+        progress.flush(received, total > 0 ? total : null);
+        transferred = true;
+      } on FormatException {
+        rethrow;
+      } catch (_) {
+        if (stop.stopped) return await pause(byUser: stop.byUser);
+        // Either the connection ended early or the transfer failed: retry from
+        // the retained offset, then keep the fragment for a manual resume.
+        if (attempt >= retryDelays.length) return await pause(byUser: false);
+        await Future<void>.delayed(retryDelays[attempt]);
+        attempt++;
+      }
+    }
+
+    // Verification and installer handoff are not retryable: a full fragment
+    // plus a disk or filesystem failure must surface as a failure instead of
+    // restarting the whole transfer forever.
+    onVerifying?.call();
     try {
-      if (_closed) throw StateError('更新页面已关闭');
-      if (platform.supportsApkInstall) await platform.verifyApk(file, release);
-      _download = file;
-      return file;
-    } catch (_) {
-      await file.parent.delete(recursive: true);
+      return UpdateDownloadResult.completed(
+        await _verifyAndHandoff(
+          release: release,
+          file: file,
+          metaFile: metaFile,
+          received: received,
+          total: total,
+        ),
+      );
+    } on FormatException {
       rethrow;
+    } on FileSystemException {
+      throw const FormatException('无法写入下载文件，请检查存储空间后重试');
     }
   }
 
-  /// Retain a verified APK after installer handoff, as Android reads it later.
-  void retainForInstaller() => _download = null;
-
-  Future<void> clearDownload() async {
-    final file = _download;
-    _download = null;
-    if (file != null && await file.parent.exists()) {
-      await file.parent.delete(recursive: true);
+  Future<UpdatePartial> _persistPause({
+    required File file,
+    required File metaFile,
+    required ReleaseInfo release,
+    required int received,
+    required int total,
+    required String? etag,
+    required String? lastModified,
+    required bool pausedByUser,
+  }) async {
+    var durable = received;
+    try {
+      if (await file.exists()) durable = await file.length();
+    } on FileSystemException {
+      durable = received;
     }
+    final partial = UpdatePartial(
+      tagName: release.tagName,
+      sha256: release.sha256,
+      apkUrl: release.apkUrl,
+      received: durable,
+      total: total,
+      updatedAt: _clock(),
+      etag: etag,
+      lastModified: lastModified,
+      pausedByUser: pausedByUser,
+    );
+    await _writePartialMeta(metaFile, partial);
+    return partial;
+  }
+
+  Future<File> _verifyAndHandoff({
+    required ReleaseInfo release,
+    required File file,
+    required File metaFile,
+    required int received,
+    required int total,
+  }) async {
+    if (total > 0 && await file.length() != total) {
+      await _discardPartial(file, metaFile);
+      throw const FormatException('APK 大小与发布信息不符');
+    }
+    if (await sha256File(file) != release.sha256) {
+      await _discardPartial(file, metaFile);
+      throw const FormatException('APK 校验失败，请重新下载');
+    }
+    final target = await _handoffFile(release);
+    await target.parent.create(recursive: true);
+    await _deleteIfExists(target);
+    final size = await file.length();
+    // The marker goes first: a crash between the two leaves an orphan marker,
+    // which [existingDownload] retires, instead of an unverifiable APK.
+    final marker = await _readyMarkerFile(target);
+    await marker.writeAsString(
+      jsonEncode({
+        'tagName': release.tagName,
+        'sha256': release.sha256,
+        'size': size,
+      }),
+      flush: true,
+    );
+    try {
+      await file.rename(target.path);
+    } on FileSystemException {
+      await target.writeAsBytes(await file.readAsBytes(), flush: true);
+      await _deleteIfExists(file);
+    }
+    await _deleteIfExists(metaFile);
+    return target;
+  }
+
+  Future<Map<String, dynamic>?> _readReadyMarker(File apk) async {
+    try {
+      final marker = await _readyMarkerFile(apk);
+      if (!await marker.exists()) return null;
+      final decoded = jsonDecode(await marker.readAsString());
+      return decoded is Map<String, dynamic> ? decoded : null;
+    } on FormatException {
+      return null;
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  static _ContentRange? _parseContentRange(String? value) {
+    final match = RegExp(r'^bytes\s+(\d+)-(\d+)/(\d+)$')
+        .firstMatch(value?.trim() ?? '');
+    if (match == null) return null;
+    return _ContentRange(
+      start: int.parse(match.group(1)!),
+      end: int.parse(match.group(2)!),
+      total: int.parse(match.group(3)!),
+    );
   }
 
   Future<void> close() async {
+    if (_closed) return;
     _closed = true;
     _client.close();
-    await clearDownload();
+  }
+}
+
+/// Coalesces progress callbacks so the UI is not rebuilt per network chunk.
+class _ProgressThrottle {
+  _ProgressThrottle(
+    this._emit,
+    this.clock, {
+    required this.minBytes,
+    required this.minInterval,
+  });
+
+  final void Function(int received, int? total)? _emit;
+  final DateTime Function() clock;
+  final int minBytes;
+  final Duration minInterval;
+  int _lastBytes = -1;
+  DateTime? _lastAt;
+
+  void report(int received, int? total) {
+    final emit = _emit;
+    if (emit == null) return;
+    if (_lastBytes < 0) {
+      _lastBytes = received;
+      _lastAt = clock();
+      emit(received, total);
+      return;
+    }
+    final now = clock();
+    final complete = total != null && total > 0 && received >= total;
+    final bytesEnough = received - _lastBytes >= math.max(minBytes, 1);
+    final timeEnough =
+        _lastAt == null || now.difference(_lastAt!) >= minInterval;
+    // The interval bounds the notification rate; the byte threshold decides
+    // which of those ticks is worth a rebuild.
+    if (!complete && !(timeEnough && bytesEnough)) return;
+    _lastBytes = received;
+    _lastAt = now;
+    emit(received, total);
+  }
+
+  /// Emits the final position even when it arrived inside one interval.
+  void flush(int received, int? total) {
+    final emit = _emit;
+    if (emit == null) return;
+    if (_lastBytes == received) return;
+    _lastBytes = received;
+    _lastAt = clock();
+    emit(received, total);
   }
 }
