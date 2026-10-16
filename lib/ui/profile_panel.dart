@@ -1213,6 +1213,8 @@ class _AddProfileDialogState extends State<_AddProfileDialog> {
                 controller: region,
                 decoration: const InputDecoration(
                   labelText: '最新地址区域（自动识别或 CSS）',
+                  helperText:
+                      '支持 @latest-addresses、CSS；复杂站点可填 @extract:{JSON} 自定义规则',
                 ),
               ),
               const SizedBox(height: SiteLensMetrics.formGap),
@@ -1350,7 +1352,10 @@ class _AddProfilePageDialogState extends State<_AddProfilePageDialog> {
           ),
           TextField(
             controller: region,
-            decoration: const InputDecoration(labelText: '最新地址区域（自动识别或 CSS）'),
+            decoration: const InputDecoration(
+              labelText: '最新地址区域（自动识别、CSS 或 @extract:{JSON}）',
+              helperText: '可读取 a 链接、data-domain/data-url 和纯文本域名',
+            ),
           ),
         ],
       ),

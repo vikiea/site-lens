@@ -228,6 +228,24 @@ Uri userUri(String input) {
   }
 }
 
+/// Some publishing servers serve a directory page only with its trailing
+/// slash (for example `/dizhi/`) but return a hard 404 for `/dizhi`.  Retry
+/// only well-known publishing-page paths so ordinary site URLs are untouched.
+Uri? publishingDirectoryVariant(Uri uri) {
+  if (uri.path.isEmpty || uri.path.endsWith('/')) return null;
+  const directoryNames = {
+    'dizhi',
+    'address',
+    'addresses',
+    'domain',
+    'domains',
+    'links',
+  };
+  final segment = uri.pathSegments.isEmpty ? '' : uri.pathSegments.last;
+  if (!directoryNames.contains(segment.toLowerCase())) return null;
+  return uri.removeFragment().replace(path: '${uri.path}/');
+}
+
 String landingKey(Uri uri) => uri.removeFragment().toString();
 
 /// The name reserved for candidates that do not belong to any curated profile.

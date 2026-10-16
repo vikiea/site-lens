@@ -7,6 +7,7 @@ dart run pigeon --input pigeons/web_host.dart
 flutter analyze
 flutter test
 node tool/test_runtime.mjs
+node tool/test_page_inspector.mjs
 
 node tool/test_media_lifecycle.mjs
 python3 tool/test_android_tools.py

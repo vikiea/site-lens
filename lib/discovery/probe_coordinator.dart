@@ -320,6 +320,8 @@ class PublishingDiscovery {
     var added = 0;
     for (final page in pages) {
       HostSession? host;
+      final slashVariant = publishingDirectoryVariant(page.url);
+      var retriedSlash = false;
       try {
         cancel.check();
         host = await hosts.create(HostPurpose.discovery);
@@ -333,7 +335,24 @@ class PublishingDiscovery {
         List<Uri>? extracted;
         while (watch.elapsed < const Duration(seconds: 12)) {
           cancel.check();
-          if (host.error != null) throw StateError(host.error!);
+          if (host.error != null) {
+            if (!retriedSlash &&
+                slashVariant != null &&
+                host.errorKind == 'httpError' &&
+                RegExp(r'\b404\b').hasMatch(host.error!)) {
+              retriedSlash = true;
+              await hosts.navigate(host, slashVariant);
+              host
+                ..error = null
+                ..errorKind = null
+                ..loaded = false;
+              watch
+                ..reset()
+                ..start();
+              continue;
+            }
+            throw StateError(host.error!);
+          }
           final snapshot = await hosts.api
               .inspect(host.id, page.regionSelector)
               .timeout(const Duration(seconds: 2));

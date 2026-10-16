@@ -632,6 +632,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     token.check();
     final host = await hosts.create(HostPurpose.discovery);
     token.onCancel(() => unawaited(hosts.destroy(host)));
+    final slashVariant = publishingDirectoryVariant(url);
+    var retriedSlash = false;
     try {
       await hosts.navigate(host, url);
       final watch = Stopwatch()..start();
@@ -639,7 +641,24 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       Uri? lastUrl;
       while (watch.elapsed < const Duration(seconds: 15)) {
         token.check();
-        if (host.error != null) throw StateError(host.error!);
+        if (host.error != null) {
+          if (!retriedSlash &&
+              slashVariant != null &&
+              host.errorKind == 'httpError' &&
+              RegExp(r'\b404\b').hasMatch(host.error!)) {
+            retriedSlash = true;
+            await hosts.navigate(host, slashVariant);
+            host
+              ..error = null
+              ..errorKind = null
+              ..loaded = false;
+            watch
+              ..reset()
+              ..start();
+            continue;
+          }
+          throw StateError(host.error!);
+        }
         final snapshot = await hosts.api
             .inspect(host.id, '@latest-addresses')
             .timeout(const Duration(seconds: 3));
