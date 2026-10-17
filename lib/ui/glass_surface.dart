@@ -89,11 +89,19 @@ class SiteLensGlassSurface extends StatelessWidget {
     final plan = SiteLensGlassPolicyScope.of(context)
         .resolve(context, role: role);
     if (plan.useCompatibilityFallback) {
+      final backer = plan.settings.effectiveBackerColor;
       return ClipPath(
         clipper: ShapeBorderClipper(
           shape: LiquidRoundedSuperellipse(borderRadius: radius),
         ),
-        child: ColoredBox(color: plan.glassColor, child: content),
+        child: Stack(
+          fit: StackFit.passthrough,
+          children: [
+            if (backer != null)
+              Positioned.fill(child: ColoredBox(color: backer)),
+            ColoredBox(color: plan.glassColor, child: content),
+          ],
+        ),
       );
     }
     return AdaptiveGlass(

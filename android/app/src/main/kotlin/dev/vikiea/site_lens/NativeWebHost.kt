@@ -473,7 +473,16 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) { refreshLayout?.isRefreshing = false; handler.cancel(); revoke(); event("certificateError", "TLS/证书验证失败，不会忽略证书错误；若启用了代理/MITM，请检查代理证书", error.url) }
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) { if (request.isForMainFrame) { refreshLayout?.isRefreshing = false; revoke(); event("networkError", error.description.toString(), request.url.toString()) } }
             override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) { if (request.isForMainFrame) { refreshLayout?.isRefreshing = false; event("httpError", "HTTP ${errorResponse.statusCode}", request.url.toString()) } }
-            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean { refreshLayout?.isRefreshing = false; revoke(); event("hostInvalidated", "Web content process terminated; reopen browsing to recover"); dispose(); return true }
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                refreshLayout?.isRefreshing = false
+                // The renderer may reject WebViewCompat cleanup calls after it
+                // has gone away. Never let recovery from a renderer death turn
+                // into an application crash on the UI thread.
+                runCatching { revoke() }
+                event("hostInvalidated", "Web content process terminated; reopen browsing to recover")
+                runCatching { dispose() }
+                return true
+            }
         }
         webView.webChromeClient = object : WebChromeClient() {
             override fun onReceivedTitle(view: WebView, title: String?) { event("title", title ?: "") }
@@ -504,10 +513,17 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 return true
             }
             override fun onShowCustomView(view: View, callback: CustomViewCallback) {
-                if (customView != null) { callback.onCustomViewHidden(); return }
+                if (customView != null) { runCatching { callback.onCustomViewHidden() }; return }
+                (view.parent as? ViewGroup)?.removeView(view)
                 customView = view; customCallback = callback; originalOrientation = activity.requestedOrientation
-                (activity.window.decorView as ViewGroup).addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-                event("fullscreen", "entered")
+                try {
+                    (activity.window.decorView as ViewGroup).addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                    event("fullscreen", "entered")
+                } catch (_: RuntimeException) {
+                    customView = null; customCallback = null
+                    originalOrientation = null
+                    runCatching { callback.onCustomViewHidden() }
+                }
             }
             override fun onHideCustomView() { hideFullscreen() }
             override fun onPermissionRequest(request: PermissionRequest) { request.deny() }
@@ -519,8 +535,8 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     fun revoke() {
         accepting = false; generation++; expectedUrl = null; leasedOrigin = null; pageError = null
         entryFollowing = false; entryHops = 0; entryNavigation = null; entryArmed = false
-        injections.forEach { it.remove() }; injections.clear()
-        bindings.forEach { WebViewCompat.removeWebMessageListener(webView, it.world, "lensBridge") }; bindings.clear()
+        injections.forEach { runCatching { it.remove() } }; injections.clear()
+        bindings.forEach { runCatching { WebViewCompat.removeWebMessageListener(webView, it.world, "lensBridge") } }; bindings.clear()
         event("invalidated")
     }
     fun prepareNavigation(
@@ -597,16 +613,20 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     private fun hideFullscreen() {
         val view = customView ?: return
         (view.parent as? ViewGroup)?.removeView(view); customView = null
-        customCallback?.onCustomViewHidden(); customCallback = null
-        originalOrientation?.let { activity.requestedOrientation = it }; originalOrientation = null
+        runCatching { customCallback?.onCustomViewHidden() }; customCallback = null
+        originalOrientation?.let { runCatching { activity.requestedOrientation = it } }; originalOrientation = null
         event("fullscreen", "exited")
     }
     fun dispose() {
         if (destroyed) return
-        media.dispose(); revoke(); hideFullscreen(); destroyed = true
-        navigationListener?.let { WebViewCompat.removeNavigationListener(webView, it) }; navigationListener = null
-        webView.stopLoading(); (platformView.parent as? ViewGroup)?.removeView(platformView)
-        webView.destroy()
+        runCatching { media.dispose() }
+        runCatching { revoke() }
+        runCatching { hideFullscreen() }
+        destroyed = true
+        navigationListener?.let { runCatching { WebViewCompat.removeNavigationListener(webView, it) } }; navigationListener = null
+        runCatching { webView.stopLoading() }
+        runCatching { (platformView.parent as? ViewGroup)?.removeView(platformView) }
+        runCatching { webView.destroy() }
         if (profileName != null) {
             // ProfileStore deletion of a loaded profile may be rejected. Clear the
             // isolated cookie/storage; never touch the default browsing profile.

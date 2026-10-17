@@ -28,7 +28,9 @@ class BrowserMediaController(private val activity: Activity, private val view: W
     private val script = activity.assets.open("flutter_assets/web_assets/media_lifecycle.js").bufferedReader().use { it.readText() }
 
     init {
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.MUTE_AUDIO)) WebViewCompat.setAudioMuted(view, true)
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.MUTE_AUDIO)) {
+            runCatching { WebViewCompat.setAudioMuted(view, true) }
+        }
         if (supported && browsing) {
             WebViewCompat.addWebMessageListener(view, bridge, setOf("*")) { _, message, _, main, _ ->
                 if (!disposed && main) {
@@ -49,10 +51,12 @@ class BrowserMediaController(private val activity: Activity, private val view: W
     }
     private fun refreshInjection() {
         if (!supported || !browsing || disposed) return
-        injection?.remove()
+        runCatching { injection?.remove() }
         val config = JSONObject().put("bridge", bridge).put("token", token).put("blocked", !allowed || manualPause)
-        injection = WebViewCompat.addDocumentStartJavaScript(view,
-            script.replace("__SITE_LENS_MEDIA_CONFIG__", config.toString()), setOf("*"))
+        injection = runCatching {
+            WebViewCompat.addDocumentStartJavaScript(view,
+                script.replace("__SITE_LENS_MEDIA_CONFIG__", config.toString()), setOf("*"))
+        }.getOrNull()
     }
     fun activity(current: Boolean, visible: Boolean, foreground: Boolean, background: Boolean): Boolean {
         val changed = this.current != current || this.visible != visible || this.requestedForeground != foreground || this.background != background
@@ -77,17 +81,21 @@ class BrowserMediaController(private val activity: Activity, private val view: W
         updateNotification()
     }
     private fun evaluate(action: String) {
-        if (supported && browsing && !disposed) view.evaluateJavascript("window.__siteLensMediaControl?.apply('$action');", null)
+        if (supported && browsing && !disposed) {
+            runCatching { view.evaluateJavascript("window.__siteLensMediaControl?.apply('$action');", null) }
+        }
     }
     private fun mute(value: Boolean) {
-        if (!disposed && WebViewFeature.isFeatureSupported(WebViewFeature.MUTE_AUDIO)) WebViewCompat.setAudioMuted(view, value)
+        if (!disposed && WebViewFeature.isFeatureSupported(WebViewFeature.MUTE_AUDIO)) {
+            runCatching { WebViewCompat.setAudioMuted(view, value) }
+        }
     }
     private fun enforce() {
         if (disposed) return
         val run = allowed && !manualPause
         mute(!run)
         evaluate(if (run) "unblock" else "pause")
-        if (run) view.onResume() else view.onPause()
+        runCatching { if (run) view.onResume() else view.onPause() }
         if (!allowed) { playing = false; BrowserMediaService.stop(activity, token) }
         updateNotification()
     }
@@ -103,7 +111,7 @@ class BrowserMediaController(private val activity: Activity, private val view: W
         if (disposed) return
         mute(true); evaluate("pause"); disposed = true
         BrowserMediaService.stop(activity, token)
-        injection?.remove(); injection = null
-        if (supported && browsing) WebViewCompat.removeWebMessageListener(view, bridge)
+        runCatching { injection?.remove() }; injection = null
+        if (supported && browsing) runCatching { WebViewCompat.removeWebMessageListener(view, bridge) }
     }
 }

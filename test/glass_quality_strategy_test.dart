@@ -247,6 +247,67 @@ void main() {
     }
   });
 
+  testWidgets(
+    'Android WebView overlays avoid live backdrop sampling while Flutter stays premium',
+    (tester) async {
+      final previous = debugDefaultTargetPlatformOverride;
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      try {
+        late BuildContext context;
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSiteLensTheme(
+              ThemePresetId.oceanBlue,
+              Brightness.light,
+            ),
+            home: Builder(
+              builder: (value) {
+                context = value;
+                return const SizedBox();
+              },
+            ),
+          ),
+        );
+
+        const browsing = SiteLensGlassQualityStrategy(
+          mode: SiteLensGlassQualityMode.high,
+          allSurfacesHighQuality: true,
+          webViewVisible: true,
+          shaderSupported: true,
+        );
+        final overlay = browsing.resolve(
+          context,
+          role: SiteLensSurfaceRole.platformView,
+        );
+        final panel = browsing.resolve(
+          context,
+          role: SiteLensSurfaceRole.panel,
+        );
+        final ordinaryChrome = const SiteLensGlassQualityStrategy(
+          mode: SiteLensGlassQualityMode.high,
+          allSurfacesHighQuality: true,
+          shaderSupported: true,
+        ).resolve(context, role: SiteLensSurfaceRole.chrome);
+        final idlePlatformView = const SiteLensGlassQualityStrategy(
+          mode: SiteLensGlassQualityMode.high,
+          allSurfacesHighQuality: true,
+          shaderSupported: true,
+        ).resolve(context, role: SiteLensSurfaceRole.platformView);
+
+        expect(overlay.platformViewBackdrop, isFalse);
+        expect(overlay.useCompatibilityFallback, isTrue);
+        expect(panel.quality, GlassQuality.standard);
+        expect(ordinaryChrome.quality, GlassQuality.premium);
+        expect(ordinaryChrome.platformViewBackdrop, isFalse);
+        expect(ordinaryChrome.useCompatibilityFallback, isFalse);
+        expect(idlePlatformView.platformViewBackdrop, isTrue);
+        expect(idlePlatformView.useCompatibilityFallback, isFalse);
+      } finally {
+        debugDefaultTargetPlatformOverride = previous;
+      }
+    },
+  );
+
   testWidgets('unsupported Android shader uses the compatibility plan', (
     tester,
   ) async {
