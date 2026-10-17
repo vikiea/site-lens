@@ -2056,7 +2056,13 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     widget.app.hosts.changed.addListener(_changed);
     // Deferred: opening a tab notifies the controller, and doing that from
     // initState would rebuild listeners during the current build.
-    scheduleMicrotask(() => unawaited(_start()));
+    scheduleMicrotask(() {
+      if (!mounted) return;
+      // Mark the route as a WebView route before creating the native view so
+      // Android keeps Flutter glass on the 0.1.3-safe tier during composition.
+      widget.app.browserVisible = true;
+      unawaited(_start());
+    });
   }
 
   void _appChanged() {
@@ -2132,9 +2138,9 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   @override
   void dispose() {
     browserRouteObserver.unsubscribe(this);
-    widget.app.browserVisible = false;
     widget.app.removeListener(_appChanged);
     widget.app.hosts.changed.removeListener(_changed);
+    widget.app.browserVisible = false;
     _hideTimer?.cancel();
     // Tabs are owned by AppController so the home floating entry can restore
     // the same native WebView without recreating it.

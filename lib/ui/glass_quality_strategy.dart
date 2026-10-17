@@ -54,12 +54,18 @@ class SiteLensGlassQualityStrategy {
   const SiteLensGlassQualityStrategy({
     this.mode = SiteLensGlassQualityMode.automatic,
     this.allSurfacesHighQuality = false,
+    this.webViewVisible = false,
     this.shaderSupported,
     this.adaptiveQualityOverride,
   });
 
   final SiteLensGlassQualityMode mode;
   final bool allSurfacesHighQuality;
+
+  /// Whether an Android WebView is currently visible in the browsing route.
+  /// Premium glass is kept available everywhere else; while a native view is
+  /// composited, Flutter glass uses the 0.1.3-safe optical tier.
+  final bool webViewVisible;
   final bool? shaderSupported;
   final GlassQuality? adaptiveQualityOverride;
 
@@ -80,20 +86,17 @@ class SiteLensGlassQualityStrategy {
         GlassQuality.standard;
     final requestedQuality = _requestedQuality(
       role,
+      isAndroid: isAndroid,
       adaptiveQuality: adaptiveQuality,
     );
     final platformViewBackdrop = role == SiteLensSurfaceRole.platformView;
     final shaderSupported =
         this.shaderSupported ?? ui.ImageFilter.isShaderFilterSupported;
-    // Keep premium Flutter surfaces on AdaptiveGlass even when the premium
-    // shader is unavailable. The library can select its calibrated lightweight
-    // path; replacing them with a plain colored box makes high quality
-    // indistinguishable from a tint change. PlatformView overlays remain on
-    // their live backdrop path because premium capture cannot sample WebView.
-    final useCompatibilityFallback =
-        !shaderSupported &&
-        role == SiteLensSurfaceRole.panel &&
-        requestedQuality != GlassQuality.premium;
+    // A renderer without shader-filter support must stay on the same clipped
+    // fallback used by 0.1.3 for every Flutter surface. Platform-view
+    // overlays remain on their live backdrop path because the fallback cannot
+    // sample a native WebView either.
+    final useCompatibilityFallback = !shaderSupported && !platformViewBackdrop;
 
     return SiteLensGlassRenderPlan(
       quality: requestedQuality,
@@ -102,6 +105,7 @@ class SiteLensGlassQualityStrategy {
         context,
         role: role,
         isAndroid: isAndroid,
+        webViewVisible: webViewVisible,
         dark: dark,
         quality: requestedQuality,
         glassColor: glassColor,
@@ -114,8 +118,14 @@ class SiteLensGlassQualityStrategy {
 
   GlassQuality _requestedQuality(
     SiteLensSurfaceRole role, {
+    required bool isAndroid,
     required GlassQuality adaptiveQuality,
   }) {
+    if (isAndroid &&
+        webViewVisible &&
+        role != SiteLensSurfaceRole.platformView) {
+      return GlassQuality.standard;
+    }
     final quality = switch (role) {
       SiteLensSurfaceRole.panel =>
         mode == SiteLensGlassQualityMode.high && allSurfacesHighQuality
@@ -156,6 +166,7 @@ class SiteLensGlassQualityStrategy {
     BuildContext context, {
     required SiteLensSurfaceRole role,
     required bool isAndroid,
+    required bool webViewVisible,
     required bool dark,
     required GlassQuality quality,
     required Color glassColor,
@@ -171,9 +182,9 @@ class SiteLensGlassQualityStrategy {
         : 0.15 + 0.85 * Curves.easeOut.transform(lowAlphaProgress);
     final premiumSurface =
         isAndroid &&
+        !webViewVisible &&
         role != SiteLensSurfaceRole.platformView &&
         quality == GlassQuality.premium;
-
     final adjusted = role == SiteLensSurfaceRole.platformView
         ? base
         : base.copyWith(
@@ -183,6 +194,11 @@ class SiteLensGlassQualityStrategy {
             blur: base.blur,
             frost: base.frost,
             frostOpacity: base.frostOpacity * frostFactor,
+            // Android can report Impeller support while the full premium
+            // material still trips vendor GPU/WebView composition paths. Keep
+            // the Android optical parameters from 0.1.3 for standard surfaces
+            // and while a native WebView is visible; ordinary premium Flutter
+            // pages retain the full material.
             thickness: isAndroid && !premiumSurface ? 12 : base.thickness,
             refractiveIndex: isAndroid && !premiumSurface
                 ? 1.08

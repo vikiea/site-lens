@@ -133,55 +133,73 @@ void main() {
     },
   );
 
-  testWidgets('high quality panels share the premium optical treatment', (
-    tester,
-  ) async {
-    final previous = debugDefaultTargetPlatformOverride;
-    debugDefaultTargetPlatformOverride = TargetPlatform.android;
-    try {
-      late BuildContext context;
-      await tester.pumpWidget(
-        MaterialApp(
-          theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
-          home: Builder(
-            builder: (value) {
-              context = value;
-              return const SizedBox();
-            },
+  testWidgets(
+    'high quality Android panels keep premium parameters outside WebView',
+    (tester) async {
+      final previous = debugDefaultTargetPlatformOverride;
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      try {
+        late BuildContext context;
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSiteLensTheme(
+              ThemePresetId.oceanBlue,
+              Brightness.light,
+            ),
+            home: Builder(
+              builder: (value) {
+                context = value;
+                return const SizedBox();
+              },
+            ),
           ),
-        ),
-      );
-      final standard = const SiteLensGlassQualityStrategy(
-        mode: SiteLensGlassQualityMode.standard,
-        shaderSupported: true,
-      ).resolve(context, role: SiteLensSurfaceRole.panel);
-      final highPanel = const SiteLensGlassQualityStrategy(
-        mode: SiteLensGlassQualityMode.high,
-        allSurfacesHighQuality: true,
-        shaderSupported: true,
-      ).resolve(context, role: SiteLensSurfaceRole.panel);
-      final highChrome = const SiteLensGlassQualityStrategy(
-        mode: SiteLensGlassQualityMode.high,
-        shaderSupported: true,
-      ).resolve(context, role: SiteLensSurfaceRole.chrome);
+        );
+        final standard = const SiteLensGlassQualityStrategy(
+          mode: SiteLensGlassQualityMode.standard,
+          shaderSupported: true,
+        ).resolve(context, role: SiteLensSurfaceRole.panel);
+        final highPanel = const SiteLensGlassQualityStrategy(
+          mode: SiteLensGlassQualityMode.high,
+          allSurfacesHighQuality: true,
+          shaderSupported: true,
+        ).resolve(context, role: SiteLensSurfaceRole.panel);
+        final highChrome = const SiteLensGlassQualityStrategy(
+          mode: SiteLensGlassQualityMode.high,
+          shaderSupported: true,
+        ).resolve(context, role: SiteLensSurfaceRole.chrome);
 
-      expect(highPanel.quality, GlassQuality.premium);
-      expect(highPanel.settings.thickness, highChrome.settings.thickness);
-      expect(highPanel.settings.rimLight, highChrome.settings.rimLight);
-      expect(
-        highPanel.settings.thickness,
-        greaterThan(standard.settings.thickness),
-      );
-      expect(
-        highPanel.settings.rimLight,
-        greaterThan(standard.settings.rimLight),
-      );
-    } finally {
-      debugDefaultTargetPlatformOverride = previous;
-    }
-  });
+        expect(highPanel.quality, GlassQuality.premium);
+        expect(highPanel.settings.thickness, highChrome.settings.thickness);
+        expect(highPanel.settings.rimLight, highChrome.settings.rimLight);
+        expect(
+          highPanel.settings.thickness,
+          greaterThan(standard.settings.thickness),
+        );
+        expect(
+          highPanel.settings.rimLight,
+          greaterThan(standard.settings.rimLight),
+        );
 
-  testWidgets('high Android chrome keeps premium optical parameters', (
+        const browsing = SiteLensGlassQualityStrategy(
+          mode: SiteLensGlassQualityMode.high,
+          allSurfacesHighQuality: true,
+          webViewVisible: true,
+          shaderSupported: true,
+        );
+        final browsingPanel = browsing.resolve(
+          context,
+          role: SiteLensSurfaceRole.panel,
+        );
+        expect(browsingPanel.quality, GlassQuality.standard);
+        expect(browsingPanel.settings.thickness, standard.settings.thickness);
+        expect(browsingPanel.settings.rimLight, standard.settings.rimLight);
+      } finally {
+        debugDefaultTargetPlatformOverride = previous;
+      }
+    },
+  );
+
+  testWidgets('high Android chrome keeps premium parameters outside WebView', (
     tester,
   ) async {
     final previous = debugDefaultTargetPlatformOverride;
@@ -211,6 +229,19 @@ void main() {
       expect(high.quality, GlassQuality.premium);
       expect(high.settings.thickness, greaterThan(standard.settings.thickness));
       expect(high.settings.rimLight, greaterThan(standard.settings.rimLight));
+
+      const browsing = SiteLensGlassQualityStrategy(
+        mode: SiteLensGlassQualityMode.high,
+        webViewVisible: true,
+        shaderSupported: true,
+      );
+      final browsingChrome = browsing.resolve(
+        context,
+        role: SiteLensSurfaceRole.chrome,
+      );
+      expect(browsingChrome.quality, GlassQuality.standard);
+      expect(browsingChrome.settings.thickness, standard.settings.thickness);
+      expect(browsingChrome.settings.rimLight, standard.settings.rimLight);
     } finally {
       debugDefaultTargetPlatformOverride = previous;
     }
@@ -246,8 +277,8 @@ void main() {
       expect(plan.quality, GlassQuality.standard);
       expect(plan.useCompatibilityFallback, isTrue);
       expect(highPanel.quality, GlassQuality.premium);
-      expect(highPanel.useCompatibilityFallback, isFalse);
-      expect(chrome.useCompatibilityFallback, isFalse);
+      expect(highPanel.useCompatibilityFallback, isTrue);
+      expect(chrome.useCompatibilityFallback, isTrue);
     } finally {
       debugDefaultTargetPlatformOverride = previous;
     }

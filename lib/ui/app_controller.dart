@@ -98,8 +98,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   bool mediaSupported = false;
   bool get browserVisible => _browserVisible;
   set browserVisible(bool value) {
+    if (_browserVisible == value) return;
     _browserVisible = value;
-    unawaited(syncMediaPolicy());
+    if (!_disposed) notifyListeners();
   }
 
   @override
