@@ -48,6 +48,7 @@ const supportedGrants = <String>{
   'GM.addElement',
   'GM.getResourceText',
   'GM.getResourceURL',
+  'SiteLens.registerMedia',
 };
 
 /// One `@resource <name> <url>` declaration. Snapshot semantics match
@@ -143,6 +144,34 @@ class ScriptMetadata {
       matches.any((r) => r.matches(url)) &&
       !excludes.any((r) => r.matches(url));
   String digest(
+    String source,
+    List<PinnedDependency> deps, [
+    List<PinnedResource> resources = const [],
+    ScriptNetworkMode networkMode = ScriptNetworkMode.declared,
+    String? approvalReason,
+  ]) => sha256
+      .convert(
+        utf8.encode(
+          jsonEncode({
+            'source': source,
+            'dependencies': deps
+                .map((d) => {'url': d.url.toString(), 'hash': d.hash})
+                .toList(),
+            if (resources.isNotEmpty)
+              'resources': resources
+                  .map((r) => {'name': r.name, 'hash': r.hash})
+                  .toList(),
+            'networkMode': networkMode.name,
+            'approvalReason': approvalReason,
+          }),
+        ),
+      )
+      .toString();
+
+  /// Digest format used before network authorization was added. It is only
+  /// accepted during a one-time migration of an existing local approval; new
+  /// approvals always use [digest].
+  String legacyDigest(
     String source,
     List<PinnedDependency> deps, [
     List<PinnedResource> resources = const [],

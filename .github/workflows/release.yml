@@ -6,6 +6,14 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
+      channel:
+        description: Release channel
+        required: true
+        default: stable
+        type: choice
+        options:
+          - stable
+          - beta
       tag:
         description: Release tag, for example v0.1.0
         required: true
@@ -41,6 +49,7 @@ jobs:
         id: release
         env:
           DISPATCH_TAG: ${{ inputs.tag }}
+          DISPATCH_CHANNEL: ${{ inputs.channel || 'stable' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -49,17 +58,30 @@ jobs:
           else
             tag="$GITHUB_REF_NAME"
           fi
-          python3 - "$tag" <<'PY'
+          channel="$DISPATCH_CHANNEL"
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
+            if [[ "$tag" =~ -((alpha|beta|rc)[0-9A-Za-z.-]*)$ ]]; then
+              channel=beta
+            else
+              channel=stable
+            fi
+          fi
+          python3 - "$tag" "$channel" <<'PY'
           import re
           import sys
           tag = sys.argv[1]
-          if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
+          channel = sys.argv[2]
+          stable = r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+          beta = stable + r"-(alpha|beta|rc)[0-9A-Za-z.-]*"
+          pattern = beta if channel == "beta" else stable
+          if channel not in {"stable", "beta"} or not re.fullmatch(pattern, tag):
               raise SystemExit(f"invalid release tag: {tag}")
           PY
           git rev-parse "$tag^{commit}" >/dev/null
           version="${tag#v}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
 
       - name: Run repository checks
         shell: bash
@@ -122,11 +144,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
           VERSION: ${{ steps.release.outputs.version }}
+          CHANNEL: ${{ steps.release.outputs.channel }}
         shell: bash
         run: |
           set -euo pipefail
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            args=("$TAG" --title "Site Lens $TAG" --target "$(git rev-parse HEAD)" --generate-notes)
+            title="Site Lens $TAG"
+            args=("$TAG" --title "$title" --target "$(git rev-parse HEAD)" --generate-notes)
+            if [[ "$CHANNEL" == "beta" ]]; then
+              args+=(--prerelease)
+            fi
             gh release create "${args[@]}"
           fi
           gh release upload "$TAG" dist/* --clobber

@@ -4,17 +4,23 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../settings/app_settings.dart';
 import '../update/update_controller.dart';
 import 'app_theme.dart';
 import 'glass_surface.dart';
 import 'ui_primitives.dart';
 
 class SoftwareUpdateScreen extends ConsumerStatefulWidget {
-  const SoftwareUpdateScreen({super.key, this.controller});
-
   /// Test seam: production reads [updateControllerProvider] so one download
   /// survives the page.
   final UpdateController? controller;
+  final UpdateChannel channel;
+
+  const SoftwareUpdateScreen({
+    super.key,
+    this.controller,
+    this.channel = UpdateChannel.stable,
+  });
 
   @override
   ConsumerState<SoftwareUpdateScreen> createState() =>
@@ -33,6 +39,7 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
     _controller.setUpdateScreenVisible(true);
     _controller.addListener(_onControllerChanged);
     _lastState = _controller.downloadState;
+    unawaited(_controller.setChannel(widget.channel).catchError((_) {}));
     unawaited(_controller.openUpdatePage());
   }
 

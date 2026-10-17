@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../settings/app_settings.dart';
 import '../update/update_controller.dart';
+import 'app_controller.dart';
 import 'app_theme.dart';
 import 'glass_surface.dart';
 import 'navigation_observer.dart';
@@ -21,6 +23,7 @@ class SiteLensUpdateNoticeLayer extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final controller = ref.watch(updateControllerProvider);
+    final app = ref.watch(appControllerProvider);
     return ListenableBuilder(
       listenable: controller,
       builder: (context, _) => Stack(
@@ -40,7 +43,10 @@ class SiteLensUpdateNoticeLayer extends ConsumerWidget {
                   SiteLensMetrics.pagePadding,
                   0,
                 ),
-                child: _UpdateNoticeCard(controller: controller),
+                child: _UpdateNoticeCard(
+                  controller: controller,
+                  channel: app.settings.updateChannel,
+                ),
               ),
             ),
         ],
@@ -50,9 +56,10 @@ class SiteLensUpdateNoticeLayer extends ConsumerWidget {
 }
 
 class _UpdateNoticeCard extends StatefulWidget {
-  const _UpdateNoticeCard({required this.controller});
+  const _UpdateNoticeCard({required this.controller, required this.channel});
 
   final UpdateController controller;
+  final UpdateChannel channel;
 
   @override
   State<_UpdateNoticeCard> createState() => _UpdateNoticeCardState();
@@ -112,7 +119,9 @@ class _UpdateNoticeCardState extends State<_UpdateNoticeCard>
     final navigator =
         siteLensNavigatorKey.currentState ?? Navigator.maybeOf(context);
     navigator?.push(
-      MaterialPageRoute<void>(builder: (_) => const SoftwareUpdateScreen()),
+      MaterialPageRoute<void>(
+        builder: (_) => SoftwareUpdateScreen(channel: widget.channel),
+      ),
     );
   }
 

@@ -62,6 +62,41 @@ const _v2CandidateColumn =
 const _v2SourceColumn =
     'ALTER TABLE sources ADD COLUMN profile_id INTEGER REFERENCES profiles(id) ON DELETE SET NULL';
 
+const _v5Tables = <String>[
+  'CREATE TABLE IF NOT EXISTS filter_sources ('
+      'id INTEGER PRIMARY KEY AUTOINCREMENT, '
+      'profile_id INTEGER REFERENCES profiles(id) ON DELETE SET NULL, '
+      'label TEXT NOT NULL, url TEXT NOT NULL, kind TEXT NOT NULL DEFAULT \'list\', '
+      'version TEXT NOT NULL DEFAULT \'\', license TEXT NOT NULL DEFAULT \'\', '
+      'sha256 TEXT NOT NULL DEFAULT \'\', status TEXT NOT NULL DEFAULT \'missing\', '
+      'file_ref TEXT, refreshed_at TEXT, error TEXT)',
+  'CREATE TABLE IF NOT EXISTS filter_snapshots ('
+      'id TEXT PRIMARY KEY, source_id INTEGER REFERENCES filter_sources(id) ON DELETE SET NULL, '
+      'version TEXT NOT NULL, source_url TEXT NOT NULL, sha256 TEXT NOT NULL, '
+      'state TEXT NOT NULL, created_at TEXT NOT NULL, file_ref TEXT NOT NULL, '
+      'unsupported_rule_count INTEGER NOT NULL DEFAULT 0, error TEXT)',
+  'CREATE TABLE IF NOT EXISTS filter_policies ('
+      // profile_id 0 is the global policy. SQLite INTEGER PRIMARY KEY cannot
+      // represent a nullable global row reliably, so the sentinel is explicit.
+      'profile_id INTEGER PRIMARY KEY, '
+      'enabled INTEGER NOT NULL DEFAULT 0, page_filtering INTEGER NOT NULL DEFAULT 1, '
+      'domain_exceptions TEXT NOT NULL DEFAULT \'[]\', blocked_domains TEXT NOT NULL DEFAULT \'[]\', '
+      'updated_at TEXT NOT NULL)',
+  'CREATE TABLE IF NOT EXISTS media_candidates ('
+      'id TEXT PRIMARY KEY, host_id INTEGER NOT NULL, generation INTEGER NOT NULL, '
+      'source_url TEXT NOT NULL, media_url TEXT NOT NULL, title TEXT NOT NULL, '
+      'mime TEXT NOT NULL, source TEXT NOT NULL, duration_ms INTEGER, created_at TEXT NOT NULL)',
+  'CREATE TABLE IF NOT EXISTS media_tasks ('
+      'id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL REFERENCES media_candidates(id) ON DELETE CASCADE, '
+      'host_id INTEGER NOT NULL, generation INTEGER NOT NULL, source_url TEXT NOT NULL, '
+      'cache_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL, updated_at TEXT NOT NULL, '
+      'bytes_downloaded INTEGER NOT NULL DEFAULT 0, total_bytes INTEGER, error_code TEXT, local_ref TEXT)',
+  'CREATE TABLE IF NOT EXISTS script_approvals ('
+      'script_id TEXT PRIMARY KEY REFERENCES scripts(id) ON DELETE CASCADE, '
+      "network_mode TEXT NOT NULL DEFAULT 'declared', approval_reason TEXT, "
+      'approved_at TEXT, public_confirmed INTEGER NOT NULL DEFAULT 0)',
+];
+
 // Drift's SQL API keeps the small schema explicit and permits in-memory tests.
 // No browser cookie or password is copied into this database.
 class AppDatabase extends GeneratedDatabase {
@@ -81,7 +116,7 @@ class AppDatabase extends GeneratedDatabase {
   static void Function(String step)? migrationDebugHook;
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -101,6 +136,7 @@ class AppDatabase extends GeneratedDatabase {
         ..._v2Tables,
         ..._v3Tables,
         'CREATE TABLE health_run_leases(name TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at INTEGER NOT NULL)',
+        ..._v5Tables,
       ]) {
         await customStatement(sql);
       }
@@ -109,6 +145,7 @@ class AppDatabase extends GeneratedDatabase {
       if (from < 2) await _migrateV1toV2();
       if (from < 3) await _migrateV2toV3();
       if (from < 4) await _migrateV3toV4();
+      if (from < 5) await _migrateV4toV5();
     },
     beforeOpen: (_) async {
       await customStatement('PRAGMA foreign_keys = ON');
@@ -135,6 +172,27 @@ class AppDatabase extends GeneratedDatabase {
         "UPDATE candidates SET ready_selector_override=CASE WHEN ready_selector='main' THEN NULL ELSE ready_selector END",
       );
     }
+  });
+
+  Future<void> _migrateV4toV5() => transaction(() async {
+    migrationDebugHook?.call('v4-to-v5');
+    for (final sql in _v5Tables) {
+      await customStatement(sql);
+    }
+    // A short-lived development build stored these fields directly on
+    // scripts. Copy them when upgrading that build; v1-v4 databases simply
+    // receive a declared, unapproved row for every existing script.
+    if (await _columnExists('scripts', 'network_mode')) {
+      await customStatement(
+        'INSERT OR REPLACE INTO script_approvals(script_id,network_mode,approval_reason,approved_at,public_confirmed) '
+        'SELECT id,network_mode,approval_reason,approved_at,public_confirmed FROM scripts',
+      );
+    } else {
+      await customStatement(
+        "INSERT OR IGNORE INTO script_approvals(script_id) SELECT id FROM scripts",
+      );
+    }
+    migrationDebugHook?.call('v5-done');
   });
 
   /// v1 -> v2 migration. Runs inside a single transaction so a failure at any
@@ -656,7 +714,10 @@ class AppDatabase extends GeneratedDatabase {
           )
           .toList();
   Future<List<InstalledScript>> scripts() async =>
-      (await customSelect('SELECT * FROM scripts ORDER BY name').get())
+      (await customSelect(
+            'SELECT s.*, COALESCE(a.network_mode,\'declared\') AS network_mode, a.approval_reason, a.approved_at, COALESCE(a.public_confirmed,0) AS public_confirmed '
+            'FROM scripts s LEFT JOIN script_approvals a ON a.script_id=s.id ORDER BY s.name',
+          ).get())
           .map(
             (r) => InstalledScript(
               id: r.read<String>('id'),
@@ -664,18 +725,76 @@ class AppDatabase extends GeneratedDatabase {
               source: r.read<String>('source'),
               enabled: r.read<int>('enabled') == 1,
               approvedDigest: r.readNullable<String>('approved_digest'),
+              networkMode: ScriptNetworkMode.values.byName(
+                r.read<String>('network_mode'),
+              ),
+              approvalReason: r.readNullable<String>('approval_reason'),
+              approvedAt: r.readNullable<String>('approved_at') == null
+                  ? null
+                  : DateTime.parse(r.read<String>('approved_at')),
+              publicConfirmed: r.read<int>('public_confirmed') == 1,
             ),
           )
           .toList();
-  Future<void> saveScript(InstalledScript script) => customStatement(
-    'INSERT INTO scripts(id,name,source) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,source=excluded.source,enabled=0,approved_digest=NULL',
-    [script.id, script.name, script.source],
-  );
+  Future<void> saveScript(InstalledScript script) => transaction(() async {
+    await customStatement(
+      'INSERT INTO scripts(id,name,source) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,source=excluded.source,enabled=0,approved_digest=NULL',
+      [script.id, script.name, script.source],
+    );
+    await customStatement(
+      'INSERT INTO script_approvals(script_id,network_mode,approval_reason,approved_at,public_confirmed) VALUES(?,?,?,?,?) '
+      'ON CONFLICT(script_id) DO UPDATE SET network_mode=\'declared\',approval_reason=NULL,approved_at=NULL,public_confirmed=0',
+      [
+        script.id,
+        script.networkMode.name,
+        script.approvalReason,
+        script.approvedAt?.toIso8601String(),
+        script.publicConfirmed ? 1 : 0,
+      ],
+    );
+  });
   Future<void> setScriptEnabled(String id, bool enabled, {String? digest}) =>
-      customStatement(
-        'UPDATE scripts SET enabled=?,approved_digest=COALESCE(?,approved_digest) WHERE id=?',
-        [enabled ? 1 : 0, digest, id],
-      );
+      transaction(() async {
+        await customStatement(
+          'UPDATE scripts SET enabled=?,approved_digest=COALESCE(?,approved_digest) WHERE id=?',
+          [enabled ? 1 : 0, digest, id],
+        );
+        if (enabled) {
+          await customStatement(
+            'INSERT INTO script_approvals(script_id,approved_at) VALUES(?,?) ON CONFLICT(script_id) DO UPDATE SET approved_at=excluded.approved_at',
+            [id, DateTime.now().toUtc().toIso8601String()],
+          );
+        }
+      });
+
+  Future<void> setScriptApprovalMode(
+    String id,
+    ScriptNetworkMode mode, {
+    String? reason,
+    bool publicConfirmed = false,
+  }) => transaction(() async {
+    await customStatement(
+      'INSERT INTO script_approvals(script_id,network_mode,approval_reason,approved_at,public_confirmed) VALUES(?,?,?,?,?) '
+      'ON CONFLICT(script_id) DO UPDATE SET network_mode=excluded.network_mode,approval_reason=excluded.approval_reason,approved_at=NULL,public_confirmed=excluded.public_confirmed',
+      [id, mode.name, reason, null, publicConfirmed ? 1 : 0],
+    );
+    await customStatement(
+      'UPDATE scripts SET enabled=0,approved_digest=NULL WHERE id=?',
+      [id],
+    );
+  });
+
+  Future<void> clearScriptApproval(String id) => transaction(() async {
+    await customStatement(
+      'UPDATE scripts SET enabled=0,approved_digest=NULL WHERE id=?',
+      [id],
+    );
+    await customStatement(
+      'INSERT INTO script_approvals(script_id,approved_at,public_confirmed) VALUES(?,?,0) '
+      'ON CONFLICT(script_id) DO UPDATE SET approved_at=NULL,public_confirmed=0',
+      [id, null],
+    );
+  });
   Future<void> deleteScript(String id) =>
       customStatement('DELETE FROM scripts WHERE id=?', [id]);
   Future<List<PinnedDependency>> dependencies(String id) async =>
@@ -802,4 +921,224 @@ class AppDatabase extends GeneratedDatabase {
                 '${r.read<String>('happened_at')}\n${r.read<String>('message')}',
           )
           .toList();
+
+  Future<FilterPolicy> filterPolicy({int? profileId}) async {
+    final row = await customSelect(
+      'SELECT * FROM filter_policies WHERE profile_id=? LIMIT 1',
+      variables: [Variable(profileId ?? 0)],
+    ).getSingleOrNull();
+    if (row == null) return const FilterPolicy();
+    return FilterPolicy(
+      enabled: row.read<int>('enabled') == 1,
+      pageFiltering: row.read<int>('page_filtering') == 1,
+      domainExceptions: (jsonDecode(
+        row.read<String>('domain_exceptions'),
+      ) as List).whereType<String>().toSet(),
+      blockedDomains: (jsonDecode(row.read<String>('blocked_domains')) as List)
+          .whereType<String>()
+          .toSet(),
+    );
+  }
+
+  Future<void> saveFilterPolicy(FilterPolicy policy, {int? profileId}) =>
+      customStatement(
+        'INSERT INTO filter_policies(profile_id,enabled,page_filtering,domain_exceptions,blocked_domains,updated_at) VALUES(?,?,?,?,?,?) '
+        'ON CONFLICT(profile_id) DO UPDATE SET enabled=excluded.enabled,page_filtering=excluded.page_filtering,domain_exceptions=excluded.domain_exceptions,blocked_domains=excluded.blocked_domains,updated_at=excluded.updated_at',
+        [
+          profileId ?? 0,
+          policy.enabled ? 1 : 0,
+          policy.pageFiltering ? 1 : 0,
+          jsonEncode(policy.domainExceptions.toList()..sort()),
+          jsonEncode(policy.blockedDomains.toList()..sort()),
+          DateTime.now().toUtc().toIso8601String(),
+        ],
+      );
+
+  Future<void> deleteFilterPolicy({int? profileId}) => customStatement(
+    'DELETE FROM filter_policies WHERE profile_id=?',
+    [profileId ?? 0],
+  );
+
+  Future<int> saveFilterSource(FilterSource source) async {
+    await customStatement(
+      'INSERT INTO filter_sources(id,profile_id,label,url,kind,version,license,sha256,status,file_ref,refreshed_at,error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) '
+      'ON CONFLICT(id) DO UPDATE SET profile_id=excluded.profile_id,label=excluded.label,url=excluded.url,kind=excluded.kind,version=excluded.version,license=excluded.license,sha256=excluded.sha256,status=excluded.status,file_ref=excluded.file_ref,refreshed_at=excluded.refreshed_at,error=excluded.error',
+      [
+        source.id,
+        source.profileId,
+        source.label,
+        source.url.toString(),
+        source.kind,
+        source.version,
+        source.license,
+        source.sha256,
+        source.status.name,
+        source.fileRef,
+        source.refreshedAt?.toUtc().toIso8601String(),
+        source.error,
+      ],
+    );
+    return source.id;
+  }
+
+  Future<List<FilterSource>> filterSources({int? profileId}) async =>
+      (await customSelect(
+            profileId == null
+                ? 'SELECT * FROM filter_sources WHERE profile_id IS NULL ORDER BY id'
+                : 'SELECT * FROM filter_sources WHERE profile_id=? ORDER BY id',
+            variables: profileId == null ? const [] : [Variable(profileId)],
+          ).get())
+          .map(
+            (row) => FilterSource(
+              id: row.read<int>('id'),
+              profileId: row.readNullable<int>('profile_id'),
+              label: row.read<String>('label'),
+              url: webUri(row.read<String>('url')),
+              kind: row.read<String>('kind'),
+              version: row.read<String>('version'),
+              license: row.read<String>('license'),
+              sha256: row.read<String>('sha256'),
+              status: FilterSourceStatus.values.byName(
+                row.read<String>('status'),
+              ),
+              fileRef: row.readNullable<String>('file_ref'),
+              refreshedAt: row.readNullable<String>('refreshed_at') == null
+                  ? null
+                  : DateTime.parse(row.read<String>('refreshed_at')),
+              error: row.readNullable<String>('error'),
+            ),
+          )
+          .toList();
+
+  Future<void> deleteFilterSource(int id) =>
+      customStatement('DELETE FROM filter_sources WHERE id=?', [id]);
+
+  Future<void> saveFilterSnapshot(FilterSnapshot snapshot) => customStatement(
+    'INSERT INTO filter_snapshots(id,source_id,version,source_url,sha256,state,created_at,file_ref,unsupported_rule_count,error) VALUES(?,?,?,?,?,?,?,?,?,?) '
+    'ON CONFLICT(id) DO UPDATE SET state=excluded.state,sha256=excluded.sha256,created_at=excluded.created_at,file_ref=excluded.file_ref,unsupported_rule_count=excluded.unsupported_rule_count,error=excluded.error',
+    [
+      snapshot.id,
+      snapshot.sourceId,
+      snapshot.version,
+      snapshot.sourceUrl.toString(),
+      snapshot.sha256,
+      snapshot.state.name,
+      snapshot.createdAt.toIso8601String(),
+      snapshot.fileRef,
+      snapshot.unsupportedRuleCount,
+      snapshot.error,
+    ],
+  );
+
+  Future<FilterSnapshot?> filterSnapshot(String id) async {
+    final row = await customSelect(
+      'SELECT * FROM filter_snapshots WHERE id=?',
+      variables: [Variable(id)],
+    ).getSingleOrNull();
+    if (row == null) return null;
+    return FilterSnapshot(
+      id: row.read<String>('id'),
+      sourceId: row.readNullable<int>('source_id'),
+      version: row.read<String>('version'),
+      sourceUrl: webUri(row.read<String>('source_url')),
+      sha256: row.read<String>('sha256'),
+      state: FilterSnapshotState.values.byName(row.read<String>('state')),
+      createdAt: DateTime.parse(row.read<String>('created_at')),
+      fileRef: row.read<String>('file_ref'),
+      unsupportedRuleCount: row.read<int>('unsupported_rule_count'),
+      error: row.readNullable<String>('error'),
+    );
+  }
+
+  Future<FilterSnapshot?> latestFilterSnapshot() async {
+    final row = await customSelect(
+      'SELECT * FROM filter_snapshots WHERE state IN (?,?) ORDER BY created_at DESC LIMIT 1',
+      variables: [
+        Variable.withString('valid'),
+        Variable.withString('degraded'),
+      ],
+    ).getSingleOrNull();
+    if (row == null) return null;
+    return filterSnapshot(row.read<String>('id'));
+  }
+
+  Future<void> saveMediaCandidate(MediaCandidate candidate) => customStatement(
+    'INSERT INTO media_candidates(id,host_id,generation,source_url,media_url,title,mime,source,duration_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?,?) '
+    'ON CONFLICT(id) DO UPDATE SET title=excluded.title,mime=excluded.mime,duration_ms=excluded.duration_ms',
+    [
+      candidate.id,
+      candidate.hostId,
+      candidate.generation,
+      candidate.sourceUrl.toString(),
+      candidate.mediaUrl.toString(),
+      candidate.title,
+      candidate.mime,
+      candidate.source.name,
+      candidate.durationMs,
+      (candidate.createdAt ?? DateTime.now()).toUtc().toIso8601String(),
+    ],
+  );
+
+  Future<MediaCandidate?> mediaCandidate(String id) async {
+    final row = await customSelect(
+      'SELECT * FROM media_candidates WHERE id=?',
+      variables: [Variable(id)],
+    ).getSingleOrNull();
+    if (row == null) return null;
+    return MediaCandidate(
+      id: row.read<String>('id'),
+      hostId: row.read<int>('host_id'),
+      generation: row.read<int>('generation'),
+      sourceUrl: webUri(row.read<String>('source_url')),
+      mediaUrl: webUri(row.read<String>('media_url')),
+      title: row.read<String>('title'),
+      mime: row.read<String>('mime'),
+      source: MediaCandidateSource.values.byName(row.read<String>('source')),
+      durationMs: row.readNullable<int>('duration_ms'),
+      createdAt: DateTime.parse(row.read<String>('created_at')),
+    );
+  }
+
+  Future<void> saveMediaTask(MediaTask task) => customStatement(
+    'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,state,updated_at,bytes_downloaded,total_bytes,error_code,local_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) '
+    'ON CONFLICT(id) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at,bytes_downloaded=excluded.bytes_downloaded,total_bytes=excluded.total_bytes,error_code=excluded.error_code,local_ref=excluded.local_ref',
+    [
+      task.id,
+      task.candidateId,
+      task.hostId,
+      task.generation,
+      task.sourceUrl.toString(),
+      task.cacheKey,
+      task.state.name,
+      task.updatedAt.toUtc().toIso8601String(),
+      task.bytesDownloaded,
+      task.totalBytes,
+      task.errorCode,
+      task.localRef,
+    ],
+  );
+
+  Future<List<MediaTask>> mediaTasks() async =>
+      (await customSelect('SELECT * FROM media_tasks ORDER BY updated_at DESC')
+              .get())
+          .map(
+            (row) => MediaTask(
+              id: row.read<String>('id'),
+              candidateId: row.read<String>('candidate_id'),
+              hostId: row.read<int>('host_id'),
+              generation: row.read<int>('generation'),
+              sourceUrl: webUri(row.read<String>('source_url')),
+              cacheKey: row.read<String>('cache_key'),
+              state: MediaTaskState.values.byName(row.read<String>('state')),
+              updatedAt: DateTime.parse(row.read<String>('updated_at')),
+              bytesDownloaded: row.read<int>('bytes_downloaded'),
+              totalBytes: row.readNullable<int>('total_bytes'),
+              errorCode: row.readNullable<String>('error_code'),
+              localRef: row.readNullable<String>('local_ref'),
+            ),
+          )
+          .toList();
+
+  Future<void> deleteMediaTask(String id) =>
+      customStatement('DELETE FROM media_tasks WHERE id=?', [id]);
 }

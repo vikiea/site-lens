@@ -9,6 +9,8 @@ import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../settings/app_settings.dart';
+
 const siteLensRepository = 'vikiea/site-lens';
 const updateMinCheckInterval = Duration(minutes: 1);
 
@@ -70,20 +72,22 @@ class ReleaseInfo {
 
 /// Stable release versions. Pre-releases are deliberately excluded.
 class AppVersion implements Comparable<AppVersion> {
-  const AppVersion(this.major, this.minor, this.patch);
+  const AppVersion(this.major, this.minor, this.patch, [this.prerelease]);
   final int major;
   final int minor;
   final int patch;
+  final String? prerelease;
 
   factory AppVersion.parse(String value) {
     final match = RegExp(
-      r'^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+\d+)?$',
+      r'^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+\d+)?$',
     ).firstMatch(value);
     if (match == null) throw const FormatException('版本号格式错误');
     return AppVersion(
       int.parse(match[1]!),
       int.parse(match[2]!),
       int.parse(match[3]!),
+      match[4],
     );
   }
 
@@ -97,11 +101,36 @@ class AppVersion implements Comparable<AppVersion> {
       final result = pair.$1.compareTo(pair.$2);
       if (result != 0) return result;
     }
+    if (prerelease == null && other.prerelease == null) return 0;
+    if (prerelease == null) return 1;
+    if (other.prerelease == null) return -1;
+    final left = prerelease!.split('.');
+    final right = other.prerelease!.split('.');
+    for (var i = 0; i < math.max(left.length, right.length); i++) {
+      if (i >= left.length) return -1;
+      if (i >= right.length) return 1;
+      final l = left[i];
+      final r = right[i];
+      final ln = int.tryParse(l);
+      final rn = int.tryParse(r);
+      if (ln != null && rn != null) {
+        final result = ln.compareTo(rn);
+        if (result != 0) return result;
+      } else if (ln != null) {
+        return -1;
+      } else if (rn != null) {
+        return 1;
+      } else {
+        final result = l.compareTo(r);
+        if (result != 0) return result;
+      }
+    }
     return 0;
   }
 
   @override
-  String toString() => '$major.$minor.$patch';
+  String toString() =>
+      '$major.$minor.$patch${prerelease == null ? '' : '-$prerelease'}';
   bool operator >(AppVersion other) => compareTo(other) > 0;
 
   @override
@@ -303,6 +332,11 @@ class GitHubReleaseClient {
 
   final http.Client _client;
   final Uri _latestUri;
+  Uri get _betaUri => Uri.https(
+    'api.github.com',
+    '/repos/$siteLensRepository/releases',
+    {'per_page': '30'},
+  );
   static const _timeout = Duration(seconds: 20);
 
   /// Validate every redirect, including GitHub's release asset CDN redirects.
@@ -348,10 +382,22 @@ class GitHubReleaseClient {
     return bytes;
   }
 
-  Future<ReleaseInfo> fetchLatest() => _fetchLatest().timeout(_timeout);
+  Future<ReleaseInfo> fetchLatest({
+    UpdateChannel channel = UpdateChannel.stable,
+  }) => _fetchLatest(channel).timeout(_timeout);
 
-  Future<ReleaseInfo> _fetchLatest() async {
+  Future<ReleaseInfo> _fetchLatest(UpdateChannel channel) async {
+    if (channel == UpdateChannel.beta) return _fetchBeta();
     final tag = await _resolveLatestTag();
+    return _releaseForTag(tag);
+  }
+
+  Future<ReleaseInfo> _releaseForTag(
+    String tag, {
+    String body = '',
+    Uri? htmlUrl,
+    int? apkSize,
+  }) async {
     final version = AppVersion.parse(tag);
     final page = _repositoryUri(
       'https://github.com/$siteLensRepository/releases/tag/$tag',
@@ -369,16 +415,63 @@ class GitHubReleaseClient {
     return ReleaseInfo(
       tagName: tag,
       version: version,
-      body: '',
-      htmlUrl: page,
+      body: body,
+      htmlUrl: htmlUrl ?? page,
       apkUrl: _repositoryUri(
         'https://github.com/$siteLensRepository/releases/download/$tag/$name',
         '/releases/download/$tag/$name',
       ),
       apkName: name,
-      apkSize: 0,
+      apkSize: apkSize ?? 0,
       sha256: checksum,
     );
+  }
+
+  Future<ReleaseInfo> _fetchBeta() async {
+    final response = await _request(_betaUri);
+    if (response.statusCode != 200) {
+      await response.stream.listen((_) {}).cancel();
+      throw HttpException('测试版更新服务返回 HTTP ${response.statusCode}');
+    }
+    final bytes = <int>[];
+    await for (final chunk in response.stream.timeout(_timeout)) {
+      bytes.addAll(chunk);
+      if (bytes.length > 1024 * 1024) {
+        throw const FormatException('测试版发布列表超过大小限制');
+      }
+    }
+    final decoded = jsonDecode(utf8.decode(bytes));
+    if (decoded is! List) throw const FormatException('测试版发布列表格式错误');
+    for (final item in decoded.whereType<Map<String, dynamic>>()) {
+      if (item['draft'] == true || item['prerelease'] != true) continue;
+      final tag = item['tag_name'];
+      if (tag is! String ||
+          !RegExp(
+            r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(?:alpha|beta|rc)[0-9A-Za-z.-]*$',
+          ).hasMatch(tag)) {
+        continue;
+      }
+      final html = item['html_url'] as String?;
+      final page = html == null
+          ? null
+          : _repositoryUri(html, '/releases/tag/$tag');
+      final assets = item['assets'];
+      final apkName = 'site-lens-$tag.apk';
+      final size = assets is List
+          ? assets
+                .whereType<Map<String, dynamic>>()
+                .where((asset) => asset['name'] == apkName)
+                .map((asset) => (asset['size'] as num?)?.toInt())
+                .firstOrNull
+          : null;
+      return _releaseForTag(
+        tag,
+        body: item['body'] as String? ?? '',
+        htmlUrl: page,
+        apkSize: size,
+      );
+    }
+    throw const FormatException('尚无可用的测试版发布版本');
   }
 
   /// Opens the release asset, resuming from [offset] when it is greater than
@@ -461,6 +554,7 @@ class GitHubReleaseClient {
         (uri.port != 0 && uri.port != 443) ||
         !{
           'github.com',
+          'api.github.com',
           'release-assets.githubusercontent.com',
           'objects.githubusercontent.com',
         }.contains(uri.host)) {
@@ -544,6 +638,7 @@ class UpdateService {
     this.handoffDirectoryLoader,
     DateTime Function()? clock,
     List<Duration>? retryDelays,
+    this.channel = UpdateChannel.stable,
     this.progressMinBytes = 256 * 1024,
     this.progressMinInterval = const Duration(milliseconds: 200),
   }) : _client = client ?? GitHubReleaseClient(),
@@ -558,6 +653,7 @@ class UpdateService {
        _clock = clock ?? DateTime.now;
 
   final GitHubReleaseClient _client;
+  UpdateChannel channel;
   final UpdatePlatform platform;
   final Future<PackageInfo> Function()? packageInfoLoader;
 
@@ -586,7 +682,7 @@ class UpdateService {
   Future<UpdateCheckResult> checkForUpdate() async {
     final now = _clock();
     final current = AppVersion.parse((await packageInfo).version);
-    final cached = await _readCache();
+    final cached = await _readCache(channel);
     if (cached != null &&
         now.difference(cached.checkedAt) >= Duration.zero &&
         now.difference(cached.checkedAt) < updateMinCheckInterval) {
@@ -597,9 +693,9 @@ class UpdateService {
       );
     }
 
-    final release = await _client.fetchLatest();
+    final release = await _client.fetchLatest(channel: channel);
     final entry = _UpdateCacheEntry(checkedAt: now, release: release);
-    await _writeCache(entry);
+    await _writeCache(entry, channel);
     return UpdateCheckResult(
       release: release.version > current ? release : null,
       checkedAt: now,
@@ -783,12 +879,14 @@ class UpdateService {
     await temporary.rename(metaFile.path);
   }
 
-  Future<_UpdateCacheEntry?> _readCache() async {
+  Future<_UpdateCacheEntry?> _readCache(UpdateChannel channel) async {
     try {
       final root =
           await (workDirectoryLoader?.call() ??
               getApplicationSupportDirectory());
-      final file = File('${root.path}/site-lens-update-cache.json');
+      final file = File(
+        '${root.path}/site-lens-update-cache-${channel.name}.json',
+      );
       if (!await file.exists()) return null;
       final decoded = jsonDecode(await file.readAsString());
       if (decoded is! Map<String, dynamic>) return null;
@@ -800,11 +898,16 @@ class UpdateService {
     }
   }
 
-  Future<void> _writeCache(_UpdateCacheEntry entry) async {
+  Future<void> _writeCache(
+    _UpdateCacheEntry entry,
+    UpdateChannel channel,
+  ) async {
     final root =
         await (workDirectoryLoader?.call() ?? getApplicationSupportDirectory());
     await root.create(recursive: true);
-    final file = File('${root.path}/site-lens-update-cache.json');
+    final file = File(
+      '${root.path}/site-lens-update-cache-${channel.name}.json',
+    );
     final temporary = File('${file.path}.tmp');
     await temporary.writeAsString(jsonEncode(entry.toJson()), flush: true);
     await temporary.rename(file.path);

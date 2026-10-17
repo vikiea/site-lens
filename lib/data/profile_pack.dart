@@ -15,6 +15,7 @@ import 'database.dart';
 /// no GM storage values, no probe history, no error log and no approval marks.
 class ProfilePack {
   static const formatVersion = 2;
+  static const latestFormatVersion = 3;
   static const manifestPath = 'manifest.json';
 
   /// Byte-digest over the whole pack, used as the trusted fingerprint.
@@ -80,6 +81,7 @@ class PackPreview {
     required this.scripts,
     required this.candidates,
     required this.fingerprint,
+    this.filterPolicy = const FilterPolicy(),
   });
   final int formatVersion;
   final String profileName;
@@ -88,6 +90,7 @@ class PackPreview {
   final List<PackScript> scripts;
   final List<PackCandidate> candidates;
   final String fingerprint;
+  final FilterPolicy filterPolicy;
 }
 
 /// Thrown before any write when a pack's landing is already owned elsewhere.
@@ -112,6 +115,7 @@ class ProfilePacks {
     final pages = await db.profilePages(profileId: profileId);
     final candidates = await db.candidates(profileId: profileId);
     final links = await db.profileScripts(profileId: profileId);
+    final filterPolicy = await db.filterPolicy(profileId: profileId);
     final allScripts = await db.scripts();
 
     final archive = Archive();
@@ -122,15 +126,16 @@ class ProfilePacks {
       final resources = await db.resources(script.id);
       final entries = <Map<String, Object?>>[];
       for (final resource in resources) {
-        final path = 'resources/${script.id}/${resource.name}';
+        final name = _safeSegment(resource.name, '资源');
+        final path = 'resources/${_safeSegment(script.id, '脚本')}/$name';
         _addFile(archive, path, resource.bytes);
         entries.add({
-          'name': resource.name,
+          'name': name,
           'url': resource.url.toString(),
           'hash': resource.hash,
         });
       }
-      final path = 'scripts/${script.id}.user.js';
+      final path = 'scripts/${_safeSegment(script.id, '脚本')}.user.js';
       _addFile(archive, path, utf8.encode(script.source));
       scripts.add({
         'id': script.id,
@@ -140,8 +145,12 @@ class ProfilePacks {
       });
     }
 
+    // New exports always use v3 so the policy boundary is explicit. The
+    // legacy v2 constant remains available for compatibility checks and v2
+    // packs remain readable on import.
+    const version = ProfilePack.latestFormatVersion;
     final manifest = <String, Object?>{
-      'formatVersion': ProfilePack.formatVersion,
+      'formatVersion': version,
       'profile': {
         'name': profile.name,
         'readySelector': profile.readySelector,
@@ -161,6 +170,7 @@ class ProfilePacks {
           )
           .toList(),
       'scripts': scripts,
+      'filterPolicy': filterPolicy.toJson(),
     };
     manifest['checksum'] = _checksum(archive, manifest);
     _addFile(
@@ -182,7 +192,9 @@ class ProfilePacks {
       utf8.decode(manifestFile.content as List<int>),
     ) as Map<String, dynamic>;
     final version = manifest['formatVersion'];
-    if (version is! int || version < 1 || version > ProfilePack.formatVersion) {
+    if (version is! int ||
+        version < 1 ||
+        version > ProfilePack.latestFormatVersion) {
       throw const FormatException('不支持的档案包版本');
     }
     final expected = manifest['checksum'] as String?;
@@ -200,7 +212,7 @@ class ProfilePacks {
         .cast<Map<String, dynamic>>()
         .map(
           (p) => PackPage(
-            url: Uri.parse(p['url'] as String),
+            url: webUri(p['url'] as String),
             regionSelector: p['region'] as String,
           ),
         )
@@ -210,7 +222,7 @@ class ProfilePacks {
         .map(
           (c) => PackCandidate(
             label: c['label'] as String,
-            url: Uri.parse(c['url'] as String),
+            url: webUri(c['url'] as String),
             readySelector: c['readySelector'] as String? ?? 'main',
             enabled: c['enabled'] as bool? ?? true,
             readySelectorOverride: version == 1
@@ -224,12 +236,32 @@ class ProfilePacks {
     final scripts = <PackScript>[];
     for (final entry
         in (manifest['scripts'] as List).cast<Map<String, dynamic>>()) {
+      final id = entry['id'] as String?;
+      if (id == null ||
+          id.isEmpty ||
+          id.contains('/') ||
+          id.contains('\\') ||
+          id.contains('..')) {
+        throw const FormatException('脚本 id 或路径无效');
+      }
+      final expectedSourcePath = 'scripts/$id.user.js';
+      if (entry['source'] != expectedSourcePath) {
+        throw const FormatException('脚本路径不符合档案包布局');
+      }
       final sourceFile = archive.findFile(entry['source'] as String);
       if (sourceFile == null) throw const FormatException('档案包缺少脚本文件');
       final resources = <PackResource>[];
       for (final r
           in (entry['resources'] as List).cast<Map<String, dynamic>>()) {
-        final file = archive.findFile('resources/${entry['id']}/${r['name']}');
+        final name = r['name'] as String?;
+        if (name == null ||
+            name.isEmpty ||
+            name.contains('/') ||
+            name.contains('\\') ||
+            name.contains('..')) {
+          throw const FormatException('资源路径无效');
+        }
+        final file = archive.findFile('resources/$id/$name');
         if (file == null) throw const FormatException('档案包缺少资源文件');
         final data = file.content as List<int>;
         if (sha256.convert(data).toString() != r['hash']) {
@@ -237,8 +269,8 @@ class ProfilePacks {
         }
         resources.add(
           PackResource(
-            name: r['name'] as String,
-            url: Uri.parse(r['url'] as String),
+            name: name,
+            url: webUri(r['url'] as String),
             hash: r['hash'] as String,
             bytes: data,
           ),
@@ -246,13 +278,20 @@ class ProfilePacks {
       }
       scripts.add(
         PackScript(
-          id: entry['id'] as String,
+          id: id,
           name: entry['name'] as String,
           source: utf8.decode(sourceFile.content as List<int>),
           resources: resources,
         ),
       );
     }
+    final filterPolicy =
+        version >= ProfilePack.latestFormatVersion &&
+            manifest['filterPolicy'] is Map
+        ? FilterPolicy.fromJson(
+            Map<String, dynamic>.from(manifest['filterPolicy'] as Map),
+          )
+        : const FilterPolicy();
     return PackPreview(
       formatVersion: manifest['formatVersion'] as int? ?? 0,
       profileName: profile['name'] as String,
@@ -261,13 +300,14 @@ class ProfilePacks {
       scripts: scripts,
       candidates: candidates,
       fingerprint: ProfilePack.fingerprint(bytes),
+      filterPolicy: filterPolicy,
     );
   }
 
   /// Imports an inspected pack. Scripts land disabled and unapproved; the user
   /// must confirm permissions locally before they can run.
   Future<int> import(PackPreview preview) => db.transaction(() async {
-    if (preview.formatVersion > ProfilePack.formatVersion) {
+    if (preview.formatVersion > ProfilePack.latestFormatVersion) {
       throw const FormatException('档案包版本过新，请升级 App');
     }
     // Reject any landing already owned by another profile, listing the owners,
@@ -305,6 +345,9 @@ class ProfilePacks {
       preview.profileName,
       readySelector: preview.readySelector,
     );
+    if (!preview.filterPolicy.isDefault) {
+      await db.saveFilterPolicy(preview.filterPolicy, profileId: profileId);
+    }
     for (final page in preview.pages) {
       await db.addProfilePage(profileId, page.url, page.regionSelector);
     }
@@ -375,6 +418,17 @@ class ProfilePacks {
       parts.add('${file.name}:${sha256.convert(file.content as List<int>)}');
     }
     return sha256.convert(utf8.encode(parts.join('\n'))).toString();
+  }
+
+  String _safeSegment(String value, String label) {
+    if (value.isEmpty ||
+        value == '.' ||
+        value == '..' ||
+        value.contains('/') ||
+        value.contains('\\')) {
+      throw FormatException('$label名称无效');
+    }
+    return value;
   }
 
   String _canonicalJson(Object? value) {

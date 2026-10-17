@@ -30,6 +30,8 @@ import '../web_host/native_hosts.dart';
 import '../web_host/web_host.g.dart';
 import '../settings/settings_repository.dart';
 import '../settings/app_settings.dart';
+import '../filter/filter_service.dart';
+import '../media/media_service.dart';
 import 'glass_quality_cache.dart';
 
 /// The user preferences travel as one versioned record (`AppPolicy.settingsKey`).
@@ -61,6 +63,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     this.sessionStore = sessionStore ?? BrowserSessionStore(db);
     scripts = ScriptService(db, ControlledHttp());
     hosts = NativeHosts(db, scripts, ControlledHttp(), api: api);
+    filterSnapshots = FilterSnapshotStore();
+    filterSources = FilterSourceManager(store: filterSnapshots, db: db);
+    mediaTasks = MediaTaskStore(db: db);
+    mediaDownloads = MediaDownloadService(tasks: mediaTasks);
+    mediaExports = Mp4ExportService(tasks: mediaTasks);
+    castSessions = CastSessionController(tasks: mediaTasks);
+    mediaPlayback = NativePlaybackController();
     hosts.onNewWindow = (hostId, url) {
       unawaited(_openLinkInNewTab(hostId, url));
     };
@@ -162,6 +171,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   late final ScriptService scripts;
   late final ProfilePacks packs;
   late final NativeHosts hosts;
+  late final FilterSnapshotStore filterSnapshots;
+  late final FilterSourceManager filterSources;
+  late final MediaTaskStore mediaTasks;
+  late final MediaDownloadService mediaDownloads;
+  late final Mp4ExportService mediaExports;
+  late final CastSessionController castSessions;
+  late final NativePlaybackController mediaPlayback;
   late final ProbeCoordinator probes;
   List<Candidate> sites = [];
   List<PublishingSource> sources = [];
@@ -182,6 +198,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   ThemePresetId themePreset = ThemePresetId.sunsetCoral;
   bool restoreBrowserSessions = true;
   bool allowBackgroundPlayback = false;
+  FilterPolicy filterPolicy = const FilterPolicy();
 
   /// Entry redirects are always retained by product policy.
   bool get followEntryRedirects => true;
@@ -222,6 +239,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> initialize() async {
     WidgetsBinding.instance.addObserver(this);
+    await mediaTasks.restore();
     await load();
     await restoreSavedSessions();
     // Schedule/cancel the periodic survival check in the background. It waits
@@ -329,6 +347,22 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     await hosts.applyPreferences(hostPreferences);
     await syncMediaPolicy();
     notifyListeners();
+  }
+
+  Future<void> updateFilterPolicy(FilterPolicy next, {int? profileId}) async {
+    await db.saveFilterPolicy(next, profileId: profileId);
+    if (profileId == null) {
+      filterPolicy = next;
+      hosts.setFilterEngine(filterSnapshots.activeEngine, policy: next);
+      notifyListeners();
+    }
+  }
+
+  Future<FilterSnapshot> refreshFilterSource(FilterSource source) async {
+    final snapshot = await filterSources.refresh(source);
+    hosts.setFilterEngine(filterSnapshots.activeEngine, policy: filterPolicy);
+    notifyListeners();
+    return snapshot;
   }
 
   void _applySettings() {
@@ -490,6 +524,16 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     profileHealth = await db.profileHealthAll();
     profileScriptLinks = await db.profileScripts();
     installed = await db.scripts();
+    filterPolicy = await db.filterPolicy();
+    final latestFilter = await db.latestFilterSnapshot();
+    if (latestFilter != null) {
+      try {
+        await filterSnapshots.load(latestFilter);
+      } catch (_) {
+        // Keep browsing available with no active snapshot; diagnostics are
+        // retained in Drift and the next manual refresh can recover it.
+      }
+    }
     history = await db.recentProbes();
     settings = await settingsRepository.read();
     glassQualityCache = await glassQualityCacheRepository.read();
@@ -504,6 +548,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         glassQualityCache?.quality ?? GlassQuality.standard,
     };
     _applySettings();
+    hosts.setFilterEngine(filterSnapshots.activeEngine, policy: filterPolicy);
     await hosts.applyPreferences(hostPreferences);
     await syncMediaPolicy();
     notifyListeners();
@@ -954,6 +999,28 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       await hosts.configure(session);
       await hosts.api.reload(session.id);
     }
+    await load();
+  }
+
+  Future<void> disableScript(String id) async {
+    await scripts.disable(id);
+    await reloadScripts();
+    await load();
+  }
+
+  Future<void> setScriptNetworkMode(
+    String id,
+    ScriptNetworkMode mode, {
+    String? reason,
+    bool publicConfirmed = false,
+  }) async {
+    await scripts.setNetworkMode(
+      id,
+      mode,
+      reason: reason,
+      publicConfirmed: publicConfirmed,
+    );
+    await reloadScripts();
     await load();
   }
 

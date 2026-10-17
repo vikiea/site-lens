@@ -27,6 +27,8 @@ class BackupService {
   // Parent-before-child restore order; runtime leases/pack authorizations excluded.
   static const tableNames = [
     'profiles',
+    // User intent is portable; compiled rule files and snapshots are not.
+    'filter_policies',
     'sources',
     'candidates',
     'scripts',
@@ -217,6 +219,14 @@ class BackupService {
         if (table == 'settings' && !_portableSetting(values['key'])) {
           throw const FormatException('不支持的备份设置');
         }
+        if (table == 'filter_policies') {
+          for (final key in const ['domain_exceptions', 'blocked_domains']) {
+            final value = values[key];
+            if (value is! String || jsonDecode(value) is! List) {
+              throw const FormatException('过滤策略字段无效');
+            }
+          }
+        }
         if (table == 'settings' && values['key'] == AppPolicy.settingsKey) {
           AppSettings.decode(values['value'] as String);
         }
@@ -322,6 +332,7 @@ class BackupService {
       for (final table in tableNames.reversed) {
         await db.customStatement('DELETE FROM "$table"');
       }
+      await db.customStatement('DELETE FROM script_approvals');
       await db.customStatement('DELETE FROM health_run_leases');
       await db.customStatement('DELETE FROM pack_approvals');
       for (final table in tableNames) {
@@ -331,6 +342,10 @@ class BackupService {
           if (table == 'scripts') {
             row['enabled'] = 0;
             row['approved_digest'] = null;
+            row['network_mode'] = 'declared';
+            row['approval_reason'] = null;
+            row['approved_at'] = null;
+            row['public_confirmed'] = 0;
           }
           final keys = row.keys.toList();
           await db.customStatement(
@@ -339,6 +354,9 @@ class BackupService {
           );
         }
       }
+      await db.customStatement(
+        "INSERT OR IGNORE INTO script_approvals(script_id) SELECT id FROM scripts",
+      );
       // Exercise the same model parsing as startup before the replacement commits.
       await db.profiles();
       await db.sources();

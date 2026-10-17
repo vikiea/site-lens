@@ -155,6 +155,16 @@
     if (typeof url !== 'string') throw new TypeError('url is required');
     return bridge('openExternal', { url }).then(() => undefined);
   }
+  function registerMedia(details) {
+    if (!details || typeof details.url !== 'string') throw new TypeError('media url is required');
+    return bridge('registerMedia', {
+      candidateId: details.candidateId == null ? undefined : String(details.candidateId),
+      url: details.url,
+      title: details.title == null ? '' : String(details.title),
+      mime: details.mime == null ? '' : String(details.mime),
+      durationMs: Number.isFinite(Number(details.durationMs)) ? Number(details.durationMs) : undefined,
+    });
+  }
   // Only native evaluation in this SAME world invokes this function. Page JS
   // cannot access the world, and the native API checks the active document.
   if (!config.pageWorld) Object.defineProperty(globalThis, '__lensInvokeMenu', { value: id => {
@@ -220,6 +230,7 @@
     setClipboard: setClipboard,
     notification: notify,
     openInTab: openInTab,
+    registerMedia: registerMedia,
     addValueChangeListener: addValueChangeListener,
     removeValueChangeListener: removeValueChangeListener
   };
@@ -234,6 +245,10 @@
   for (const [name, fn] of Object.entries(classic)) if (grants.has(name)) Object.defineProperty(globalThis, name, { value: fn });
   const GM = Object.create(null);
   for (const [name, fn] of Object.entries(modern)) if (grants.has('GM.' + name)) GM[name] = fn;
+  if (grants.has('SiteLens.registerMedia')) {
+    const siteLens = Object.freeze({ registerMedia });
+    Object.defineProperty(globalThis, 'SiteLens', { value: siteLens, configurable: false });
+  }
   if (!config.pageWorld) Object.defineProperty(globalThis, 'GM', { value: Object.freeze(GM) });
   function execute() {
     try {
