@@ -19,3 +19,4 @@ python3 tool/test_release_version.py
 python3 tool/test_version_code.py
 python3 tool/test_extract_release_version_codes.py
 python3 tool/test_version_code_reservations.py
+python3 tool/test_acceptance_evidence.py
