@@ -109,6 +109,8 @@ class NativeHosts extends WebHostEvents {
                   'block': rule.block,
                   'cosmetic': rule.cosmetic,
                   'hostOnly': rule.hostOnly,
+                  'scriptlet': rule.scriptlet,
+                  'scriptletArgs': rule.scriptletArgs,
                 },
               )
               .toList(growable: false);

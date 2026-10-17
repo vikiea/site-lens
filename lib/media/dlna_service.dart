@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/services.dart';
 
 import '../domain/models.dart';
 import 'media_service.dart';
@@ -15,6 +16,8 @@ class DlnaDiscovery {
   final Duration timeout;
 
   Future<List<CastDevice>> discover() async {
+    final multicast = _DlnaMulticastLock();
+    await multicast.acquire();
     final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
     socket.broadcastEnabled = true;
     final request = utf8.encode(
@@ -42,6 +45,7 @@ class DlnaDiscovery {
     await completer.future;
     timer.cancel();
     socket.close();
+    await multicast.release();
     final devices = <CastDevice>[];
     for (final response in byLocation.values) {
       final device = await _readDevice(response);
@@ -66,6 +70,7 @@ class DlnaDiscovery {
       final model = _xmlTag(body, 'modelName');
       final control = _controlUrl(body, uri);
       if (control == null) return null;
+      final protocolInfo = _xmlTag(body, 'sink') ?? body;
       final id = sha256
           .convert(utf8.encode(control.toString()))
           .toString()
@@ -75,8 +80,12 @@ class DlnaDiscovery {
         name: friendly,
         address: control,
         model: model,
-        supportsMp4: true,
-        supportsHls: false,
+        supportsMp4:
+            protocolInfo.toLowerCase().contains('video/mp4') ||
+            protocolInfo == body,
+        supportsHls:
+            protocolInfo.toLowerCase().contains('mpegurl') ||
+            protocolInfo.toLowerCase().contains('m3u8'),
         supportsSeek: true,
       );
     } catch (_) {
@@ -107,6 +116,27 @@ class DlnaDiscovery {
     if (service == null) return null;
     final raw = service.group(1);
     return raw == null ? null : base.resolve(raw.trim());
+  }
+}
+
+class _DlnaMulticastLock {
+  const _DlnaMulticastLock();
+  static const _channel = MethodChannel('site_lens/dlna');
+
+  Future<void> acquire() async {
+    try {
+      await _channel.invokeMethod<void>('acquireMulticastLock');
+    } on MissingPluginException {
+      // iOS and desktop use the system network stack without an Android lock.
+    }
+  }
+
+  Future<void> release() async {
+    try {
+      await _channel.invokeMethod<void>('releaseMulticastLock');
+    } on MissingPluginException {
+      // No-op outside Android.
+    }
   }
 }
 
@@ -149,17 +179,35 @@ class DlnaSoapClient {
     '<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>${_clock(position)}</Target>',
   );
 
+  /// Queries the renderer's ConnectionManager protocol list when the caller
+  /// has a control URL for that service. The raw response is kept out of the
+  /// task model; [supportsProtocol] performs a narrow capability check.
+  Future<String> getProtocolInfo() => _actionResponse(
+    'GetProtocolInfo',
+    '<Source></Source><Sink></Sink>',
+    serviceType: 'urn:schemas-upnp-org:service:ConnectionManager:1',
+  );
+
+  bool supportsProtocol(String protocolInfo, {required String mime}) =>
+      protocolInfo.toLowerCase().contains(mime.toLowerCase()) ||
+      protocolInfo.toLowerCase().contains('*:*:*');
+
   Future<void> _action(String action, String arguments) async {
+    await _actionResponse(action, arguments);
+  }
+
+  Future<String> _actionResponse(
+    String action,
+    String arguments, {
+    String serviceType = 'urn:schemas-upnp-org:service:AVTransport:1',
+  }) async {
     final body =
         '<?xml version="1.0" encoding="utf-8"?>'
         '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
-        '<s:Body><u:$action xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">$arguments</u:$action></s:Body></s:Envelope>';
+        '<s:Body><u:$action xmlns:u="$serviceType">$arguments</u:$action></s:Body></s:Envelope>';
     final request = await _client.postUrl(controlUrl);
     request.headers.contentType = ContentType('text', 'xml', charset: 'utf-8');
-    request.headers.set(
-      'SOAPACTION',
-      '"urn:schemas-upnp-org:service:AVTransport:1#$action"',
-    );
+    request.headers.set('SOAPACTION', '"$serviceType#$action"');
     request.write(body);
     final response = await request.close();
     final text = await response.transform(utf8.decoder).join();
@@ -168,6 +216,7 @@ class DlnaSoapClient {
         text.contains('<s:Fault')) {
       throw StateError('DLNA SOAP $action failed (${response.statusCode})');
     }
+    return text;
   }
 
   static String _xml(String value) => const HtmlEscape().convert(value);
@@ -192,6 +241,7 @@ class DlnaCastController {
   DlnaCastController(this.sessions);
   final CastSessionController sessions;
   DlnaSoapClient? _soap;
+  MediaRelayServer? _relay;
 
   CastSession? get active => sessions.active;
 
@@ -199,6 +249,7 @@ class DlnaCastController {
     required CastDevice device,
     required String mediaTaskId,
     required Uri mediaUrl,
+    File? localFile,
     String mime = 'video/mp4',
     String title = 'Site Lens',
   }) async {
@@ -207,6 +258,15 @@ class DlnaCastController {
       sessions.transition(CastSessionState.connecting);
       final soap = DlnaSoapClient(device.address);
       _soap = soap;
+      if (localFile != null) {
+        final authorization = sessions.authorizeRelay(deviceId: device.id);
+        _relay = await MediaRelayServer.start(
+          authorization: authorization,
+          file: localFile,
+          allowedRoot: localFile.parent,
+        );
+        mediaUrl = _relay!.url;
+      }
       sessions.transition(CastSessionState.settingMedia);
       await soap.setMedia(mediaUrl, mime: mime, title: title);
       await soap.play();
@@ -214,6 +274,8 @@ class DlnaCastController {
     } catch (error) {
       _soap?.close();
       _soap = null;
+      await _relay?.close();
+      _relay = null;
       sessions.transition(CastSessionState.failed, errorCode: error.toString());
       rethrow;
     }
@@ -238,6 +300,8 @@ class DlnaCastController {
       soap.close();
     }
     _soap = null;
+    await _relay?.close();
+    _relay = null;
     return sessions.transition(CastSessionState.stopped);
   }
 }
@@ -347,6 +411,148 @@ class MediaRelayServer {
       request.response.statusCode = HttpStatus.forbidden;
       await request.response.close();
     }
+  }
+
+  Future<void> close() => _server.close(force: true);
+}
+
+/// Token-bound local HLS relay for receivers that cannot read the app's
+/// private cache. It rewrites only the selected manifest and its relative
+/// segments/keys; absolute or remote URIs are rejected rather than proxied.
+class HlsRelayServer {
+  HlsRelayServer._(this._server, this.authorization, this._root, this._host);
+
+  final HttpServer _server;
+  final RelayAuthorization authorization;
+  final Directory _root;
+  final String _host;
+
+  Uri get url => Uri.parse(
+    'http://$_host:${_server.port}/hls/${authorization.taskId}/index.m3u8?token=${authorization.token}',
+  );
+
+  static Future<HlsRelayServer> start({
+    required RelayAuthorization authorization,
+    required File playlist,
+    Directory? allowedRoot,
+    String? advertisedHost,
+  }) async {
+    final root = (allowedRoot ?? playlist.parent).absolute;
+    final canonicalRoot = root.resolveSymbolicLinksSync();
+    final canonicalPlaylist = playlist.resolveSymbolicLinksSync();
+    if (!canonicalPlaylist.startsWith(
+          '$canonicalRoot${Platform.pathSeparator}',
+        ) ||
+        !await playlist.exists()) {
+      throw StateError(MediaErrorCode.relayDenied);
+    }
+    final server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
+    final host = advertisedHost ?? await MediaRelayServer._routableHost();
+    final relay = HlsRelayServer._(server, authorization, root, host);
+    server.listen(relay._handle);
+    return relay;
+  }
+
+  Future<void> _handle(HttpRequest request) async {
+    try {
+      final token = request.uri.queryParameters['token'];
+      final prefix = '/hls/${authorization.taskId}/';
+      if (token != authorization.token ||
+          authorization.expired ||
+          (request.method != 'GET' && request.method != 'HEAD') ||
+          !request.uri.path.startsWith(prefix)) {
+        request.response.statusCode = HttpStatus.forbidden;
+        await request.response.close();
+        return;
+      }
+      final relative = request.uri.path.substring(prefix.length);
+      final file = File('${_root.path}/$relative').absolute;
+      final canonical = file.resolveSymbolicLinksSync();
+      final rootPath = _root.resolveSymbolicLinksSync();
+      if (!canonical.startsWith('$rootPath${Platform.pathSeparator}') ||
+          !await file.exists()) {
+        request.response.statusCode = HttpStatus.notFound;
+        await request.response.close();
+        return;
+      }
+      final isManifest = file.path.toLowerCase().endsWith('.m3u8');
+      request.response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
+      if (isManifest) {
+        final text = await file.readAsString();
+        final rewritten = _rewrite(text, file.parent);
+        request.response.headers.contentType = ContentType(
+          'application',
+          'vnd.apple.mpegurl',
+          charset: 'utf-8',
+        );
+        request.response.contentLength = utf8.encode(rewritten).length;
+        if (request.method == 'GET') request.response.write(rewritten);
+        await request.response.close();
+        return;
+      }
+      request.response.headers.contentType = _contentType(file.path);
+      request.response.contentLength = await file.length();
+      if (request.method == 'GET') {
+        await file.openRead().pipe(request.response);
+      } else {
+        await request.response.close();
+      }
+    } catch (_) {
+      request.response.statusCode = HttpStatus.forbidden;
+      await request.response.close();
+    }
+  }
+
+  String _rewrite(String source, Directory base) {
+    final lines = source.split(RegExp(r'\r?\n'));
+    return lines
+        .map((line) {
+          final match = RegExp(r'URI="([^"]+)"').firstMatch(line);
+          if (match != null) {
+            final uri = _relativeUri(base, match.group(1)!);
+            if (uri == null) throw StateError(MediaErrorCode.relayDenied);
+            return line.replaceRange(match.start + 5, match.end - 1, uri);
+          }
+          final value = line.trim();
+          if (value.isEmpty || value.startsWith('#')) return line;
+          final uri = _relativeUri(base, value);
+          if (uri == null) throw StateError(MediaErrorCode.relayDenied);
+          return uri;
+        })
+        .join('\n');
+  }
+
+  String? _relativeUri(Directory base, String raw) {
+    final parsed = Uri.tryParse(raw);
+    if (parsed == null ||
+        parsed.hasScheme ||
+        parsed.host.isNotEmpty ||
+        parsed.query.isNotEmpty ||
+        parsed.fragment.isNotEmpty ||
+        raw.startsWith('/')) {
+      return null;
+    }
+    final file = File('${base.path}/${parsed.path}').absolute;
+    final canonical = file.resolveSymbolicLinksSync();
+    final root = _root.resolveSymbolicLinksSync();
+    if (!canonical.startsWith('$root${Platform.pathSeparator}') ||
+        !file.existsSync()) {
+      throw StateError(MediaErrorCode.relayDenied);
+    }
+    final relative = canonical
+        .substring(root.length + 1)
+        .replaceAll(Platform.pathSeparator, '/');
+    return '/hls/${authorization.taskId}/$relative?token=${authorization.token}';
+  }
+
+  ContentType _contentType(String path) {
+    final lower = path.toLowerCase();
+    if (lower.endsWith('.ts')) return ContentType('video', 'mp2t');
+    if (lower.endsWith('.key')) {
+      return ContentType('application', 'octet-stream');
+    }
+    if (lower.endsWith('.mp4')) return ContentType('video', 'mp4');
+    return ContentType('application', 'octet-stream');
   }
 
   Future<void> close() => _server.close(force: true);

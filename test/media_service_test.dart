@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -82,6 +83,38 @@ void main() {
     );
   });
 
+  test(
+    'HLS parser selects a local master variant without following network URLs',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-hls-master-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final low = Directory('${root.path}/low')..createSync();
+      final high = Directory('${root.path}/high')..createSync();
+      File('${low.path}/index.m3u8')
+          .writeAsStringSync('#EXTM3U\n#EXTINF:1,\nlow.ts\n');
+      File('${high.path}/index.m3u8')
+          .writeAsStringSync('#EXTM3U\n#EXTINF:1,\nhigh.ts\n');
+      File('${low.path}/low.ts').writeAsBytesSync([1]);
+      File('${high.path}/high.ts').writeAsBytesSync([2]);
+      final master = File('${root.path}/master.m3u8')
+        ..writeAsStringSync(
+          '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nlow/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=2\nhigh/index.m3u8\n',
+        );
+      final input = await const HlsPlaylistParser().parseFile(master.uri);
+      expect(input.segments.single.path, '${high.path}/high.ts');
+      final remote = File('${root.path}/remote.m3u8')
+        ..writeAsStringSync(
+          '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=3\nhttps://cdn.example/high.m3u8\n',
+        );
+      await expectLater(
+        const HlsPlaylistParser().parseFile(remote.uri),
+        throwsA(isA<FormatException>()),
+      );
+    },
+  );
+
   test('relay authorization binds token to session, task and device', () {
     final auth = const RelayAuthorizer().issue(
       sessionId: 'session',
@@ -126,6 +159,33 @@ void main() {
       ),
       throwsStateError,
     );
+  });
+
+  test('HLS relay rewrites only local manifest resources', () async {
+    final root = await Directory.systemTemp.createTemp('site-lens-hls-relay-');
+    addTearDown(() => root.delete(recursive: true));
+    final segment = File('${root.path}/seg.ts')..writeAsBytesSync([1, 2, 3]);
+    final playlist = File('${root.path}/index.m3u8')
+      ..writeAsStringSync('#EXTM3U\n#EXTINF:1,\nseg.ts\n');
+    final auth = const RelayAuthorizer().issue(
+      sessionId: 's',
+      taskId: 't',
+      deviceId: 'd',
+    );
+    final relay = await HlsRelayServer.start(
+      authorization: auth,
+      playlist: playlist,
+      allowedRoot: root,
+      advertisedHost: '127.0.0.1',
+    );
+    addTearDown(relay.close);
+    final client = HttpClient();
+    addTearDown(() => client.close(force: true));
+    final response = await (await client.getUrl(relay.url)).close();
+    final body = await response.transform(const Utf8Decoder()).join();
+    expect(response.statusCode, HttpStatus.ok);
+    expect(body, contains('/hls/t/seg.ts?token=${auth.token}'));
+    expect(segment.existsSync(), isTrue);
   });
 
   test(

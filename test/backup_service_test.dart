@@ -80,6 +80,24 @@ void main() {
     expect(await db.setting(AppPolicy.settingsKey), isNotNull);
     expect((await db.customSelect('SELECT * FROM resources').get()).length, 1);
   });
+  test(
+    'business backup excludes media cache and credential-bearing task rows',
+    () async {
+      await db.customStatement(
+        "INSERT INTO media_candidates(id,host_id,generation,source_url,media_url,title,mime,source,created_at) VALUES('c',1,1,'https://example.com/','https://cdn.example/video.mp4','video','video/mp4','dom','2026-10-11')",
+      );
+      await db.customStatement(
+        "INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,state,updated_at,local_ref) VALUES('t','c',1,1,'https://example.com/','cache','playable','2026-10-11','/private/cache.mp4')",
+      );
+      final archive = ZipDecoder().decodeBytes(await backup.export());
+      final body = jsonDecode(
+        utf8.decode(archive.findFile('business.json')!.readBytes()!),
+      ) as Map<String, dynamic>;
+      final tables = body['tables'] as Map<String, dynamic>;
+      expect(tables.containsKey('media_candidates'), isFalse);
+      expect(tables.containsKey('media_tasks'), isFalse);
+    },
+  );
   test('restore constraint failure rolls back all business data', () async {
     final bytes = rewrite(await backup.export(), (data) {
       data['tables']['script_values'][0]['script_id'] = 'missing';

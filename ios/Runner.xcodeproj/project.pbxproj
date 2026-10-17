@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		C0D000000000000000000003 /* NativeWebHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D000000000000000000004 /* NativeWebHost.swift */; };
+		C0D000000000000000000005 /* NativeCapabilityPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D000000000000000000006 /* NativeCapabilityPlugin.swift */; };
 		C0D000000000000000000001 /* WebHost.g.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D000000000000000000002 /* WebHost.g.swift */; };
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
@@ -45,6 +46,7 @@
 
 /* Begin PBXFileReference section */
 		C0D000000000000000000004 /* NativeWebHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeWebHost.swift; sourceTree = "<group>"; };
+		C0D000000000000000000006 /* NativeCapabilityPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCapabilityPlugin.swift; sourceTree = "<group>"; };
 		C0D000000000000000000002 /* WebHost.g.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebHost.g.swift; sourceTree = "<group>"; };
 		1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GeneratedPluginRegistrant.h; sourceTree = "<group>"; };
 		1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = GeneratedPluginRegistrant.m; sourceTree = "<group>"; };
@@ -127,6 +129,7 @@
 				1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */,
 				C0D000000000000000000002 /* WebHost.g.swift */,
 				C0D000000000000000000004 /* NativeWebHost.swift */,
+				C0D000000000000000000006 /* NativeCapabilityPlugin.swift */,
 				74858FAE1ED2DC5600515810 /* AppDelegate.swift */,
 				7884E8672EC3CC0400C636F2 /* SceneDelegate.swift */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
@@ -289,6 +292,7 @@
 			files = (
 				C0D000000000000000000001 /* WebHost.g.swift in Sources */,
 				C0D000000000000000000003 /* NativeWebHost.swift in Sources */,
+				C0D000000000000000000005 /* NativeCapabilityPlugin.swift in Sources */,
 				74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */,

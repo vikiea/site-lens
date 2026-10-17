@@ -12,6 +12,17 @@ class NativeExportRuntime {
       await _channel.invokeMethod<bool>('validateLocalInput', {'path': path}) ??
       false;
 
+  Future<String> muxHls({
+    required String playlist,
+    required String output,
+  }) async {
+    final result = await _channel.invokeMapMethod<String, Object?>('muxHls', {
+      'playlist': playlist,
+      'output': output,
+    });
+    return result?['output'] as String? ?? output;
+  }
+
   Future<void> deliver({required String source, required Uri destination}) =>
       _channel.invokeMethod<void>('deliver', {
         'source': source,

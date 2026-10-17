@@ -29,6 +29,7 @@ import '../settings/app_settings.dart'
 import 'glass_surface.dart';
 import 'browser_entry.dart';
 import 'profile_panel.dart';
+import 'media_tasks_screen.dart';
 import 'ui_util.dart';
 import 'ui_primitives.dart';
 
@@ -1490,6 +1491,21 @@ class _SettingsPageState extends State<SettingsPage> {
                     ),
                   ),
                 ),
+                Divider(height: 1, indent: 18, endIndent: 18),
+                ListTile(
+                  leading: const Icon(
+                    Icons.download_for_offline_outlined,
+                    size: 20,
+                  ),
+                  title: const Text('媒体任务'),
+                  subtitle: const Text('查看后台下载、播放和导出状态'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => MediaTasksScreen(app: app),
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -1857,8 +1873,7 @@ class _GlassOpacitySliderState extends State<_GlassOpacitySlider> {
                 // Track hit testing includes the default marker's visual
                 // center. Snap that narrow band to the exact preset so a tap
                 // resets to 55 instead of landing on the Slider's padded 57.
-                final rounded =
-                    (raw - AppPolicy.defaultGlassOpacity).abs() <= 3
+                final rounded = (raw - AppPolicy.defaultGlassOpacity).abs() <= 3
                     ? AppPolicy.defaultGlassOpacity
                     : raw;
                 if (_lastHapticValue != rounded) {
@@ -2757,7 +2772,10 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                       candidate.id,
                     );
                     final task = widget.app.mediaTasks.create(authorized);
-                    await widget.app.mediaDownloads.start(task, authorized);
+                    await widget.app.mediaDownloads.startNative(
+                      task,
+                      authorized,
+                    );
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(content: Text('媒体已缓存，可在任务中继续播放或导出')),

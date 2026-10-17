@@ -15,5 +15,8 @@ import UIKit
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "NativeWebHost") {
       NativeWebHostPlugin.register(with: registrar)
     }
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "NativeCapabilityPlugin") {
+      NativeCapabilityPlugin.register(with: registrar)
+    }
   }
 }

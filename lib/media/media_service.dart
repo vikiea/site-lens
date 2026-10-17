@@ -9,6 +9,8 @@ import 'package:path_provider/path_provider.dart';
 import '../data/database.dart';
 import '../domain/models.dart';
 import '../network/transport.dart';
+import 'native_download_runtime.dart';
+import 'native_export_runtime.dart';
 
 class MediaErrorCode {
   static const staleGeneration = 'stale_generation';
@@ -428,12 +430,72 @@ class MediaTaskStore {
 /// implementation can replace this transport while keeping the same task
 /// states and cache keys.
 class MediaDownloadService {
-  MediaDownloadService({required this.tasks, ControlledHttp? http})
+  MediaDownloadService({required this.tasks, ControlledHttp? http, this.native})
     : http = http ?? ControlledHttp();
 
   final MediaTaskStore tasks;
   final ControlledHttp http;
+
+  /// Optional Android OS-managed backend. The deterministic Dart backend stays
+  /// available for tests and platforms without DownloadManager.
+  final NativeDownloadRuntime? native;
   final _active = <String, Cancellation>{};
+
+  Future<MediaTask> startNative(
+    MediaTask task,
+    MediaCandidate candidate,
+  ) async {
+    final runtime = native;
+    if (runtime == null) return start(task, candidate);
+    const validator = MediaCandidateValidator();
+    validator.validate(
+      candidate,
+      hostId: task.hostId,
+      generation: task.generation,
+      sourceUrl: task.sourceUrl,
+    );
+    if (task.candidateId != candidate.id) {
+      throw StateError(MediaErrorCode.staleGeneration);
+    }
+    var current = tasks.task(task.id) ?? task;
+    if (current.state == MediaTaskState.queued ||
+        current.state == MediaTaskState.paused) {
+      current = tasks.transition(task.id, MediaTaskState.downloading);
+    }
+    Map<String, Object?> status;
+    try {
+      status = await runtime.start(current, candidate);
+    } catch (error) {
+      if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
+        tasks.transition(
+          task.id,
+          MediaTaskState.failed,
+          errorCode:
+              error is StateError && error.message.toString().contains('授权')
+              ? MediaErrorCode.authorizationRequired
+              : MediaErrorCode.network,
+        );
+      }
+      rethrow;
+    }
+    final state = status['state'] as String?;
+    final bytes = (status['bytesDownloaded'] as num?)?.toInt();
+    final total = (status['totalBytes'] as num?)?.toInt();
+    if (bytes != null) {
+      current = tasks.updateProgress(task.id, bytes, totalBytes: total);
+    }
+    if (state == 'completed') {
+      current = tasks.transition(task.id, MediaTaskState.completed);
+      current = tasks.transition(task.id, MediaTaskState.playable);
+    } else if (state == 'failed') {
+      current = tasks.transition(
+        task.id,
+        MediaTaskState.failed,
+        errorCode: MediaErrorCode.network,
+      );
+    }
+    return current;
+  }
 
   Future<MediaTask> start(
     MediaTask task,
@@ -587,6 +649,47 @@ class HlsCacheInput {
 class HlsPlaylistParser {
   const HlsPlaylistParser();
 
+  /// Reads a cached master playlist and selects the highest-bandwidth local
+  /// variant. It never follows an HTTP(S) URI and therefore cannot turn the
+  /// export path into a remote downloader.
+  Future<HlsCacheInput> parseFile(Uri playlist) async {
+    if (playlist.scheme != 'file') {
+      throw const FormatException('HLS 清单必须来自本地缓存');
+    }
+    final file = File(playlist.toFilePath());
+    if (!await file.exists()) throw const FormatException('HLS 清单缺失');
+    final text = await file.readAsString();
+    final variants = <({int bandwidth, Uri uri})>[];
+    final lines = text.split(RegExp(r'\r?\n'));
+    for (var index = 0; index < lines.length; index++) {
+      final line = lines[index].trim();
+      if (!line.startsWith('#EXT-X-STREAM-INF:')) continue;
+      final bandwidth =
+          int.tryParse(
+            RegExp(r'BANDWIDTH=(\d+)').firstMatch(line)?.group(1) ?? '',
+          ) ??
+          0;
+      final uriLine = lines
+          .skip(index + 1)
+          .map((value) => value.trim())
+          .firstWhere(
+            (value) => value.isNotEmpty && !value.startsWith('#'),
+            orElse: () => '',
+          );
+      if (uriLine.isEmpty) continue;
+      final resolved = playlist.resolve(uriLine);
+      if (resolved.scheme != 'file') {
+        throw const FormatException('HLS 清单包含远程变体');
+      }
+      variants.add((bandwidth: bandwidth, uri: resolved));
+    }
+    if (variants.isNotEmpty) {
+      variants.sort((a, b) => b.bandwidth.compareTo(a.bandwidth));
+      return parseFile(variants.first.uri);
+    }
+    return parse(playlist, text);
+  }
+
   HlsCacheInput parse(Uri playlist, String text) {
     if (playlist.scheme != 'file') {
       throw const FormatException('HLS 清单必须来自本地缓存');
@@ -651,11 +754,13 @@ class Mp4ExportService {
   Mp4ExportService({
     required this.tasks,
     this._muxer,
+    this.native,
     Future<Directory> Function()? directoryProvider,
   }) : _directoryProvider = directoryProvider ?? getApplicationSupportDirectory;
 
   final MediaTaskStore tasks;
   final Mp4Muxer? _muxer;
+  final NativeExportRuntime? native;
   final Future<Directory> Function() _directoryProvider;
 
   Future<Mp4ExportTask> export(
@@ -687,15 +792,21 @@ class Mp4ExportService {
     try {
       cancel.check();
       final muxer = _muxer;
-      if (muxer == null) {
+      if (muxer != null) {
+        await muxer(
+          input: input,
+          outputPath: temporary.path,
+          onProgress: (_) {},
+          cancellation: cancel,
+        );
+      } else if (native != null) {
+        await native!.muxHls(
+          playlist: input.playlist.toFilePath(),
+          output: temporary.path,
+        );
+      } else {
         throw StateError(MediaErrorCode.unsupported);
       }
-      await muxer(
-        input: input,
-        outputPath: temporary.path,
-        onProgress: (_) {},
-        cancellation: cancel,
-      );
       cancel.check();
       if (!await temporary.exists() || await temporary.length() == 0) {
         throw StateError('导出文件为空');

@@ -19,12 +19,19 @@ class FilterRule {
     required this.block,
     this.cosmetic = false,
     this.hostOnly = false,
+    this.scriptlet,
+    this.scriptletArgs = const <String>[],
   });
 
   final String pattern;
   final bool block;
   final bool cosmetic;
   final bool hostOnly;
+
+  /// Name of an audited, built-in scriptlet. Remote rule text is never
+  /// evaluated as JavaScript; unknown names stay in diagnostics.
+  final String? scriptlet;
+  final List<String> scriptletArgs;
 
   bool matches(Uri url) {
     final target = url.removeFragment().toString().toLowerCase();
@@ -155,18 +162,46 @@ class FilterCompiler {
       if (line.isEmpty || line.startsWith('!') || line.startsWith('[')) {
         continue;
       }
-      if (line.startsWith('##') || line.startsWith('#@#')) {
-        if (line.length > 3) {
-          rules.add(
-            FilterRule(
-              pattern: line.substring(line.indexOf('#') + 2),
-              block: true,
-              cosmetic: true,
-            ),
-          );
+      final cosmeticMatch = RegExp(r'^(?:[^#\s]+)?##(?!\+js)(.+)$')
+          .firstMatch(line);
+      final exceptionCosmeticMatch = RegExp(r'^(?:[^#\s]+)?#@#(.+)$')
+          .firstMatch(line);
+      if (cosmeticMatch != null || exceptionCosmeticMatch != null) {
+        final cosmetic =
+            cosmeticMatch?.group(1) ?? exceptionCosmeticMatch!.group(1)!;
+        if (cosmetic.isNotEmpty) {
+          rules.add(FilterRule(pattern: cosmetic, block: true, cosmetic: true));
         } else {
           unsupported.add(line);
         }
+        continue;
+      }
+      final scriptletMatch = RegExp(
+        r'^(?:(\*|[A-Za-z0-9.-]+))?##\+js\(([^,()\s]+)(?:,(.*))?\)$',
+      ).firstMatch(line);
+      if (scriptletMatch != null) {
+        final name = scriptletMatch.group(2)!;
+        const supported = {'abort-on-property-read', 'set-constant'};
+        if (!supported.contains(name)) {
+          unsupported.add(line);
+          continue;
+        }
+        final domain = scriptletMatch.group(1) ?? '*';
+        rules.add(
+          FilterRule(
+            pattern: domain,
+            block: false,
+            cosmetic: true,
+            hostOnly: domain != '*',
+            scriptlet: name,
+            scriptletArgs: (scriptletMatch.group(3) ?? '')
+                .split(',')
+                .map((value) => value.trim())
+                .where((value) => value.isNotEmpty)
+                .take(4)
+                .toList(growable: false),
+          ),
+        );
         continue;
       }
       final exception = line.startsWith('@@||');

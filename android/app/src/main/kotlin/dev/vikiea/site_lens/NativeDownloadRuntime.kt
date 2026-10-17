@@ -11,7 +11,7 @@ import io.flutter.plugin.common.MethodChannel
  * process death and network changes without sharing the update cache. */
 class NativeDownloadRuntime(private val context: Context) : MethodChannel.MethodCallHandler {
     private val manager = context.getSystemService(DownloadManager::class.java)
-    private val prefs = context.getSharedPreferences("media_downloads", Context.MODE_PRIVATE)
+    private val repository = NativeMediaTaskRepository(context)
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         try {
@@ -39,18 +39,18 @@ class NativeDownloadRuntime(private val context: Context) : MethodChannel.Method
             .setAllowedOverMetered(true)
             .setAllowedOverRoaming(false)
             .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "site-lens/$taskId.media")
-        val existing = prefs.getLong(taskId, -1L)
+        val existing = repository.read(taskId)?.downloadId ?: -1L
         if (existing != -1L) {
             val current = query(existing)
             if (current["state"] != "failed" && current["state"] != "cancelled") return current
         }
         val id = manager.enqueue(request)
-        prefs.edit().putLong(taskId, id).apply()
+        repository.save(NativeMediaTaskRepository.Record(taskId, id, call.argument<String>("candidateId") ?: "", call.argument<Number>("generation")?.toLong() ?: 0L))
         return query(id)
     }
 
     private fun status(taskId: String): Map<String, Any?> {
-        val id = prefs.getLong(taskId, -1L)
+        val id = repository.read(taskId)?.downloadId ?: -1L
         return if (id == -1L) mapOf("taskId" to taskId, "state" to "missing") else query(id) + mapOf("taskId" to taskId)
     }
 
@@ -69,16 +69,16 @@ class NativeDownloadRuntime(private val context: Context) : MethodChannel.Method
                 "downloadId" to id,
                 "state" to state,
                 "bytesDownloaded" to it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)),
-                "totalBytes" to it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)),
+                "totalBytes" to it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)).takeIf { value -> value >= 0 },
                 "localUri" to it.getString(it.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI)),
             )
         }
     }
 
     private fun cancel(taskId: String) {
-        val id = prefs.getLong(taskId, -1L)
+        val id = repository.read(taskId)?.downloadId ?: -1L
         if (id != -1L) manager.remove(id)
-        prefs.edit().remove(taskId).apply()
+        repository.remove(taskId)
     }
 
     private fun delete(taskId: String) {

@@ -155,7 +155,12 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
     private fun host(id: Long): NativeWebHost = hosts[id]?.takeIf { !it.destroyed } ?: throw FlutterError("host_destroyed", "Web host no longer exists", null)
     private var isForeground = true
     override fun create(hostId: Long, purpose: HostPurpose, preferences: HostPreferences): HostCapabilities {
-        require(!hosts.containsKey(hostId)) { "Host already exists" }
+        // A Flutter integration test can time out after the platform create
+        // reply was sent but before Dart records the session. On the next
+        // test/engine generation the numeric host id is reused; dispose the
+        // orphaned native host instead of making every later test fail with a
+        // stale `Host already exists` error.
+        hosts.remove(hostId)?.dispose()
         val host = NativeWebHost(activity, hostId, purpose, events, preferences)
         host.media.foregroundState(isForeground)
         hosts[hostId] = host
@@ -257,7 +262,14 @@ private data class NativeFilterState(
     val snapshotId: String = "",
 )
 
-private data class NativeFilterRule(val pattern: String, val block: Boolean, val cosmetic: Boolean, val hostOnly: Boolean)
+private data class NativeFilterRule(
+    val pattern: String,
+    val block: Boolean,
+    val cosmetic: Boolean,
+    val hostOnly: Boolean,
+    val scriptlet: String? = null,
+    val scriptletArgs: List<String> = emptyList(),
+)
 
 private const val FILTER_RUNTIME_ASSET = "flutter_assets/web_assets/filter_runtime.js"
 
@@ -372,6 +384,10 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                     block = value.optBoolean("block", true),
                     cosmetic = value.optBoolean("cosmetic", false),
                     hostOnly = value.optBoolean("hostOnly", false),
+                    scriptlet = value.optString("scriptlet").takeIf { it.isNotEmpty() },
+                    scriptletArgs = value.optJSONArray("scriptletArgs")?.let { args ->
+                        (0 until args.length()).mapNotNull { args.optString(it).takeIf { value -> value.isNotEmpty() } }
+                    } ?: emptyList(),
                 )
             }
         }.getOrDefault(emptyList())
@@ -392,10 +408,15 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         val state = filterState
         if (!state.enabled || !state.pageFiltering || !hasStart || destroyed) return
         val source = runCatching { activity.assets.open(FILTER_RUNTIME_ASSET).bufferedReader().use { it.readText() } }.getOrNull() ?: return
-        val cosmetic = state.rules.filter { it.block && it.cosmetic }.map { it.pattern }.take(128)
+        val cosmetic = state.rules.filter { it.block && it.cosmetic && it.scriptlet == null }.map { it.pattern }.take(128)
+        val scriptlets = state.rules.filter { it.scriptlet != null }.map { rule ->
+            JSONObject().put("domain", rule.pattern).put("name", rule.scriptlet)
+                .put("args", JSONArray(rule.scriptletArgs))
+        }.take(32)
         val config = JSONObject()
             .put("enabled", true)
             .put("selectors", JSONArray(cosmetic))
+            .put("scriptlets", JSONArray(scriptlets))
             .put("snapshotId", state.snapshotId)
         filterInjection = runCatching {
             if (hasWorld) {
@@ -413,6 +434,9 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         if (state.blockedDomains.any { host == it || host.endsWith(".$it") }) return false
         val text = url.toString().lowercase()
         for (rule in state.rules) {
+            // Cosmetic selectors and audited scriptlets run in the document;
+            // they are never request-blocking rules.
+            if (rule.cosmetic) continue
             val pattern = rule.pattern.lowercase()
             val matched = if (rule.hostOnly || pattern.startsWith("||")) {
                 val rawExpected = pattern.removePrefix("||")

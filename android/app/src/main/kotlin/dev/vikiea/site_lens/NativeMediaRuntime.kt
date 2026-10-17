@@ -20,6 +20,7 @@ class NativeMediaRuntime(private val context: Context) : MethodChannel.MethodCal
     private var player: MediaPlayer? = null
     private var sessionId: String? = null
     private var channel: MethodChannel? = null
+    private var state: String = "stopped"
 
     fun attach(channel: MethodChannel) {
         this.channel = channel
@@ -30,12 +31,13 @@ class NativeMediaRuntime(private val context: Context) : MethodChannel.MethodCal
         try {
             when (call.method) {
                 "open" -> open(call, result)
-                "play" -> { player?.start(); emit("playing"); result.success(snapshot()) }
-                "pause" -> { player?.pause(); emit("paused"); result.success(snapshot()) }
+                "play" -> { require(player != null) { "没有活动播放会话" }; player?.start(); state = "playing"; emit("playing"); result.success(snapshot()) }
+                "pause" -> { require(player != null) { "没有活动播放会话" }; player?.pause(); state = "paused"; emit("paused"); result.success(snapshot()) }
                 "seek" -> {
                     val position = (call.argument<Number>("positionMs")?.toInt() ?: -1)
                     require(position >= 0 && player != null) { "播放位置无效" }
                     player!!.seekTo(position)
+                    state = if (player!!.isPlaying) "playing" else state
                     result.success(snapshot())
                 }
                 "speed" -> {
@@ -65,13 +67,20 @@ class NativeMediaRuntime(private val context: Context) : MethodChannel.MethodCal
         val next = MediaPlayer()
         player = next
         next.setOnPreparedListener { media ->
+            state = "playing"
             media.start()
             emit("playing")
         }
-        next.setOnCompletionListener { emit("completed") }
-        next.setOnErrorListener { _, what, extra -> emit("failed", "$what:$extra"); true }
+        next.setOnCompletionListener { state = "completed"; emit("completed") }
+        next.setOnInfoListener { _, what, _ ->
+            if (what == MediaPlayer.MEDIA_INFO_BUFFERING_START) { state = "buffering"; emit("buffering") }
+            if (what == MediaPlayer.MEDIA_INFO_BUFFERING_END) { state = "playing"; emit("playing") }
+            false
+        }
+        next.setOnErrorListener { _, what, extra -> state = "failed"; emit("failed", "$what:$extra"); true }
         next.setDataSource(context, uri)
         next.prepareAsync()
+        state = "preparing"
         result.success(snapshot())
     }
 
@@ -81,14 +90,10 @@ class NativeMediaRuntime(private val context: Context) : MethodChannel.MethodCal
 
     private fun snapshot(overrideState: String? = null, error: String? = null): Map<String, Any?> {
         val active = player
-        val state = overrideState ?: when {
-            active == null -> "stopped"
-            active.isPlaying -> "playing"
-            else -> "paused"
-        }
+        val currentState = overrideState ?: if (active == null) "stopped" else state
         return mapOf(
             "sessionId" to sessionId,
-            "state" to state,
+            "state" to currentState,
             "positionMs" to (runCatching { active?.currentPosition ?: 0 }.getOrDefault(0)),
             "durationMs" to (runCatching { active?.duration ?: 0 }.getOrDefault(0)),
             "errorCode" to error,
@@ -103,6 +108,7 @@ class NativeMediaRuntime(private val context: Context) : MethodChannel.MethodCal
         }
         player = null
         sessionId = null
+        state = "stopped"
     }
 
     fun dispose() {

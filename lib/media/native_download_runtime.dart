@@ -24,6 +24,8 @@ class NativeDownloadRuntime {
     if (!candidate.playable) throw const FormatException('invalid_url');
     final value = await _channel.invokeMapMethod<String, Object?>('start', {
       'taskId': task.id,
+      'candidateId': candidate.id,
+      'generation': candidate.generation,
       'url': candidate.mediaUrl.toString(),
       'title': title ?? candidate.title,
     });

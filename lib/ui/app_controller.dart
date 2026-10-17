@@ -32,6 +32,9 @@ import '../settings/settings_repository.dart';
 import '../settings/app_settings.dart';
 import '../filter/filter_service.dart';
 import '../media/media_service.dart';
+import '../media/native_download_runtime.dart';
+import '../media/native_export_runtime.dart';
+import '../media/native_media_runtime.dart';
 import 'glass_quality_cache.dart';
 
 /// The user preferences travel as one versioned record (`AppPolicy.settingsKey`).
@@ -66,8 +69,14 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     filterSnapshots = FilterSnapshotStore();
     filterSources = FilterSourceManager(store: filterSnapshots, db: db);
     mediaTasks = MediaTaskStore(db: db);
-    mediaDownloads = MediaDownloadService(tasks: mediaTasks);
-    mediaExports = Mp4ExportService(tasks: mediaTasks);
+    nativeDownloads = Platform.isAndroid ? NativeDownloadRuntime() : null;
+    nativeExports = Platform.isAndroid ? NativeExportRuntime() : null;
+    nativeMedia = NativeMediaRuntime();
+    mediaDownloads = MediaDownloadService(
+      tasks: mediaTasks,
+      native: nativeDownloads,
+    );
+    mediaExports = Mp4ExportService(tasks: mediaTasks, native: nativeExports);
     castSessions = CastSessionController(tasks: mediaTasks);
     mediaPlayback = NativePlaybackController();
     hosts.onNewWindow = (hostId, url) {
@@ -189,6 +198,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   late final Mp4ExportService mediaExports;
   late final CastSessionController castSessions;
   late final NativePlaybackController mediaPlayback;
+  late final NativeMediaRuntime nativeMedia;
+  late final NativeDownloadRuntime? nativeDownloads;
+  late final NativeExportRuntime? nativeExports;
   late final ProbeCoordinator probes;
   List<Candidate> sites = [];
   List<PublishingSource> sources = [];
@@ -1622,7 +1634,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     // Clear native ownership immediately, but do not overwrite the captured
     // snapshot during asynchronous destruction.
     final close = closeAllTabs(persist: false);
-    _shutdownFuture = Future.wait<void>([flush, close])
+    _shutdownFuture = Future.wait<void>([flush, close, nativeMedia.dispose()])
         .whenComplete(settingsRepository.dispose);
     unawaited(_shutdownFuture!.catchError((Object _) {}));
     super.dispose();
