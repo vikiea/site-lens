@@ -354,6 +354,23 @@ class AppDatabase extends GeneratedDatabase {
   Future<void> deleteCandidate(int id) =>
       customStatement('DELETE FROM candidates WHERE id=?', [id]);
 
+  /// Removes stale candidates that are now explicitly configured as publishing
+  /// pages. Probe history is kept in its append-only table and simply stops
+  /// being associated with the active candidate list.
+  Future<void> deleteCandidatesByUrls(
+    Iterable<String> urls, {
+    int? profileId,
+  }) async {
+    final values = urls.toSet().toList();
+    if (values.isEmpty) return;
+    final placeholders = List.filled(values.length, '?').join(',');
+    final owner = profileId == null ? '' : ' AND profile_id=?';
+    await customStatement(
+      'DELETE FROM candidates WHERE url IN ($placeholders)$owner',
+      [...values, ?profileId],
+    );
+  }
+
   Future<List<SiteProfile>> profiles() async =>
       (await customSelect('SELECT * FROM profiles ORDER BY id').get())
           .map(

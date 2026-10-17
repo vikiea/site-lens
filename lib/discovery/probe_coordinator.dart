@@ -314,8 +314,10 @@ class PublishingDiscovery {
         .toList();
     // Deny *every* configured publishing host, even when only one profile is
     // being rescanned, so a page cannot import another profile's own source.
-    final publishingHosts = (await db.profilePages())
-        .map((p) => p.url.host)
+    final configuredPages = await db.profilePages();
+    final publishingHosts = configuredPages.map((p) => p.url.host).toSet();
+    final publishingPageKeys = configuredPages
+        .map((p) => webPageKey(p.url))
         .toSet();
     var added = 0;
     for (final page in pages) {
@@ -347,6 +349,10 @@ class PublishingDiscovery {
               ...publishingHosts,
               if (snapshot.url.startsWith('http')) webUri(snapshot.url).host,
             };
+            final sourcePageKeys = <String>{webPageKey(page.url)};
+            if (snapshot.url.startsWith('http')) {
+              sourcePageKeys.add(webPageKey(webUri(snapshot.url)));
+            }
             extracted = snapshot.links
                 .map(Uri.tryParse)
                 .whereType<Uri>()
@@ -354,7 +360,9 @@ class PublishingDiscovery {
                   (u) =>
                       ['http', 'https'].contains(u.scheme) &&
                       u.userInfo.isEmpty &&
-                      !denied.contains(u.host),
+                      !denied.contains(u.host) &&
+                      !publishingPageKeys.contains(webPageKey(u)) &&
+                      !sourcePageKeys.contains(webPageKey(u)),
                 )
                 .map((u) => u.removeFragment())
                 .toSet()
@@ -369,6 +377,10 @@ class PublishingDiscovery {
         }
         await db.transaction(() async {
           cancel.check();
+          await db.deleteCandidatesByUrls([
+            page.url.toString(),
+            webPageKey(page.url),
+          ], profileId: page.profileId);
           for (final uri in extracted!) {
             await db.addCandidate(uri, profileId: page.profileId);
             added++;

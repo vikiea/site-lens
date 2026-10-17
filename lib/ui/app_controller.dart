@@ -94,12 +94,23 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _glassQualityWrites = Future.value();
   bool _disposed = false;
   bool _browserVisible = false;
+  bool _browserSurfaceActive = false;
   bool _foreground = true;
   bool mediaSupported = false;
   bool get browserVisible => _browserVisible;
   set browserVisible(bool value) {
     if (_browserVisible == value) return;
     _browserVisible = value;
+    if (!_disposed) notifyListeners();
+  }
+
+  /// True while a browsing route still owns a mounted native WebView surface.
+  /// This is separate from [browserVisible]: a modal route can cover the
+  /// browser while its PlatformView remains mounted underneath.
+  bool get browserSurfaceActive => _browserSurfaceActive;
+  set browserSurfaceActive(bool value) {
+    if (_browserSurfaceActive == value) return;
+    _browserSurfaceActive = value;
     if (!_disposed) notifyListeners();
   }
 
@@ -254,6 +265,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   GlassAdaptiveScopeConfig get glassAdaptiveConfig {
     final mode = settings.glassQualityMode;
+    final androidWebViewSurface = Platform.isAndroid && browserSurfaceActive;
     final cached = glassQualityCache;
     final cachedQuality =
         cached != null && cached.matches(glassQualityFingerprint)
@@ -264,16 +276,24 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     return GlassAdaptiveScopeConfig(
       // Manual modes are explicit locks. Automatic mode is the only mode that
       // may move between the standard floor and premium ceiling.
-      minQuality: manualHigh || manualStandard
+      minQuality: androidWebViewSurface
+          ? GlassQuality.standard
+          : manualHigh || manualStandard
           ? (manualHigh ? GlassQuality.premium : GlassQuality.standard)
           : GlassQuality.standard,
-      maxQuality: manualStandard ? GlassQuality.standard : GlassQuality.premium,
-      initialQuality: manualHigh
+      maxQuality: androidWebViewSurface
+          ? GlassQuality.standard
+          : manualStandard
+          ? GlassQuality.standard
+          : GlassQuality.premium,
+      initialQuality: androidWebViewSurface
+          ? GlassQuality.standard
+          : manualHigh
           ? GlassQuality.premium
           : manualStandard
           ? GlassQuality.standard
           : cachedQuality ?? GlassQuality.standard,
-      allowStepUp: !manualHigh && !manualStandard,
+      allowStepUp: !androidWebViewSurface && !manualHigh && !manualStandard,
       onQualityChanged: (_, to) => effectiveGlassQuality = to,
       onDiagnostic: (diagnostic) =>
           unawaited(recordGlassQualityDiagnostic(diagnostic)),
@@ -679,10 +699,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         await Future<void>.delayed(const Duration(milliseconds: 200));
       }
       final ready = await _inferReadySelector(host, token);
+      final excludedPages = <String>{webPageKey(url)};
+      if (lastUrl != null) excludedPages.add(webPageKey(lastUrl));
       final links = (region?.links ?? const <String>[])
           .map(Uri.tryParse)
           .whereType<Uri>()
           .where((u) => ['http', 'https'].contains(u.scheme))
+          .where((u) => !excludedPages.contains(webPageKey(u)))
           .take(5)
           .toList();
       return ReconResult(

@@ -1784,10 +1784,19 @@ class _ThemePresetChip extends StatelessWidget {
 /// One row of mutually exclusive choices, styled as part of the glass language
 /// rather than as a Material box: a translucent track with a pill for the
 /// current value, equal widths and no inner dividers.
-class _GlassOpacitySlider extends StatelessWidget {
+class _GlassOpacitySlider extends StatefulWidget {
   const _GlassOpacitySlider({required this.app});
 
   final AppController app;
+
+  @override
+  State<_GlassOpacitySlider> createState() => _GlassOpacitySliderState();
+}
+
+class _GlassOpacitySliderState extends State<_GlassOpacitySlider> {
+  bool _dragging = false;
+  int? _lastHapticValue;
+  int? _dragStartValue;
 
   @override
   Widget build(BuildContext context) => SizedBox(
@@ -1805,40 +1814,78 @@ class _GlassOpacitySlider extends StatelessWidget {
               min: 0,
               max: 100,
               divisions: 100,
-              value: app.settings.glassOpacity.toDouble(),
-              label: '${app.settings.glassOpacity}',
-              onChanged: (value) => safely(
-                context,
-                () => app.updateSettings({'glassOpacity': value.round()}),
-              ),
+              value: widget.app.settings.glassOpacity.toDouble(),
+              // Material's discrete value indicator is the local magnifier:
+              // it enlarges the active value above the thumb without scaling
+              // the surrounding settings row.
+              label: _dragging ? '${widget.app.settings.glassOpacity}' : null,
+              onChangeStart: (value) {
+                setState(() {
+                  _dragging = true;
+                  _lastHapticValue = value.round();
+                  _dragStartValue = value.round();
+                });
+                unawaited(HapticFeedback.selectionClick());
+              },
+              onChanged: (value) => safely(context, () {
+                final raw = value.round();
+                // Track hit testing includes the default marker's visual
+                // center. Snap that narrow band to the exact preset so a tap
+                // resets to 55 instead of landing on the Slider's padded 57.
+                final rounded =
+                    (raw - AppPolicy.defaultGlassOpacity).abs() <= 3
+                    ? AppPolicy.defaultGlassOpacity
+                    : raw;
+                if (_lastHapticValue != rounded) {
+                  _lastHapticValue = rounded;
+                  unawaited(HapticFeedback.selectionClick());
+                }
+                return widget.app.updateSettings({'glassOpacity': rounded});
+              }),
+              onChangeEnd: (value) {
+                final start = _dragStartValue;
+                final end = value.round();
+                // The default marker is drawn over the track. A tap on it is
+                // intentionally treated as a reset, while a real drag that
+                // starts there keeps the dragged value.
+                if (start != null &&
+                    start == end &&
+                    (start - AppPolicy.defaultGlassOpacity).abs() <= 3 &&
+                    end != AppPolicy.defaultGlassOpacity) {
+                  unawaited(
+                    safely(
+                      context,
+                      () => widget.app.updateSettings({
+                        'glassOpacity': AppPolicy.defaultGlassOpacity,
+                      }),
+                    ),
+                  );
+                }
+                setState(() {
+                  _dragging = false;
+                  _lastHapticValue = null;
+                  _dragStartValue = null;
+                });
+              },
             ),
             Positioned(
               left: markerLeft,
               top: 14,
               width: markerWidth,
               height: 20,
-              child: Tooltip(
-                message: '默认 ${AppPolicy.defaultGlassOpacity}',
+              // Keep the marker visual only. The Slider underneath receives a
+              // tap at the default value and a drag that starts on the marker.
+              child: IgnorePointer(
                 child: Semantics(
                   key: const ValueKey('default-glass-opacity-marker'),
-                  button: true,
                   label: '恢复默认不透明度 ${AppPolicy.defaultGlassOpacity}',
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () => safely(
-                      context,
-                      () => app.updateSettings({
-                        'glassOpacity': AppPolicy.defaultGlassOpacity,
-                      }),
-                    ),
-                    child: Center(
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.primary,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                        child: const SizedBox(width: 3, height: 10),
+                  child: Center(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.primary,
+                        borderRadius: BorderRadius.circular(2),
                       ),
+                      child: const SizedBox(width: 3, height: 10),
                     ),
                   ),
                 ),
@@ -2043,6 +2090,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
       if (!mounted) return;
       // Mark the route as a WebView route before creating the native view so
       // Android keeps Flutter glass on the 0.1.3-safe tier during composition.
+      widget.app.browserSurfaceActive = true;
       widget.app.browserVisible = true;
       unawaited(_start());
     });
@@ -2124,6 +2172,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     widget.app.removeListener(_appChanged);
     widget.app.hosts.changed.removeListener(_changed);
     widget.app.browserVisible = false;
+    widget.app.browserSurfaceActive = false;
     _hideTimer?.cancel();
     // Tabs are owned by AppController so the home floating entry can restore
     // the same native WebView without recreating it.

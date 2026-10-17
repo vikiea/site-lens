@@ -17,7 +17,23 @@
     const interactionRequired = Array.from(document.querySelectorAll('input[type="password"]')).some(visible);
     const ready = document.readyState !== 'loading' && visible(root) && ((root.textContent || '').trim().length >= 16 || !!root.querySelector('a[href],video,audio,img,article'));
     const anchors = root ? [...(root.matches('a[href]') ? [root] : []), ...root.querySelectorAll('a[href]')] : [];
-    return JSON.stringify({title: document.title, ready, challenge, interactionRequired, links: anchors.filter(a => !/备用.*发布|发布页|发布地址|永久发布|邮箱|telegram|twitter/i.test(a.textContent || '')).slice(0, 100).map(a => a.href), text: (root && root.textContent || '').slice(0, 4096), error: ''});
+    const pageKey = raw => {
+      try {
+        const u = new URL(raw, document.baseURI);
+        u.hash = '';
+        if (!u.pathname) u.pathname = '/';
+        return u.href;
+      } catch (_) { return ''; }
+    };
+    const currentPage = pageKey(location.href);
+    const links = anchors
+      .filter(a => !/备用.*发布|发布页|发布地址|永久发布|邮箱|telegram|twitter/i.test(a.textContent || ''))
+      .map(a => a.href)
+      // A publishing page commonly links to itself through a canonical or
+      // trailing-slash variant. It is a source document, never a candidate.
+      .filter(href => pageKey(href) !== currentPage)
+      .slice(0, 100);
+    return JSON.stringify({title: document.title, ready, challenge, interactionRequired, links, text: (root && root.textContent || '').slice(0, 4096), error: ''});
   } catch (error) {
     return JSON.stringify({title: '', ready: false, challenge: false, interactionRequired: false, links: [], text: '', error: 'DOM selector/inspection error: ' + error});
   }

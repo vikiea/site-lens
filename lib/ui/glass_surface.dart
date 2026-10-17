@@ -1,4 +1,5 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
@@ -166,6 +167,12 @@ class SiteLensGlassGroup extends StatelessWidget {
   final Widget child;
 
   @override
-  Widget build(BuildContext context) =>
-      GlassBackdropGroup(enabled: !kIsWeb, joinEnclosing: true, child: child);
+  Widget build(BuildContext context) => GlassBackdropGroup(
+    enabled:
+        !kIsWeb &&
+        !(defaultTargetPlatform == TargetPlatform.android &&
+            SiteLensGlassPolicyScope.of(context).webViewVisible),
+    joinEnclosing: true,
+    child: child,
+  );
 }

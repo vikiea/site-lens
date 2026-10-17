@@ -100,6 +100,9 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(app.settings.glassOpacity, 55);
+    await tester.drag(find.byType(Slider), const Offset(-42, 0));
+    await tester.pumpAndSettle();
+    expect(app.settings.glassOpacity, lessThan(55));
     final segmented = find.byType(SiteLensSegmented<ThemeModePreference>);
     expect(segmented, findsOneWidget);
     expect(tester.getSize(segmented).height, SiteLensMetrics.segmentedHeight);
