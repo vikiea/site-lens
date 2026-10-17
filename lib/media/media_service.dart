@@ -842,13 +842,13 @@ typedef Mp4Muxer = Future<void> Function({
 class Mp4ExportService {
   Mp4ExportService({
     required this.tasks,
-    this._muxer,
+    this.muxer,
     this.native,
     Future<Directory> Function()? directoryProvider,
   }) : _directoryProvider = directoryProvider ?? getApplicationSupportDirectory;
 
   final MediaTaskStore tasks;
-  final Mp4Muxer? _muxer;
+  final Mp4Muxer? muxer;
   final NativeExportRuntime? native;
   final Future<Directory> Function() _directoryProvider;
 
@@ -883,20 +883,25 @@ class Mp4ExportService {
     try {
       cancel.check();
       report(0);
-      final muxer = _muxer;
-      if (muxer != null) {
-        await muxer(
+      final injectedMuxer = muxer;
+      if (injectedMuxer != null) {
+        await injectedMuxer(
           input: input,
           outputPath: temporary.path,
           onProgress: report,
           cancellation: cancel,
         );
       } else if (native != null) {
+        if (!await native!.validateLocalInput(input.playlist.toFilePath())) {
+          throw StateError('HLS 本地输入校验失败');
+        }
+        report(10);
         cancel.onCancel(native!.cancel);
         await native!.muxHls(
           playlist: input.playlist.toFilePath(),
           output: temporary.path,
         );
+        report(90);
       } else {
         throw StateError(MediaErrorCode.unsupported);
       }

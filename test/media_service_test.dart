@@ -210,6 +210,88 @@ void main() {
   });
 
   test(
+    'MP4 export reports progress and leaves a validated deliverable',
+    () async {
+      final root = await Directory.systemTemp.createTemp('site-lens-export-');
+      addTearDown(() => root.delete(recursive: true));
+      final playlist = File('${root.path}/index.m3u8')
+        ..writeAsStringSync('#EXTM3U\n#EXTINF:1,\nseg.ts\n');
+      final segment = File('${root.path}/seg.ts')..writeAsBytesSync([1, 2, 3]);
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final task = store.create(candidate());
+      store.transition(task.id, MediaTaskState.downloading);
+      store.transition(task.id, MediaTaskState.completed);
+      store.transition(task.id, MediaTaskState.playable);
+      final progress = <int>[];
+      final service = Mp4ExportService(
+        tasks: store,
+        directoryProvider: () async => root,
+        muxer:
+            ({
+              required HlsCacheInput input,
+              required String outputPath,
+              required void Function(int) onProgress,
+              required Cancellation cancellation,
+            }) async {
+              expect(input.segments.single.path, segment.path);
+              onProgress(50);
+              await File(outputPath).writeAsBytes([9, 8, 7]);
+            },
+      );
+      final successful = await service.export(
+        task.id,
+        HlsCacheInput(playlist: playlist.uri, segments: [segment.uri]),
+        onProgress: progress.add,
+      );
+      expect(successful.state, ExportState.deliverable);
+      expect(await File(successful.outputPath!).exists(), isTrue);
+      expect(progress, containsAllInOrder([0, 50, 100]));
+    },
+  );
+
+  test(
+    'cancelled MP4 export removes the temporary output but keeps the task',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-export-cancel-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final playlist = File('${root.path}/index.m3u8')
+        ..writeAsStringSync('#EXTM3U\n#EXTINF:1,\nseg.ts\n');
+      final segment = File('${root.path}/seg.ts')..writeAsBytesSync([1]);
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final task = store.create(candidate());
+      store.transition(task.id, MediaTaskState.downloading);
+      store.transition(task.id, MediaTaskState.completed);
+      store.transition(task.id, MediaTaskState.playable);
+      final cancel = Cancellation();
+      final service = Mp4ExportService(
+        tasks: store,
+        directoryProvider: () async => root,
+        muxer:
+            ({
+              required HlsCacheInput input,
+              required String outputPath,
+              required void Function(int) onProgress,
+              required Cancellation cancellation,
+            }) async {
+              await File(outputPath).writeAsBytes([1, 2, 3]);
+              cancellation.cancel();
+              cancellation.check();
+            },
+      );
+      final result = await service.export(
+        task.id,
+        HlsCacheInput(playlist: playlist.uri, segments: [segment.uri]),
+        cancellation: cancel,
+      );
+      expect(result.state, ExportState.cancelled);
+      expect(store.task(task.id), isNotNull);
+      expect(Directory('${root.path}/media_exports').listSync(), isEmpty);
+    },
+  );
+
+  test(
     'HLS parser selects a local master variant without following network URLs',
     () async {
       final root = await Directory.systemTemp.createTemp(
