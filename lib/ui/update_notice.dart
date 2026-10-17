@@ -5,7 +5,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../settings/app_settings.dart';
 import '../update/update_controller.dart';
-import 'app_controller.dart';
 import 'app_theme.dart';
 import 'glass_surface.dart';
 import 'navigation_observer.dart';
@@ -23,7 +22,6 @@ class SiteLensUpdateNoticeLayer extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final controller = ref.watch(updateControllerProvider);
-    final app = ref.watch(appControllerProvider);
     return ListenableBuilder(
       listenable: controller,
       builder: (context, _) => Stack(
@@ -45,7 +43,7 @@ class SiteLensUpdateNoticeLayer extends ConsumerWidget {
                 ),
                 child: _UpdateNoticeCard(
                   controller: controller,
-                  channel: app.settings.updateChannel,
+                  channel: controller.channel,
                 ),
               ),
             ),

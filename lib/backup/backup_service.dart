@@ -342,10 +342,6 @@ class BackupService {
           if (table == 'scripts') {
             row['enabled'] = 0;
             row['approved_digest'] = null;
-            row['network_mode'] = 'declared';
-            row['approval_reason'] = null;
-            row['approved_at'] = null;
-            row['public_confirmed'] = 0;
           }
           final keys = row.keys.toList();
           await db.customStatement(
