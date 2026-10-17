@@ -91,7 +91,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 4);
+      expect(raw.userVersion, 5);
       expect(raw.select('SELECT COUNT(*) AS c FROM probes').single['c'], 281);
 
       final scripts = await db.scripts();
@@ -101,7 +101,7 @@ void main() {
       expect(
         scripts.single.approvedDigest,
         ScriptMetadata.parse(scripts.single.source)
-            .digest(scripts.single.source, []),
+            .legacyDigest(scripts.single.source, []),
       );
       expect(scripts.single.source.length, greaterThan(1000000));
 

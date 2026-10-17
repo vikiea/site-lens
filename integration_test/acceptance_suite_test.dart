@@ -10,6 +10,7 @@ import 'health_check_test.dart' as health_check;
 import 'evidence_test.dart' as evidence;
 import 'modernization_test.dart' as modernization;
 import 'update_flow_test.dart' as update_flow;
+import 'media_tasks_test.dart' as media_tasks;
 
 /// One install, one run: registers every integration suite in this process.
 ///
@@ -27,4 +28,5 @@ void main() {
   evidence.main();
   modernization.main();
   update_flow.main();
+  media_tasks.main();
 }

@@ -524,6 +524,507 @@ class HostPreferences {
   }
 }
 
+/// Immutable filtering data passed to a native host.  The native side never
+/// reads the rules from disk or asks Dart during a WebView request callback;
+/// it receives a complete snapshot before navigation starts.
+class FilterSnapshotDto {
+  FilterSnapshotDto({
+    required this.id,
+    required this.version,
+    required this.sha256,
+    required this.state,
+    required this.rules,
+  });
+
+  String id;
+
+  String version;
+
+  String sha256;
+
+  String state;
+
+  String rules;
+
+  List<Object?> _toList() {
+    return <Object?>[
+      id,
+      version,
+      sha256,
+      state,
+      rules,
+    ];
+  }
+
+  Object encode() {
+    return _toList();  }
+
+  static FilterSnapshotDto decode(Object result) {
+    result as List<Object?>;
+    return FilterSnapshotDto(
+      id: result[0]! as String,
+      version: result[1]! as String,
+      sha256: result[2]! as String,
+      state: result[3]! as String,
+      rules: result[4]! as String,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! FilterSnapshotDto || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(id, other.id) && _deepEquals(version, other.version) && _deepEquals(sha256, other.sha256) && _deepEquals(state, other.state) && _deepEquals(rules, other.rules);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'FilterSnapshotDto(id: $id, version: $version, sha256: $sha256, state: $state, rules: $rules)';
+  }
+}
+
+class FilterPolicyDto {
+  FilterPolicyDto({
+    required this.enabled,
+    required this.pageFiltering,
+    required this.domainExceptions,
+    required this.blockedDomains,
+  });
+
+  bool enabled;
+
+  bool pageFiltering;
+
+  List<String> domainExceptions;
+
+  List<String> blockedDomains;
+
+  List<Object?> _toList() {
+    return <Object?>[
+      enabled,
+      pageFiltering,
+      domainExceptions,
+      blockedDomains,
+    ];
+  }
+
+  Object encode() {
+    return _toList();  }
+
+  static FilterPolicyDto decode(Object result) {
+    result as List<Object?>;
+    return FilterPolicyDto(
+      enabled: result[0]! as bool,
+      pageFiltering: result[1]! as bool,
+      domainExceptions: (result[2]! as List<Object?>).cast<String>(),
+      blockedDomains: (result[3]! as List<Object?>).cast<String>(),
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! FilterPolicyDto || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(enabled, other.enabled) && _deepEquals(pageFiltering, other.pageFiltering) && _deepEquals(domainExceptions, other.domainExceptions) && _deepEquals(blockedDomains, other.blockedDomains);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'FilterPolicyDto(enabled: $enabled, pageFiltering: $pageFiltering, domainExceptions: $domainExceptions, blockedDomains: $blockedDomains)';
+  }
+}
+
+class HostFilterContextDto {
+  HostFilterContextDto({
+    required this.hostId,
+    required this.generation,
+    required this.sourceUrl,
+    required this.snapshotId,
+  });
+
+  int hostId;
+
+  int generation;
+
+  String sourceUrl;
+
+  String snapshotId;
+
+  List<Object?> _toList() {
+    return <Object?>[
+      hostId,
+      generation,
+      sourceUrl,
+      snapshotId,
+    ];
+  }
+
+  Object encode() {
+    return _toList();  }
+
+  static HostFilterContextDto decode(Object result) {
+    result as List<Object?>;
+    return HostFilterContextDto(
+      hostId: result[0]! as int,
+      generation: result[1]! as int,
+      sourceUrl: result[2]! as String,
+      snapshotId: result[3]! as String,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! HostFilterContextDto || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(hostId, other.hostId) && _deepEquals(generation, other.generation) && _deepEquals(sourceUrl, other.sourceUrl) && _deepEquals(snapshotId, other.snapshotId);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'HostFilterContextDto(hostId: $hostId, generation: $generation, sourceUrl: $sourceUrl, snapshotId: $snapshotId)';
+  }
+}
+
+/// Candidate/task/cast DTOs deliberately contain no cookie, authorization,
+/// Web Storage or native file path.  They are snapshots for UI/native calls;
+/// Dart remains the authority for authorization and persistence.
+class MediaCandidateDto {
+  MediaCandidateDto({
+    required this.id,
+    required this.hostId,
+    required this.generation,
+    required this.sourceUrl,
+    required this.mediaUrl,
+    required this.title,
+    required this.mime,
+    required this.source,
+    this.durationMs,
+  });
+
+  String id;
+
+  int hostId;
+
+  int generation;
+
+  String sourceUrl;
+
+  String mediaUrl;
+
+  String title;
+
+  String mime;
+
+  String source;
+
+  int? durationMs;
+
+  List<Object?> _toList() {
+    return <Object?>[
+      id,
+      hostId,
+      generation,
+      sourceUrl,
+      mediaUrl,
+      title,
+      mime,
+      source,
+      durationMs,
+    ];
+  }
+
+  Object encode() {
+    return _toList();  }
+
+  static MediaCandidateDto decode(Object result) {
+    result as List<Object?>;
+    return MediaCandidateDto(
+      id: result[0]! as String,
+      hostId: result[1]! as int,
+      generation: result[2]! as int,
+      sourceUrl: result[3]! as String,
+      mediaUrl: result[4]! as String,
+      title: result[5]! as String,
+      mime: result[6]! as String,
+      source: result[7]! as String,
+      durationMs: result[8] as int?,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! MediaCandidateDto || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(id, other.id) && _deepEquals(hostId, other.hostId) && _deepEquals(generation, other.generation) && _deepEquals(sourceUrl, other.sourceUrl) && _deepEquals(mediaUrl, other.mediaUrl) && _deepEquals(title, other.title) && _deepEquals(mime, other.mime) && _deepEquals(source, other.source) && _deepEquals(durationMs, other.durationMs);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'MediaCandidateDto(id: $id, hostId: $hostId, generation: $generation, sourceUrl: $sourceUrl, mediaUrl: $mediaUrl, title: $title, mime: $mime, source: $source, durationMs: $durationMs)';
+  }
+}
+
+class MediaTaskDto {
+  MediaTaskDto({
+    required this.id,
+    required this.candidateId,
+    required this.hostId,
+    required this.generation,
+    required this.state,
+    required this.cacheKey,
+    required this.bytesDownloaded,
+    this.totalBytes,
+    this.errorCode,
+  });
+
+  String id;
+
+  String candidateId;
+
+  int hostId;
+
+  int generation;
+
+  String state;
+
+  String cacheKey;
+
+  int bytesDownloaded;
+
+  int? totalBytes;
+
+  String? errorCode;
+
+  List<Object?> _toList() {
+    return <Object?>[
+      id,
+      candidateId,
+      hostId,
+      generation,
+      state,
+      cacheKey,
+      bytesDownloaded,
+      totalBytes,
+      errorCode,
+    ];
+  }
+
+  Object encode() {
+    return _toList();  }
+
+  static MediaTaskDto decode(Object result) {
+    result as List<Object?>;
+    return MediaTaskDto(
+      id: result[0]! as String,
+      candidateId: result[1]! as String,
+      hostId: result[2]! as int,
+      generation: result[3]! as int,
+      state: result[4]! as String,
+      cacheKey: result[5]! as String,
+      bytesDownloaded: result[6]! as int,
+      totalBytes: result[7] as int?,
+      errorCode: result[8] as String?,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! MediaTaskDto || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(id, other.id) && _deepEquals(candidateId, other.candidateId) && _deepEquals(hostId, other.hostId) && _deepEquals(generation, other.generation) && _deepEquals(state, other.state) && _deepEquals(cacheKey, other.cacheKey) && _deepEquals(bytesDownloaded, other.bytesDownloaded) && _deepEquals(totalBytes, other.totalBytes) && _deepEquals(errorCode, other.errorCode);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'MediaTaskDto(id: $id, candidateId: $candidateId, hostId: $hostId, generation: $generation, state: $state, cacheKey: $cacheKey, bytesDownloaded: $bytesDownloaded, totalBytes: $totalBytes, errorCode: $errorCode)';
+  }
+}
+
+class CastDeviceDto {
+  CastDeviceDto({
+    required this.id,
+    required this.name,
+    required this.address,
+    this.model,
+    required this.supportsMp4,
+    required this.supportsHls,
+    required this.supportsSeek,
+  });
+
+  String id;
+
+  String name;
+
+  String address;
+
+  String? model;
+
+  bool supportsMp4;
+
+  bool supportsHls;
+
+  bool supportsSeek;
+
+  List<Object?> _toList() {
+    return <Object?>[
+      id,
+      name,
+      address,
+      model,
+      supportsMp4,
+      supportsHls,
+      supportsSeek,
+    ];
+  }
+
+  Object encode() {
+    return _toList();  }
+
+  static CastDeviceDto decode(Object result) {
+    result as List<Object?>;
+    return CastDeviceDto(
+      id: result[0]! as String,
+      name: result[1]! as String,
+      address: result[2]! as String,
+      model: result[3] as String?,
+      supportsMp4: result[4]! as bool,
+      supportsHls: result[5]! as bool,
+      supportsSeek: result[6]! as bool,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! CastDeviceDto || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(id, other.id) && _deepEquals(name, other.name) && _deepEquals(address, other.address) && _deepEquals(model, other.model) && _deepEquals(supportsMp4, other.supportsMp4) && _deepEquals(supportsHls, other.supportsHls) && _deepEquals(supportsSeek, other.supportsSeek);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'CastDeviceDto(id: $id, name: $name, address: $address, model: $model, supportsMp4: $supportsMp4, supportsHls: $supportsHls, supportsSeek: $supportsSeek)';
+  }
+}
+
+class CastSessionDto {
+  CastSessionDto({
+    required this.id,
+    required this.deviceId,
+    required this.mediaTaskId,
+    required this.state,
+    this.errorCode,
+  });
+
+  String id;
+
+  String deviceId;
+
+  String mediaTaskId;
+
+  String state;
+
+  String? errorCode;
+
+  List<Object?> _toList() {
+    return <Object?>[
+      id,
+      deviceId,
+      mediaTaskId,
+      state,
+      errorCode,
+    ];
+  }
+
+  Object encode() {
+    return _toList();  }
+
+  static CastSessionDto decode(Object result) {
+    result as List<Object?>;
+    return CastSessionDto(
+      id: result[0]! as String,
+      deviceId: result[1]! as String,
+      mediaTaskId: result[2]! as String,
+      state: result[3]! as String,
+      errorCode: result[4] as String?,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! CastSessionDto || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(id, other.id) && _deepEquals(deviceId, other.deviceId) && _deepEquals(mediaTaskId, other.mediaTaskId) && _deepEquals(state, other.state) && _deepEquals(errorCode, other.errorCode);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'CastSessionDto(id: $id, deviceId: $deviceId, mediaTaskId: $mediaTaskId, state: $state, errorCode: $errorCode)';
+  }
+}
+
 
 class _PigeonCodec extends StandardMessageCodec {
   const _PigeonCodec();
@@ -553,6 +1054,27 @@ class _PigeonCodec extends StandardMessageCodec {
     }    else if (value is HostPreferences) {
       buffer.putUint8(135);
       writeValue(buffer, value.encode());
+    }    else if (value is FilterSnapshotDto) {
+      buffer.putUint8(136);
+      writeValue(buffer, value.encode());
+    }    else if (value is FilterPolicyDto) {
+      buffer.putUint8(137);
+      writeValue(buffer, value.encode());
+    }    else if (value is HostFilterContextDto) {
+      buffer.putUint8(138);
+      writeValue(buffer, value.encode());
+    }    else if (value is MediaCandidateDto) {
+      buffer.putUint8(139);
+      writeValue(buffer, value.encode());
+    }    else if (value is MediaTaskDto) {
+      buffer.putUint8(140);
+      writeValue(buffer, value.encode());
+    }    else if (value is CastDeviceDto) {
+      buffer.putUint8(141);
+      writeValue(buffer, value.encode());
+    }    else if (value is CastSessionDto) {
+      buffer.putUint8(142);
+      writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
     }
@@ -576,6 +1098,20 @@ class _PigeonCodec extends StandardMessageCodec {
         return GmRequest.decode(readValue(buffer)!);
       case 135:
         return HostPreferences.decode(readValue(buffer)!);
+      case 136:
+        return FilterSnapshotDto.decode(readValue(buffer)!);
+      case 137:
+        return FilterPolicyDto.decode(readValue(buffer)!);
+      case 138:
+        return HostFilterContextDto.decode(readValue(buffer)!);
+      case 139:
+        return MediaCandidateDto.decode(readValue(buffer)!);
+      case 140:
+        return MediaTaskDto.decode(readValue(buffer)!);
+      case 141:
+        return CastDeviceDto.decode(readValue(buffer)!);
+      case 142:
+        return CastSessionDto.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
     }
@@ -664,6 +1200,26 @@ class WebHostApi {
       binaryMessenger: pigeonVar_binaryMessenger,
     );
     final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[hostId, scripts]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: true,
+    )
+    ;
+  }
+
+  /// Installs an immutable filter snapshot before the next document starts.
+  /// Native request callbacks must use this in-memory snapshot only.
+  Future<void> applyFilter(int hostId, HostFilterContextDto context, FilterPolicyDto policy, FilterSnapshotDto snapshot) async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.site_lens.WebHostApi.applyFilter$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[hostId, context, policy, snapshot]);
     final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
 
     _extractReplyValueOrThrow(

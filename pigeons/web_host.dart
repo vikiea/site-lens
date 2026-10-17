@@ -115,6 +115,133 @@ class HostPreferences {
   bool pullToRefresh;
 }
 
+/// Immutable filtering data passed to a native host.  The native side never
+/// reads the rules from disk or asks Dart during a WebView request callback;
+/// it receives a complete snapshot before navigation starts.
+class FilterSnapshotDto {
+  FilterSnapshotDto({
+    required this.id,
+    required this.version,
+    required this.sha256,
+    required this.state,
+    required this.rules,
+  });
+  String id;
+  String version;
+  String sha256;
+  String state;
+  String rules;
+}
+
+class FilterPolicyDto {
+  FilterPolicyDto({
+    required this.enabled,
+    required this.pageFiltering,
+    required this.domainExceptions,
+    required this.blockedDomains,
+  });
+  bool enabled;
+  bool pageFiltering;
+  List<String> domainExceptions;
+  List<String> blockedDomains;
+}
+
+class HostFilterContextDto {
+  HostFilterContextDto({
+    required this.hostId,
+    required this.generation,
+    required this.sourceUrl,
+    required this.snapshotId,
+  });
+  int hostId;
+  int generation;
+  String sourceUrl;
+  String snapshotId;
+}
+
+/// Candidate/task/cast DTOs deliberately contain no cookie, authorization,
+/// Web Storage or native file path.  They are snapshots for UI/native calls;
+/// Dart remains the authority for authorization and persistence.
+class MediaCandidateDto {
+  MediaCandidateDto({
+    required this.id,
+    required this.hostId,
+    required this.generation,
+    required this.sourceUrl,
+    required this.mediaUrl,
+    required this.title,
+    required this.mime,
+    required this.source,
+    this.durationMs,
+  });
+  String id;
+  int hostId;
+  int generation;
+  String sourceUrl;
+  String mediaUrl;
+  String title;
+  String mime;
+  String source;
+  int? durationMs;
+}
+
+class MediaTaskDto {
+  MediaTaskDto({
+    required this.id,
+    required this.candidateId,
+    required this.hostId,
+    required this.generation,
+    required this.state,
+    required this.cacheKey,
+    required this.bytesDownloaded,
+    required this.totalBytes,
+    required this.errorCode,
+  });
+  String id;
+  String candidateId;
+  int hostId;
+  int generation;
+  String state;
+  String cacheKey;
+  int bytesDownloaded;
+  int? totalBytes;
+  String? errorCode;
+}
+
+class CastDeviceDto {
+  CastDeviceDto({
+    required this.id,
+    required this.name,
+    required this.address,
+    required this.model,
+    required this.supportsMp4,
+    required this.supportsHls,
+    required this.supportsSeek,
+  });
+  String id;
+  String name;
+  String address;
+  String? model;
+  bool supportsMp4;
+  bool supportsHls;
+  bool supportsSeek;
+}
+
+class CastSessionDto {
+  CastSessionDto({
+    required this.id,
+    required this.deviceId,
+    required this.mediaTaskId,
+    required this.state,
+    required this.errorCode,
+  });
+  String id;
+  String deviceId;
+  String mediaTaskId;
+  String state;
+  String? errorCode;
+}
+
 @HostApi()
 abstract class WebHostApi {
   HostCapabilities create(
@@ -126,6 +253,14 @@ abstract class WebHostApi {
   /// Returns false when the native host cannot enforce background media policy.
   bool setHostActivity(int hostId, bool isCurrent, bool visible, bool foreground, bool allowBackgroundPlayback);
   void registerScripts(int hostId, List<ScriptRegistration> scripts);
+  /// Installs an immutable filter snapshot before the next document starts.
+  /// Native request callbacks must use this in-memory snapshot only.
+  void applyFilter(
+    int hostId,
+    HostFilterContextDto context,
+    FilterPolicyDto policy,
+    FilterSnapshotDto snapshot,
+  );
   void navigate(int hostId, String url);
   void reload(int hostId);
   bool goBack(int hostId);

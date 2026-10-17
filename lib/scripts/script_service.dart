@@ -39,9 +39,49 @@ class ScriptService {
     return script;
   }
 
-  Future<void> enable(InstalledScript script, Cancellation cancel) async {
+  /// Disable a script and revoke its approval atomically. A later enable must
+  /// re-pin dependencies and receive a fresh user confirmation.
+  Future<void> disable(String id) async {
+    await db.clearScriptApproval(id);
+  }
+
+  Future<void> setNetworkMode(
+    String id,
+    ScriptNetworkMode mode, {
+    String? reason,
+    bool publicConfirmed = false,
+  }) async {
+    await db.setScriptApprovalMode(
+      id,
+      mode,
+      reason: reason,
+      publicConfirmed: publicConfirmed,
+    );
+  }
+
+  Future<void> enable(
+    InstalledScript script,
+    Cancellation cancel, {
+    ScriptNetworkMode? networkMode,
+    String? approvalReason,
+    bool publicConfirmed = false,
+  }) async {
     final metadata = ScriptMetadata.parse(script.source);
     if (!metadata.canEnable) throw StateError(metadata.errors.join('\n'));
+    final mode = networkMode ?? script.networkMode;
+    if (mode == ScriptNetworkMode.public &&
+        !publicConfirmed &&
+        !script.publicConfirmed) {
+      throw StateError('public 联网模式必须逐脚本确认');
+    }
+    if (mode == ScriptNetworkMode.declared &&
+        metadata.connect.isEmpty &&
+        metadata.grants.any(
+          (grant) =>
+              grant == 'GM_xmlhttpRequest' || grant == 'GM.xmlHttpRequest',
+        )) {
+      throw StateError('声明式联网模式需要至少一个 @connect');
+    }
     final existing = await db.dependencies(script.id);
     final pinned = <PinnedDependency>[];
     for (final uri in metadata.requires) {
@@ -123,7 +163,27 @@ class ScriptService {
       await db.setScriptEnabled(
         script.id,
         true,
-        digest: metadata.digest(script.source, pinned, pinnedResources),
+        digest: metadata.digest(
+          script.source,
+          pinned,
+          pinnedResources,
+          mode,
+          approvalReason ?? script.approvalReason,
+        ),
+      );
+      await db.customStatement(
+        'INSERT INTO script_approvals(script_id,network_mode,approval_reason,public_confirmed) VALUES(?,?,?,?) '
+        'ON CONFLICT(script_id) DO UPDATE SET network_mode=excluded.network_mode,approval_reason=excluded.approval_reason,public_confirmed=excluded.public_confirmed',
+        [
+          script.id,
+          mode.name,
+          approvalReason ?? script.approvalReason,
+          mode == ScriptNetworkMode.public ||
+                  publicConfirmed ||
+                  script.publicConfirmed
+              ? 1
+              : 0,
+        ],
       );
     });
   }
@@ -147,6 +207,7 @@ class ScriptService {
                 sha256.convert(deps[i].bytes).toString() == deps[i].hash,
           ).every((b) => b);
       final resources = await db.resources(script.id);
+      final mode = script.networkMode;
       final resourcesIntact =
           metadata.resources.length == resources.length &&
           List.generate(
@@ -157,14 +218,35 @@ class ScriptService {
                 sha256.convert(resources[i].bytes).toString() ==
                     resources[i].hash,
           ).every((b) => b);
+      final currentDigest = metadata.digest(
+        script.source,
+        deps,
+        resources,
+        mode,
+        script.approvalReason,
+      );
+      final legacyDigest = metadata.legacyDigest(
+        script.source,
+        deps,
+        resources,
+      );
+      final legacyApproval =
+          script.approvedDigest == legacyDigest &&
+          mode == ScriptNetworkMode.declared &&
+          !script.publicConfirmed;
       if (!metadata.canEnable ||
           !intact ||
           !resourcesIntact ||
-          script.approvedDigest !=
-              metadata.digest(script.source, deps, resources)) {
+          (script.approvedDigest != currentDigest && !legacyApproval) ||
+          (mode == ScriptNetworkMode.public && !script.publicConfirmed)) {
         await db.setScriptEnabled(script.id, false);
         await db.logScriptError(script.id, '确认或依赖完整性已失效，自动关闭');
         continue;
+      }
+      if (legacyApproval) {
+        // Upgrade the local approval in place. This does not enable an
+        // imported/backup script because imported scripts have no digest.
+        await db.setScriptEnabled(script.id, true, digest: currentDigest);
       }
       final sourcePath = await _writeSourceFile(script);
       final config = jsonEncode({
@@ -177,6 +259,8 @@ class ScriptService {
             'description': metadata.description,
             'matches': metadata.matches.map((rule) => rule.pattern).toList(),
             'grants': metadata.grants.toList(),
+            'networkMode': mode.name,
+            'approvalReason': script.approvalReason,
           },
         },
         'rules': jsonDecode(metadata.rulesJson),
@@ -186,12 +270,13 @@ class ScriptService {
         'runAt': metadata.runAt,
         'dependencies': deps.map((d) => d.text).toList(),
         'resources': {for (final r in resources) r.name: r.text},
+        'siteLens': {'networkMode': mode.name},
         'source': scriptSourcePlaceholder,
       });
       result.add(
         ScriptRegistration(
           id: script.id,
-          revision: script.approvedDigest!,
+          revision: currentDigest,
           privileged: !metadata.pageWorld,
           rulesJson: metadata.rulesJson,
           source: runtime.replaceFirst('__LENS_CONFIG__', config),

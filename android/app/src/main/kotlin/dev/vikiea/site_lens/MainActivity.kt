@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
+import android.net.wifi.WifiManager
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import androidx.webkit.ProfileStore
@@ -27,6 +28,10 @@ class MainActivity : FlutterActivity() {
     private var hosts: NativeWebHostRegistry? = null
     private var pendingNotification: Pair<String, String>? = null
     private var notificationPermissionAsked = false
+    private var nativeMedia: NativeMediaRuntime? = null
+    private var nativeDownloads: NativeDownloadRuntime? = null
+    private var nativeExport: NativeExportRuntime? = null
+    private var dlnaMulticastLock: WifiManager.MulticastLock? = null
 
     private fun postNotification(title: String, body: String) {
         val manager = getSystemService(NotificationManager::class.java)
@@ -73,6 +78,10 @@ class MainActivity : FlutterActivity() {
         hosts = NativeWebHostRegistry(this, flutterEngine)
         registerDeviceChannel(flutterEngine)
         registerUpdateChannel(flutterEngine)
+        registerNativeMediaChannel(flutterEngine)
+        registerNativeDownloadChannel(flutterEngine)
+        registerNativeExportChannel(flutterEngine)
+        registerDlnaChannel(flutterEngine)
     }
 
     private fun registerDeviceChannel(flutterEngine: FlutterEngine) {
@@ -143,6 +152,46 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    private fun registerNativeMediaChannel(flutterEngine: FlutterEngine) {
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/native_media")
+        nativeMedia = NativeMediaRuntime(this).also { it.attach(channel) }
+    }
+
+    private fun registerNativeDownloadChannel(flutterEngine: FlutterEngine) {
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/native_download")
+        nativeDownloads = NativeDownloadRuntime(this).also { channel.setMethodCallHandler(it) }
+    }
+
+    private fun registerNativeExportChannel(flutterEngine: FlutterEngine) {
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/native_export")
+        nativeExport = NativeExportRuntime(this).also { channel.setMethodCallHandler(it) }
+    }
+
+    private fun registerDlnaChannel(flutterEngine: FlutterEngine) {
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/dlna")
+            .setMethodCallHandler { call, result ->
+                val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                when (call.method) {
+                    "acquireMulticastLock" -> {
+                        if (dlnaMulticastLock == null) {
+                            dlnaMulticastLock = wifi.createMulticastLock("site-lens-dlna").apply {
+                                setReferenceCounted(false)
+                                acquire()
+                            }
+                        } else if (dlnaMulticastLock?.isHeld != true) {
+                            dlnaMulticastLock?.acquire()
+                        }
+                        result.success(null)
+                    }
+                    "releaseMulticastLock" -> {
+                        dlnaMulticastLock?.takeIf { it.isHeld }?.release()
+                        result.success(null)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
     }
 
     private fun canInstallPackages(): Boolean =
@@ -242,6 +291,11 @@ class MainActivity : FlutterActivity() {
     override fun onResume() { super.onResume(); hosts?.foreground(true) }
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
         hosts?.dispose(); hosts = null
+        nativeMedia?.dispose(); nativeMedia = null
+        nativeDownloads?.let { nativeDownloads = null }
+        nativeExport?.let { nativeExport = null }
+        dlnaMulticastLock?.takeIf { it.isHeld }?.release()
+        dlnaMulticastLock = null
         super.cleanUpFlutterEngine(flutterEngine)
     }
 

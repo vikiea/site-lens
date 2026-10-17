@@ -1,0 +1,559 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:crypto/crypto.dart';
+import 'package:flutter/services.dart';
+
+import '../domain/models.dart';
+import 'media_service.dart';
+
+/// Minimal SSDP/AVTransport implementation for a single user-selected DLNA
+/// session. Discovery and SOAP are intentionally separate from the relay so a
+/// device can be used with a public MP4 URL without opening a server.
+class DlnaDiscovery {
+  const DlnaDiscovery({this.timeout = const Duration(seconds: 2)});
+  final Duration timeout;
+
+  Future<List<CastDevice>> discover() async {
+    final multicast = _DlnaMulticastLock();
+    await multicast.acquire();
+    final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+    socket.broadcastEnabled = true;
+    final request = utf8.encode(
+      'M-SEARCH * HTTP/1.1\r\n'
+      'HOST: 239.255.255.250:1900\r\n'
+      'MAN: "ssdp:discover"\r\n'
+      'MX: 1\r\n'
+      'ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n',
+    );
+    final byLocation = <String, _SsdpResponse>{};
+    final completer = Completer<void>();
+    final timer = Timer(timeout, () {
+      if (!completer.isCompleted) completer.complete();
+    });
+    socket.listen((event) {
+      if (event != RawSocketEvent.read) return;
+      final datagram = socket.receive();
+      if (datagram == null) return;
+      final response = _SsdpResponse.parse(
+        utf8.decode(datagram.data, allowMalformed: true),
+      );
+      if (response.location != null) byLocation[response.location!] = response;
+    });
+    socket.send(request, InternetAddress('239.255.255.250'), 1900);
+    await completer.future;
+    timer.cancel();
+    socket.close();
+    await multicast.release();
+    final devices = <CastDevice>[];
+    for (final response in byLocation.values) {
+      final device = await _readDevice(response);
+      if (device != null) devices.add(device);
+    }
+    return List.unmodifiable(devices);
+  }
+
+  Future<CastDevice?> _readDevice(_SsdpResponse response) async {
+    final location = response.location;
+    if (location == null) return null;
+    final uri = Uri.tryParse(location);
+    if (uri == null || uri.scheme != 'http' || uri.host.isEmpty) return null;
+    final client = HttpClient()..connectionTimeout = timeout;
+    try {
+      final request = await client.getUrl(uri).timeout(timeout);
+      final body = await (await request.close())
+          .transform(utf8.decoder)
+          .join()
+          .timeout(timeout);
+      final friendly = _xmlTag(body, 'friendlyName') ?? uri.host;
+      final model = _xmlTag(body, 'modelName');
+      final control = _controlUrl(body, uri);
+      if (control == null) return null;
+      final protocolInfo = _xmlTag(body, 'sink') ?? body;
+      final id = sha256
+          .convert(utf8.encode(control.toString()))
+          .toString()
+          .substring(0, 24);
+      return CastDevice(
+        id: id,
+        name: friendly,
+        address: control,
+        model: model,
+        supportsMp4:
+            protocolInfo.toLowerCase().contains('video/mp4') ||
+            protocolInfo == body,
+        supportsHls:
+            protocolInfo.toLowerCase().contains('mpegurl') ||
+            protocolInfo.toLowerCase().contains('m3u8'),
+        supportsSeek: true,
+      );
+    } catch (_) {
+      return null;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  String? _xmlTag(String source, String name) => RegExp(
+    '<(?:[A-Za-z0-9_.-]+:)?$name[^>]*>([^<]*)<',
+    caseSensitive: false,
+  ).firstMatch(source)?.group(1)?.trim();
+
+  Uri? _controlUrl(String source, Uri base) {
+    final matches =
+        RegExp(
+              r'<(?:[A-Za-z0-9_.-]+:)?service[^>]*>.*?<controlURL>([^<]+)</controlURL>.*?</(?:[A-Za-z0-9_.-]+:)?service>',
+              caseSensitive: false,
+              dotAll: true,
+            )
+            .allMatches(source)
+            .where(
+              (match) =>
+                  (match.group(0) ?? '').toLowerCase().contains('avtransport'),
+            );
+    final service = matches.isEmpty ? null : matches.first;
+    if (service == null) return null;
+    final raw = service.group(1);
+    return raw == null ? null : base.resolve(raw.trim());
+  }
+}
+
+class _DlnaMulticastLock {
+  const _DlnaMulticastLock();
+  static const _channel = MethodChannel('site_lens/dlna');
+
+  Future<void> acquire() async {
+    try {
+      await _channel.invokeMethod<void>('acquireMulticastLock');
+    } on MissingPluginException {
+      // iOS and desktop use the system network stack without an Android lock.
+    }
+  }
+
+  Future<void> release() async {
+    try {
+      await _channel.invokeMethod<void>('releaseMulticastLock');
+    } on MissingPluginException {
+      // No-op outside Android.
+    }
+  }
+}
+
+class _SsdpResponse {
+  const _SsdpResponse(this.location);
+  final String? location;
+
+  static _SsdpResponse parse(String source) {
+    for (final line in source.split(RegExp(r'\r?\n'))) {
+      final separator = line.indexOf(':');
+      if (separator <= 0) continue;
+      if (line.substring(0, separator).trim().toLowerCase() == 'location') {
+        return _SsdpResponse(line.substring(separator + 1).trim());
+      }
+    }
+    return const _SsdpResponse(null);
+  }
+}
+
+class DlnaSoapClient {
+  DlnaSoapClient(this.controlUrl, {HttpClient? client})
+    : _client = client ?? HttpClient();
+  final Uri controlUrl;
+  final HttpClient _client;
+
+  Future<void> setMedia(
+    Uri mediaUrl, {
+    String mime = 'video/mp4',
+    String title = 'Site Lens',
+  }) => _action(
+    'SetAVTransportURI',
+    '<InstanceID>0</InstanceID><CurrentURI>${_xml(mediaUrl.toString())}</CurrentURI><CurrentURIMetaData>${_xml(_metadata(mediaUrl, mime, title))}</CurrentURIMetaData>',
+  );
+  Future<void> play() =>
+      _action('Play', '<InstanceID>0</InstanceID><Speed>1</Speed>');
+  Future<void> pause() => _action('Pause', '<InstanceID>0</InstanceID>');
+  Future<void> stop() => _action('Stop', '<InstanceID>0</InstanceID>');
+  Future<void> seek(Duration position) => _action(
+    'Seek',
+    '<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>${_clock(position)}</Target>',
+  );
+
+  /// Queries the renderer's ConnectionManager protocol list when the caller
+  /// has a control URL for that service. The raw response is kept out of the
+  /// task model; [supportsProtocol] performs a narrow capability check.
+  Future<String> getProtocolInfo() => _actionResponse(
+    'GetProtocolInfo',
+    '<Source></Source><Sink></Sink>',
+    serviceType: 'urn:schemas-upnp-org:service:ConnectionManager:1',
+  );
+
+  bool supportsProtocol(String protocolInfo, {required String mime}) =>
+      protocolInfo.toLowerCase().contains(mime.toLowerCase()) ||
+      protocolInfo.toLowerCase().contains('*:*:*');
+
+  Future<void> _action(String action, String arguments) async {
+    await _actionResponse(action, arguments);
+  }
+
+  Future<String> _actionResponse(
+    String action,
+    String arguments, {
+    String serviceType = 'urn:schemas-upnp-org:service:AVTransport:1',
+  }) async {
+    final body =
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+        '<s:Body><u:$action xmlns:u="$serviceType">$arguments</u:$action></s:Body></s:Envelope>';
+    final request = await _client.postUrl(controlUrl);
+    request.headers.contentType = ContentType('text', 'xml', charset: 'utf-8');
+    request.headers.set('SOAPACTION', '"$serviceType#$action"');
+    request.write(body);
+    final response = await request.close();
+    final text = await response.transform(utf8.decoder).join();
+    if (response.statusCode < 200 ||
+        response.statusCode >= 300 ||
+        text.contains('<s:Fault')) {
+      throw StateError('DLNA SOAP $action failed (${response.statusCode})');
+    }
+    return text;
+  }
+
+  static String _xml(String value) => const HtmlEscape().convert(value);
+  static String _clock(Duration value) {
+    final hours = value.inHours.toString().padLeft(2, '0');
+    final minutes = (value.inMinutes % 60).toString().padLeft(2, '0');
+    final seconds = (value.inSeconds % 60).toString().padLeft(2, '0');
+    return '$hours:$minutes:$seconds';
+  }
+
+  static String _metadata(Uri media, String mime, String title) =>
+      '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
+      '<item id="0" parentID="-1" restricted="1"><dc:title>${_xml(title)}</dc:title><upnp:class>object.item.videoItem</upnp:class><res protocolInfo="http-get:*:$mime:*">${_xml(media.toString())}</res></item></DIDL-Lite>';
+
+  void close() => _client.close(force: true);
+}
+
+/// Couples the protocol client to the Dart single-session state machine. The
+/// caller supplies a public URL or a [MediaRelayServer.url] that was issued
+/// for the selected task; the SOAP client never receives browser credentials.
+class DlnaCastController {
+  DlnaCastController(this.sessions);
+  final CastSessionController sessions;
+  DlnaSoapClient? _soap;
+  MediaRelayServer? _relay;
+
+  CastSession? get active => sessions.active;
+
+  Future<CastSession> cast({
+    required CastDevice device,
+    required String mediaTaskId,
+    required Uri mediaUrl,
+    File? localFile,
+    String mime = 'video/mp4',
+    String title = 'Site Lens',
+  }) async {
+    sessions.begin(device: device, mediaTaskId: mediaTaskId);
+    try {
+      sessions.transition(CastSessionState.connecting);
+      final soap = DlnaSoapClient(device.address);
+      _soap = soap;
+      if (localFile != null) {
+        final authorization = sessions.authorizeRelay(deviceId: device.id);
+        _relay = await MediaRelayServer.start(
+          authorization: authorization,
+          file: localFile,
+          allowedRoot: localFile.parent,
+        );
+        mediaUrl = _relay!.url;
+      }
+      sessions.transition(CastSessionState.settingMedia);
+      await soap.setMedia(mediaUrl, mime: mime, title: title);
+      await soap.play();
+      return sessions.transition(CastSessionState.playing);
+    } catch (error) {
+      _soap?.close();
+      _soap = null;
+      await _relay?.close();
+      _relay = null;
+      sessions.transition(CastSessionState.failed, errorCode: error.toString());
+      rethrow;
+    }
+  }
+
+  Future<CastSession> pause() async {
+    final soap = _soap ?? (throw StateError('投屏会话不存在'));
+    await soap.pause();
+    return sessions.transition(CastSessionState.paused);
+  }
+
+  Future<CastSession> resume() async {
+    final soap = _soap ?? (throw StateError('投屏会话不存在'));
+    await soap.play();
+    return sessions.transition(CastSessionState.playing);
+  }
+
+  Future<CastSession> stop() async {
+    final soap = _soap;
+    if (soap != null) {
+      await soap.stop();
+      soap.close();
+    }
+    _soap = null;
+    await _relay?.close();
+    _relay = null;
+    return sessions.transition(CastSessionState.stopped);
+  }
+}
+
+/// Short-lived local relay for a previously authorized media task. Requests
+/// require the exact session/device/task token and can only read the supplied
+/// app-private file. It implements HEAD and byte ranges for TV clients.
+class MediaRelayServer {
+  MediaRelayServer._(
+    this._server,
+    this.authorization,
+    this._file,
+    this._advertisedHost,
+  );
+  final HttpServer _server;
+  final RelayAuthorization authorization;
+  final File _file;
+  final String _advertisedHost;
+
+  Uri get url => Uri.parse(
+    'http://$_advertisedHost:${_server.port}/media/${authorization.taskId}?token=${authorization.token}',
+  );
+
+  static Future<MediaRelayServer> start({
+    required RelayAuthorization authorization,
+    required File file,
+    Directory? allowedRoot,
+    String? advertisedHost,
+  }) async {
+    final root = (allowedRoot ?? file.parent).absolute;
+    final canonical = file.resolveSymbolicLinksSync();
+    final rootPath = root.resolveSymbolicLinksSync();
+    if (!(canonical == rootPath ||
+        canonical.startsWith('$rootPath${Platform.pathSeparator}'))) {
+      throw StateError(MediaErrorCode.relayDenied);
+    }
+    if (!await file.exists()) throw StateError(MediaErrorCode.relayDenied);
+    final server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
+    final host = advertisedHost ?? await _routableHost();
+    final relay = MediaRelayServer._(server, authorization, file, host);
+    server.listen(relay._handle);
+    return relay;
+  }
+
+  static Future<String> _routableHost() async {
+    final interfaces = await NetworkInterface.list(
+      type: InternetAddressType.IPv4,
+      includeLoopback: false,
+    );
+    for (final interface in interfaces) {
+      for (final address in interface.addresses) {
+        if (!address.isLoopback && address.address.isNotEmpty) {
+          return address.address;
+        }
+      }
+    }
+    throw StateError('没有可用于 DLNA 中继的局域网地址');
+  }
+
+  Future<void> _handle(HttpRequest request) async {
+    try {
+      const validator = RelayRequestValidator();
+      final range = validator.validate(
+        RelayRequest(
+          method: request.method,
+          range: request.headers.value('range'),
+        ),
+      );
+      final token = request.uri.queryParameters['token'];
+      if (token == null ||
+          token != authorization.token ||
+          authorization.expired ||
+          request.uri.pathSegments.length != 2 ||
+          request.uri.pathSegments[1] != authorization.taskId) {
+        request.response.statusCode = HttpStatus.forbidden;
+        await request.response.close();
+        return;
+      }
+      final length = await _file.length();
+      final start = range.start ?? 0;
+      final end = (range.end ?? length - 1).clamp(0, length - 1);
+      if (start >= length) {
+        request.response.statusCode = HttpStatus.requestedRangeNotSatisfiable;
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes */$length',
+        );
+        await request.response.close();
+        return;
+      }
+      request.response.headers.contentType = ContentType('video', 'mp4');
+      request.response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
+      request.response.headers.contentLength = end - start + 1;
+      if (range.start != null) {
+        request.response.statusCode = HttpStatus.partialContent;
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes $start-$end/$length',
+        );
+      }
+      if (request.method == 'HEAD') {
+        await request.response.close();
+        return;
+      }
+      await _file.openRead(start, end + 1).pipe(request.response);
+    } catch (_) {
+      request.response.statusCode = HttpStatus.forbidden;
+      await request.response.close();
+    }
+  }
+
+  Future<void> close() => _server.close(force: true);
+}
+
+/// Token-bound local HLS relay for receivers that cannot read the app's
+/// private cache. It rewrites only the selected manifest and its relative
+/// segments/keys; absolute or remote URIs are rejected rather than proxied.
+class HlsRelayServer {
+  HlsRelayServer._(this._server, this.authorization, this._root, this._host);
+
+  final HttpServer _server;
+  final RelayAuthorization authorization;
+  final Directory _root;
+  final String _host;
+
+  Uri get url => Uri.parse(
+    'http://$_host:${_server.port}/hls/${authorization.taskId}/index.m3u8?token=${authorization.token}',
+  );
+
+  static Future<HlsRelayServer> start({
+    required RelayAuthorization authorization,
+    required File playlist,
+    Directory? allowedRoot,
+    String? advertisedHost,
+  }) async {
+    final root = (allowedRoot ?? playlist.parent).absolute;
+    final canonicalRoot = root.resolveSymbolicLinksSync();
+    final canonicalPlaylist = playlist.resolveSymbolicLinksSync();
+    if (!canonicalPlaylist.startsWith(
+          '$canonicalRoot${Platform.pathSeparator}',
+        ) ||
+        !await playlist.exists()) {
+      throw StateError(MediaErrorCode.relayDenied);
+    }
+    final server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
+    final host = advertisedHost ?? await MediaRelayServer._routableHost();
+    final relay = HlsRelayServer._(server, authorization, root, host);
+    server.listen(relay._handle);
+    return relay;
+  }
+
+  Future<void> _handle(HttpRequest request) async {
+    try {
+      final token = request.uri.queryParameters['token'];
+      final prefix = '/hls/${authorization.taskId}/';
+      if (token != authorization.token ||
+          authorization.expired ||
+          (request.method != 'GET' && request.method != 'HEAD') ||
+          !request.uri.path.startsWith(prefix)) {
+        request.response.statusCode = HttpStatus.forbidden;
+        await request.response.close();
+        return;
+      }
+      final relative = request.uri.path.substring(prefix.length);
+      final file = File('${_root.path}/$relative').absolute;
+      final canonical = file.resolveSymbolicLinksSync();
+      final rootPath = _root.resolveSymbolicLinksSync();
+      if (!canonical.startsWith('$rootPath${Platform.pathSeparator}') ||
+          !await file.exists()) {
+        request.response.statusCode = HttpStatus.notFound;
+        await request.response.close();
+        return;
+      }
+      final isManifest = file.path.toLowerCase().endsWith('.m3u8');
+      request.response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
+      if (isManifest) {
+        final text = await file.readAsString();
+        final rewritten = _rewrite(text, file.parent);
+        request.response.headers.contentType = ContentType(
+          'application',
+          'vnd.apple.mpegurl',
+          charset: 'utf-8',
+        );
+        request.response.contentLength = utf8.encode(rewritten).length;
+        if (request.method == 'GET') request.response.write(rewritten);
+        await request.response.close();
+        return;
+      }
+      request.response.headers.contentType = _contentType(file.path);
+      request.response.contentLength = await file.length();
+      if (request.method == 'GET') {
+        await file.openRead().pipe(request.response);
+      } else {
+        await request.response.close();
+      }
+    } catch (_) {
+      request.response.statusCode = HttpStatus.forbidden;
+      await request.response.close();
+    }
+  }
+
+  String _rewrite(String source, Directory base) {
+    final lines = source.split(RegExp(r'\r?\n'));
+    return lines
+        .map((line) {
+          final match = RegExp(r'URI="([^"]+)"').firstMatch(line);
+          if (match != null) {
+            final uri = _relativeUri(base, match.group(1)!);
+            if (uri == null) throw StateError(MediaErrorCode.relayDenied);
+            return line.replaceRange(match.start + 5, match.end - 1, uri);
+          }
+          final value = line.trim();
+          if (value.isEmpty || value.startsWith('#')) return line;
+          final uri = _relativeUri(base, value);
+          if (uri == null) throw StateError(MediaErrorCode.relayDenied);
+          return uri;
+        })
+        .join('\n');
+  }
+
+  String? _relativeUri(Directory base, String raw) {
+    final parsed = Uri.tryParse(raw);
+    if (parsed == null ||
+        parsed.hasScheme ||
+        parsed.host.isNotEmpty ||
+        parsed.query.isNotEmpty ||
+        parsed.fragment.isNotEmpty ||
+        raw.startsWith('/')) {
+      return null;
+    }
+    final file = File('${base.path}/${parsed.path}').absolute;
+    final canonical = file.resolveSymbolicLinksSync();
+    final root = _root.resolveSymbolicLinksSync();
+    if (!canonical.startsWith('$root${Platform.pathSeparator}') ||
+        !file.existsSync()) {
+      throw StateError(MediaErrorCode.relayDenied);
+    }
+    final relative = canonical
+        .substring(root.length + 1)
+        .replaceAll(Platform.pathSeparator, '/');
+    return '/hls/${authorization.taskId}/$relative?token=${authorization.token}';
+  }
+
+  ContentType _contentType(String path) {
+    final lower = path.toLowerCase();
+    if (lower.endsWith('.ts')) return ContentType('video', 'mp2t');
+    if (lower.endsWith('.key')) {
+      return ContentType('application', 'octet-stream');
+    }
+    if (lower.endsWith('.mp4')) return ContentType('video', 'mp4');
+    return ContentType('application', 'octet-stream');
+  }
+
+  Future<void> close() => _server.close(force: true);
+}

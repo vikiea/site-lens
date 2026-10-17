@@ -546,6 +546,439 @@ struct HostPreferences: Hashable, CustomStringConvertible {
   }
 }
 
+/// Immutable filtering data passed to a native host.  The native side never
+/// reads the rules from disk or asks Dart during a WebView request callback;
+/// it receives a complete snapshot before navigation starts.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct FilterSnapshotDto: Hashable, CustomStringConvertible {
+  var id: String
+  var version: String
+  var sha256: String
+  var state: String
+  var rules: String
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> FilterSnapshotDto? {
+    let id = pigeonVar_list[0] as! String
+    let version = pigeonVar_list[1] as! String
+    let sha256 = pigeonVar_list[2] as! String
+    let state = pigeonVar_list[3] as! String
+    let rules = pigeonVar_list[4] as! String
+
+    return FilterSnapshotDto(
+      id: id,
+      version: version,
+      sha256: sha256,
+      state: state,
+      rules: rules
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      id,
+      version,
+      sha256,
+      state,
+      rules,
+    ]
+  }
+  static func == (lhs: FilterSnapshotDto, rhs: FilterSnapshotDto) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return WebHostPigeonInternal.deepEquals(lhs.id, rhs.id) && WebHostPigeonInternal.deepEquals(lhs.version, rhs.version) && WebHostPigeonInternal.deepEquals(lhs.sha256, rhs.sha256) && WebHostPigeonInternal.deepEquals(lhs.state, rhs.state) && WebHostPigeonInternal.deepEquals(lhs.rules, rhs.rules)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("FilterSnapshotDto")
+    WebHostPigeonInternal.deepHash(value: id, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: version, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: sha256, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: state, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: rules, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "FilterSnapshotDto(id: \(String(describing: id)), version: \(String(describing: version)), sha256: \(String(describing: sha256)), state: \(String(describing: state)), rules: \(String(describing: rules)))"
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct FilterPolicyDto: Hashable, CustomStringConvertible {
+  var enabled: Bool
+  var pageFiltering: Bool
+  var domainExceptions: [String]
+  var blockedDomains: [String]
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> FilterPolicyDto? {
+    let enabled = pigeonVar_list[0] as! Bool
+    let pageFiltering = pigeonVar_list[1] as! Bool
+    let domainExceptions = pigeonVar_list[2] as! [String]
+    let blockedDomains = pigeonVar_list[3] as! [String]
+
+    return FilterPolicyDto(
+      enabled: enabled,
+      pageFiltering: pageFiltering,
+      domainExceptions: domainExceptions,
+      blockedDomains: blockedDomains
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      enabled,
+      pageFiltering,
+      domainExceptions,
+      blockedDomains,
+    ]
+  }
+  static func == (lhs: FilterPolicyDto, rhs: FilterPolicyDto) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return WebHostPigeonInternal.deepEquals(lhs.enabled, rhs.enabled) && WebHostPigeonInternal.deepEquals(lhs.pageFiltering, rhs.pageFiltering) && WebHostPigeonInternal.deepEquals(lhs.domainExceptions, rhs.domainExceptions) && WebHostPigeonInternal.deepEquals(lhs.blockedDomains, rhs.blockedDomains)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("FilterPolicyDto")
+    WebHostPigeonInternal.deepHash(value: enabled, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: pageFiltering, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: domainExceptions, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: blockedDomains, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "FilterPolicyDto(enabled: \(String(describing: enabled)), pageFiltering: \(String(describing: pageFiltering)), domainExceptions: \(String(describing: domainExceptions)), blockedDomains: \(String(describing: blockedDomains)))"
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct HostFilterContextDto: Hashable, CustomStringConvertible {
+  var hostId: Int64
+  var generation: Int64
+  var sourceUrl: String
+  var snapshotId: String
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> HostFilterContextDto? {
+    let hostId = pigeonVar_list[0] as! Int64
+    let generation = pigeonVar_list[1] as! Int64
+    let sourceUrl = pigeonVar_list[2] as! String
+    let snapshotId = pigeonVar_list[3] as! String
+
+    return HostFilterContextDto(
+      hostId: hostId,
+      generation: generation,
+      sourceUrl: sourceUrl,
+      snapshotId: snapshotId
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      hostId,
+      generation,
+      sourceUrl,
+      snapshotId,
+    ]
+  }
+  static func == (lhs: HostFilterContextDto, rhs: HostFilterContextDto) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return WebHostPigeonInternal.deepEquals(lhs.hostId, rhs.hostId) && WebHostPigeonInternal.deepEquals(lhs.generation, rhs.generation) && WebHostPigeonInternal.deepEquals(lhs.sourceUrl, rhs.sourceUrl) && WebHostPigeonInternal.deepEquals(lhs.snapshotId, rhs.snapshotId)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("HostFilterContextDto")
+    WebHostPigeonInternal.deepHash(value: hostId, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: generation, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: sourceUrl, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: snapshotId, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "HostFilterContextDto(hostId: \(String(describing: hostId)), generation: \(String(describing: generation)), sourceUrl: \(String(describing: sourceUrl)), snapshotId: \(String(describing: snapshotId)))"
+  }
+}
+
+/// Candidate/task/cast DTOs deliberately contain no cookie, authorization,
+/// Web Storage or native file path.  They are snapshots for UI/native calls;
+/// Dart remains the authority for authorization and persistence.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct MediaCandidateDto: Hashable, CustomStringConvertible {
+  var id: String
+  var hostId: Int64
+  var generation: Int64
+  var sourceUrl: String
+  var mediaUrl: String
+  var title: String
+  var mime: String
+  var source: String
+  var durationMs: Int64? = nil
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> MediaCandidateDto? {
+    let id = pigeonVar_list[0] as! String
+    let hostId = pigeonVar_list[1] as! Int64
+    let generation = pigeonVar_list[2] as! Int64
+    let sourceUrl = pigeonVar_list[3] as! String
+    let mediaUrl = pigeonVar_list[4] as! String
+    let title = pigeonVar_list[5] as! String
+    let mime = pigeonVar_list[6] as! String
+    let source = pigeonVar_list[7] as! String
+    let durationMs: Int64? = nilOrValue(pigeonVar_list[8])
+
+    return MediaCandidateDto(
+      id: id,
+      hostId: hostId,
+      generation: generation,
+      sourceUrl: sourceUrl,
+      mediaUrl: mediaUrl,
+      title: title,
+      mime: mime,
+      source: source,
+      durationMs: durationMs
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      id,
+      hostId,
+      generation,
+      sourceUrl,
+      mediaUrl,
+      title,
+      mime,
+      source,
+      durationMs,
+    ]
+  }
+  static func == (lhs: MediaCandidateDto, rhs: MediaCandidateDto) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return WebHostPigeonInternal.deepEquals(lhs.id, rhs.id) && WebHostPigeonInternal.deepEquals(lhs.hostId, rhs.hostId) && WebHostPigeonInternal.deepEquals(lhs.generation, rhs.generation) && WebHostPigeonInternal.deepEquals(lhs.sourceUrl, rhs.sourceUrl) && WebHostPigeonInternal.deepEquals(lhs.mediaUrl, rhs.mediaUrl) && WebHostPigeonInternal.deepEquals(lhs.title, rhs.title) && WebHostPigeonInternal.deepEquals(lhs.mime, rhs.mime) && WebHostPigeonInternal.deepEquals(lhs.source, rhs.source) && WebHostPigeonInternal.deepEquals(lhs.durationMs, rhs.durationMs)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("MediaCandidateDto")
+    WebHostPigeonInternal.deepHash(value: id, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: hostId, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: generation, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: sourceUrl, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: mediaUrl, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: title, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: mime, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: source, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: durationMs, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "MediaCandidateDto(id: \(String(describing: id)), hostId: \(String(describing: hostId)), generation: \(String(describing: generation)), sourceUrl: \(String(describing: sourceUrl)), mediaUrl: \(String(describing: mediaUrl)), title: \(String(describing: title)), mime: \(String(describing: mime)), source: \(String(describing: source)), durationMs: \(String(describing: durationMs)))"
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct MediaTaskDto: Hashable, CustomStringConvertible {
+  var id: String
+  var candidateId: String
+  var hostId: Int64
+  var generation: Int64
+  var state: String
+  var cacheKey: String
+  var bytesDownloaded: Int64
+  var totalBytes: Int64? = nil
+  var errorCode: String? = nil
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> MediaTaskDto? {
+    let id = pigeonVar_list[0] as! String
+    let candidateId = pigeonVar_list[1] as! String
+    let hostId = pigeonVar_list[2] as! Int64
+    let generation = pigeonVar_list[3] as! Int64
+    let state = pigeonVar_list[4] as! String
+    let cacheKey = pigeonVar_list[5] as! String
+    let bytesDownloaded = pigeonVar_list[6] as! Int64
+    let totalBytes: Int64? = nilOrValue(pigeonVar_list[7])
+    let errorCode: String? = nilOrValue(pigeonVar_list[8])
+
+    return MediaTaskDto(
+      id: id,
+      candidateId: candidateId,
+      hostId: hostId,
+      generation: generation,
+      state: state,
+      cacheKey: cacheKey,
+      bytesDownloaded: bytesDownloaded,
+      totalBytes: totalBytes,
+      errorCode: errorCode
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      id,
+      candidateId,
+      hostId,
+      generation,
+      state,
+      cacheKey,
+      bytesDownloaded,
+      totalBytes,
+      errorCode,
+    ]
+  }
+  static func == (lhs: MediaTaskDto, rhs: MediaTaskDto) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return WebHostPigeonInternal.deepEquals(lhs.id, rhs.id) && WebHostPigeonInternal.deepEquals(lhs.candidateId, rhs.candidateId) && WebHostPigeonInternal.deepEquals(lhs.hostId, rhs.hostId) && WebHostPigeonInternal.deepEquals(lhs.generation, rhs.generation) && WebHostPigeonInternal.deepEquals(lhs.state, rhs.state) && WebHostPigeonInternal.deepEquals(lhs.cacheKey, rhs.cacheKey) && WebHostPigeonInternal.deepEquals(lhs.bytesDownloaded, rhs.bytesDownloaded) && WebHostPigeonInternal.deepEquals(lhs.totalBytes, rhs.totalBytes) && WebHostPigeonInternal.deepEquals(lhs.errorCode, rhs.errorCode)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("MediaTaskDto")
+    WebHostPigeonInternal.deepHash(value: id, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: candidateId, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: hostId, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: generation, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: state, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: cacheKey, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: bytesDownloaded, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: totalBytes, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: errorCode, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "MediaTaskDto(id: \(String(describing: id)), candidateId: \(String(describing: candidateId)), hostId: \(String(describing: hostId)), generation: \(String(describing: generation)), state: \(String(describing: state)), cacheKey: \(String(describing: cacheKey)), bytesDownloaded: \(String(describing: bytesDownloaded)), totalBytes: \(String(describing: totalBytes)), errorCode: \(String(describing: errorCode)))"
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct CastDeviceDto: Hashable, CustomStringConvertible {
+  var id: String
+  var name: String
+  var address: String
+  var model: String? = nil
+  var supportsMp4: Bool
+  var supportsHls: Bool
+  var supportsSeek: Bool
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> CastDeviceDto? {
+    let id = pigeonVar_list[0] as! String
+    let name = pigeonVar_list[1] as! String
+    let address = pigeonVar_list[2] as! String
+    let model: String? = nilOrValue(pigeonVar_list[3])
+    let supportsMp4 = pigeonVar_list[4] as! Bool
+    let supportsHls = pigeonVar_list[5] as! Bool
+    let supportsSeek = pigeonVar_list[6] as! Bool
+
+    return CastDeviceDto(
+      id: id,
+      name: name,
+      address: address,
+      model: model,
+      supportsMp4: supportsMp4,
+      supportsHls: supportsHls,
+      supportsSeek: supportsSeek
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      id,
+      name,
+      address,
+      model,
+      supportsMp4,
+      supportsHls,
+      supportsSeek,
+    ]
+  }
+  static func == (lhs: CastDeviceDto, rhs: CastDeviceDto) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return WebHostPigeonInternal.deepEquals(lhs.id, rhs.id) && WebHostPigeonInternal.deepEquals(lhs.name, rhs.name) && WebHostPigeonInternal.deepEquals(lhs.address, rhs.address) && WebHostPigeonInternal.deepEquals(lhs.model, rhs.model) && WebHostPigeonInternal.deepEquals(lhs.supportsMp4, rhs.supportsMp4) && WebHostPigeonInternal.deepEquals(lhs.supportsHls, rhs.supportsHls) && WebHostPigeonInternal.deepEquals(lhs.supportsSeek, rhs.supportsSeek)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("CastDeviceDto")
+    WebHostPigeonInternal.deepHash(value: id, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: name, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: address, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: model, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: supportsMp4, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: supportsHls, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: supportsSeek, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "CastDeviceDto(id: \(String(describing: id)), name: \(String(describing: name)), address: \(String(describing: address)), model: \(String(describing: model)), supportsMp4: \(String(describing: supportsMp4)), supportsHls: \(String(describing: supportsHls)), supportsSeek: \(String(describing: supportsSeek)))"
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct CastSessionDto: Hashable, CustomStringConvertible {
+  var id: String
+  var deviceId: String
+  var mediaTaskId: String
+  var state: String
+  var errorCode: String? = nil
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> CastSessionDto? {
+    let id = pigeonVar_list[0] as! String
+    let deviceId = pigeonVar_list[1] as! String
+    let mediaTaskId = pigeonVar_list[2] as! String
+    let state = pigeonVar_list[3] as! String
+    let errorCode: String? = nilOrValue(pigeonVar_list[4])
+
+    return CastSessionDto(
+      id: id,
+      deviceId: deviceId,
+      mediaTaskId: mediaTaskId,
+      state: state,
+      errorCode: errorCode
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      id,
+      deviceId,
+      mediaTaskId,
+      state,
+      errorCode,
+    ]
+  }
+  static func == (lhs: CastSessionDto, rhs: CastSessionDto) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return WebHostPigeonInternal.deepEquals(lhs.id, rhs.id) && WebHostPigeonInternal.deepEquals(lhs.deviceId, rhs.deviceId) && WebHostPigeonInternal.deepEquals(lhs.mediaTaskId, rhs.mediaTaskId) && WebHostPigeonInternal.deepEquals(lhs.state, rhs.state) && WebHostPigeonInternal.deepEquals(lhs.errorCode, rhs.errorCode)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("CastSessionDto")
+    WebHostPigeonInternal.deepHash(value: id, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: deviceId, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: mediaTaskId, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: state, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: errorCode, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "CastSessionDto(id: \(String(describing: id)), deviceId: \(String(describing: deviceId)), mediaTaskId: \(String(describing: mediaTaskId)), state: \(String(describing: state)), errorCode: \(String(describing: errorCode)))"
+  }
+}
+
 private class WebHostPigeonCodecReader: FlutterStandardReader {
   override func readValue(ofType type: UInt8) -> Any? {
     switch type {
@@ -567,6 +1000,20 @@ private class WebHostPigeonCodecReader: FlutterStandardReader {
       return GmRequest.fromList(self.readValue() as! [Any?])
     case 135:
       return HostPreferences.fromList(self.readValue() as! [Any?])
+    case 136:
+      return FilterSnapshotDto.fromList(self.readValue() as! [Any?])
+    case 137:
+      return FilterPolicyDto.fromList(self.readValue() as! [Any?])
+    case 138:
+      return HostFilterContextDto.fromList(self.readValue() as! [Any?])
+    case 139:
+      return MediaCandidateDto.fromList(self.readValue() as! [Any?])
+    case 140:
+      return MediaTaskDto.fromList(self.readValue() as! [Any?])
+    case 141:
+      return CastDeviceDto.fromList(self.readValue() as! [Any?])
+    case 142:
+      return CastSessionDto.fromList(self.readValue() as! [Any?])
     default:
       return super.readValue(ofType: type)
     }
@@ -596,6 +1043,27 @@ private class WebHostPigeonCodecWriter: FlutterStandardWriter {
     } else if let value = value as? HostPreferences {
       super.writeByte(135)
       super.writeValue(value.toList())
+    } else if let value = value as? FilterSnapshotDto {
+      super.writeByte(136)
+      super.writeValue(value.toList())
+    } else if let value = value as? FilterPolicyDto {
+      super.writeByte(137)
+      super.writeValue(value.toList())
+    } else if let value = value as? HostFilterContextDto {
+      super.writeByte(138)
+      super.writeValue(value.toList())
+    } else if let value = value as? MediaCandidateDto {
+      super.writeByte(139)
+      super.writeValue(value.toList())
+    } else if let value = value as? MediaTaskDto {
+      super.writeByte(140)
+      super.writeValue(value.toList())
+    } else if let value = value as? CastDeviceDto {
+      super.writeByte(141)
+      super.writeValue(value.toList())
+    } else if let value = value as? CastSessionDto {
+      super.writeByte(142)
+      super.writeValue(value.toList())
     } else {
       super.writeValue(value)
     }
@@ -624,6 +1092,9 @@ protocol WebHostApi {
   /// Returns false when the native host cannot enforce background media policy.
   func setHostActivity(hostId: Int64, isCurrent: Bool, visible: Bool, foreground: Bool, allowBackgroundPlayback: Bool) throws -> Bool
   func registerScripts(hostId: Int64, scripts: [ScriptRegistration]) throws
+  /// Installs an immutable filter snapshot before the next document starts.
+  /// Native request callbacks must use this in-memory snapshot only.
+  func applyFilter(hostId: Int64, context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto) throws
   func navigate(hostId: Int64, url: String) throws
   func reload(hostId: Int64) throws
   func goBack(hostId: Int64) throws -> Bool
@@ -710,6 +1181,26 @@ class WebHostApiSetup {
       }
     } else {
       registerScriptsChannel.setMessageHandler(nil)
+    }
+    /// Installs an immutable filter snapshot before the next document starts.
+    /// Native request callbacks must use this in-memory snapshot only.
+    let applyFilterChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.site_lens.WebHostApi.applyFilter\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      applyFilterChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let hostIdArg = args[0] as! Int64
+        let contextArg = args[1] as! HostFilterContextDto
+        let policyArg = args[2] as! FilterPolicyDto
+        let snapshotArg = args[3] as! FilterSnapshotDto
+        do {
+          try api.applyFilter(hostId: hostIdArg, context: contextArg, policy: policyArg, snapshot: snapshotArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      applyFilterChannel.setMessageHandler(nil)
     }
     let navigateChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.site_lens.WebHostApi.navigate\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {

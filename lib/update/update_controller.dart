@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../settings/app_settings.dart';
 import 'update_service.dart';
 
 /// App-level owner of the software update flow.
@@ -60,12 +61,31 @@ class UpdateController extends ChangeNotifier with WidgetsBindingObserver {
   String? get installMessage => _installMessage;
   DateTime? get checkedAt => _checkedAt;
   UpdateDownloadState get downloadState => _downloadState;
+  UpdateChannel get channel => service.channel;
   UpdatePauseReason? get pauseReason => _pauseReason;
   int get received => _received;
   int? get total => _total;
   File? get readyApk => _readyApk;
   bool get downloading => _downloadState == UpdateDownloadState.downloading;
   bool get verifying => _downloadState == UpdateDownloadState.verifying;
+
+  /// Switches the release source without carrying a stable result or cache
+  /// into the beta channel. An active transfer must finish or be paused first.
+  Future<void> setChannel(UpdateChannel next) async {
+    if (service.channel == next) return;
+    if (busy) throw StateError('下载进行中，暂时不能切换更新渠道');
+    service.channel = next;
+    _release = null;
+    _checkMessage = null;
+    _error = null;
+    _readyApk = null;
+    _downloadState = UpdateDownloadState.idle;
+    _pauseReason = null;
+    _received = 0;
+    _total = null;
+    await _refreshLocalState();
+    _notify();
+  }
 
   /// A transfer is in flight; the check action stays disabled meanwhile.
   bool get busy => downloading || verifying;

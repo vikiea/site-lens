@@ -163,13 +163,23 @@ class InstalledScript {
     required this.source,
     this.enabled = false,
     this.approvedDigest,
+    this.networkMode = ScriptNetworkMode.declared,
+    this.approvalReason,
+    this.approvedAt,
+    this.publicConfirmed = false,
   });
   final String id;
   final String name;
   final String source;
   final bool enabled;
   final String? approvedDigest;
+  final ScriptNetworkMode networkMode;
+  final String? approvalReason;
+  final DateTime? approvedAt;
+  final bool publicConfirmed;
 }
+
+enum ScriptNetworkMode { declared, public }
 
 class PinnedDependency {
   const PinnedDependency({
@@ -371,4 +381,469 @@ class ReconResult {
   final bool challenge;
   final bool interactionRequired;
   final String? note;
+}
+
+/// Versioned filtering policy.  Policies contain user intent only; compiled
+/// rules and response bodies live in the app-private filter store.
+enum FilterSnapshotState {
+  missing,
+  downloading,
+  compiling,
+  valid,
+  corrupt,
+  failed,
+  degraded,
+}
+
+enum FilterDecision { allow, block, unsupported }
+
+enum FilterSourceStatus { missing, downloading, compiling, valid, failed }
+
+/// Metadata for a rule source. Rule text and compiled output stay in the
+/// application-private directory; this object is safe to persist or export.
+class FilterSource {
+  const FilterSource({
+    required this.id,
+    required this.label,
+    required this.url,
+    this.profileId,
+    this.kind = 'list',
+    this.version = '',
+    this.license = '',
+    this.sha256 = '',
+    this.status = FilterSourceStatus.missing,
+    this.fileRef,
+    this.refreshedAt,
+    this.error,
+  });
+
+  final int id;
+  final String label;
+  final Uri url;
+  final int? profileId;
+  final String kind;
+  final String version;
+  final String license;
+  final String sha256;
+  final FilterSourceStatus status;
+  final String? fileRef;
+  final DateTime? refreshedAt;
+  final String? error;
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'label': label,
+    'url': url.toString(),
+    'profileId': profileId,
+    'kind': kind,
+    'version': version,
+    'license': license,
+    'sha256': sha256,
+    'status': status.name,
+    'fileRef': fileRef,
+    'refreshedAt': refreshedAt?.toIso8601String(),
+    'error': error,
+  };
+
+  factory FilterSource.fromJson(Map<String, dynamic> json) => FilterSource(
+    id: (json['id'] as num).toInt(),
+    label: json['label'] as String? ?? '',
+    url: webUri(json['url'] as String),
+    profileId: (json['profileId'] as num?)?.toInt(),
+    kind: json['kind'] as String? ?? 'list',
+    version: json['version'] as String? ?? '',
+    license: json['license'] as String? ?? '',
+    sha256: json['sha256'] as String? ?? '',
+    status: FilterSourceStatus.values.byName(
+      json['status'] as String? ?? FilterSourceStatus.missing.name,
+    ),
+    fileRef: json['fileRef'] as String?,
+    refreshedAt: json['refreshedAt'] == null
+        ? null
+        : DateTime.parse(json['refreshedAt'] as String),
+    error: json['error'] as String?,
+  );
+}
+
+class FilterPolicy {
+  const FilterPolicy({
+    this.enabled = false,
+    this.pageFiltering = true,
+    this.domainExceptions = const <String>{},
+    this.blockedDomains = const <String>{},
+  });
+
+  final bool enabled;
+  final bool pageFiltering;
+  final Set<String> domainExceptions;
+  final Set<String> blockedDomains;
+
+  bool get isDefault =>
+      !enabled &&
+      pageFiltering &&
+      domainExceptions.isEmpty &&
+      blockedDomains.isEmpty;
+
+  FilterPolicy copyWith({
+    bool? enabled,
+    bool? pageFiltering,
+    Set<String>? domainExceptions,
+    Set<String>? blockedDomains,
+  }) => FilterPolicy(
+    enabled: enabled ?? this.enabled,
+    pageFiltering: pageFiltering ?? this.pageFiltering,
+    domainExceptions: domainExceptions ?? this.domainExceptions,
+    blockedDomains: blockedDomains ?? this.blockedDomains,
+  );
+
+  Map<String, Object?> toJson() => {
+    'enabled': enabled,
+    'pageFiltering': pageFiltering,
+    'domainExceptions': domainExceptions.toList()..sort(),
+    'blockedDomains': blockedDomains.toList()..sort(),
+  };
+
+  factory FilterPolicy.fromJson(Map<String, dynamic> json) => FilterPolicy(
+    enabled: json['enabled'] as bool? ?? false,
+    pageFiltering: json['pageFiltering'] as bool? ?? true,
+    domainExceptions: _stringSet(json['domainExceptions']),
+    blockedDomains: _stringSet(json['blockedDomains']),
+  );
+
+  static Set<String> _stringSet(Object? value) => value is List
+      ? value
+            .whereType<String>()
+            .map((v) => v.trim().toLowerCase())
+            .where((v) => v.isNotEmpty)
+            .toSet()
+      : <String>{};
+}
+
+class FilterSnapshot {
+  const FilterSnapshot({
+    required this.id,
+    required this.sourceId,
+    required this.version,
+    required this.sourceUrl,
+    required this.sha256,
+    required this.state,
+    required this.createdAt,
+    required this.fileRef,
+    this.unsupportedRuleCount = 0,
+    this.error,
+  });
+
+  final String id;
+  final int? sourceId;
+  final String version;
+  final Uri sourceUrl;
+  final String sha256;
+  final FilterSnapshotState state;
+  final DateTime createdAt;
+  final String fileRef;
+  final int unsupportedRuleCount;
+  final String? error;
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'sourceId': sourceId,
+    'version': version,
+    'sourceUrl': sourceUrl.toString(),
+    'sha256': sha256,
+    'state': state.name,
+    'createdAt': createdAt.toIso8601String(),
+    'fileRef': fileRef,
+    'unsupportedRuleCount': unsupportedRuleCount,
+    'error': error,
+  };
+
+  factory FilterSnapshot.fromJson(Map<String, dynamic> json) => FilterSnapshot(
+    id: json['id'] as String,
+    sourceId: json['sourceId'] as int?,
+    version: json['version'] as String? ?? '',
+    sourceUrl: webUri(json['sourceUrl'] as String),
+    sha256: json['sha256'] as String,
+    state: FilterSnapshotState.values.byName(json['state'] as String),
+    createdAt: DateTime.parse(json['createdAt'] as String),
+    fileRef: json['fileRef'] as String,
+    unsupportedRuleCount: (json['unsupportedRuleCount'] as num?)?.toInt() ?? 0,
+    error: json['error'] as String?,
+  );
+}
+
+/// Identity carried with every host-side filtering decision.
+class HostFilterContext {
+  const HostFilterContext({
+    required this.hostId,
+    required this.generation,
+    required this.sourceUrl,
+    required this.snapshotId,
+    this.profileId,
+  });
+
+  final int hostId;
+  final int generation;
+  final Uri sourceUrl;
+  final String snapshotId;
+  final int? profileId;
+}
+
+enum MediaCandidateSource { dom, registered }
+
+class MediaCandidate {
+  const MediaCandidate({
+    required this.id,
+    required this.hostId,
+    required this.generation,
+    required this.sourceUrl,
+    required this.mediaUrl,
+    required this.title,
+    required this.mime,
+    required this.source,
+    this.durationMs,
+    this.createdAt,
+  });
+
+  final String id;
+  final int hostId;
+  final int generation;
+  final Uri sourceUrl;
+  final Uri mediaUrl;
+  final String title;
+  final String mime;
+  final MediaCandidateSource source;
+  final int? durationMs;
+  final DateTime? createdAt;
+
+  bool get playable =>
+      ['http', 'https'].contains(mediaUrl.scheme) &&
+      mediaUrl.host.isNotEmpty &&
+      mediaUrl.userInfo.isEmpty &&
+      !mediaUrl.toString().startsWith('blob:');
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'hostId': hostId,
+    'generation': generation,
+    'sourceUrl': sourceUrl.toString(),
+    'mediaUrl': mediaUrl.toString(),
+    'title': title,
+    'mime': mime,
+    'source': source.name,
+    'durationMs': durationMs,
+    'createdAt': createdAt?.toIso8601String(),
+  };
+
+  factory MediaCandidate.fromJson(Map<String, dynamic> json) {
+    final source = webUri(json['sourceUrl'] as String);
+    final media = webUri(json['mediaUrl'] as String);
+    return MediaCandidate(
+      id: json['id'] as String,
+      hostId: (json['hostId'] as num).toInt(),
+      generation: (json['generation'] as num).toInt(),
+      sourceUrl: source,
+      mediaUrl: media,
+      title: (json['title'] as String? ?? '').substring(
+        0,
+        (json['title'] as String? ?? '').length.clamp(0, 512),
+      ),
+      mime: (json['mime'] as String? ?? '').substring(
+        0,
+        (json['mime'] as String? ?? '').length.clamp(0, 128),
+      ),
+      source: MediaCandidateSource.values.byName(json['source'] as String),
+      durationMs: (json['durationMs'] as num?)?.toInt(),
+      createdAt: json['createdAt'] == null
+          ? null
+          : DateTime.parse(json['createdAt'] as String),
+    );
+  }
+}
+
+enum MediaTaskState {
+  queued,
+  downloading,
+  paused,
+  completed,
+  playable,
+  cancelled,
+  failed,
+  reauthorize,
+}
+
+class MediaTask {
+  const MediaTask({
+    required this.id,
+    required this.candidateId,
+    required this.hostId,
+    required this.generation,
+    required this.sourceUrl,
+    required this.cacheKey,
+    required this.state,
+    required this.updatedAt,
+    this.bytesDownloaded = 0,
+    this.totalBytes,
+    this.errorCode,
+    this.localRef,
+  });
+
+  final String id;
+  final String candidateId;
+  final int hostId;
+  final int generation;
+  final Uri sourceUrl;
+  final String cacheKey;
+  final MediaTaskState state;
+  final DateTime updatedAt;
+  final int bytesDownloaded;
+  final int? totalBytes;
+  final String? errorCode;
+  final String? localRef;
+
+  MediaTask copyWith({
+    MediaTaskState? state,
+    int? bytesDownloaded,
+    Object? totalBytes = _unset,
+    Object? errorCode = _unset,
+    Object? localRef = _unset,
+  }) => MediaTask(
+    id: id,
+    candidateId: candidateId,
+    hostId: hostId,
+    generation: generation,
+    sourceUrl: sourceUrl,
+    cacheKey: cacheKey,
+    state: state ?? this.state,
+    updatedAt: DateTime.now().toUtc(),
+    bytesDownloaded: bytesDownloaded ?? this.bytesDownloaded,
+    totalBytes: identical(totalBytes, _unset)
+        ? this.totalBytes
+        : totalBytes as int?,
+    errorCode: identical(errorCode, _unset)
+        ? this.errorCode
+        : errorCode as String?,
+    localRef: identical(localRef, _unset) ? this.localRef : localRef as String?,
+  );
+
+  static const _unset = Object();
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'candidateId': candidateId,
+    'hostId': hostId,
+    'generation': generation,
+    'sourceUrl': sourceUrl.toString(),
+    'cacheKey': cacheKey,
+    'state': state.name,
+    'updatedAt': updatedAt.toIso8601String(),
+    'bytesDownloaded': bytesDownloaded,
+    'totalBytes': totalBytes,
+    'errorCode': errorCode,
+    'localRef': localRef,
+  };
+
+  factory MediaTask.fromJson(Map<String, dynamic> json) => MediaTask(
+    id: json['id'] as String,
+    candidateId: json['candidateId'] as String,
+    hostId: (json['hostId'] as num).toInt(),
+    generation: (json['generation'] as num).toInt(),
+    sourceUrl: webUri(json['sourceUrl'] as String),
+    cacheKey: json['cacheKey'] as String,
+    state: MediaTaskState.values.byName(json['state'] as String),
+    updatedAt: DateTime.parse(json['updatedAt'] as String),
+    bytesDownloaded: (json['bytesDownloaded'] as num?)?.toInt() ?? 0,
+    totalBytes: (json['totalBytes'] as num?)?.toInt(),
+    errorCode: json['errorCode'] as String?,
+    localRef: json['localRef'] as String?,
+  );
+}
+
+class CastDevice {
+  const CastDevice({
+    required this.id,
+    required this.name,
+    required this.address,
+    this.model,
+    this.supportsMp4 = false,
+    this.supportsHls = false,
+    this.supportsSeek = false,
+  });
+
+  final String id;
+  final String name;
+  final Uri address;
+  final String? model;
+  final bool supportsMp4;
+  final bool supportsHls;
+  final bool supportsSeek;
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'name': name,
+    'address': address.toString(),
+    'model': model,
+    'supportsMp4': supportsMp4,
+    'supportsHls': supportsHls,
+    'supportsSeek': supportsSeek,
+  };
+
+  factory CastDevice.fromJson(Map<String, dynamic> json) => CastDevice(
+    id: json['id'] as String,
+    name: json['name'] as String,
+    address: Uri.parse(json['address'] as String),
+    model: json['model'] as String?,
+    supportsMp4: json['supportsMp4'] as bool? ?? false,
+    supportsHls: json['supportsHls'] as bool? ?? false,
+    supportsSeek: json['supportsSeek'] as bool? ?? false,
+  );
+}
+
+enum CastSessionState {
+  discovering,
+  connecting,
+  settingMedia,
+  playing,
+  paused,
+  stopped,
+  failed,
+}
+
+class CastSession {
+  const CastSession({
+    required this.id,
+    required this.deviceId,
+    required this.mediaTaskId,
+    required this.state,
+    required this.createdAt,
+    this.relayToken,
+    this.errorCode,
+  });
+
+  final String id;
+  final String deviceId;
+  final String mediaTaskId;
+  final CastSessionState state;
+  final DateTime createdAt;
+  final String? relayToken;
+  final String? errorCode;
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'deviceId': deviceId,
+    'mediaTaskId': mediaTaskId,
+    'state': state.name,
+    'createdAt': createdAt.toIso8601String(),
+    'relayToken': relayToken,
+    'errorCode': errorCode,
+  };
+
+  factory CastSession.fromJson(Map<String, dynamic> json) => CastSession(
+    id: json['id'] as String,
+    deviceId: json['deviceId'] as String,
+    mediaTaskId: json['mediaTaskId'] as String,
+    state: CastSessionState.values.byName(json['state'] as String),
+    createdAt: DateTime.parse(json['createdAt'] as String),
+    relayToken: json['relayToken'] as String?,
+    errorCode: json['errorCode'] as String?,
+  );
 }

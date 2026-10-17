@@ -549,6 +549,421 @@ data class HostPreferences (
     return "HostPreferences(followEntryRedirects=$followEntryRedirects, pullToRefresh=$pullToRefresh)"
   }
 }
+
+/**
+ * Immutable filtering data passed to a native host.  The native side never
+ * reads the rules from disk or asks Dart during a WebView request callback;
+ * it receives a complete snapshot before navigation starts.
+ *
+ * Generated class from Pigeon that represents data sent in messages.
+ */
+data class FilterSnapshotDto (
+  val id: String,
+  val version: String,
+  val sha256: String,
+  val state: String,
+  val rules: String
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): FilterSnapshotDto {
+      val id = pigeonVar_list[0] as String
+      val version = pigeonVar_list[1] as String
+      val sha256 = pigeonVar_list[2] as String
+      val state = pigeonVar_list[3] as String
+      val rules = pigeonVar_list[4] as String
+      return FilterSnapshotDto(id, version, sha256, state, rules)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      id,
+      version,
+      sha256,
+      state,
+      rules,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as FilterSnapshotDto
+    return WebHostPigeonUtils.deepEquals(this.id, other.id) && WebHostPigeonUtils.deepEquals(this.version, other.version) && WebHostPigeonUtils.deepEquals(this.sha256, other.sha256) && WebHostPigeonUtils.deepEquals(this.state, other.state) && WebHostPigeonUtils.deepEquals(this.rules, other.rules)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.id)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.version)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.sha256)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.state)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.rules)
+    return result
+  }
+  override fun toString(): String {
+    return "FilterSnapshotDto(id=$id, version=$version, sha256=$sha256, state=$state, rules=$rules)"
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class FilterPolicyDto (
+  val enabled: Boolean,
+  val pageFiltering: Boolean,
+  val domainExceptions: List<String>,
+  val blockedDomains: List<String>
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): FilterPolicyDto {
+      val enabled = pigeonVar_list[0] as Boolean
+      val pageFiltering = pigeonVar_list[1] as Boolean
+      val domainExceptions = pigeonVar_list[2] as List<String>
+      val blockedDomains = pigeonVar_list[3] as List<String>
+      return FilterPolicyDto(enabled, pageFiltering, domainExceptions, blockedDomains)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      enabled,
+      pageFiltering,
+      domainExceptions,
+      blockedDomains,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as FilterPolicyDto
+    return WebHostPigeonUtils.deepEquals(this.enabled, other.enabled) && WebHostPigeonUtils.deepEquals(this.pageFiltering, other.pageFiltering) && WebHostPigeonUtils.deepEquals(this.domainExceptions, other.domainExceptions) && WebHostPigeonUtils.deepEquals(this.blockedDomains, other.blockedDomains)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.enabled)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.pageFiltering)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.domainExceptions)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.blockedDomains)
+    return result
+  }
+  override fun toString(): String {
+    return "FilterPolicyDto(enabled=$enabled, pageFiltering=$pageFiltering, domainExceptions=$domainExceptions, blockedDomains=$blockedDomains)"
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class HostFilterContextDto (
+  val hostId: Long,
+  val generation: Long,
+  val sourceUrl: String,
+  val snapshotId: String
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): HostFilterContextDto {
+      val hostId = pigeonVar_list[0] as Long
+      val generation = pigeonVar_list[1] as Long
+      val sourceUrl = pigeonVar_list[2] as String
+      val snapshotId = pigeonVar_list[3] as String
+      return HostFilterContextDto(hostId, generation, sourceUrl, snapshotId)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      hostId,
+      generation,
+      sourceUrl,
+      snapshotId,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as HostFilterContextDto
+    return WebHostPigeonUtils.deepEquals(this.hostId, other.hostId) && WebHostPigeonUtils.deepEquals(this.generation, other.generation) && WebHostPigeonUtils.deepEquals(this.sourceUrl, other.sourceUrl) && WebHostPigeonUtils.deepEquals(this.snapshotId, other.snapshotId)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.hostId)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.generation)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.sourceUrl)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.snapshotId)
+    return result
+  }
+  override fun toString(): String {
+    return "HostFilterContextDto(hostId=$hostId, generation=$generation, sourceUrl=$sourceUrl, snapshotId=$snapshotId)"
+  }
+}
+
+/**
+ * Candidate/task/cast DTOs deliberately contain no cookie, authorization,
+ * Web Storage or native file path.  They are snapshots for UI/native calls;
+ * Dart remains the authority for authorization and persistence.
+ *
+ * Generated class from Pigeon that represents data sent in messages.
+ */
+data class MediaCandidateDto (
+  val id: String,
+  val hostId: Long,
+  val generation: Long,
+  val sourceUrl: String,
+  val mediaUrl: String,
+  val title: String,
+  val mime: String,
+  val source: String,
+  val durationMs: Long? = null
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): MediaCandidateDto {
+      val id = pigeonVar_list[0] as String
+      val hostId = pigeonVar_list[1] as Long
+      val generation = pigeonVar_list[2] as Long
+      val sourceUrl = pigeonVar_list[3] as String
+      val mediaUrl = pigeonVar_list[4] as String
+      val title = pigeonVar_list[5] as String
+      val mime = pigeonVar_list[6] as String
+      val source = pigeonVar_list[7] as String
+      val durationMs = pigeonVar_list[8] as Long?
+      return MediaCandidateDto(id, hostId, generation, sourceUrl, mediaUrl, title, mime, source, durationMs)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      id,
+      hostId,
+      generation,
+      sourceUrl,
+      mediaUrl,
+      title,
+      mime,
+      source,
+      durationMs,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as MediaCandidateDto
+    return WebHostPigeonUtils.deepEquals(this.id, other.id) && WebHostPigeonUtils.deepEquals(this.hostId, other.hostId) && WebHostPigeonUtils.deepEquals(this.generation, other.generation) && WebHostPigeonUtils.deepEquals(this.sourceUrl, other.sourceUrl) && WebHostPigeonUtils.deepEquals(this.mediaUrl, other.mediaUrl) && WebHostPigeonUtils.deepEquals(this.title, other.title) && WebHostPigeonUtils.deepEquals(this.mime, other.mime) && WebHostPigeonUtils.deepEquals(this.source, other.source) && WebHostPigeonUtils.deepEquals(this.durationMs, other.durationMs)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.id)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.hostId)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.generation)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.sourceUrl)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.mediaUrl)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.title)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.mime)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.source)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.durationMs)
+    return result
+  }
+  override fun toString(): String {
+    return "MediaCandidateDto(id=$id, hostId=$hostId, generation=$generation, sourceUrl=$sourceUrl, mediaUrl=$mediaUrl, title=$title, mime=$mime, source=$source, durationMs=$durationMs)"
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class MediaTaskDto (
+  val id: String,
+  val candidateId: String,
+  val hostId: Long,
+  val generation: Long,
+  val state: String,
+  val cacheKey: String,
+  val bytesDownloaded: Long,
+  val totalBytes: Long? = null,
+  val errorCode: String? = null
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): MediaTaskDto {
+      val id = pigeonVar_list[0] as String
+      val candidateId = pigeonVar_list[1] as String
+      val hostId = pigeonVar_list[2] as Long
+      val generation = pigeonVar_list[3] as Long
+      val state = pigeonVar_list[4] as String
+      val cacheKey = pigeonVar_list[5] as String
+      val bytesDownloaded = pigeonVar_list[6] as Long
+      val totalBytes = pigeonVar_list[7] as Long?
+      val errorCode = pigeonVar_list[8] as String?
+      return MediaTaskDto(id, candidateId, hostId, generation, state, cacheKey, bytesDownloaded, totalBytes, errorCode)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      id,
+      candidateId,
+      hostId,
+      generation,
+      state,
+      cacheKey,
+      bytesDownloaded,
+      totalBytes,
+      errorCode,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as MediaTaskDto
+    return WebHostPigeonUtils.deepEquals(this.id, other.id) && WebHostPigeonUtils.deepEquals(this.candidateId, other.candidateId) && WebHostPigeonUtils.deepEquals(this.hostId, other.hostId) && WebHostPigeonUtils.deepEquals(this.generation, other.generation) && WebHostPigeonUtils.deepEquals(this.state, other.state) && WebHostPigeonUtils.deepEquals(this.cacheKey, other.cacheKey) && WebHostPigeonUtils.deepEquals(this.bytesDownloaded, other.bytesDownloaded) && WebHostPigeonUtils.deepEquals(this.totalBytes, other.totalBytes) && WebHostPigeonUtils.deepEquals(this.errorCode, other.errorCode)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.id)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.candidateId)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.hostId)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.generation)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.state)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.cacheKey)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.bytesDownloaded)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.totalBytes)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.errorCode)
+    return result
+  }
+  override fun toString(): String {
+    return "MediaTaskDto(id=$id, candidateId=$candidateId, hostId=$hostId, generation=$generation, state=$state, cacheKey=$cacheKey, bytesDownloaded=$bytesDownloaded, totalBytes=$totalBytes, errorCode=$errorCode)"
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class CastDeviceDto (
+  val id: String,
+  val name: String,
+  val address: String,
+  val model: String? = null,
+  val supportsMp4: Boolean,
+  val supportsHls: Boolean,
+  val supportsSeek: Boolean
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): CastDeviceDto {
+      val id = pigeonVar_list[0] as String
+      val name = pigeonVar_list[1] as String
+      val address = pigeonVar_list[2] as String
+      val model = pigeonVar_list[3] as String?
+      val supportsMp4 = pigeonVar_list[4] as Boolean
+      val supportsHls = pigeonVar_list[5] as Boolean
+      val supportsSeek = pigeonVar_list[6] as Boolean
+      return CastDeviceDto(id, name, address, model, supportsMp4, supportsHls, supportsSeek)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      id,
+      name,
+      address,
+      model,
+      supportsMp4,
+      supportsHls,
+      supportsSeek,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as CastDeviceDto
+    return WebHostPigeonUtils.deepEquals(this.id, other.id) && WebHostPigeonUtils.deepEquals(this.name, other.name) && WebHostPigeonUtils.deepEquals(this.address, other.address) && WebHostPigeonUtils.deepEquals(this.model, other.model) && WebHostPigeonUtils.deepEquals(this.supportsMp4, other.supportsMp4) && WebHostPigeonUtils.deepEquals(this.supportsHls, other.supportsHls) && WebHostPigeonUtils.deepEquals(this.supportsSeek, other.supportsSeek)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.id)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.name)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.address)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.model)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.supportsMp4)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.supportsHls)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.supportsSeek)
+    return result
+  }
+  override fun toString(): String {
+    return "CastDeviceDto(id=$id, name=$name, address=$address, model=$model, supportsMp4=$supportsMp4, supportsHls=$supportsHls, supportsSeek=$supportsSeek)"
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class CastSessionDto (
+  val id: String,
+  val deviceId: String,
+  val mediaTaskId: String,
+  val state: String,
+  val errorCode: String? = null
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): CastSessionDto {
+      val id = pigeonVar_list[0] as String
+      val deviceId = pigeonVar_list[1] as String
+      val mediaTaskId = pigeonVar_list[2] as String
+      val state = pigeonVar_list[3] as String
+      val errorCode = pigeonVar_list[4] as String?
+      return CastSessionDto(id, deviceId, mediaTaskId, state, errorCode)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      id,
+      deviceId,
+      mediaTaskId,
+      state,
+      errorCode,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as CastSessionDto
+    return WebHostPigeonUtils.deepEquals(this.id, other.id) && WebHostPigeonUtils.deepEquals(this.deviceId, other.deviceId) && WebHostPigeonUtils.deepEquals(this.mediaTaskId, other.mediaTaskId) && WebHostPigeonUtils.deepEquals(this.state, other.state) && WebHostPigeonUtils.deepEquals(this.errorCode, other.errorCode)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.id)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.deviceId)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.mediaTaskId)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.state)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.errorCode)
+    return result
+  }
+  override fun toString(): String {
+    return "CastSessionDto(id=$id, deviceId=$deviceId, mediaTaskId=$mediaTaskId, state=$state, errorCode=$errorCode)"
+  }
+}
 private open class WebHostPigeonCodec : StandardMessageCodec() {
   override fun readValueOfType(type: Byte, buffer: ByteBuffer): Any? {
     return when (type) {
@@ -587,6 +1002,41 @@ private open class WebHostPigeonCodec : StandardMessageCodec() {
           HostPreferences.fromList(it)
         }
       }
+      136.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          FilterSnapshotDto.fromList(it)
+        }
+      }
+      137.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          FilterPolicyDto.fromList(it)
+        }
+      }
+      138.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          HostFilterContextDto.fromList(it)
+        }
+      }
+      139.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          MediaCandidateDto.fromList(it)
+        }
+      }
+      140.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          MediaTaskDto.fromList(it)
+        }
+      }
+      141.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          CastDeviceDto.fromList(it)
+        }
+      }
+      142.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          CastSessionDto.fromList(it)
+        }
+      }
       else -> super.readValueOfType(type, buffer)
     }
   }
@@ -620,6 +1070,34 @@ private open class WebHostPigeonCodec : StandardMessageCodec() {
         stream.write(135)
         writeValue(stream, value.toList())
       }
+      is FilterSnapshotDto -> {
+        stream.write(136)
+        writeValue(stream, value.toList())
+      }
+      is FilterPolicyDto -> {
+        stream.write(137)
+        writeValue(stream, value.toList())
+      }
+      is HostFilterContextDto -> {
+        stream.write(138)
+        writeValue(stream, value.toList())
+      }
+      is MediaCandidateDto -> {
+        stream.write(139)
+        writeValue(stream, value.toList())
+      }
+      is MediaTaskDto -> {
+        stream.write(140)
+        writeValue(stream, value.toList())
+      }
+      is CastDeviceDto -> {
+        stream.write(141)
+        writeValue(stream, value.toList())
+      }
+      is CastSessionDto -> {
+        stream.write(142)
+        writeValue(stream, value.toList())
+      }
       else -> super.writeValue(stream, value)
     }
   }
@@ -633,6 +1111,11 @@ interface WebHostApi {
   /** Returns false when the native host cannot enforce background media policy. */
   fun setHostActivity(hostId: Long, isCurrent: Boolean, visible: Boolean, foreground: Boolean, allowBackgroundPlayback: Boolean): Boolean
   fun registerScripts(hostId: Long, scripts: List<ScriptRegistration>)
+  /**
+   * Installs an immutable filter snapshot before the next document starts.
+   * Native request callbacks must use this in-memory snapshot only.
+   */
+  fun applyFilter(hostId: Long, context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto)
   fun navigate(hostId: Long, url: String)
   fun reload(hostId: Long)
   fun goBack(hostId: Long): Boolean
@@ -721,6 +1204,27 @@ interface WebHostApi {
             val scriptsArg = args[1] as List<ScriptRegistration>
             val wrapped: List<Any?> = try {
               api.registerScripts(hostIdArg, scriptsArg)
+              listOf(null)
+            } catch (exception: Throwable) {
+              WebHostPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.site_lens.WebHostApi.applyFilter$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val hostIdArg = args[0] as Long
+            val contextArg = args[1] as HostFilterContextDto
+            val policyArg = args[2] as FilterPolicyDto
+            val snapshotArg = args[3] as FilterSnapshotDto
+            val wrapped: List<Any?> = try {
+              api.applyFilter(hostIdArg, contextArg, policyArg, snapshotArg)
               listOf(null)
             } catch (exception: Throwable) {
               WebHostPigeonUtils.wrapError(exception)

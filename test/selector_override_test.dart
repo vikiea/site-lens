@@ -78,7 +78,7 @@ void main() {
     expect(candidate.readySelector, '.changed');
   });
 
-  test('v2 pack round trip preserves explicit overrides', () async {
+  test('latest pack round trip preserves explicit overrides', () async {
     final profile = await db.createProfile('站点', readySelector: 'article');
     await db.addCandidate(
       Uri.parse('https://a.example/'),
@@ -87,7 +87,7 @@ void main() {
     );
     final packs = ProfilePacks(db);
     final preview = await packs.inspect(await packs.export(profile));
-    expect(preview.formatVersion, 2);
+    expect(preview.formatVersion, ProfilePack.latestFormatVersion);
     expect(preview.candidates.single.readySelectorOverride, 'main');
     final restored = AppDatabase(NativeDatabase.memory());
     addTearDown(restored.close);

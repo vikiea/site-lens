@@ -10,6 +10,8 @@ import '../domain/models.dart';
 import '../network/transport.dart';
 import '../scripts/metadata.dart';
 import '../scripts/script_service.dart';
+import '../media/media_service.dart';
+import '../filter/filter_service.dart';
 import 'web_host.g.dart';
 
 class HostSession {
@@ -30,6 +32,10 @@ class HostSession {
   Cancellation cancellation = Cancellation();
   final menus = <String, ScriptMenu>{};
   final registered = <String, String>{};
+  final mediaCandidates = <String, MediaCandidate>{};
+  FilterEngine? filterEngine;
+  FilterPolicy filterPolicy = const FilterPolicy();
+  FilterSnapshot? filterSnapshot;
 }
 
 class ScriptMenu {
@@ -57,6 +63,9 @@ class NativeHosts extends WebHostEvents {
   final ControlledHttp http;
   final WebHostApi api;
   final sessions = <int, HostSession>{};
+  FilterEngine? filterEngine;
+  FilterPolicy filterPolicy = const FilterPolicy();
+  FilterSnapshot? filterSnapshot;
 
   /// Policy [AppController] owns and pushes to every host: the app decides, the
   /// native host only enforces. New hosts get the current value at creation, and
@@ -71,6 +80,73 @@ class NativeHosts extends WebHostEvents {
     for (final session in sessions.values.toList()) {
       if (session.disposed) continue;
       await api.applyPreferences(session.id, next);
+    }
+  }
+
+  void setFilterEngine(
+    FilterEngine? next, {
+    FilterPolicy policy = const FilterPolicy(),
+    FilterSnapshot? snapshot,
+  }) {
+    filterEngine = next;
+    filterPolicy = policy;
+    filterSnapshot = snapshot;
+    for (final session in sessions.values.toList()) {
+      if (!session.disposed) unawaited(_applyFilter(session));
+    }
+  }
+
+  Future<void> _applyFilter(HostSession session) async {
+    if (session.disposed) return;
+    final snapshot = filterSnapshot;
+    final engine = filterEngine;
+    final rules = engine == null
+        ? const <Map<String, Object?>>[]
+        : engine.rules
+              .map(
+                (rule) => <String, Object?>{
+                  'pattern': rule.pattern,
+                  'block': rule.block,
+                  'cosmetic': rule.cosmetic,
+                  'hostOnly': rule.hostOnly,
+                  'scriptlet': rule.scriptlet,
+                  'scriptletArgs': rule.scriptletArgs,
+                },
+              )
+              .toList(growable: false);
+    final source = session.url.isEmpty ? 'https://invalid.local/' : session.url;
+    try {
+      await api.applyFilter(
+        session.id,
+        HostFilterContextDto(
+          hostId: session.id,
+          generation: session.generation,
+          sourceUrl: source,
+          snapshotId: snapshot?.id ?? '',
+        ),
+        FilterPolicyDto(
+          enabled: filterPolicy.enabled,
+          pageFiltering: filterPolicy.pageFiltering,
+          domainExceptions: filterPolicy.domainExceptions.toList(
+            growable: false,
+          ),
+          blockedDomains: filterPolicy.blockedDomains.toList(growable: false),
+        ),
+        FilterSnapshotDto(
+          id: snapshot?.id ?? '',
+          version: snapshot?.version ?? '',
+          sha256: snapshot?.sha256 ?? '',
+          state: snapshot?.state.name ?? FilterSnapshotState.missing.name,
+          rules: jsonEncode(rules),
+        ),
+      );
+    } catch (error) {
+      // Older/iOS hosts can lack a request interception channel. Keep Dart's
+      // filtering authority active and expose the degraded capability instead
+      // of allowing an unawaited platform exception to fail a later test/UI
+      // operation.
+      session.errorKind = 'filterUnavailable';
+      session.error = error.toString();
     }
   }
 
@@ -93,6 +169,11 @@ class NativeHosts extends WebHostEvents {
       await destroy(session);
       throw StateError('检测数据隔离不可用：${capabilities.reason}');
     }
+    if (filterEngine != null ||
+        filterPolicy.enabled ||
+        filterSnapshot != null) {
+      await _applyFilter(session);
+    }
     return session;
   }
 
@@ -114,11 +195,52 @@ class NativeHosts extends WebHostEvents {
     await api.navigate(session.id, url.toString());
   }
 
+  List<MediaCandidate> mediaCandidates(HostSession session) =>
+      List.unmodifiable(session.mediaCandidates.values);
+
+  List<MediaCandidate> mediaCandidatesForHost(int hostId, {int? generation}) {
+    final session = sessions[hostId];
+    if (session == null || session.disposed) return const [];
+    final expected = generation ?? session.generation;
+    return List.unmodifiable(
+      session.mediaCandidates.values.where(
+        (candidate) => candidate.generation == expected,
+      ),
+    );
+  }
+
+  MediaCandidate authorizeMediaCandidate(int hostId, String candidateId) {
+    final session = sessions[hostId];
+    if (session == null || session.disposed) {
+      throw StateError(MediaErrorCode.staleGeneration);
+    }
+    final candidate = session.mediaCandidates[candidateId];
+    if (candidate == null) throw StateError(MediaErrorCode.invalidUrl);
+    const validator = MediaCandidateValidator();
+    validator.validate(
+      candidate,
+      hostId: hostId,
+      generation: session.generation,
+      sourceUrl: webUri(
+        session.url.isEmpty ? candidate.sourceUrl.toString() : session.url,
+      ),
+    );
+    if (session.filterEngine?.evaluate(
+          candidate.mediaUrl,
+          policy: session.filterPolicy,
+        ) ==
+        FilterDecision.block) {
+      throw StateError('媒体地址被当前过滤快照阻止');
+    }
+    return candidate;
+  }
+
   Future<void> destroy(HostSession session) async {
     if (session.disposed) return;
     session.disposed = true;
     session.cancellation.cancel();
     session.menus.clear();
+    session.mediaCandidates.clear();
     _aborted.removeWhere((key) => key.startsWith('${session.id}:'));
     sessions.remove(session.id);
     await api.destroy(session.id);
@@ -152,7 +274,11 @@ class NativeHosts extends WebHostEvents {
       session.cancellation.cancel();
       session.cancellation = Cancellation();
       session.menus.clear();
+      session.mediaCandidates.clear();
       session.generation = event.generation;
+      session.filterEngine = filterEngine;
+      session.filterPolicy = filterPolicy;
+      session.filterSnapshot = filterSnapshot;
       session.loaded = false;
       session.error = null;
       session.errorKind = null;
@@ -170,6 +296,50 @@ class NativeHosts extends WebHostEvents {
     if (event.kind == 'newWindow') {
       final target = event.detail.isEmpty ? event.url : event.detail;
       if (target.isNotEmpty) onNewWindow?.call(event.hostId, target);
+    }
+    if (event.kind == 'mediaCandidate' &&
+        session.purpose == HostPurpose.browsing) {
+      try {
+        final raw = jsonDecode(event.detail) as Map<String, dynamic>;
+        final source = webUri(session.url);
+        final media = webUri(raw['url'] as String? ?? '');
+        final candidate = MediaCandidate(
+          id: 'dom:${session.id}:${session.generation}:${media.removeFragment()}',
+          hostId: session.id,
+          generation: session.generation,
+          sourceUrl: source,
+          mediaUrl: media.removeFragment(),
+          title: (raw['title'] as String? ?? '').trim().substring(
+            0,
+            (raw['title'] as String? ?? '').length.clamp(0, 512),
+          ),
+          mime: (raw['mime'] as String? ?? '').trim().substring(
+            0,
+            (raw['mime'] as String? ?? '').length.clamp(0, 128),
+          ),
+          source: MediaCandidateSource.dom,
+          durationMs: (raw['durationMs'] as num?)?.toInt(),
+          createdAt: DateTime.now().toUtc(),
+        );
+        const MediaCandidateValidator().validate(
+          candidate,
+          hostId: session.id,
+          generation: session.generation,
+          sourceUrl: source,
+        );
+        if (session.filterEngine?.evaluate(
+              candidate.mediaUrl,
+              policy: session.filterPolicy,
+            ) !=
+            FilterDecision.block) {
+          session.mediaCandidates[candidate.id] = candidate;
+          unawaited(db.saveMediaCandidate(candidate));
+          changed.value++;
+        }
+      } catch (_) {
+        // Media telemetry is untrusted page data; malformed candidates are
+        // ignored and never become persisted tasks.
+      }
     }
     if (event.kind == 'hostInvalidated') {
       session.errorKind = event.kind;
@@ -213,6 +383,11 @@ class NativeHosts extends WebHostEvents {
     session.cancellation = Cancellation();
     session.generation = generation;
     session.menus.clear();
+    // Bind the immutable snapshot to this document. A later refresh takes
+    // effect on the next navigation and never changes an active page's rules.
+    session.filterEngine = filterEngine;
+    session.filterPolicy = filterPolicy;
+    session.filterSnapshot = filterSnapshot;
     if (session.purpose != HostPurpose.browsing) {
       await NetworkPolicy.publicNavigation(webUri(url));
       return [];
@@ -286,6 +461,7 @@ class NativeHosts extends WebHostEvents {
         'setClipboard': ['GM_setClipboard', 'GM.setClipboard'],
         'notify': ['GM_notification', 'GM.notification'],
         'openExternal': ['GM_openInTab', 'GM.openInTab'],
+        'registerMedia': ['SiteLens.registerMedia'],
       };
       if (op != 'error' &&
           !(permissions[op]?.any(metadata.grants.contains) ?? false)) {
@@ -333,13 +509,23 @@ class NativeHosts extends WebHostEvents {
             '${session.id}:${request.generation}:${request.scriptId}:${args['requestId']}';
         if (_requests.length >= 8) throw StateError('同时 GM 网络请求最多 8 个');
         final cancel = Cancellation();
+        final target = webUri(args['url'] as String);
+        if (session.filterEngine?.evaluate(
+              target,
+              policy: session.filterPolicy,
+            ) ==
+            FilterDecision.block) {
+          throw StateError('请求被过滤规则阻止');
+        }
         if (_aborted.remove(key)) cancel.cancel();
         session.cancellation.onCancel(cancel.cancel);
         _requests[key] = cancel;
         try {
           final response = await http.fetch(
-            webUri(args['url'] as String),
-            connect: metadata.connect,
+            target,
+            connect: script.networkMode == ScriptNetworkMode.public
+                ? const {'*'}
+                : metadata.connect,
             document: webUri(request.documentUrl),
             cancel: cancel,
             method: args['method'] as String? ?? 'GET',
@@ -366,6 +552,46 @@ class NativeHosts extends WebHostEvents {
         } finally {
           _requests.remove(key);
         }
+      } else if (op == 'registerMedia') {
+        if (!metadata.grants.contains('SiteLens.registerMedia')) {
+          throw StateError('未声明 SiteLens.registerMedia 权限');
+        }
+        final sourceUrl = webUri(request.documentUrl);
+        final mediaUrl = webUri(args['url'] as String? ?? '');
+        final title = args['title'] as String? ?? '';
+        final mime = args['mime'] as String? ?? '';
+        final candidate = MediaCandidate(
+          id:
+              args['candidateId'] as String? ??
+              '${request.scriptId}:${request.generation}:$mediaUrl',
+          hostId: request.hostId,
+          generation: request.generation,
+          sourceUrl: sourceUrl,
+          mediaUrl: mediaUrl,
+          title: title.substring(0, title.length.clamp(0, 512)),
+          mime: mime.substring(0, mime.length.clamp(0, 128)),
+          source: MediaCandidateSource.registered,
+          durationMs: (args['durationMs'] as num?)?.toInt(),
+          createdAt: DateTime.now().toUtc(),
+        );
+        const validator = MediaCandidateValidator();
+        validator.validate(
+          candidate,
+          hostId: request.hostId,
+          generation: request.generation,
+          sourceUrl: sourceUrl,
+        );
+        if (session.filterEngine?.evaluate(
+              mediaUrl,
+              policy: session.filterPolicy,
+            ) ==
+            FilterDecision.block) {
+          throw StateError('媒体地址被当前过滤快照阻止');
+        }
+        session.mediaCandidates[candidate.id] = candidate;
+        await db.saveMediaCandidate(candidate);
+        changed.value++;
+        value = candidate.toJson();
       } else if (op == 'xhrAbort') {
         final key =
             '${session.id}:${request.generation}:${request.scriptId}:${args['requestId']}';

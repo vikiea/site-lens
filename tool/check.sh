@@ -13,4 +13,8 @@ python3 tool/test_android_tools.py
 python3 tool/test_check_emulator.py
 python3 tool/test_verify_level.py
 python3 tool/test_bootstrap_dev.py
+python3 tool/test_release_notes.py
+python3 tool/test_release_version.py
+python3 tool/test_version_code.py
+python3 tool/test_extract_release_version_codes.py
 python3 tool/test_version_code_reservations.py
