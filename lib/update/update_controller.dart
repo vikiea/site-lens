@@ -166,9 +166,10 @@ class UpdateController extends ChangeNotifier with WidgetsBindingObserver {
       _currentVersion = (await service.packageInfo).version;
       _checkedAt = result.checkedAt;
       _release = result.release;
-      _checkMessage = result.fromCache
-          ? '使用本地缓存 · 上次检查于 ${_formatCheckedAt(result.checkedAt)}'
-          : (result.release == null ? '当前已是最新版本' : null);
+      // Cache freshness is an implementation detail. Keep the visible
+      // message about the result itself so a cached latest check reads the
+      // same as a network check.
+      _checkMessage = result.release == null ? '当前已是最新版本' : null;
       await _refreshLocalState();
     } catch (error) {
       _error = readableUpdateError(error);
@@ -496,10 +497,4 @@ String updateEntrySubtitleFor({
 String updateFormatBytes(int value) {
   if (value < 1024 * 1024) return '${(value / 1024).toStringAsFixed(0)} KB';
   return '${(value / (1024 * 1024)).toStringAsFixed(1)} MB';
-}
-
-String _formatCheckedAt(DateTime value) {
-  final local = value.toLocal();
-  String two(int number) => number.toString().padLeft(2, '0');
-  return '${local.month}月${local.day}日 ${two(local.hour)}:${two(local.minute)}';
 }

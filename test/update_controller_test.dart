@@ -38,9 +38,12 @@ void main() {
     int failTimes = 0,
     FakeUpdatePlatform? platform,
     int fixtureLength = 64 * 1024,
+    String tag = 'v0.2.0',
+    String version = '0.1.0',
   }) {
     final server = FakeAssetServer(
       bytes: fixtureBytes(fixtureLength),
+      tag: tag,
       chunkSize: chunkSize,
       chunkDelay: chunkDelay,
       failAfterChunks: failAfterChunks ?? -1,
@@ -54,6 +57,7 @@ void main() {
         handoff: handoff,
         platform: fake,
         retryDelays: retryDelays,
+        version: version,
       ),
     );
     addTearDown(controller.dispose);
@@ -79,6 +83,19 @@ void main() {
     expect(controller.noticeVisible, isTrue);
     expect(controller.error, isNull);
   });
+
+  test(
+    'keeps the latest wording when the check result comes from cache',
+    () async {
+      final harness = build(tag: 'v0.1.0');
+      final controller = harness.controller;
+
+      await controller.check();
+      expect(controller.checkMessage, '当前已是最新版本');
+      await controller.check();
+      expect(controller.checkMessage, '当前已是最新版本');
+    },
+  );
 
   test('pause keeps the fragment and resume finishes it', () async {
     final harness = build(
