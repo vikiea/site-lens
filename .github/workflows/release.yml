@@ -47,9 +47,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  allocate_version:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
+    concurrency:
+      group: version-code-allocation
+      cancel-in-progress: false
+    outputs:
+      tag: ${{ steps.allocate.outputs.tag }}
+      version: ${{ steps.allocate.outputs.version }}
+      channel: ${{ steps.allocate.outputs.channel }}
+      bump: ${{ steps.allocate.outputs.bump }}
+      bump_reason: ${{ steps.allocate.outputs.bump_reason }}
+      version_code: ${{ steps.allocate.outputs.version_code }}
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v7.0.1
@@ -58,15 +68,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Fixed Flutter SDK
-        shell: bash
-        run: |
-          git clone --filter=blob:none --no-checkout https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
-          git -C "$RUNNER_TEMP/flutter" checkout 5fc346839b5d0eef006ed8404392afb4dfae428d
-          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
-
-      - name: Resolve and validate release tag
-        id: release
+      - name: Allocate and reserve versionCode
+        id: allocate
         env:
           DISPATCH_TAG: ${{ inputs.tag }}
           DISPATCH_CHANNEL: ${{ inputs.channel || 'stable' }}
@@ -104,6 +107,31 @@ jobs:
           PY
           git rev-parse "$tag^{commit}" >/dev/null
           mkdir -p dist
+          refresh_reservations() {
+            gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/version-code/" \
+              > dist/version-code-refs.json
+            python3 tool/version_code_reservations.py \
+              --input dist/version-code-refs.json \
+              --tag "$tag" \
+              --output dist/version-code-reservations.json
+          }
+          write_reserved_codes() {
+            python3 - <<'PY'
+          import json
+          data = json.load(open("dist/version-code-reservations.json"))
+          with open("dist/reserved-version-codes.txt", "w") as output:
+              for marker, code in data["reservations"].items():
+                  print(f"{marker} {code}", file=output)
+          PY
+          }
+          refresh_reservations
+          existing_code="$(python3 - <<'PY'
+          import json
+          value = json.load(open("dist/version-code-reservations.json"))["existing_code"]
+          print("" if value is None else value)
+          PY
+          )"
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > dist/releases.json
           python3 tool/extract_release_version_codes.py \
             --input dist/releases.json \
@@ -151,14 +179,73 @@ jobs:
             --channel "$channel"
             --published-codes-file dist/published-version-codes.txt
             --main-stable-code "$main_stable_code"
+            --reserved-codes-file dist/reserved-version-codes.txt
           )
           if [[ "$DISPATCH_VERSION_CODE" != "auto" && -n "$DISPATCH_VERSION_CODE" ]]; then
             version_args+=(--override "$DISPATCH_VERSION_CODE")
           fi
-          python3 tool/determine_version_code.py \
-            "${version_args[@]}" \
-            --minimum-code "$minimum_code" > dist/version-code.json
-          cat dist/version-code.json
+          if [[ -n "$existing_code" ]]; then
+            if [[ "$DISPATCH_VERSION_CODE" != "auto" && "$DISPATCH_VERSION_CODE" != "$existing_code" ]]; then
+              echo "release tag $tag already reserves versionCode $existing_code; override $DISPATCH_VERSION_CODE is unsafe" >&2
+              exit 1
+            fi
+            version_code="$existing_code"
+            echo "Reusing version-code reservation $version_code for $tag"
+          else
+            write_reserved_codes
+            python3 tool/determine_version_code.py \
+              "${version_args[@]}" \
+              --minimum-code "$minimum_code" > dist/version-code.json
+            cat dist/version-code.json
+            version_code="$(python3 -c 'import json; print(json.load(open("dist/version-code.json"))["version_code"])')"
+            reservation_ready=false
+            release_sha="$(git rev-parse "$tag^{commit}")"
+            for attempt in $(seq 1 20); do
+              marker_ref="$(python3 - "$tag" "$version_code" <<'PY'
+          import sys
+          sys.path.insert(0, "tool")
+          from version_code_reservations import reservation_ref
+          print(reservation_ref(sys.argv[1], int(sys.argv[2])))
+          PY
+              )"
+              if gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+                -f "ref=$marker_ref" \
+                -f "sha=$release_sha" \
+                >dist/version-code-reservation-response.json 2>dist/version-code-reservation-error.log; then
+                echo "Created immutable version-code reservation $marker_ref"
+                reservation_ready=true
+                break
+              fi
+              refresh_reservations
+              existing_code="$(python3 - <<'PY'
+          import json
+          value = json.load(open("dist/version-code-reservations.json"))["existing_code"]
+          print("" if value is None else value)
+          PY
+              )"
+              if [[ -n "$existing_code" ]]; then
+                version_code="$existing_code"
+                echo "Using reservation created by a concurrent run: $version_code"
+                reservation_ready=true
+                break
+              fi
+              if [[ "$DISPATCH_VERSION_CODE" != "auto" && -n "$DISPATCH_VERSION_CODE" ]]; then
+                echo "versionCode override $DISPATCH_VERSION_CODE collided with an existing reservation" >&2
+                cat dist/version-code-reservation-error.log >&2 || true
+                exit 1
+              fi
+              write_reserved_codes
+              python3 tool/determine_version_code.py \
+                "${version_args[@]}" \
+                --minimum-code "$minimum_code" > dist/version-code.json
+              version_code="$(python3 -c 'import json; print(json.load(open("dist/version-code.json"))["version_code"])')"
+            done
+            if [[ "$reservation_ready" != true ]]; then
+              echo "failed to create a version-code reservation after 20 attempts" >&2
+              cat dist/version-code-reservation-error.log >&2 || true
+              exit 1
+            fi
+          fi
           python3 tool/determine_release_version.py \
             --tag "$tag" \
             --channel "$channel" \
@@ -172,19 +259,39 @@ jobs:
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
           echo "bump=$bump" >> "$GITHUB_OUTPUT"
           echo "bump_reason=$reason" >> "$GITHUB_OUTPUT"
-          version_code="$(python3 -c 'import json; print(json.load(open("dist/version-code.json"))["version_code"])')"
           echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
+
+
+  release:
+    needs: allocate_version
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fixed Flutter SDK
+        shell: bash
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          git -C "$RUNNER_TEMP/flutter" checkout 5fc346839b5d0eef006ed8404392afb4dfae428d
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
 
       - name: Generate categorized release notes
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-          CHANNEL: ${{ steps.release.outputs.channel }}
-          BUMP: ${{ steps.release.outputs.bump }}
-          BUMP_REASON: ${{ steps.release.outputs.bump_reason }}
-          VERSION_CODE: ${{ steps.release.outputs.version_code }}
+          TAG: ${{ needs.allocate_version.outputs.tag }}
+          CHANNEL: ${{ needs.allocate_version.outputs.channel }}
+          BUMP: ${{ needs.allocate_version.outputs.bump }}
+          BUMP_REASON: ${{ needs.allocate_version.outputs.bump_reason }}
+          VERSION_CODE: ${{ needs.allocate_version.outputs.version_code }}
         run: |
           set -euo pipefail
+          mkdir -p dist
           gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' > dist/eligible-release-tags.txt
           python3 tool/generate_release_notes.py \
             --tag "$TAG" \
@@ -239,14 +346,14 @@ jobs:
 
       - name: Build and verify formal APK
         env:
-          BUILD_NAME: ${{ steps.release.outputs.version }}
-          BUILD_NUMBER: ${{ steps.release.outputs.version_code }}
+          BUILD_NAME: ${{ needs.allocate_version.outputs.version }}
+          BUILD_NUMBER: ${{ needs.allocate_version.outputs.version_code }}
         run: |
           make build-release BUILD_NAME="$BUILD_NAME" BUILD_NUMBER="$BUILD_NUMBER"
 
       - name: Prepare release assets
         env:
-          TAG: ${{ steps.release.outputs.tag }}
+          TAG: ${{ needs.allocate_version.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -260,9 +367,9 @@ jobs:
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-          VERSION: ${{ steps.release.outputs.version }}
-          CHANNEL: ${{ steps.release.outputs.channel }}
+          TAG: ${{ needs.allocate_version.outputs.tag }}
+          VERSION: ${{ needs.allocate_version.outputs.version }}
+          CHANNEL: ${{ needs.allocate_version.outputs.channel }}
         shell: bash
         run: |
           set -euo pipefail

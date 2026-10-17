@@ -36,6 +36,7 @@ def determine(
     channel: str,
     *,
     published_codes: dict[str, int] | None = None,
+    reserved_codes: dict[str, int] | None = None,
     minimum_code: int = 0,
     main_stable_code: int = 0,
     override: int | None = None,
@@ -47,8 +48,10 @@ def determine(
     if main_stable_code < 0:
         raise ValueError("main stable versionCode must be non-negative")
     known = published_codes or {}
+    reserved = reserved_codes or {}
     highest_published = max(known.values(), default=0)
-    floor = max(highest_published, minimum_code, main_stable_code)
+    highest_reserved = max(reserved.values(), default=0)
+    floor = max(highest_published, highest_reserved, minimum_code, main_stable_code)
     selected = floor + 1 if override is None else override
     if selected <= floor:
         raise ValueError(
@@ -61,6 +64,7 @@ def determine(
         "channel": channel,
         "version_code": selected,
         "highest_published_version_code": highest_published,
+        "highest_reserved_version_code": highest_reserved,
         "minimum_version_code": minimum_code,
         "main_stable_version_code": main_stable_code,
         "existing_install_floor": floor,
@@ -74,6 +78,7 @@ def main() -> int:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--channel", choices=("stable", "beta"), required=True)
     parser.add_argument("--published-codes-file", type=Path)
+    parser.add_argument("--reserved-codes-file", type=Path)
     parser.add_argument("--minimum-code", type=int, default=0)
     parser.add_argument("--main-stable-code", type=int, default=0)
     parser.add_argument("--override", type=int)
@@ -84,6 +89,7 @@ def main() -> int:
                 args.tag,
                 args.channel,
                 published_codes=_read_codes(args.published_codes_file),
+                reserved_codes=_read_codes(args.reserved_codes_file),
                 minimum_code=args.minimum_code,
                 main_stable_code=args.main_stable_code,
                 override=args.override,

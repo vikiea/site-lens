@@ -43,6 +43,16 @@ class VersionCodeTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "main stable"):
             determine("v0.2.0.alpha3", "beta", main_stable_code=-1)
 
+    def test_existing_reservation_is_part_of_the_shared_global_floor(self):
+        result = determine(
+            "v0.2.0.beta2",
+            "beta",
+            published_codes={"v0.2.0.alpha2": 13},
+            reserved_codes={"v0.2.0.alpha3": 21},
+        )
+        self.assertEqual(result["version_code"], 22)
+        self.assertEqual(result["highest_reserved_version_code"], 21)
+
     def test_manual_override_must_clear_the_global_floor(self):
         result = determine(
             "v0.2.1",

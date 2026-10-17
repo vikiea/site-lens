@@ -2,6 +2,10 @@
 
 Site Lens 通过 GitHub Actions 构建 Android 正式 APK，并把 APK 和 SHA-256 校验文件上传到 `vikiea/site-lens` 的 GitHub Release。
 
+## VersionCode allocation
+
+Release runs first enter a short `version-code-allocation` concurrency group. That job reads the latest stable APK and existing `version-code/<code>-<tag>` refs, then atomically creates a new immutable reservation ref through the GitHub API. A ref creation conflict causes the job to reread the reservations and try the next code. The repository checks, formal build, signing, and upload run after allocation and are not held by this lock. Rerunning a tag reuses its existing reservation, so failed retries cannot publish the same code under a different allocation.
+
 ## 自动发布
 
 推送符合 `vMAJOR.MINOR.PATCH` 的稳定标签即可触发发布：
