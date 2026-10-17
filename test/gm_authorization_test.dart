@@ -64,6 +64,34 @@ class CancelAwareHttp extends ControlledHttp {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test(
+    'public mode cannot be enabled without explicit per-script confirmation',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final scripts = ScriptService(db, CancelAwareHttp());
+      final script = await scripts.save(
+        '// ==UserScript==\n'
+        '// @name public-confirmation\n'
+        '// @match https://example.com/*\n'
+        '// @grant GM_xmlhttpRequest\n'
+        '// @connect example.com\n'
+        '// ==/UserScript==',
+      );
+      await expectLater(
+        scripts.enable(
+          script,
+          Cancellation(),
+          networkMode: ScriptNetworkMode.public,
+        ),
+        throwsA(isA<StateError>()),
+      );
+      final stored = (await db.scripts()).single;
+      expect(stored.enabled, isFalse);
+      expect(stored.publicConfirmed, isFalse);
+      await db.close();
+    },
+  );
+
   test('public approval is revoked by mode changes and source edits', () async {
     final db = AppDatabase(NativeDatabase.memory());
     final root = await Directory.systemTemp.createTemp('site-lens-public-');
@@ -144,6 +172,77 @@ void main() {
       );
       expect(candidate?.mediaUrl.toString(), 'https://cdn.example/video.mp4');
       expect(candidate?.source, MediaCandidateSource.registered);
+      await db.close();
+    },
+  );
+
+  test(
+    'registerMedia rejects stale generations and credential-bearing URLs',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final scripts = ScriptService(db, CancelAwareHttp());
+      final script = await scripts.save(
+        '// ==UserScript==\n// @name media\n// @match https://example.com/*\n// @grant SiteLens.registerMedia\n// ==/UserScript==',
+      );
+      await scripts.enable(script, Cancellation());
+      final revision = (await db.scripts()).single.approvedDigest!;
+      final hosts = NativeHosts(
+        db,
+        scripts,
+        CancelAwareHttp(),
+        api: SnapshotApi(),
+      );
+      final session =
+          HostSession(
+              1,
+              HostPurpose.browsing,
+              HostCapabilities(
+                platform: 'fixture',
+                isolatedScripts: true,
+                documentStart: true,
+                privateProbes: true,
+                reason: 'test',
+              ),
+            )
+            ..generation = 1
+            ..registered[script.id] = revision;
+      hosts.sessions[1] = session;
+      GmRequest request({required int generation, required String url}) =>
+          GmRequest(
+            hostId: 1,
+            generation: generation,
+            scriptId: script.id,
+            revision: revision,
+            documentUrl: 'https://example.com/',
+            payload: jsonEncode({
+              'id': 'candidate',
+              'op': 'registerMedia',
+              'args': {'url': url, 'title': 'fixture', 'mime': 'video/mp4'},
+            }),
+          );
+
+      final stale = jsonDecode(
+        await hosts.onGmRequest(
+          request(generation: 2, url: 'https://cdn.example/video.mp4'),
+        ),
+      );
+      expect(stale['ok'], isFalse);
+      for (final url in [
+        'blob:https://example.com/opaque',
+        'https://user:password@cdn.example/video.mp4',
+      ]) {
+        final rejected = jsonDecode(
+          await hosts.onGmRequest(request(generation: 1, url: url)),
+        );
+        expect(rejected['ok'], isFalse);
+      }
+      expect(
+        await db
+            .customSelect('SELECT COUNT(*) AS count FROM media_candidates')
+            .getSingle()
+            .then((row) => row.read<int>('count')),
+        0,
+      );
       await db.close();
     },
   );
