@@ -275,6 +275,90 @@ GM_registerMenuCommand('Lease SPA menu', () => {
     );
   });
 
+  testWidgets(
+    'app-owned history navigation restores the page without a false warning',
+    (tester) async {
+      final server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
+      final port = server.port;
+      addTearDown(() => server.close(force: true));
+      server.listen((request) async {
+        request.response.headers.contentType = ContentType.html;
+        final page = request.uri.path == '/two' ? 'Two' : 'One';
+        request.response.write(
+          '<!doctype html><html><body><main id="main">$page</main></body></html>',
+        );
+        await request.response.close();
+      });
+
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final container = ProviderContainer(
+        overrides: [databaseProvider.overrideWithValue(db)],
+      );
+      addTearDown(container.dispose);
+      final controller = container.read(appControllerProvider);
+      addTearDown(controller.shutdown);
+      await controller.initialize();
+      await reportCapabilitiesForTest(controller);
+
+      final site = Candidate(
+        id: 0,
+        url: Uri.parse('http://127.0.0.2:$port/one'),
+        label: 'history',
+        enabled: true,
+        sourceId: null,
+        readySelector: 'main',
+      );
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: BrowserScreen(app: controller, site: site),
+          ),
+        ),
+      );
+      await waitForCondition(
+        tester,
+        () => controller.activeBrowser?.host.loaded == true,
+        'initial history page loaded',
+      );
+      final session = controller.activeBrowser!.host;
+
+      await controller.hosts.api.navigate(
+        session.id,
+        'http://127.0.0.2:$port/two',
+      );
+      await waitForCondition(
+        tester,
+        () => session.loaded && session.url.endsWith('/two'),
+        'second history page loaded',
+      );
+      expect(session.errorKind, isNull);
+
+      expect(await controller.hosts.api.goBack(session.id), isTrue);
+      await waitForCondition(
+        tester,
+        () => session.loaded && session.url.endsWith('/one'),
+        'toolbar back restored the first history page',
+      );
+      expect(
+        session.errorKind,
+        isNull,
+        reason:
+            'app-owned history must not show the unverifiable-document warning',
+      );
+
+      expect(await controller.hosts.api.goForward(session.id), isTrue);
+      await waitForCondition(
+        tester,
+        () => session.loaded && session.url.endsWith('/two'),
+        'toolbar forward restored the second history page',
+      );
+      expect(session.errorKind, isNull);
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
   testWidgets('entry redirects always retain the privileged script lease', (
     tester,
   ) async {
