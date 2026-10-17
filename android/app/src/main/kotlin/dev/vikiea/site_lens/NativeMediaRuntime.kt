@@ -19,6 +19,8 @@ import java.util.UUID
 class NativeMediaRuntime(private val context: Context) : MethodChannel.MethodCallHandler {
     private var player: MediaPlayer? = null
     private var sessionId: String? = null
+    private var candidateId: String? = null
+    private var speed: Float = 1f
     private var channel: MethodChannel? = null
     private var state: String = "stopped"
 
@@ -47,6 +49,7 @@ class NativeMediaRuntime(private val context: Context) : MethodChannel.MethodCal
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                         player!!.playbackParams = player!!.playbackParams.setSpeed(speed)
                     }
+                    this.speed = speed
                     result.success(snapshot())
                 }
                 "stop", "close" -> { stop(); result.success(snapshot()) }
@@ -65,6 +68,8 @@ class NativeMediaRuntime(private val context: Context) : MethodChannel.MethodCal
         stop()
         val id = call.argument<String>("sessionId")?.takeIf { it.isNotBlank() } ?: "native_${UUID.randomUUID()}"
         sessionId = id
+        candidateId = call.argument<String>("candidateId")
+        speed = 1f
         val next = MediaPlayer()
         player = next
         next.setOnPreparedListener { media ->
@@ -94,6 +99,8 @@ class NativeMediaRuntime(private val context: Context) : MethodChannel.MethodCal
         stop()
         val id = call.argument<String>("sessionId")?.takeIf { it.isNotBlank() } ?: "native_${UUID.randomUUID()}"
         sessionId = id
+        candidateId = call.argument<String>("candidateId")
+        speed = 1f
         val next = MediaPlayer()
         player = next
         next.setOnPreparedListener { media -> state = "playing"; media.start(); emit("playing") }
@@ -119,9 +126,11 @@ class NativeMediaRuntime(private val context: Context) : MethodChannel.MethodCal
         val currentState = overrideState ?: if (active == null) "stopped" else state
         return mapOf(
             "sessionId" to sessionId,
+            "candidateId" to candidateId,
             "state" to currentState,
             "positionMs" to (runCatching { active?.currentPosition ?: 0 }.getOrDefault(0)),
             "durationMs" to (runCatching { active?.duration ?: 0 }.getOrDefault(0)),
+            "speed" to speed,
             "errorCode" to error,
         )
     }
@@ -134,6 +143,8 @@ class NativeMediaRuntime(private val context: Context) : MethodChannel.MethodCal
         }
         player = null
         sessionId = null
+        candidateId = null
+        speed = 1f
         state = "stopped"
     }
 

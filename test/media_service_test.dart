@@ -19,6 +19,36 @@ MediaCandidate candidate({String url = 'https://cdn.example/video.mp4'}) =>
     );
 
 void main() {
+  test('native playback controller enforces one session and safe controls', () {
+    final controller = NativePlaybackController();
+    final opening = controller.open(
+      candidate(),
+      hostId: 7,
+      generation: 3,
+      sourceUrl: Uri.parse('https://example.com/watch'),
+    );
+    expect(opening.state, NativePlaybackState.preparing);
+    expect(
+      controller.transition(NativePlaybackState.playing).state,
+      NativePlaybackState.playing,
+    );
+    expect(controller.seek(1200).positionMs, 1200);
+    expect(controller.setSpeed(1.5).speed, 1.5);
+    expect(
+      () => controller.transition(NativePlaybackState.completed),
+      returnsNormally,
+    );
+    expect(() => controller.seek(10), throwsStateError);
+    final replacement = controller.open(
+      candidate(url: 'https://cdn.example/other.mp4'),
+      hostId: 7,
+      generation: 3,
+      sourceUrl: Uri.parse('https://example.com/watch'),
+    );
+    expect(replacement.id, isNot(opening.id));
+    expect(replacement.state, NativePlaybackState.preparing);
+  });
+
   test('DOM collector rejects blob URLs and de-duplicates safe media URLs', () {
     final values = const MediaCandidateCollector().fromDom(
       hostId: 7,

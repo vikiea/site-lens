@@ -36,6 +36,7 @@ class NativeMediaRuntime {
     );
     final raw = await _channel.invokeMapMethod<String, Object?>('open', {
       'sessionId': sessionId,
+      'candidateId': candidate.id,
       'url': candidate.mediaUrl.toString(),
     });
     return _decode(raw ?? const <String, Object?>{});
@@ -47,6 +48,7 @@ class NativeMediaRuntime {
     }
     final raw = await _channel.invokeMapMethod<String, Object?>('openLocal', {
       'sessionId': 'play_${task.id}',
+      'candidateId': task.candidateId,
       'path': file.path,
     });
     return _decode(raw ?? const <String, Object?>{});
@@ -78,18 +80,19 @@ class NativeMediaRuntime {
 
   Future<void> _onNativeEvent(MethodCall call) async {
     if (call.method != 'state' || call.arguments is! Map) return;
-    _states.add(_decode(Map<String, Object?>.from(call.arguments as Map)));
+    _decode(Map<String, Object?>.from(call.arguments as Map));
   }
 
   NativePlaybackSession _decode(Map<String, Object?> raw) {
     final value = NativePlaybackSession(
       id: raw['sessionId'] as String? ?? '',
-      candidateId: '',
+      candidateId: raw['candidateId'] as String? ?? '',
       state: NativePlaybackState.values.firstWhere(
         (state) => state.name == raw['state'],
         orElse: () => NativePlaybackState.stopped,
       ),
       positionMs: (raw['positionMs'] as num?)?.toInt() ?? 0,
+      speed: (raw['speed'] as num?)?.toDouble() ?? 1,
       errorCode: raw['errorCode'] as String?,
     );
     _active = value.state == NativePlaybackState.stopped ? null : value;

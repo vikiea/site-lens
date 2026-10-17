@@ -2788,6 +2788,33 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
+                trailing: IconButton(
+                  tooltip: '缓存媒体',
+                  icon: const Icon(Icons.download_for_offline_outlined),
+                  onPressed: () async {
+                    Navigator.pop(c);
+                    try {
+                      final authorized = widget.app.hosts
+                          .authorizeMediaCandidate(current.id, candidate.id);
+                      final task = widget.app.mediaTasks.create(authorized);
+                      await widget.app.mediaDownloads.startNative(
+                        task,
+                        authorized,
+                      );
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('媒体已缓存，可在任务中继续播放或导出')),
+                        );
+                      }
+                    } catch (error) {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('媒体任务未完成：$error')),
+                        );
+                      }
+                    }
+                  },
+                ),
                 onTap: () async {
                   Navigator.pop(c);
                   try {
@@ -2795,15 +2822,19 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                       current.id,
                       candidate.id,
                     );
-                    final task = widget.app.mediaTasks.create(authorized);
-                    await widget.app.mediaDownloads.startNative(
-                      task,
+                    await widget.app.nativeMedia.open(
                       authorized,
+                      hostId: current.id,
+                      generation: current.generation,
+                      sourceUrl: current.url.isEmpty
+                          ? authorized.sourceUrl
+                          : Uri.parse(current.url),
+                      sessionId: 'candidate_${candidate.id}',
                     );
                     if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('媒体已缓存，可在任务中继续播放或导出')),
-                      );
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(const SnackBar(content: Text('原生播放器已打开')));
                     }
                   } catch (error) {
                     if (mounted) {
