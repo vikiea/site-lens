@@ -52,7 +52,7 @@ extension SiteLensGlassQualityModeLabel on SiteLensGlassQualityMode {
 class AppSettings {
   const AppSettings({
     this.themeMode = ThemeModePreference.system,
-    this.themePreset = ThemePresetId.oceanBlue,
+    this.themePreset = ThemePresetId.sunsetCoral,
     this.glassOpacity = AppPolicy.defaultGlassOpacity,
     this.glassQualityMode = SiteLensGlassQualityMode.automatic,
     this.highQualityAllSurfaces = false,
@@ -139,7 +139,7 @@ class AppSettings {
           ThemePresetId.values
               .where((v) => v.wireId == json['themePreset'])
               .firstOrNull ??
-          ThemePresetId.oceanBlue,
+          ThemePresetId.sunsetCoral,
       glassOpacity: json.containsKey('glassOpacity')
           ? percentage('glassOpacity', AppPolicy.defaultGlassOpacity)
           : json['glassTransparency'] is num &&

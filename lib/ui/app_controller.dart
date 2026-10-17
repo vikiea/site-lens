@@ -179,7 +179,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   bool scriptsDisabled = false;
   bool backgroundHealthCheck = true;
   ThemeModePreference themeModePreference = ThemeModePreference.system;
-  ThemePresetId themePreset = ThemePresetId.oceanBlue;
+  ThemePresetId themePreset = ThemePresetId.sunsetCoral;
   bool restoreBrowserSessions = true;
   bool allowBackgroundPlayback = false;
 

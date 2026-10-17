@@ -6,14 +6,79 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/update/update_controller.dart';
 import 'package:site_lens/update/update_service.dart';
 import 'package:site_lens/data/database.dart';
+import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/browser_entry.dart';
 import 'package:site_lens/ui/profile_panel.dart';
 import 'package:site_lens/ui/screens.dart';
 
 import 'fake_update_platform.dart';
+import 'fake_web_host_api.dart';
 
 void main() {
+  testWidgets('home exposes import and detection actions in the app bar', (
+    tester,
+  ) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final app = AppController(db, api: FakeWebHostApi());
+    await app.load();
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWithValue(app)],
+        child: const MaterialApp(home: HomeScreen()),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byTooltip('导入档案包'), findsOneWidget);
+    expect(find.byTooltip('全部检测'), findsOneWidget);
+    expect(find.byTooltip('站点操作'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+    await app.shutdown();
+    await db.close();
+  });
+
+  testWidgets('site cards label stale recommendations and expose detection', (
+    tester,
+  ) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final app = AppController(db, api: FakeWebHostApi());
+    final profileId = await db.createProfile('示例站');
+    await db.addCandidate(
+      Uri.parse('https://example.com/'),
+      label: '主地址',
+      profileId: profileId,
+    );
+    final candidate = (await db.candidates()).single;
+    await db.saveProbe(
+      ProbeResult(
+        round: 1,
+        candidateId: candidate.id,
+        stage: ProbeStage.homepage,
+        status: ProbeStatus.ready,
+        entryUrl: candidate.url,
+        finalUrl: candidate.url,
+        checkedAt: DateTime(2026, 10, 17),
+      ),
+    );
+    await app.load();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ProfilesPanel(app: app, onOpen: (_) {}, onResume: () {}),
+        ),
+      ),
+    );
+
+    expect(find.text('本轮暂无推荐'), findsOneWidget);
+    expect(find.byTooltip('检测此档案'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+    await app.shutdown();
+    await db.close();
+  });
+
   testWidgets('empty product invites adding a profile and can create one', (
     tester,
   ) async {

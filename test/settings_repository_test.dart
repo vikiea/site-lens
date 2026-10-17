@@ -32,7 +32,7 @@ void main() {
     // Nothing is reinterpreted: a record that is not the current format cannot
     // be read, so the defaults apply and the script kill switch stays engaged
     // rather than silently re-enabling user scripts.
-    expect(value.themePreset, ThemePresetId.oceanBlue);
+    expect(value.themePreset, ThemePresetId.sunsetCoral);
     expect(value.themeMode, ThemeModePreference.system);
     expect(value.pullToRefresh, false);
     expect(value.scriptsDisabled, true);
@@ -149,7 +149,7 @@ void main() {
         'themePreset': 'missing',
       });
       expect(value.scriptsDisabled, isTrue);
-      expect(value.themePreset, ThemePresetId.oceanBlue);
+      expect(value.themePreset, ThemePresetId.sunsetCoral);
       expect(() => AppSettings.decode('{"version":1}'), throwsFormatException);
     },
   );
@@ -164,7 +164,7 @@ void main() {
       });
       final reset = await settings.resetUserPreferences();
       expect(reset.scriptsDisabled, isTrue);
-      expect(reset.themePreset, ThemePresetId.oceanBlue);
+      expect(reset.themePreset, ThemePresetId.sunsetCoral);
       expect(await db.profiles(), hasLength(1));
     },
   );

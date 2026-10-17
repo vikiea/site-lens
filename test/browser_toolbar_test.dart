@@ -159,4 +159,36 @@ void main() {
       reason: 'the handle position is remembered',
     );
   });
+
+  testWidgets('more opens an icon-only row above the browser toolbar', (
+    tester,
+  ) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final app = await boot(tester, db);
+    addTearDown(() async {
+      await app.shutdown();
+      await db.close();
+    });
+
+    await tester.tap(find.byIcon(Icons.keyboard_arrow_up));
+    await tester.pump();
+    await tester.tap(find.byTooltip('更多浏览器操作'));
+    await tester.pump();
+
+    final secondary = find.byKey(
+      const ValueKey('browser-secondary-navigation'),
+    );
+    expect(secondary, findsOneWidget);
+    expect(
+      find.descendant(of: secondary, matching: find.byType(IconButton)),
+      findsNWidgets(3),
+    );
+    expect(find.byTooltip('新建标签页'), findsOneWidget);
+    expect(find.byTooltip('脚本菜单与恢复'), findsOneWidget);
+    expect(find.byTooltip('关闭当前标签页'), findsOneWidget);
+    expect(
+      tester.getTopLeft(secondary).dy,
+      lessThan(tester.getTopLeft(find.byTooltip('后退')).dy),
+    );
+  });
 }

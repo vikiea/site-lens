@@ -221,46 +221,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     icon: const Icon(Icons.add_link),
                     onPressed: () => showAddProfileDialog(context, app),
                   ),
-                  PopupMenuButton<String>(
-                    tooltip: '站点操作',
-                    onSelected: (choice) => safely(context, () async {
-                      switch (choice) {
-                        case 'import':
-                          await importProfilePack(context, app);
-                        case 'detect':
-                          await app.detect();
-                        case 'cancel':
-                          app.cancel();
-                      }
-                    }),
-                    itemBuilder: (_) => [
-                      const PopupMenuItem(
-                        value: 'import',
-                        child: ListTile(
-                          leading: Icon(Icons.file_download_outlined),
-                          title: Text('导入档案包'),
-                          contentPadding: EdgeInsets.zero,
-                        ),
-                      ),
-                      PopupMenuItem(
-                        value: 'detect',
-                        enabled: app.profiles.any((profile) => profile.enabled),
-                        child: const ListTile(
-                          leading: Icon(Icons.radar),
-                          title: Text('全部检测'),
-                          contentPadding: EdgeInsets.zero,
-                        ),
-                      ),
-                      if (app.probes.running || app.refreshing)
-                        const PopupMenuItem(
-                          value: 'cancel',
-                          child: ListTile(
-                            leading: Icon(Icons.stop_circle_outlined),
-                            title: Text('取消检测'),
-                            contentPadding: EdgeInsets.zero,
-                          ),
-                        ),
-                    ],
+                  IconButton(
+                    tooltip: '导入档案包',
+                    icon: const Icon(Icons.file_download_outlined),
+                    onPressed: () =>
+                        safely(context, () => importProfilePack(context, app)),
+                  ),
+                  IconButton(
+                    tooltip: app.probes.running || app.refreshing
+                        ? '取消检测'
+                        : '全部检测',
+                    icon: Icon(
+                      app.probes.running || app.refreshing
+                          ? Icons.stop_circle_outlined
+                          : Icons.radar,
+                    ),
+                    onPressed: app.probes.running || app.refreshing
+                        ? app.cancel
+                        : app.profiles.any((profile) => profile.enabled)
+                        ? () => safely(context, () async {
+                            await app.detect();
+                          })
+                        : null,
                   ),
                 ],
                 AppDestination.browser => [
@@ -2039,6 +2021,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   int? _dismissedHostId;
   Timer? _hideTimer;
   bool _navigationVisible = false;
+  bool _moreNavigationVisible = false;
   late bool _autoHideEnabled;
   int _toolbarHolds = 0;
   int _lastInteraction = 0;
@@ -2202,12 +2185,27 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
       if (mounted &&
           widget.app.settings.autoHideBrowserControls &&
           _toolbarHolds == 0) {
-        setState(() => _navigationVisible = false);
+        setState(() {
+          _navigationVisible = false;
+          _moreNavigationVisible = false;
+        });
       }
     });
   }
 
   void _keepNavigationVisible() => _armHideTimer();
+
+  void _toggleMoreNavigation() {
+    if (!mounted) return;
+    setState(() => _moreNavigationVisible = !_moreNavigationVisible);
+    _keepNavigationVisible();
+  }
+
+  void _closeMoreNavigation() {
+    if (_moreNavigationVisible && mounted) {
+      setState(() => _moreNavigationVisible = false);
+    }
+  }
 
   /// Transient surfaces hold the toolbar open: its countdown resumes when the
   /// sheet or menu closes instead of expiring behind it.
@@ -2465,15 +2463,38 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                     onPointerDown: (_) => _keepNavigationVisible(),
                     onPointerMove: (_) => _keepNavigationVisible(),
                     onPointerUp: (_) => _keepNavigationVisible(),
-                    child: _BrowserNavigation(
-                      tabsCount: _tabs.length,
-                      onTabs: () => unawaited(_openTabSwitcher()),
-                      onBack: () => unawaited(_goBack()),
-                      onForward: () => unawaited(_goForward()),
-                      onReload: () => unawaited(_reload()),
-                      onHome: () => unawaited(_goHome()),
-                      onExit: _exitToHome,
-                      onMore: () => unawaited(_openMoreActions()),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (_moreNavigationVisible) ...[
+                          _BrowserMoreNavigation(
+                            onNewTab: () {
+                              _closeMoreNavigation();
+                              unawaited(_addTab());
+                            },
+                            onMenus: () {
+                              _closeMoreNavigation();
+                              unawaited(_menus());
+                            },
+                            onCloseTab: () {
+                              _closeMoreNavigation();
+                              unawaited(_closeTab());
+                            },
+                          ),
+                          const SizedBox(height: 4),
+                        ],
+                        _BrowserNavigation(
+                          tabsCount: _tabs.length,
+                          onTabs: () => unawaited(_openTabSwitcher()),
+                          onBack: () => unawaited(_goBack()),
+                          onForward: () => unawaited(_goForward()),
+                          onReload: () => unawaited(_reload()),
+                          onHome: () => unawaited(_goHome()),
+                          onExit: _exitToHome,
+                          onMore: _toggleMoreNavigation,
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -2516,47 +2537,6 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   /// scripts are live here — the menu list is empty whenever no *active* script
   /// called `GM_registerMenuCommand`, and saying so beats an empty sheet.
   Future<void> _menus() => _withToolbarHeld(_showMenusSheet);
-
-  /// The occasional and destructive actions. A sheet, not a popup menu: an
-  /// Android popup menu is composited below the WebView's platform view, so
-  /// over the page it is unreadable. Sheets render correctly above it.
-  Future<void> _openMoreActions() => _withToolbarHeld(() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.add, size: 20),
-              title: const Text('新建标签页'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                unawaited(_addTab());
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.code, size: 20),
-              title: const Text('脚本菜单与恢复'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                unawaited(_menus());
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.close, size: 20),
-              title: const Text('关闭当前标签页'),
-              subtitle: const Text('销毁这个标签页的 WebView'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                unawaited(_closeTab());
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  });
 
   Future<void> _showMenusSheet() async {
     final tab = _tab;
@@ -2753,6 +2733,55 @@ class _BrowserNavButton extends StatelessWidget {
           : Badge(label: Text('$badge'), child: glyph),
     );
   }
+}
+
+/// The compact icon-only row opened by the more button. It stays above the
+/// primary toolbar so actions remain over the WebView without a modal sheet.
+class _BrowserMoreNavigation extends StatelessWidget {
+  const _BrowserMoreNavigation({
+    required this.onNewTab,
+    required this.onMenus,
+    required this.onCloseTab,
+  });
+
+  final VoidCallback onNewTab;
+  final VoidCallback onMenus;
+  final VoidCallback onCloseTab;
+
+  @override
+  Widget build(BuildContext context) => SiteLensGlassSurface(
+    role: SiteLensSurfaceRole.platformView,
+    radius: SiteLensMetrics.toolbarRadius,
+    child: SizedBox(
+      key: const ValueKey('browser-secondary-navigation'),
+      height: SiteLensMetrics.toolbarHeight,
+      child: Row(
+        children: [
+          Expanded(
+            child: _BrowserNavButton(
+              tooltip: '新建标签页',
+              icon: Icons.add,
+              onPressed: onNewTab,
+            ),
+          ),
+          Expanded(
+            child: _BrowserNavButton(
+              tooltip: '脚本菜单与恢复',
+              icon: Icons.code,
+              onPressed: onMenus,
+            ),
+          ),
+          Expanded(
+            child: _BrowserNavButton(
+              tooltip: '关闭当前标签页',
+              icon: Icons.close,
+              onPressed: onCloseTab,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 /// The one movable control in the browsing view: a semi-transparent handle the

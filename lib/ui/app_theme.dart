@@ -246,7 +246,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
 
   static SiteLensColors of(BuildContext context) =>
       Theme.of(context).extension<SiteLensColors>() ??
-      SiteLensColors.resolve(ThemePresetId.oceanBlue, Brightness.light);
+      SiteLensColors.resolve(ThemePresetId.sunsetCoral, Brightness.light);
 
   @override
   SiteLensColors copyWith({

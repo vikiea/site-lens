@@ -208,7 +208,7 @@ class _ProfileCard extends StatelessWidget {
                         children: [
                           Text(
                             stale
-                                ? '当前没有本轮推荐'
+                                ? '本轮暂无推荐'
                                 : recommended == null
                                 ? '还没有可用落点'
                                 : '当前推荐地址',
@@ -230,6 +230,18 @@ class _ProfileCard extends StatelessWidget {
                             ),
                         ],
                       ),
+                    ),
+                    IconButton(
+                      tooltip: '检测此档案',
+                      onPressed:
+                          profile.enabled &&
+                              !app.probes.running &&
+                              !app.refreshing
+                          ? () => safely(context, () async {
+                              await app.detect(profileId: profile.id);
+                            })
+                          : null,
+                      icon: const Icon(Icons.radar),
                     ),
                   ],
                 ),
