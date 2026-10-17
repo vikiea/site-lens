@@ -189,19 +189,26 @@ class DlnaSoapClient {
 /// require the exact session/device/task token and can only read the supplied
 /// app-private file. It implements HEAD and byte ranges for TV clients.
 class MediaRelayServer {
-  MediaRelayServer._(this._server, this.authorization, this._file);
+  MediaRelayServer._(
+    this._server,
+    this.authorization,
+    this._file,
+    this._advertisedHost,
+  );
   final HttpServer _server;
   final RelayAuthorization authorization;
   final File _file;
+  final String _advertisedHost;
 
   Uri get url => Uri.parse(
-    'http://${_server.address.address}:${_server.port}/media/${authorization.taskId}?token=${authorization.token}',
+    'http://$_advertisedHost:${_server.port}/media/${authorization.taskId}?token=${authorization.token}',
   );
 
   static Future<MediaRelayServer> start({
     required RelayAuthorization authorization,
     required File file,
     Directory? allowedRoot,
+    String? advertisedHost,
   }) async {
     final root = (allowedRoot ?? file.parent).absolute;
     final canonical = file.resolveSymbolicLinksSync();
@@ -212,9 +219,25 @@ class MediaRelayServer {
     }
     if (!await file.exists()) throw StateError(MediaErrorCode.relayDenied);
     final server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
-    final relay = MediaRelayServer._(server, authorization, file);
+    final host = advertisedHost ?? await _routableHost();
+    final relay = MediaRelayServer._(server, authorization, file, host);
     server.listen(relay._handle);
     return relay;
+  }
+
+  static Future<String> _routableHost() async {
+    final interfaces = await NetworkInterface.list(
+      type: InternetAddressType.IPv4,
+      includeLoopback: false,
+    );
+    for (final interface in interfaces) {
+      for (final address in interface.addresses) {
+        if (!address.isLoopback && address.address.isNotEmpty) {
+          return address.address;
+        }
+      }
+    }
+    throw StateError('没有可用于 DLNA 中继的局域网地址');
   }
 
   Future<void> _handle(HttpRequest request) async {

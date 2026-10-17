@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/domain/models.dart';
+import 'package:site_lens/media/dlna_service.dart';
 import 'package:site_lens/media/media_service.dart';
 
 MediaCandidate candidate({String url = 'https://cdn.example/video.mp4'}) =>
@@ -126,4 +127,40 @@ void main() {
       throwsStateError,
     );
   });
+
+  test(
+    'local relay advertises a routable host and serves byte ranges',
+    () async {
+      final root = await Directory.systemTemp.createTemp('site-lens-relay-');
+      addTearDown(() => root.delete(recursive: true));
+      final file = File('${root.path}/video.mp4')
+        ..writeAsBytesSync(List<int>.generate(32, (index) => index));
+      final auth = const RelayAuthorizer().issue(
+        sessionId: 'session',
+        taskId: 'task',
+        deviceId: 'device',
+      );
+      final relay = await MediaRelayServer.start(
+        authorization: auth,
+        file: file,
+        allowedRoot: root,
+        advertisedHost: '127.0.0.1',
+      );
+      addTearDown(relay.close);
+      expect(relay.url.host, '127.0.0.1');
+      final client = HttpClient();
+      addTearDown(() => client.close(force: true));
+      final request = await client.getUrl(relay.url);
+      request.headers.set(HttpHeaders.rangeHeader, 'bytes=4-7');
+      final response = await request.close();
+      expect(response.statusCode, HttpStatus.partialContent);
+      expect(
+        await response.fold<List<int>>(
+          <int>[],
+          (all, chunk) => all..addAll(chunk),
+        ),
+        [4, 5, 6, 7],
+      );
+    },
+  );
 }
