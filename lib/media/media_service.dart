@@ -449,8 +449,9 @@ class MediaDownloadService {
       final state = status['state'] as String?;
       final bytes = (status['bytesDownloaded'] as num?)?.toInt();
       final total = (status['totalBytes'] as num?)?.toInt();
-      if (bytes != null)
+      if (bytes != null) {
         tasks.updateProgress(task.id, bytes, totalBytes: total);
+      }
       final localUri = status['localUri'] as String?;
       if (localUri != null && localUri.startsWith('file://')) {
         tasks.setLocalRef(task.id, Uri.parse(localUri).toFilePath());
@@ -483,8 +484,9 @@ class MediaDownloadService {
     final runtime = native;
     final current = tasks.task(taskId) ?? (throw StateError('媒体任务不存在'));
     if (runtime == null) {
-      if (current.state == MediaTaskState.downloading)
+      if (current.state == MediaTaskState.downloading) {
         return tasks.transition(taskId, MediaTaskState.paused);
+      }
       return current;
     }
     await runtime.pause(taskId);
@@ -501,8 +503,9 @@ class MediaDownloadService {
     final runtime = native;
     final current = tasks.task(taskId) ?? (throw StateError('媒体任务不存在'));
     if (runtime == null) return start(current, candidate);
-    if (current.state == MediaTaskState.paused)
+    if (current.state == MediaTaskState.paused) {
       tasks.transition(taskId, MediaTaskState.downloading);
+    }
     final status = await runtime.resume(taskId);
     final bytes = (status['bytesDownloaded'] as num?)?.toInt();
     final total = (status['totalBytes'] as num?)?.toInt();
@@ -653,8 +656,9 @@ class MediaDownloadService {
         value.contains('授权')) {
       return MediaErrorCode.authorizationRequired;
     }
-    if (value.contains('disk') || value.contains('space'))
+    if (value.contains('disk') || value.contains('space')) {
       return MediaErrorCode.diskFull;
+    }
     if (value.contains('cancel')) return MediaErrorCode.cancelled;
     return MediaErrorCode.network;
   }

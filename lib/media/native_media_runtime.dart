@@ -18,6 +18,8 @@ class NativeMediaRuntime {
   final MethodChannel _channel;
   final _states = StreamController<NativePlaybackSession>.broadcast();
   Stream<NativePlaybackSession> get states => _states.stream;
+  NativePlaybackSession? _active;
+  NativePlaybackSession? get active => _active;
 
   Future<NativePlaybackSession> open(
     MediaCandidate candidate, {
@@ -90,6 +92,7 @@ class NativeMediaRuntime {
       positionMs: (raw['positionMs'] as num?)?.toInt() ?? 0,
       errorCode: raw['errorCode'] as String?,
     );
+    _active = value.state == NativePlaybackState.stopped ? null : value;
     _states.add(value);
     return value;
   }

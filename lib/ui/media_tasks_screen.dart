@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../domain/models.dart';
 import '../media/dlna_service.dart';
+import '../media/media_service.dart';
 import 'app_controller.dart';
 import 'glass_surface.dart';
 import 'ui_primitives.dart';
@@ -120,14 +122,14 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     if (result.state != ExportState.deliverable) {
       throw StateError(result.errorCode ?? '导出失败');
     }
-    final destination = await FilePicker.platform.saveFile(
+    final destination = await FilePicker.saveFile(
+      bytes: Uint8List(0),
       dialogTitle: '导出 MP4',
       fileName: '${task.id}.mp4',
-      type: FileType.custom,
-      allowedExtensions: ['mp4'],
+      mimeType: 'video/mp4',
     );
     if (destination == null) return;
-    await widget.app.mediaExports.deliver(result, Uri.parse(destination));
+    await widget.app.mediaExports.deliver(result, destination);
     if (mounted) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('MP4 已交付')));
