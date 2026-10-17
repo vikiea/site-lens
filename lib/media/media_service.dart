@@ -603,6 +603,9 @@ class MediaDownloadService {
         maxBytes: maxBytes,
       );
       cancel.check();
+      if (response.status < 200 || response.status >= 300) {
+        throw StateError('媒体下载 HTTP ${response.status}');
+      }
       final append = offset > 0 && response.status == 206;
       if (offset > 0 && !append) {
         // A server that ignored Range would duplicate bytes. Start over only

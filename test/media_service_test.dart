@@ -1,10 +1,43 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/media/dlna_service.dart';
 import 'package:site_lens/media/media_service.dart';
+import 'package:site_lens/media/native_download_runtime.dart';
+import 'package:site_lens/network/transport.dart';
+
+class FakeNativeDownloads extends NativeDownloadRuntime {
+  FakeNativeDownloads() : super(channel: const MethodChannel('fake_downloads'));
+
+  final statuses = <String, Map<String, Object?>>{};
+  final calls = <String>[];
+
+  @override
+  Future<Map<String, Object?>> start(
+    MediaTask task,
+    MediaCandidate candidate, {
+    String? title,
+  }) async {
+    calls.add('start:${task.id}');
+    return statuses[task.id] ?? {'state': 'downloading'};
+  }
+
+  @override
+  Future<Map<String, Object?>> status(String taskId) async =>
+      statuses[taskId] ?? {'state': 'missing'};
+
+  @override
+  Future<void> pause(String taskId) async => calls.add('pause:$taskId');
+
+  @override
+  Future<Map<String, Object?>> resume(String taskId) async {
+    calls.add('resume:$taskId');
+    return statuses[taskId] ?? {'state': 'downloading'};
+  }
+}
 
 MediaCandidate candidate({String url = 'https://cdn.example/video.mp4'}) =>
     MediaCandidate(
@@ -63,6 +96,69 @@ void main() {
     );
     expect(values, hasLength(1));
     expect(values.single.mediaUrl.toString(), 'https://cdn.example/video.mp4');
+  });
+
+  test('native task reconciliation restores progress, local URI and playable state', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'site-lens-native-task-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final store = MediaTaskStore(directoryProvider: () async => root);
+    final cache = await store.cacheDirectory();
+    final file = File('${cache.path}/cached.media')
+      ..writeAsBytesSync([1, 2, 3]);
+    final task = store.create(candidate());
+    store.transition(task.id, MediaTaskState.downloading);
+    final native = FakeNativeDownloads();
+    native.statuses[task.id] = {
+      'state': 'completed',
+      'bytesDownloaded': 3,
+      'totalBytes': 3,
+      'localUri': file.uri.toString(),
+    };
+    await MediaDownloadService(tasks: store, native: native).reconcileNative();
+    expect(store.task(task.id)?.state, MediaTaskState.playable);
+    expect(store.task(task.id)?.bytesDownloaded, 3);
+    expect(store.task(task.id)?.localRef, file.path);
+    expect(await store.cachedFile(task.id), isNotNull);
+  });
+
+  test(
+    'native pause/resume keeps the task state and records backend calls',
+    () async {
+      final store = MediaTaskStore();
+      final task = store.create(candidate());
+      final native = FakeNativeDownloads();
+      final service = MediaDownloadService(tasks: store, native: native);
+      native.statuses[task.id] = {'state': 'downloading'};
+      await service.startNative(task, candidate());
+      expect(store.task(task.id)?.state, MediaTaskState.downloading);
+      await service.pauseNative(task.id);
+      expect(store.task(task.id)?.state, MediaTaskState.paused);
+      await service.resumeNative(task.id, candidate());
+      expect(store.task(task.id)?.state, MediaTaskState.downloading);
+      expect(native.calls, [
+        'start:${task.id}',
+        'pause:${task.id}',
+        'resume:${task.id}',
+      ]);
+    },
+  );
+
+  test('HTTP failures do not become playable cache entries', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'site-lens-http-failure-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final store = MediaTaskStore(directoryProvider: () async => root);
+    final task = store.create(candidate());
+    final http = _StatusHttp(404);
+    final service = MediaDownloadService(tasks: store, http: http);
+    await expectLater(
+      service.start(task, candidate()),
+      throwsA(isA<StateError>()),
+    );
+    expect(store.task(task.id)?.state, MediaTaskState.failed);
   });
 
   test(
@@ -252,5 +348,28 @@ void main() {
         [4, 5, 6, 7],
       );
     },
+  );
+}
+
+class _StatusHttp extends ControlledHttp {
+  _StatusHttp(this.statusCode);
+  final int statusCode;
+
+  @override
+  Future<FetchResponse> fetch(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    String method = 'GET',
+    Map<String, String> headers = const {},
+    String? body,
+    Duration timeout = const Duration(seconds: 15),
+    int maxBytes = 1024 * 1024,
+  }) async => FetchResponse(
+    url: url,
+    status: statusCode,
+    bytes: const [],
+    headers: const {},
   );
 }
