@@ -397,16 +397,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 }
 
-/// (group label, note, scripts) in display order: profiles first, then 未绑定.
-List<(String, String, List<InstalledScript>)> scriptGroups(
+/// (group label, note, profile id, scripts) in display order: profiles first,
+/// then 未绑定.
+List<(String, String, int?, List<InstalledScript>)> scriptGroups(
   AppController app, {
   int? profileId,
 }) => [
   for (final profile in app.profiles.where(
     (p) => profileId == null || p.id == profileId,
   ))
-    (profile.name, '随档案一起导出/导入', app.scriptsForProfile(profile.id)),
-  ('未绑定', '暂未归属任何档案，按 @match 全局生效', app.unboundScripts),
+    (profile.name, '随档案一起导出/导入', profile.id, app.scriptsForProfile(profile.id)),
+  ('未绑定', '暂未归属任何档案，按 @match 全局生效', null, app.unboundScripts),
 ];
 
 class ScriptManagementScreen extends StatelessWidget {
@@ -473,8 +474,11 @@ class ScriptsPage extends StatelessWidget {
     final errorCount = parsed
         .where((metadata) => metadata.errors.isNotEmpty)
         .length;
-    final enabledCount = app.installed.where((script) => script.enabled).length;
     final groups = scriptGroups(app, profileId: profileId);
+    final enabledCount = groups
+        .expand((group) => group.$4)
+        .where((script) => script.enabled)
+        .length;
     return ListView(
       padding: const EdgeInsets.fromLTRB(
         SiteLensMetrics.pagePadding,
@@ -505,7 +509,7 @@ class ScriptsPage extends StatelessWidget {
           ),
         for (final group in groups) ...[
           SiteLensSectionHeader(title: group.$1, subtitle: group.$2),
-          if (group.$3.isEmpty)
+          if (group.$4.isEmpty)
             SiteLensPanel(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               child: Text(
@@ -513,8 +517,8 @@ class ScriptsPage extends StatelessWidget {
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
-          for (final script in group.$3) ...[
-            _ScriptCard(app: app, script: script),
+          for (final script in group.$4) ...[
+            _ScriptCard(app: app, script: script, profileId: group.$3),
             const SizedBox(height: SiteLensMetrics.itemGap),
           ],
         ],
@@ -692,9 +696,10 @@ class _GlobalScriptSwitchPanel extends StatelessWidget {
 }
 
 class _ScriptCard extends StatelessWidget {
-  const _ScriptCard({required this.app, required this.script});
+  const _ScriptCard({required this.app, required this.script, this.profileId});
   final AppController app;
   final InstalledScript script;
+  final int? profileId;
 
   @override
   Widget build(BuildContext context) {
@@ -806,12 +811,16 @@ class _ScriptCard extends StatelessWidget {
   Future<void> _toggle(BuildContext context, bool enabled) async {
     await safely(context, () async {
       if (!enabled) {
-        await app.db.setScriptEnabled(script.id, false);
+        if (profileId == null) {
+          await app.db.setScriptEnabled(script.id, false);
+        } else {
+          await app.db.setProfileScriptEnabled(profileId!, script.id, false);
+        }
       } else {
         if (!context.mounted || !await confirmScript(context, app, script)) {
           return;
         }
-        await app.scripts.enable(script, Cancellation());
+        await app.scripts.enable(script, Cancellation(), profileId: profileId);
       }
       await app.load();
     });
@@ -1832,8 +1841,7 @@ class _GlassOpacitySliderState extends State<_GlassOpacitySlider> {
                 // Track hit testing includes the default marker's visual
                 // center. Snap that narrow band to the exact preset so a tap
                 // resets to 55 instead of landing on the Slider's padded 57.
-                final rounded =
-                    (raw - AppPolicy.defaultGlassOpacity).abs() <= 3
+                final rounded = (raw - AppPolicy.defaultGlassOpacity).abs() <= 3
                     ? AppPolicy.defaultGlassOpacity
                     : raw;
                 if (_lastHapticValue != rounded) {

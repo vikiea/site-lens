@@ -545,11 +545,22 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Scripts explicitly bound to [profileId].
   List<InstalledScript> scriptsForProfile(int profileId) {
-    final ids = profileScriptLinks
+    final links = profileScriptLinks
         .where((l) => l.profileId == profileId)
-        .map((l) => l.scriptId)
-        .toSet();
-    return installed.where((s) => ids.contains(s.id)).toList();
+        .toList();
+    return installed
+        .where((s) => links.any((link) => link.scriptId == s.id))
+        .map((s) {
+          final link = links.firstWhere((l) => l.scriptId == s.id);
+          return InstalledScript(
+            id: s.id,
+            name: s.name,
+            source: s.source,
+            enabled: link.enabled,
+            approvedDigest: link.approvedDigest,
+          );
+        })
+        .toList();
   }
 
   /// Scripts with no profile binding: they stay globally active by @match.
@@ -1008,7 +1019,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       return '还没有导入任何脚本：到「脚本」页粘贴或导入 .user.js。';
     }
     final enabled = installed.where((s) => s.enabled).toList();
-    if (enabled.isEmpty) {
+    if (enabled.isEmpty && tab.host.registered.isEmpty) {
       return '没有已启用的脚本：到「脚本」页启用；被自动关闭的会在错误日志里写明原因。';
     }
     if (tab.loadedHost == null) return '选择标签加载后可查看生效脚本';
@@ -1016,6 +1027,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       return '宿主里没有已注册脚本（共 ${enabled.length} 个已启用）：确认或依赖完整性可能已失效'
           '（看「脚本」页错误日志），也可能是本机不支持安全隔离（见页面上的提示）；'
           '页面刚打开时刷新一次再看。';
+    }
+    final active = activeScriptsFor(tab);
+    if (active.isNotEmpty) {
+      return '本次文档生效脚本：${active.map((s) => s.name).join('、')}';
     }
     final where = tab.host.url.isEmpty ? '当前地址' : tab.host.url;
     return '已启用 ${enabled.length} 个脚本（${enabled.map((s) => s.name).join('、')}），'
@@ -1298,7 +1313,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final epoch = _tabLifecycleEpoch;
     HostSession? host;
     try {
-      host = await hosts.create(HostPurpose.browsing);
+      host = await hosts.create(
+        HostPurpose.browsing,
+        profileId: site.profileId,
+      );
       capabilities = host.capabilities;
       cancelToken?.check();
       if (epoch != _tabLifecycleEpoch) {
@@ -1369,7 +1387,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
     HostSession? host;
     try {
-      host = await hosts.create(HostPurpose.browsing);
+      host = await hosts.create(
+        HostPurpose.browsing,
+        profileId: tab.site.profileId,
+      );
       capabilities = host.capabilities;
       if (!browserTabs.contains(tab) || epoch != _tabLifecycleEpoch) {
         throw const Cancelled();

@@ -117,4 +117,29 @@ void main() {
     await db.unlinkProfileScript(id, 's1');
     expect(await db.profileScripts(), isEmpty);
   });
+
+  test('script activation is isolated per profile binding', () async {
+    final first = await db.createProfile('甲站');
+    final second = await db.createProfile('乙站');
+    await db.saveScript(
+      const InstalledScript(id: 'shared', name: '共享', source: '// script'),
+    );
+    await db.linkProfileScript(first, 'shared', 'hash');
+    await db.linkProfileScript(second, 'shared', 'hash');
+    await db.setProfileScriptEnabled(first, 'shared', true, digest: 'digest-a');
+
+    final a = (await db.profileScripts(profileId: first)).single;
+    final b = (await db.profileScripts(profileId: second)).single;
+    expect(a.enabled, isTrue);
+    expect(a.approvedDigest, 'digest-a');
+    expect(b.enabled, isFalse);
+    expect(b.approvedDigest, isNull);
+
+    await db.setProfileScriptEnabled(first, 'shared', false);
+    expect(
+      (await db.profileScripts(profileId: second)).single.enabled,
+      isFalse,
+    );
+    expect((await db.scripts()).single.enabled, isFalse);
+  });
 }

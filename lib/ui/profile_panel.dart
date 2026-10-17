@@ -46,13 +46,6 @@ class ProfilesPanel extends StatelessWidget {
               padding: EdgeInsets.only(bottom: SiteLensMetrics.itemGap),
               child: LinearProgressIndicator(),
             ),
-          if (app.probes.notice != null) ...[
-            SiteLensNotice(
-              text: app.probes.notice!,
-              tone: SiteLensNoticeTone.info,
-            ),
-            const SizedBox(height: SiteLensMetrics.itemGap),
-          ],
           if (app.error != null) ...[
             SiteLensErrorBanner(text: app.error!, onDismiss: app.clearError),
             const SizedBox(height: SiteLensMetrics.itemGap),
@@ -582,6 +575,7 @@ class ProfileDetailScreen extends StatelessWidget {
             const SizedBox(height: SiteLensMetrics.itemGap),
             _DetectionPanel(
               app: app,
+              profileId: live.id,
               ledger: ledger,
               current: current,
               backupCandidates: backupCandidates,
@@ -637,6 +631,7 @@ class _HistoryPanel extends StatelessWidget {
 class _DetectionPanel extends StatelessWidget {
   const _DetectionPanel({
     required this.app,
+    required this.profileId,
     required this.ledger,
     required this.current,
     required this.backupCandidates,
@@ -645,6 +640,7 @@ class _DetectionPanel extends StatelessWidget {
     required this.onDetect,
   });
   final AppController app;
+  final int profileId;
   final ({int round, bool live, List<ProbeResult> results}) ledger;
   final List<ProbeResult> current;
   final List<Candidate> backupCandidates;
@@ -654,11 +650,21 @@ class _DetectionPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final notice = app.probes.profileId == profileId ? app.probes.notice : null;
     return SiteLensPanel(
       padding: EdgeInsets.zero,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (notice != null) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: SiteLensNotice(
+                text: notice,
+                tone: SiteLensNoticeTone.info,
+              ),
+            ),
+          ],
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 14, 12, 12),
             child: Row(
