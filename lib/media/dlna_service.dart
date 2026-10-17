@@ -185,6 +185,63 @@ class DlnaSoapClient {
   void close() => _client.close(force: true);
 }
 
+/// Couples the protocol client to the Dart single-session state machine. The
+/// caller supplies a public URL or a [MediaRelayServer.url] that was issued
+/// for the selected task; the SOAP client never receives browser credentials.
+class DlnaCastController {
+  DlnaCastController(this.sessions);
+  final CastSessionController sessions;
+  DlnaSoapClient? _soap;
+
+  CastSession? get active => sessions.active;
+
+  Future<CastSession> cast({
+    required CastDevice device,
+    required String mediaTaskId,
+    required Uri mediaUrl,
+    String mime = 'video/mp4',
+    String title = 'Site Lens',
+  }) async {
+    sessions.begin(device: device, mediaTaskId: mediaTaskId);
+    try {
+      sessions.transition(CastSessionState.connecting);
+      final soap = DlnaSoapClient(device.address);
+      _soap = soap;
+      sessions.transition(CastSessionState.settingMedia);
+      await soap.setMedia(mediaUrl, mime: mime, title: title);
+      await soap.play();
+      return sessions.transition(CastSessionState.playing);
+    } catch (error) {
+      _soap?.close();
+      _soap = null;
+      sessions.transition(CastSessionState.failed, errorCode: error.toString());
+      rethrow;
+    }
+  }
+
+  Future<CastSession> pause() async {
+    final soap = _soap ?? (throw StateError('投屏会话不存在'));
+    await soap.pause();
+    return sessions.transition(CastSessionState.paused);
+  }
+
+  Future<CastSession> resume() async {
+    final soap = _soap ?? (throw StateError('投屏会话不存在'));
+    await soap.play();
+    return sessions.transition(CastSessionState.playing);
+  }
+
+  Future<CastSession> stop() async {
+    final soap = _soap;
+    if (soap != null) {
+      await soap.stop();
+      soap.close();
+    }
+    _soap = null;
+    return sessions.transition(CastSessionState.stopped);
+  }
+}
+
 /// Short-lived local relay for a previously authorized media task. Requests
 /// require the exact session/device/task token and can only read the supplied
 /// app-private file. It implements HEAD and byte ranges for TV clients.
