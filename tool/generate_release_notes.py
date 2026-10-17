@@ -138,8 +138,10 @@ def render_notes(
     return "\n".join(lines) + "\n"
 
 
-def generate(root: Path, tag: str, channel: str) -> str:
+def generate(root: Path, tag: str, channel: str, eligible_tags: set[str] | None = None) -> str:
     tags = _run(root, "tag", "--list", "v*").splitlines()
+    if eligible_tags is not None:
+        tags = [candidate for candidate in tags if candidate in eligible_tags or candidate == tag]
     base = previous_tag(tags, tag, channel)
     commits, fallback = commits_between(root, tag, base)
     return render_notes(
@@ -157,11 +159,26 @@ def main() -> int:
     parser.add_argument("--channel", choices=("stable", "beta"), required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument(
+        "--eligible-tags-file",
+        type=Path,
+        help="Optional newline-delimited GitHub Release tags to use as changelog baselines",
+    )
     args = parser.parse_args()
     if tag_channel(args.tag) != args.channel:
         raise SystemExit(f"tag {args.tag!r} does not match channel {args.channel!r}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(generate(args.root, args.tag, args.channel), encoding="utf-8")
+    eligible_tags = None
+    if args.eligible_tags_file:
+        eligible_tags = {
+            line.strip()
+            for line in args.eligible_tags_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+    args.output.write_text(
+        generate(args.root, args.tag, args.channel, eligible_tags),
+        encoding="utf-8",
+    )
     return 0
 
 

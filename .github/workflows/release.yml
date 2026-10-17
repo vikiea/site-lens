@@ -15,9 +15,19 @@ on:
           - stable
           - beta
       tag:
-        description: Release tag, for example v0.1.9.alpha1
+        description: Release tag, for example v0.2.0.alpha1
         required: true
         type: string
+      version_bump:
+        description: Version bump policy for the tag base
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - major
+          - minor
+          - patch
 
 permissions:
   contents: write
@@ -50,6 +60,7 @@ jobs:
         env:
           DISPATCH_TAG: ${{ inputs.tag }}
           DISPATCH_CHANNEL: ${{ inputs.channel || 'stable' }}
+          DISPATCH_BUMP: ${{ inputs.version_bump || 'auto' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -59,6 +70,7 @@ jobs:
             tag="$GITHUB_REF_NAME"
           fi
           channel="$DISPATCH_CHANNEL"
+          bump="$DISPATCH_BUMP"
           if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
             if [[ "$tag" =~ \.((alpha|beta|rc)(0|[1-9][0-9]*))$ ]]; then
               channel=beta
@@ -78,21 +90,42 @@ jobs:
               raise SystemExit(f"invalid release tag: {tag}")
           PY
           git rev-parse "$tag^{commit}" >/dev/null
+          mkdir -p dist
+          python3 tool/determine_release_version.py \
+            --tag "$tag" \
+            --channel "$channel" \
+            --bump "$bump" > dist/release-version.json
+          cat dist/release-version.json
+          bump="$(python3 -c 'import json; print(json.load(open("dist/release-version.json"))["bump"])')"
+          reason="$(python3 -c 'import json; print(json.load(open("dist/release-version.json"))["reason"])')"
           version="${tag#v}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "bump=$bump" >> "$GITHUB_OUTPUT"
+          echo "bump_reason=$reason" >> "$GITHUB_OUTPUT"
 
       - name: Generate categorized release notes
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
           CHANNEL: ${{ steps.release.outputs.channel }}
+          BUMP: ${{ steps.release.outputs.bump }}
+          BUMP_REASON: ${{ steps.release.outputs.bump_reason }}
         run: |
           set -euo pipefail
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' > dist/eligible-release-tags.txt
           python3 tool/generate_release_notes.py \
             --tag "$TAG" \
             --channel "$CHANNEL" \
-            --output dist/release-notes.md
+            --output dist/release-notes.md \
+            --eligible-tags-file dist/eligible-release-tags.txt
+          {
+            echo
+            echo "## 版本判断"
+            echo "- 本次版本基线：\`$TAG\`。"
+            echo "- 版本级别：**$BUMP**；$BUMP_REASON。"
+          } >> dist/release-notes.md
           test -s dist/release-notes.md
           sed -n '1,160p' dist/release-notes.md
 
