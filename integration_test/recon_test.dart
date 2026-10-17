@@ -39,13 +39,14 @@ void main() {
           case '/publish':
             request.response.write(
               '<!doctype html><html><head><title>闭环发布页</title></head><body>'
-              '<section id="latest-addresses"><h2>最新地址</h2>'
-              '<a href="http://127.0.0.1:$port/publish">本站</a>'
-              '<a href="http://127.0.0.2:$port/site">入口一</a>'
-              '<a href="http://127.0.0.3:$port/site">入口二</a>'
+              '<main><header><h1>闭环站点最新地址</h1></header>'
+              '<section><h2>官方地址列表</h2>'
+              '<a href="/publish">发布页</a>'
+              '<a href="/hop?to=http%3A%2F%2F127.0.0.2%3A$port%2Fsite">入口一</a>'
+              '<a href="/hop?to=http%3A%2F%2F127.0.0.3%3A$port%2Fsite">入口二</a>'
               '<a href="https://docs.example/guide">使用文档</a>'
               '<a href="https://social.example/">社区</a>'
-              '</section></body></html>',
+              '</section></main></body></html>',
             );
           case '/captcha':
             request.response.write(

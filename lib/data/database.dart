@@ -697,16 +697,30 @@ class AppDatabase extends GeneratedDatabase {
     );
   }
 
-  Future<List<ProbeResult>> recentProbes() async =>
-      (await customSelect(
-            'SELECT result FROM probes ORDER BY id DESC LIMIT 100',
-          ).get())
-          .map(
-            (r) => ProbeResult.fromJson(
-              jsonDecode(r.read<String>('result')) as Map<String, dynamic>,
-            ),
-          )
-          .toList();
+  Future<List<ProbeResult>> recentProbes() async {
+    final results = <ProbeResult>[];
+    for (final row in await customSelect(
+      'SELECT result FROM probes ORDER BY id DESC LIMIT 100',
+    ).get()) {
+      // Probe rows predate the current profile schema and may have been
+      // interrupted while being written by an older build. One malformed
+      // history item must never prevent the rest of the home screen from
+      // loading on a cold start.
+      try {
+        final decoded = jsonDecode(row.read<String>('result'));
+        if (decoded is! Map<String, dynamic>) continue;
+        results.add(ProbeResult.fromJson(decoded));
+      } on FormatException {
+        continue;
+      } on TypeError {
+        continue;
+      } on ArgumentError {
+        continue;
+      }
+    }
+    return results;
+  }
+
   Future<List<InstalledScript>> scripts() async =>
       (await customSelect('SELECT * FROM scripts ORDER BY name').get())
           .map(
