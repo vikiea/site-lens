@@ -6,21 +6,33 @@
 
   // Cosmetic rules are intentionally selector-only.  Arbitrary JavaScript
   // from a remote rule source is never evaluated in the page.
+  const safeSelector = value => {
+    const selector = typeof value === 'string' ? value : value && value.selector;
+    if (typeof selector !== 'string' || selector.length === 0 || selector.length > 256) return false;
+    if (/[{};]/.test(selector)) return false;
+    return !/:(?:has-text|contains|matches-css|xpath|style|remove-attr|remove-class)/i.test(selector)
+      && /^[A-Za-z0-9_.*#\-\[\]="': >+~(),]+$/.test(selector);
+  };
   const selectorRules = Array.isArray(config.selectors)
-    ? config.selectors.filter(value =>
-        (typeof value === 'string' && value.length < 512) ||
-        (value && typeof value.selector === 'string' && value.selector.length < 512))
+    ? config.selectors.filter(safeSelector)
     : [];
   const scriptlets = Array.isArray(config.scriptlets) ? config.scriptlets : [];
-  const hostMatches = domain => {
-    if (!domain || domain === '*') return true;
+  const hostMatches = (domain, domains, excludedDomains) => {
     const host = String(location.hostname || '').toLowerCase();
-    const value = String(domain).toLowerCase().replace(/^\*\./, '');
-    return host === value || host.endsWith('.' + value);
+    const excluded = Array.isArray(excludedDomains) && excludedDomains.some(item => {
+      const value = String(item || '').toLowerCase().replace(/^\*\./, '');
+      return value && (host === value || host.endsWith('.' + value));
+    });
+    if (excluded) return false;
+    const values = Array.isArray(domains) && domains.length ? domains : [domain || '*'];
+    return values.some(item => {
+      const value = String(item || '*').toLowerCase().replace(/^\*\./, '');
+      return value === '*' || host === value || host.endsWith('.' + value);
+    });
   };
   const resolvePath = path => String(path || '').split('.').filter(Boolean).slice(0, 8);
   const applyScriptlet = item => {
-    if (!item || !hostMatches(item.domain)) return;
+    if (!item || !hostMatches(item.domain, item.domains, item.excludedDomains)) return;
     const args = Array.isArray(item.args) ? item.args : [];
     const path = resolvePath(args[0]);
     if (!path.length || !['abort-on-property-read', 'set-constant'].includes(item.name)) return;
@@ -44,7 +56,7 @@
     for (const item of selectorRules) {
       const selector = typeof item === 'string' ? item : item.selector;
       const domain = typeof item === 'string' ? '*' : item.domain;
-      if (!hostMatches(domain)) continue;
+      if (!hostMatches(domain, typeof item === 'string' ? null : item.domains, typeof item === 'string' ? null : item.excludedDomains)) continue;
       try { root.querySelectorAll(selector).forEach(node => node.remove()); } catch (_) {}
     }
   };
@@ -56,7 +68,7 @@
       const style = document.createElement('style');
       style.dataset.siteLensFilter = String(config.snapshotId || '');
       style.textContent = selectorRules
-        .filter(item => hostMatches(typeof item === 'string' ? '*' : item.domain))
+        .filter(item => hostMatches(typeof item === 'string' ? '*' : item.domain, typeof item === 'string' ? null : item.domains, typeof item === 'string' ? null : item.excludedDomains))
         .map(item => `${typeof item === 'string' ? item : item.selector}{display:none!important}`)
         .join('\n');
       (document.head || document.documentElement).appendChild(style);

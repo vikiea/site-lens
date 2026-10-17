@@ -13,6 +13,7 @@ import '../scripts/script_service.dart';
 import '../media/media_service.dart';
 import '../filter/filter_service.dart';
 import 'web_host.g.dart';
+import 'host_dto_codec.dart';
 
 class HostSession {
   HostSession(this.id, this.purpose, this.capabilities);
@@ -99,48 +100,20 @@ class NativeHosts extends WebHostEvents {
   Future<void> _applyFilter(HostSession session) async {
     if (session.disposed) return;
     final snapshot = filterSnapshot;
-    final engine = filterEngine;
-    final rules = engine == null
-        ? const <Map<String, Object?>>[]
-        : engine.rules
-              .map(
-                (rule) => <String, Object?>{
-                  'pattern': rule.pattern,
-                  'block': rule.block,
-                  'cosmetic': rule.cosmetic,
-                  'hostOnly': rule.hostOnly,
-                  'domain': rule.domain,
-                  'exception': rule.exception,
-                  'scriptlet': rule.scriptlet,
-                  'scriptletArgs': rule.scriptletArgs,
-                },
-              )
-              .toList(growable: false);
     final source = session.url.isEmpty ? 'https://invalid.local/' : session.url;
     try {
       await api.applyFilter(
         session.id,
-        HostFilterContextDto(
-          hostId: session.id,
-          generation: session.generation,
-          sourceUrl: source,
-          snapshotId: snapshot?.id ?? '',
-        ),
-        FilterPolicyDto(
-          enabled: filterPolicy.enabled,
-          pageFiltering: filterPolicy.pageFiltering,
-          domainExceptions: filterPolicy.domainExceptions.toList(
-            growable: false,
+        HostDtoCodec.context(
+          HostFilterContext(
+            hostId: session.id,
+            generation: session.generation,
+            sourceUrl: webUri(source),
+            snapshotId: snapshot?.id ?? '',
           ),
-          blockedDomains: filterPolicy.blockedDomains.toList(growable: false),
         ),
-        FilterSnapshotDto(
-          id: snapshot?.id ?? '',
-          version: snapshot?.version ?? '',
-          sha256: snapshot?.sha256 ?? '',
-          state: snapshot?.state.name ?? FilterSnapshotState.missing.name,
-          rules: jsonEncode(rules),
-        ),
+        HostDtoCodec.policy(filterPolicy),
+        HostDtoCodec.snapshot(value: snapshot, engine: filterEngine),
       );
     } catch (error) {
       // Older/iOS hosts can lack a request interception channel. Keep Dart's

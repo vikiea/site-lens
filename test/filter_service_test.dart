@@ -70,6 +70,30 @@ void main() {
     },
   );
 
+  test(
+    'cosmetic domain lists honor exclusions and reject unsupported semantics',
+    () {
+      final result = const FilterCompiler().compile(
+        'example.com,~news.example##.sponsor\n'
+        'example.com##div:has-text(ad)\n',
+        snapshotId: 'cosmetic-domains',
+      );
+      expect(
+        result.engine.cosmeticSelectors(Uri.parse('https://example.com/')),
+        ['.sponsor'],
+      );
+      expect(
+        result.engine.cosmeticSelectors(Uri.parse('https://news.example/')),
+        isEmpty,
+      );
+      expect(
+        result.unsupportedRules,
+        contains('example.com##div:has-text(ad)'),
+      );
+      expect(result.engine.rules, hasLength(1));
+    },
+  );
+
   test('diagnostics redact query values and expose degraded rule state', () {
     final result = const FilterCompiler().compile(
       'example.com##+js(unsupported,foo)\n',

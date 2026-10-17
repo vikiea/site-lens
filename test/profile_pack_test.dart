@@ -174,6 +174,34 @@ void main() {
     );
   });
 
+  test(
+    'unknown future profile-pack versions are rejected before import',
+    () async {
+      final db = await _seeded();
+      addTearDown(db.close);
+      final bytes = await ProfilePacks(db)
+          .export((await db.profiles()).single.id);
+      final archive = ZipDecoder().decodeBytes(bytes);
+      final manifestFile = archive.findFile(ProfilePack.manifestPath)!;
+      final manifest = jsonDecode(
+        utf8.decode(manifestFile.content as List<int>),
+      ) as Map<String, dynamic>;
+      manifest['formatVersion'] = ProfilePack.latestFormatVersion + 1;
+      final future = Archive();
+      for (final file in archive.files) {
+        final content = file.name == ProfilePack.manifestPath
+            ? utf8.encode(jsonEncode(manifest))
+            : file.content as List<int>;
+        future.add(ArchiveFile(file.name, content.length, content));
+      }
+      await expectLater(
+        ProfilePacks(db)
+            .inspect(Uint8List.fromList(ZipEncoder().encode(future))),
+        throwsA(isA<FormatException>()),
+      );
+    },
+  );
+
   test('import reports landing conflicts with the owning profile', () async {
     final source = await _seeded();
     final bytes = await ProfilePacks(source)

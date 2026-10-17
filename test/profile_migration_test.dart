@@ -22,6 +22,49 @@ File _copyFixture(Directory dir) {
   return target;
 }
 
+Future<File> _v4ContractFixture(Directory dir) async {
+  final file = File('${dir.path}/v4-contract.sqlite');
+  final seed = AppDatabase(NativeDatabase(file));
+  await seed.customSelect('SELECT 1').get();
+  await seed.saveScript(
+    const InstalledScript(
+      id: 'legacy',
+      name: 'Legacy',
+      source: '// ==UserScript==\n// @name Legacy\n// @match https://example.com/*\n// ==/UserScript==\n',
+    ),
+  );
+  await seed.close();
+
+  final raw = sqlite3.open(file.path);
+  try {
+    for (final table in [
+      'script_approvals',
+      'media_tasks',
+      'media_candidates',
+      'filter_policies',
+      'filter_snapshots',
+      'filter_sources',
+    ]) {
+      raw.execute('DROP TABLE $table');
+    }
+    raw.execute(
+      "ALTER TABLE scripts ADD COLUMN network_mode TEXT NOT NULL DEFAULT 'declared'",
+    );
+    raw.execute('ALTER TABLE scripts ADD COLUMN approval_reason TEXT');
+    raw.execute('ALTER TABLE scripts ADD COLUMN approved_at TEXT');
+    raw.execute(
+      'ALTER TABLE scripts ADD COLUMN public_confirmed INTEGER NOT NULL DEFAULT 0',
+    );
+    raw.execute(
+      "UPDATE scripts SET network_mode='public', approval_reason='fixture', approved_at='2026-10-17T00:00:00Z', public_confirmed=1 WHERE id='legacy'",
+    );
+    raw.userVersion = 4;
+  } finally {
+    raw.close();
+  }
+  return file;
+}
+
 List<Map<String, Object?>> _rows(Database db, String sql) =>
     db.select(sql).map((r) => Map<String, Object?>.from(r)).toList();
 
@@ -314,6 +357,69 @@ void main() {
       expect(await db.profiles(), hasLength(1));
       expect(await db.profilePages(), hasLength(1));
       expect(await db.candidates(), hasLength(42));
+    },
+  );
+
+  test(
+    'v4 -> v5 preserves the legacy approval shape and creates contract tables',
+    () async {
+      final file = await _v4ContractFixture(dir);
+      final db = AppDatabase(NativeDatabase(file));
+      addTearDown(db.close);
+      await db.customSelect('SELECT 1').get();
+
+      final raw = sqlite3.open(file.path);
+      addTearDown(raw.close);
+      expect(raw.userVersion, 5);
+      expect(
+        raw.select(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='filter_snapshots'",
+        ),
+        hasLength(1),
+      );
+      final approval = raw
+          .select(
+            'SELECT network_mode,approval_reason,approved_at,public_confirmed FROM script_approvals WHERE script_id=\'legacy\'',
+          )
+          .single;
+      expect(approval['network_mode'], 'public');
+      expect(approval['approval_reason'], 'fixture');
+      expect(approval['approved_at'], '2026-10-17T00:00:00Z');
+      expect(approval['public_confirmed'], 1);
+    },
+  );
+
+  test(
+    'v4 -> v5 rollback leaves the original v4 schema and data intact',
+    () async {
+      final file = await _v4ContractFixture(dir);
+      AppDatabase.migrationDebugHook = (step) {
+        if (step == 'v5-after-tables') throw StateError('injected v5 failure');
+      };
+      final db = AppDatabase(NativeDatabase(file));
+      await expectLater(
+        db.customSelect('SELECT 1').get(),
+        throwsA(isA<StateError>()),
+      );
+      await db.close();
+
+      final raw = sqlite3.open(file.path);
+      addTearDown(raw.close);
+      expect(raw.userVersion, 4);
+      expect(
+        raw.select(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='filter_sources'",
+        ),
+        isEmpty,
+      );
+      expect(
+        raw.select('SELECT id FROM scripts WHERE id=\'legacy\''),
+        hasLength(1),
+      );
+      expect(
+        raw.select('PRAGMA table_info(scripts)').map((row) => row['name']),
+        contains('network_mode'),
+      );
     },
   );
 }

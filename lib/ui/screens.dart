@@ -30,6 +30,7 @@ import 'glass_surface.dart';
 import 'browser_entry.dart';
 import 'profile_panel.dart';
 import 'media_tasks_screen.dart';
+import 'filter_diagnostics_panel.dart';
 import 'ui_util.dart';
 import 'ui_primitives.dart';
 
@@ -2393,6 +2394,25 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
         showTabSwitcher(context, widget.app, onAdd: () => unawaited(_addTab())),
   );
 
+  Future<void> _showFilterDiagnostics() => _withToolbarHeld(() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 18),
+          child: FilterDiagnosticsPanel(
+            session: host,
+            engine: host?.filterEngine,
+            snapshot: host?.filterSnapshot,
+            policy: host?.filterPolicy ?? const FilterPolicy(),
+          ),
+        ),
+      ),
+    );
+  });
+
   Future<void> _retryTab() async {
     final tab = _tab;
     if (tab == null || error != null) {
@@ -2569,6 +2589,10 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                             onCloseTab: () {
                               _closeMoreNavigation();
                               unawaited(_closeTab());
+                            },
+                            onFilterDiagnostics: () {
+                              _closeMoreNavigation();
+                              unawaited(_showFilterDiagnostics());
                             },
                           ),
                           const SizedBox(height: 4),
@@ -2905,11 +2929,13 @@ class _BrowserMoreNavigation extends StatelessWidget {
     required this.onNewTab,
     required this.onMenus,
     required this.onCloseTab,
+    required this.onFilterDiagnostics,
   });
 
   final VoidCallback onNewTab;
   final VoidCallback onMenus;
   final VoidCallback onCloseTab;
+  final VoidCallback onFilterDiagnostics;
 
   @override
   Widget build(BuildContext context) => SiteLensGlassSurface(
@@ -2932,6 +2958,13 @@ class _BrowserMoreNavigation extends StatelessWidget {
               tooltip: '脚本菜单与恢复',
               icon: Icons.code,
               onPressed: onMenus,
+            ),
+          ),
+          Expanded(
+            child: _BrowserNavButton(
+              tooltip: '过滤诊断',
+              icon: Icons.filter_alt_outlined,
+              onPressed: onFilterDiagnostics,
             ),
           ),
           Expanded(

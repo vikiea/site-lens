@@ -185,7 +185,13 @@ class AppDatabase extends GeneratedDatabase {
     // A short-lived development build stored these fields directly on
     // scripts. Copy them when upgrading that build; v1-v4 databases simply
     // receive a declared, unapproved row for every existing script.
-    if (await _columnExists('scripts', 'network_mode')) {
+    final scriptColumns = await _tableColumns('scripts');
+    if ({
+      'network_mode',
+      'approval_reason',
+      'approved_at',
+      'public_confirmed',
+    }.every(scriptColumns.contains)) {
       await customStatement(
         'INSERT OR REPLACE INTO script_approvals(script_id,network_mode,approval_reason,approved_at,public_confirmed) '
         'SELECT id,network_mode,approval_reason,approved_at,public_confirmed FROM scripts',
@@ -288,6 +294,10 @@ class AppDatabase extends GeneratedDatabase {
     final rows = await customSelect('PRAGMA table_info($table)').get();
     return rows.any((r) => r.read<String>('name') == column);
   }
+
+  Future<Set<String>> _tableColumns(String table) async => (await customSelect(
+    'PRAGMA table_info($table)',
+  ).get()).map((row) => row.read<String>('name')).toSet();
 
   Future<int?> _profileIdForPageUrl(String url) async => (await customSelect(
     'SELECT profile_id FROM profile_pages WHERE url=? ORDER BY profile_id LIMIT 1',

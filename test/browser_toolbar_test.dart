@@ -181,10 +181,11 @@ void main() {
     expect(secondary, findsOneWidget);
     expect(
       find.descendant(of: secondary, matching: find.byType(IconButton)),
-      findsNWidgets(3),
+      findsNWidgets(4),
     );
     expect(find.byTooltip('新建标签页'), findsOneWidget);
     expect(find.byTooltip('脚本菜单与恢复'), findsOneWidget);
+    expect(find.byTooltip('过滤诊断'), findsOneWidget);
     expect(find.byTooltip('关闭当前标签页'), findsOneWidget);
     expect(
       tester.getTopLeft(secondary).dy,

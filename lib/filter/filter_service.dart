@@ -20,6 +20,8 @@ class FilterRule {
     this.cosmetic = false,
     this.hostOnly = false,
     this.domain,
+    this.domains = const <String>[],
+    this.excludedDomains = const <String>[],
     this.exception = false,
     this.scriptlet,
     this.scriptletArgs = const <String>[],
@@ -30,6 +32,8 @@ class FilterRule {
   final bool cosmetic;
   final bool hostOnly;
   final String? domain;
+  final List<String> domains;
+  final List<String> excludedDomains;
   final bool exception;
 
   /// Name of an audited, built-in scriptlet. Remote rule text is never
@@ -54,10 +58,20 @@ class FilterRule {
 
   bool cosmeticApplies(Uri url) {
     if (!cosmetic) return false;
-    final expected = domain?.trim().toLowerCase();
-    if (expected == null || expected.isEmpty || expected == '*') return true;
-    return url.host.toLowerCase() == expected ||
-        url.host.toLowerCase().endsWith('.$expected');
+    final host = url.host.toLowerCase();
+    final excluded = excludedDomains.any(
+      (value) => host == value || host.endsWith('.$value'),
+    );
+    if (excluded) return false;
+    final included = domains.isEmpty
+        ? (domain == null || domain!.trim().isEmpty || domain!.trim() == '*'
+              ? const <String>[]
+              : <String>[domain!.trim().toLowerCase()])
+        : domains;
+    if (included.isEmpty) return true;
+    return included.any(
+      (value) => value == '*' || host == value || host.endsWith('.$value'),
+    );
   }
 }
 
@@ -207,15 +221,50 @@ class FilterCompiler {
       if (cosmeticMatch != null || exceptionCosmeticMatch != null) {
         final cosmetic =
             cosmeticMatch?.group(1) ?? exceptionCosmeticMatch!.group(1)!;
-        if (cosmetic.isNotEmpty) {
+        if (cosmetic.isNotEmpty && _isSupportedCosmeticSelector(cosmetic)) {
           final match = cosmeticMatch ?? exceptionCosmeticMatch!;
           final prefix = match.group(0)!.split('#').first;
+          final domains = <String>[];
+          final excludedDomains = <String>[];
+          for (final rawDomain in prefix.split(',')) {
+            final value = rawDomain.trim().toLowerCase();
+            if (value.isEmpty || value == '*') continue;
+            if (!_isValidDomainToken(value)) {
+              domains.clear();
+              excludedDomains.clear();
+              break;
+            }
+            if (value.startsWith('~')) {
+              final excluded = value.substring(1);
+              if (excluded.isEmpty || !_isValidDomainToken(excluded)) {
+                domains.clear();
+                excludedDomains.clear();
+                break;
+              }
+              excludedDomains.add(excluded);
+            } else {
+              domains.add(value);
+            }
+          }
+          final domainSyntaxValid =
+              prefix.isEmpty ||
+              (domains.isNotEmpty || excludedDomains.isNotEmpty) &&
+                  prefix.split(',').every((raw) {
+                    final value = raw.trim().toLowerCase();
+                    return value == '*' || _isValidDomainToken(value);
+                  });
+          if (!domainSyntaxValid) {
+            unsupported.add(line);
+            continue;
+          }
           rules.add(
             FilterRule(
               pattern: cosmetic,
               block: cosmeticMatch != null,
               cosmetic: true,
               domain: prefix.isEmpty ? '*' : prefix,
+              domains: List.unmodifiable(domains),
+              excludedDomains: List.unmodifiable(excludedDomains),
               exception: exceptionCosmeticMatch != null,
             ),
           );
@@ -275,6 +324,32 @@ class FilterCompiler {
       engine: engine,
       unsupportedRules: List.unmodifiable(unsupported),
     );
+  }
+
+  static bool _isValidDomainToken(String value) {
+    final token = value.startsWith('~') ? value.substring(1) : value;
+    return token == '*' ||
+        RegExp(
+          r'^(?:\*\.)?[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$',
+          caseSensitive: false,
+        ).hasMatch(token);
+  }
+
+  static bool _isSupportedCosmeticSelector(String selector) {
+    final value = selector.trim();
+    if (value.isEmpty || value.length > 256) return false;
+    if (value.contains(RegExp(r'[{};]')) ||
+        value.toLowerCase().contains(
+          RegExp(
+            r':(?:has-text|contains|matches-css|xpath|style|remove-attr|remove-class)',
+          ),
+        )) {
+      return false;
+    }
+    // Keep the native document-start runtime selector-only. This grammar
+    // covers ordinary element/class/id/attribute selectors and combinators;
+    // anything requiring a rule-specific evaluator is reported unsupported.
+    return RegExp(r'''^[A-Za-z0-9_.*#\-\[\]="': >+~(),]+$''').hasMatch(value);
   }
 }
 

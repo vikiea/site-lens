@@ -268,6 +268,8 @@ private data class NativeFilterRule(
     val cosmetic: Boolean,
     val hostOnly: Boolean,
     val domain: String? = null,
+    val domains: List<String> = emptyList(),
+    val excludedDomains: List<String> = emptyList(),
     val exception: Boolean = false,
     val scriptlet: String? = null,
     val scriptletArgs: List<String> = emptyList(),
@@ -387,6 +389,12 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                     cosmetic = value.optBoolean("cosmetic", false),
                     hostOnly = value.optBoolean("hostOnly", false),
                     domain = value.optString("domain").takeIf { it.isNotEmpty() },
+                    domains = value.optJSONArray("domains")?.let { domains ->
+                        (0 until domains.length()).mapNotNull { domains.optString(it).takeIf(String::isNotBlank) }
+                    } ?: emptyList(),
+                    excludedDomains = value.optJSONArray("excludedDomains")?.let { domains ->
+                        (0 until domains.length()).mapNotNull { domains.optString(it).takeIf(String::isNotBlank) }
+                    } ?: emptyList(),
                     exception = value.optBoolean("exception", false),
                     scriptlet = value.optString("scriptlet").takeIf { it.isNotEmpty() },
                     scriptletArgs = value.optJSONArray("scriptletArgs")?.let { args ->
@@ -412,8 +420,9 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         val state = filterState
         if (!state.enabled || !state.pageFiltering || !hasStart || destroyed) return
         val source = runCatching { activity.assets.open(FILTER_RUNTIME_ASSET).bufferedReader().use { it.readText() } }.getOrNull() ?: return
-        val cosmetic = state.rules.filter { it.block && !it.exception && it.cosmetic && it.scriptlet == null }.map { rule ->
+        val cosmetic = state.rules.filter { it.block && !it.exception && it.cosmetic && it.scriptlet == null && isSafeCosmeticSelector(it.pattern) }.map { rule ->
             JSONObject().put("selector", rule.pattern).put("domain", rule.domain ?: "*")
+                .put("domains", JSONArray(rule.domains)).put("excludedDomains", JSONArray(rule.excludedDomains))
         }.take(128)
         val scriptlets = state.rules.filter { it.scriptlet != null }.map { rule ->
             JSONObject().put("domain", rule.pattern).put("name", rule.scriptlet)
@@ -430,6 +439,13 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 WebViewCompat.addJavaScriptOnEvent(webView, source.replace("__SITE_LENS_FILTER_CONFIG__", config.toString()), WebViewCompat.INJECTION_EVENT_DOCUMENT_START, setOf("*"), world)
             } else WebViewCompat.addDocumentStartJavaScript(webView, source.replace("__SITE_LENS_FILTER_CONFIG__", config.toString()), setOf("*"))
         }.getOrNull()
+    }
+
+    private fun isSafeCosmeticSelector(selector: String): Boolean {
+        if (selector.isBlank() || selector.length > 256 || selector.any { it == '{' || it == '}' || it == ';' }) return false
+        val lower = selector.lowercase()
+        if (listOf(":has-text", ":contains", ":matches-css", ":xpath", ":style", ":remove-attr", ":remove-class").any(lower::contains)) return false
+        return selector.matches(Regex("^[A-Za-z0-9_.*#\\-\\[\\]=\"': >+~(),]+$"))
     }
 
     private fun filterAllows(url: Uri): Boolean {
