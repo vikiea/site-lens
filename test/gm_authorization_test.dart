@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
+import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/network/transport.dart';
 import 'package:site_lens/scripts/script_service.dart';
 import 'package:site_lens/web_host/native_hosts.dart';
@@ -62,6 +64,90 @@ class CancelAwareHttp extends ControlledHttp {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test('public approval is revoked by mode changes and source edits', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final root = await Directory.systemTemp.createTemp('site-lens-public-');
+    addTearDown(() => root.delete(recursive: true));
+    final scripts = ScriptService(
+      db,
+      CancelAwareHttp(),
+      sourceDirectory: () async => root,
+    );
+    final source =
+        '// ==UserScript==\n'
+        '// @name public\n'
+        '// @match https://example.com/*\n'
+        '// @grant GM_xmlhttpRequest\n'
+        '// ==/UserScript==';
+    final script = await scripts.save(source);
+    await scripts.enable(
+      script,
+      Cancellation(),
+      networkMode: ScriptNetworkMode.public,
+      publicConfirmed: true,
+    );
+    expect((await db.scripts()).single.publicConfirmed, isTrue);
+    expect(await scripts.registrations(), hasLength(1));
+    await scripts.setNetworkMode(script.id, ScriptNetworkMode.public);
+    expect(await scripts.registrations(), isEmpty);
+    final edited = await scripts.save('$source\n// edited', id: script.id);
+    expect(edited.id, script.id);
+    expect(await scripts.registrations(), isEmpty);
+    await db.close();
+  });
+
+  test(
+    'registered media candidates survive a fresh host/session read',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final scripts = ScriptService(db, CancelAwareHttp());
+      final script = await scripts.save(
+        '// ==UserScript==\n// @name media\n// @match https://example.com/*\n// @grant SiteLens.registerMedia\n// ==/UserScript==',
+      );
+      await scripts.enable(script, Cancellation());
+      final api = SnapshotApi();
+      final hosts = NativeHosts(db, scripts, CancelAwareHttp(), api: api);
+      final session = HostSession(
+        1,
+        HostPurpose.browsing,
+        HostCapabilities(
+          platform: 'fixture',
+          isolatedScripts: true,
+          documentStart: true,
+          privateProbes: true,
+          reason: 'test',
+        ),
+      )..generation = 1;
+      session.registered[script.id] =
+          (await db.scripts()).single.approvedDigest!;
+      hosts.sessions[1] = session;
+      final request = GmRequest(
+        hostId: 1,
+        generation: 1,
+        scriptId: script.id,
+        revision: (await db.scripts()).single.approvedDigest!,
+        documentUrl: 'https://example.com/',
+        payload: jsonEncode({
+          'id': 'media',
+          'op': 'registerMedia',
+          'args': {
+            'url': 'https://cdn.example/video.mp4',
+            'title': 'fixture',
+            'mime': 'video/mp4',
+          },
+        }),
+      );
+      final result = jsonDecode(await hosts.onGmRequest(request));
+      expect(result['ok'], isTrue);
+      final candidate = await db.mediaCandidate(
+        result['value']['id'] as String,
+      );
+      expect(candidate?.mediaUrl.toString(), 'https://cdn.example/video.mp4');
+      expect(candidate?.source, MediaCandidateSource.registered);
+      await db.close();
+    },
+  );
+
   test(
     'approved revision bound, and immediate abort wins before XHR registration',
     () async {

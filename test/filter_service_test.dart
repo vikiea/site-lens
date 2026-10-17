@@ -37,5 +37,50 @@ void main() {
       ),
       FilterDecision.allow,
     );
+    expect(
+      result.engine.cosmeticSelectors(Uri.parse('https://example.com/article')),
+      ['.sponsor'],
+    );
+  });
+
+  test(
+    'cosmetic exceptions cancel only their selector and never block requests',
+    () {
+      final result = const FilterCompiler().compile(
+        'example.com##.sponsor\n'
+        'example.com#@#.sponsor\n'
+        'other.example##.sponsor\n',
+        snapshotId: 'cosmetic',
+      );
+      expect(
+        result.engine.cosmeticSelectors(Uri.parse('https://example.com/')),
+        isEmpty,
+      );
+      expect(
+        result.engine.cosmeticSelectors(Uri.parse('https://other.example/')),
+        ['.sponsor'],
+      );
+      expect(
+        result.engine.evaluate(
+          Uri.parse('https://example.com/article'),
+          policy: const FilterPolicy(enabled: true),
+        ),
+        FilterDecision.allow,
+      );
+    },
+  );
+
+  test('diagnostics redact query values and expose degraded rule state', () {
+    final result = const FilterCompiler().compile(
+      'example.com##+js(unsupported,foo)\n',
+      snapshotId: 'degraded',
+    );
+    final diagnostic = result.engine.diagnose(
+      Uri.parse('https://example.com/a?token=secret'),
+      policy: const FilterPolicy(enabled: true),
+    );
+    expect(diagnostic.toJson()['url'], 'https://example.com/a?token=%E2%80%A6');
+    expect(diagnostic.reason, contains('未支持'));
+    expect(result.engine.diagnostics['degraded'], isTrue);
   });
 }

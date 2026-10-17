@@ -6,8 +6,10 @@
 
   // Cosmetic rules are intentionally selector-only.  Arbitrary JavaScript
   // from a remote rule source is never evaluated in the page.
-  const selectors = Array.isArray(config.selectors)
-    ? config.selectors.filter(value => typeof value === 'string' && value.length < 512)
+  const selectorRules = Array.isArray(config.selectors)
+    ? config.selectors.filter(value =>
+        (typeof value === 'string' && value.length < 512) ||
+        (value && typeof value.selector === 'string' && value.selector.length < 512))
     : [];
   const scriptlets = Array.isArray(config.scriptlets) ? config.scriptlets : [];
   const hostMatches = domain => {
@@ -39,7 +41,10 @@
     } catch (_) {}
   };
   const remove = root => {
-    for (const selector of selectors) {
+    for (const item of selectorRules) {
+      const selector = typeof item === 'string' ? item : item.selector;
+      const domain = typeof item === 'string' ? '*' : item.domain;
+      if (!hostMatches(domain)) continue;
       try { root.querySelectorAll(selector).forEach(node => node.remove()); } catch (_) {}
     }
   };
@@ -47,10 +52,13 @@
     if (!document.documentElement) return;
     scriptlets.slice(0, 32).forEach(applyScriptlet);
     remove(document);
-    if (selectors.length) {
+    if (selectorRules.length) {
       const style = document.createElement('style');
       style.dataset.siteLensFilter = String(config.snapshotId || '');
-      style.textContent = selectors.map(selector => `${selector}{display:none!important}`).join('\n');
+      style.textContent = selectorRules
+        .filter(item => hostMatches(typeof item === 'string' ? '*' : item.domain))
+        .map(item => `${typeof item === 'string' ? item : item.selector}{display:none!important}`)
+        .join('\n');
       (document.head || document.documentElement).appendChild(style);
     }
   };

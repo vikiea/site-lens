@@ -179,6 +179,9 @@ class AppDatabase extends GeneratedDatabase {
     for (final sql in _v5Tables) {
       await customStatement(sql);
     }
+    // Keep the v4 -> v5 upgrade failure-injectable. This is test-only and
+    // proves the table creation plus approval backfill remains one transaction.
+    migrationDebugHook?.call('v5-after-tables');
     // A short-lived development build stored these fields directly on
     // scripts. Copy them when upgrading that build; v1-v4 databases simply
     // receive a declared, unapproved row for every existing script.

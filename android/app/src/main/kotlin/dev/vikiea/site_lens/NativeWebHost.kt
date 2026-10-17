@@ -267,6 +267,8 @@ private data class NativeFilterRule(
     val block: Boolean,
     val cosmetic: Boolean,
     val hostOnly: Boolean,
+    val domain: String? = null,
+    val exception: Boolean = false,
     val scriptlet: String? = null,
     val scriptletArgs: List<String> = emptyList(),
 )
@@ -384,6 +386,8 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                     block = value.optBoolean("block", true),
                     cosmetic = value.optBoolean("cosmetic", false),
                     hostOnly = value.optBoolean("hostOnly", false),
+                    domain = value.optString("domain").takeIf { it.isNotEmpty() },
+                    exception = value.optBoolean("exception", false),
                     scriptlet = value.optString("scriptlet").takeIf { it.isNotEmpty() },
                     scriptletArgs = value.optJSONArray("scriptletArgs")?.let { args ->
                         (0 until args.length()).mapNotNull { args.optString(it).takeIf { value -> value.isNotEmpty() } }
@@ -408,7 +412,9 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         val state = filterState
         if (!state.enabled || !state.pageFiltering || !hasStart || destroyed) return
         val source = runCatching { activity.assets.open(FILTER_RUNTIME_ASSET).bufferedReader().use { it.readText() } }.getOrNull() ?: return
-        val cosmetic = state.rules.filter { it.block && it.cosmetic && it.scriptlet == null }.map { it.pattern }.take(128)
+        val cosmetic = state.rules.filter { it.block && !it.exception && it.cosmetic && it.scriptlet == null }.map { rule ->
+            JSONObject().put("selector", rule.pattern).put("domain", rule.domain ?: "*")
+        }.take(128)
         val scriptlets = state.rules.filter { it.scriptlet != null }.map { rule ->
             JSONObject().put("domain", rule.pattern).put("name", rule.scriptlet)
                 .put("args", JSONArray(rule.scriptletArgs))

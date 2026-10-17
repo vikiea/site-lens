@@ -246,6 +246,42 @@ void main() {
     expect(raw.select('SELECT COUNT(*) AS c FROM scripts').single['c'], 1);
   });
 
+  test('v4 to v5 failure rolls back every new contract table', () async {
+    final file = _copyFixture(dir);
+    var failed = false;
+    AppDatabase.migrationDebugHook = (step) {
+      if (step == 'v5-after-tables') {
+        failed = true;
+        throw StateError('injected v5 failure');
+      }
+    };
+    final db = AppDatabase(NativeDatabase(file));
+    await expectLater(
+      db.customSelect('SELECT 1').get(),
+      throwsA(isA<StateError>()),
+    );
+    await db.close();
+    expect(failed, isTrue);
+    final raw = sqlite3.open(file.path);
+    addTearDown(raw.close);
+    // Drift keeps the original user_version until the failed upgrade is
+    // retried; the important rollback boundary is the absence of all v5 rows.
+    expect(raw.userVersion, 1);
+    expect(
+      raw.select(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='media_tasks'",
+      ),
+      isEmpty,
+    );
+    expect(
+      raw.select(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='filter_sources'",
+      ),
+      isEmpty,
+    );
+    expect(raw.select('SELECT COUNT(*) AS c FROM candidates').single['c'], 42);
+  });
+
   test('migration is idempotent across repeated opens', () async {
     final file = _copyFixture(dir);
     var db = AppDatabase(NativeDatabase(file));

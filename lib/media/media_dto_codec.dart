@@ -7,6 +7,44 @@ import '../web_host/web_host.g.dart';
 class MediaDtoCodec {
   const MediaDtoCodec._();
 
+  /// Audits the public DTO field names in one place. Pigeon DTOs are plain
+  /// mutable records, so keeping this allow-list close to the conversion
+  /// helpers prevents a future credential/path field from crossing the host
+  /// boundary unnoticed.
+  static const safeCandidateFields = <String>{
+    'id',
+    'hostId',
+    'generation',
+    'sourceUrl',
+    'mediaUrl',
+    'title',
+    'mime',
+    'source',
+    'durationMs',
+  };
+
+  static const safeTaskFields = <String>{
+    'id',
+    'candidateId',
+    'hostId',
+    'generation',
+    'state',
+    'cacheKey',
+    'bytesDownloaded',
+    'totalBytes',
+    'errorCode',
+  };
+
+  static const sensitiveFieldNames = <String>{
+    'cookie',
+    'cookies',
+    'authorization',
+    'webStorage',
+    'localPath',
+    'nativePath',
+    'capabilityToken',
+  };
+
   static MediaCandidateDto candidate(MediaCandidate value) => MediaCandidateDto(
     id: value.id,
     hostId: value.hostId,

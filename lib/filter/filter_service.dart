@@ -19,6 +19,8 @@ class FilterRule {
     required this.block,
     this.cosmetic = false,
     this.hostOnly = false,
+    this.domain,
+    this.exception = false,
     this.scriptlet,
     this.scriptletArgs = const <String>[],
   });
@@ -27,6 +29,8 @@ class FilterRule {
   final bool block;
   final bool cosmetic;
   final bool hostOnly;
+  final String? domain;
+  final bool exception;
 
   /// Name of an audited, built-in scriptlet. Remote rule text is never
   /// evaluated as JavaScript; unknown names stay in diagnostics.
@@ -34,6 +38,7 @@ class FilterRule {
   final List<String> scriptletArgs;
 
   bool matches(Uri url) {
+    if (cosmetic) return false;
     final target = url.removeFragment().toString().toLowerCase();
     final value = pattern.toLowerCase();
     if (value.isEmpty) return false;
@@ -45,6 +50,14 @@ class FilterRule {
     }
     final needle = value.replaceAll('*', '');
     return needle.isNotEmpty && target.contains(needle);
+  }
+
+  bool cosmeticApplies(Uri url) {
+    if (!cosmetic) return false;
+    final expected = domain?.trim().toLowerCase();
+    if (expected == null || expected.isEmpty || expected == '*') return true;
+    return url.host.toLowerCase() == expected ||
+        url.host.toLowerCase().endsWith('.$expected');
   }
 }
 
@@ -67,7 +80,14 @@ class FilterDiagnostic {
 
 String redactUrl(Uri url) {
   final query = url.queryParameters.keys.map((key) => '$key=…').join('&');
-  return url.replace(query: query, fragment: '').toString();
+  return Uri(
+    scheme: url.scheme,
+    userInfo: '',
+    host: url.host,
+    port: url.hasPort ? url.port : null,
+    path: url.path,
+    query: query,
+  ).toString();
 }
 
 class FilterEngine {
@@ -127,18 +147,36 @@ class FilterEngine {
     'blocked': blockedCount,
     'allowed': allowedCount,
     'unsupported': unsupportedCount,
+    'cosmeticRules': rules.where((rule) => rule.cosmetic).length,
+    'degraded': unsupportedCount > 0,
   };
+
+  /// Returns the audited CSS selectors that apply to [url]. Exception rules
+  /// are applied after block rules so a site can opt out of one selector.
+  List<String> cosmeticSelectors(Uri url) {
+    final blocked = <String>{};
+    for (final rule in rules.where((rule) => rule.cosmetic)) {
+      if (!rule.cosmeticApplies(url)) continue;
+      if (rule.exception) {
+        blocked.remove(rule.pattern);
+      } else if (rule.block) {
+        blocked.add(rule.pattern);
+      }
+    }
+    return List.unmodifiable(blocked);
+  }
 
   FilterDiagnostic diagnose(
     Uri url, {
     FilterPolicy policy = const FilterPolicy(),
   }) {
     final decision = evaluate(url, policy: policy);
-    return FilterDiagnostic(
-      url: url,
-      decision: decision,
-      reason: decision == FilterDecision.block ? '规则命中' : '未命中规则',
-    );
+    final reason = decision == FilterDecision.block
+        ? '请求规则命中'
+        : decision == FilterDecision.unsupported || unsupportedCount > 0
+        ? '规则语义未支持，已按默认策略处理'
+        : '未命中请求规则';
+    return FilterDiagnostic(url: url, decision: decision, reason: reason);
   }
 }
 
@@ -170,7 +208,17 @@ class FilterCompiler {
         final cosmetic =
             cosmeticMatch?.group(1) ?? exceptionCosmeticMatch!.group(1)!;
         if (cosmetic.isNotEmpty) {
-          rules.add(FilterRule(pattern: cosmetic, block: true, cosmetic: true));
+          final match = cosmeticMatch ?? exceptionCosmeticMatch!;
+          final prefix = match.group(0)!.split('#').first;
+          rules.add(
+            FilterRule(
+              pattern: cosmetic,
+              block: cosmeticMatch != null,
+              cosmetic: true,
+              domain: prefix.isEmpty ? '*' : prefix,
+              exception: exceptionCosmeticMatch != null,
+            ),
+          );
         } else {
           unsupported.add(line);
         }
