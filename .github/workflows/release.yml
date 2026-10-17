@@ -28,6 +28,16 @@ on:
           - major
           - minor
           - patch
+      version_code:
+        description: Android versionCode override (auto derives it from release tags)
+        required: false
+        default: auto
+        type: string
+      minimum_version_code:
+        description: Optional installed versionCode floor for emergency/manual builds
+        required: false
+        default: '0'
+        type: string
 
 permissions:
   contents: write
@@ -61,6 +71,9 @@ jobs:
           DISPATCH_TAG: ${{ inputs.tag }}
           DISPATCH_CHANNEL: ${{ inputs.channel || 'stable' }}
           DISPATCH_BUMP: ${{ inputs.version_bump || 'auto' }}
+          DISPATCH_VERSION_CODE: ${{ inputs.version_code || 'auto' }}
+          DISPATCH_MINIMUM_VERSION_CODE: ${{ inputs.minimum_version_code || '0' }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -91,6 +104,22 @@ jobs:
           PY
           git rev-parse "$tag^{commit}" >/dev/null
           mkdir -p dist
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > dist/releases.json
+          python3 tool/extract_release_version_codes.py \
+            --input dist/releases.json \
+            --output dist/published-version-codes.txt
+          pubspec_code="$(sed -n 's/^version:.*+\([0-9][0-9]*\)$/\1/p' pubspec.yaml | head -1)"
+          test -n "$pubspec_code"
+          minimum_code="$DISPATCH_MINIMUM_VERSION_CODE"
+          if (( pubspec_code > minimum_code )); then minimum_code="$pubspec_code"; fi
+          version_args=(--tag "$tag" --channel "$channel" --published-codes-file dist/published-version-codes.txt)
+          if [[ "$DISPATCH_VERSION_CODE" != "auto" && -n "$DISPATCH_VERSION_CODE" ]]; then
+            version_args+=(--override "$DISPATCH_VERSION_CODE")
+          fi
+          python3 tool/determine_version_code.py \
+            "${version_args[@]}" \
+            --minimum-code "$minimum_code" > dist/version-code.json
+          cat dist/version-code.json
           python3 tool/determine_release_version.py \
             --tag "$tag" \
             --channel "$channel" \
@@ -104,6 +133,8 @@ jobs:
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
           echo "bump=$bump" >> "$GITHUB_OUTPUT"
           echo "bump_reason=$reason" >> "$GITHUB_OUTPUT"
+          version_code="$(python3 -c 'import json; print(json.load(open("dist/version-code.json"))["version_code"])')"
+          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
 
       - name: Generate categorized release notes
         env:
@@ -112,6 +143,7 @@ jobs:
           CHANNEL: ${{ steps.release.outputs.channel }}
           BUMP: ${{ steps.release.outputs.bump }}
           BUMP_REASON: ${{ steps.release.outputs.bump_reason }}
+          VERSION_CODE: ${{ steps.release.outputs.version_code }}
         run: |
           set -euo pipefail
           gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' > dist/eligible-release-tags.txt
@@ -125,6 +157,7 @@ jobs:
             echo "## 版本判断"
             echo "- 本次版本基线：\`$TAG\`。"
             echo "- 版本级别：**$BUMP**；$BUMP_REASON。"
+            echo "- Android versionCode: \`$VERSION_CODE\`."
           } >> dist/release-notes.md
           test -s dist/release-notes.md
           sed -n '1,160p' dist/release-notes.md
@@ -168,7 +201,7 @@ jobs:
       - name: Build and verify formal APK
         env:
           BUILD_NAME: ${{ steps.release.outputs.version }}
-          BUILD_NUMBER: ${{ github.run_number }}
+          BUILD_NUMBER: ${{ steps.release.outputs.version_code }}
         run: |
           make build-release BUILD_NAME="$BUILD_NAME" BUILD_NUMBER="$BUILD_NUMBER"
 
