@@ -95,6 +95,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   Future<void> _cast(MediaTask task) async {
     final file = await widget.app.mediaTasks.cachedFile(task.id);
     if (file == null) throw StateError('该任务没有可投屏的本地文件');
+    final isHls = file.path.toLowerCase().endsWith('.m3u8');
     final devices = await const DlnaDiscovery().discover();
     if (devices.isEmpty) throw StateError('局域网内没有发现可用的 DLNA 接收端');
     final device = devices.first;
@@ -102,8 +103,9 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
       device: device,
       mediaTaskId: task.id,
       mediaUrl: file.uri,
-      localFile: file,
-      mime: 'video/mp4',
+      localFile: isHls ? null : file,
+      localHlsPlaylist: isHls ? file : null,
+      mime: isHls ? 'application/vnd.apple.mpegurl' : 'video/mp4',
       title: task.id,
     );
     if (mounted) {

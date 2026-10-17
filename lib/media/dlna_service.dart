@@ -188,6 +188,9 @@ class DlnaSoapClient {
     serviceType: 'urn:schemas-upnp-org:service:ConnectionManager:1',
   );
 
+  Future<DlnaProtocolInfo> protocolInfo() async =>
+      DlnaProtocolInfo.parse(await getProtocolInfo());
+
   bool supportsProtocol(String protocolInfo, {required String mime}) =>
       protocolInfo.toLowerCase().contains(mime.toLowerCase()) ||
       protocolInfo.toLowerCase().contains('*:*:*');
@@ -234,6 +237,38 @@ class DlnaSoapClient {
   void close() => _client.close(force: true);
 }
 
+/// Narrow parser for the renderer's ConnectionManager sink protocol list.
+/// Values are kept as MIME/protocol tuples and never become arbitrary proxy
+/// targets or persisted credentials.
+class DlnaProtocolInfo {
+  const DlnaProtocolInfo(this.sink);
+
+  final Set<String> sink;
+
+  static DlnaProtocolInfo parse(String soapResponse) {
+    final sink = RegExp(
+      r'<(?:[A-Za-z0-9_.-]+:)?Sink[^>]*>([^<]*)<',
+      caseSensitive: false,
+    ).firstMatch(soapResponse)?.group(1);
+    final values = (sink ?? soapResponse)
+        .split(',')
+        .map((value) => value.trim().toLowerCase())
+        .where((value) => value.isNotEmpty)
+        .toSet();
+    return DlnaProtocolInfo(values);
+  }
+
+  bool supportsMime(String mime) {
+    final needle = mime.toLowerCase();
+    return sink.any(
+      (value) =>
+          value.contains('*:*:*') ||
+          value.contains(':$needle:') ||
+          value.endsWith(':$needle'),
+    );
+  }
+}
+
 /// Couples the protocol client to the Dart single-session state machine. The
 /// caller supplies a public URL or a [MediaRelayServer.url] that was issued
 /// for the selected task; the SOAP client never receives browser credentials.
@@ -242,6 +277,7 @@ class DlnaCastController {
   final CastSessionController sessions;
   DlnaSoapClient? _soap;
   MediaRelayServer? _relay;
+  HlsRelayServer? _hlsRelay;
 
   CastSession? get active => sessions.active;
 
@@ -250,6 +286,7 @@ class DlnaCastController {
     required String mediaTaskId,
     required Uri mediaUrl,
     File? localFile,
+    File? localHlsPlaylist,
     String mime = 'video/mp4',
     String title = 'Site Lens',
   }) async {
@@ -258,7 +295,22 @@ class DlnaCastController {
       sessions.transition(CastSessionState.connecting);
       final soap = DlnaSoapClient(device.address);
       _soap = soap;
-      if (localFile != null) {
+      if (localHlsPlaylist != null) {
+        if (!device.supportsHls) {
+          throw StateError(MediaErrorCode.unsupported);
+        }
+        final authorization = sessions.authorizeRelay(deviceId: device.id);
+        _hlsRelay = await HlsRelayServer.start(
+          authorization: authorization,
+          playlist: localHlsPlaylist,
+          allowedRoot: localHlsPlaylist.parent,
+        );
+        mediaUrl = _hlsRelay!.url;
+        mime = 'application/vnd.apple.mpegurl';
+      } else if (localFile != null) {
+        if (!device.supportsMp4) {
+          throw StateError(MediaErrorCode.unsupported);
+        }
         final authorization = sessions.authorizeRelay(deviceId: device.id);
         _relay = await MediaRelayServer.start(
           authorization: authorization,
@@ -268,6 +320,10 @@ class DlnaCastController {
         mediaUrl = _relay!.url;
       }
       sessions.transition(CastSessionState.settingMedia);
+      // Public URLs can be probed by the renderer itself. For a local relay,
+      // the device capability flags are the fail-closed decision already made
+      // above; a SOAP protocol query is still exposed for diagnostics and
+      // future devices with a separate ConnectionManager control URL.
       await soap.setMedia(mediaUrl, mime: mime, title: title);
       await soap.play();
       return sessions.transition(CastSessionState.playing);
@@ -276,6 +332,8 @@ class DlnaCastController {
       _soap = null;
       await _relay?.close();
       _relay = null;
+      await _hlsRelay?.close();
+      _hlsRelay = null;
       sessions.transition(CastSessionState.failed, errorCode: error.toString());
       rethrow;
     }
@@ -302,6 +360,8 @@ class DlnaCastController {
     _soap = null;
     await _relay?.close();
     _relay = null;
+    await _hlsRelay?.close();
+    _hlsRelay = null;
     return sessions.transition(CastSessionState.stopped);
   }
 }

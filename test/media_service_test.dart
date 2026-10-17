@@ -348,6 +348,19 @@ void main() {
     );
   });
 
+  test('DLNA protocol info parser exposes narrow sink capabilities', () {
+    final info = DlnaProtocolInfo.parse(
+      '<GetProtocolInfoResponse><Sink>http-get:*:video/mp4:*,http-get:*:application/vnd.apple.mpegurl:*</Sink></GetProtocolInfoResponse>',
+    );
+    expect(info.supportsMime('video/mp4'), isTrue);
+    expect(info.supportsMime('application/vnd.apple.mpegurl'), isTrue);
+    expect(info.supportsMime('audio/flac'), isFalse);
+    expect(
+      DlnaProtocolInfo.parse('http-get:*:*:*').supportsMime('audio/flac'),
+      isTrue,
+    );
+  });
+
   test('relay request parser accepts HEAD and bounded ranges only', () {
     expect(
       const RelayRequestValidator().validate(
