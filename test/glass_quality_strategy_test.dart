@@ -297,11 +297,65 @@ void main() {
         expect(overlay.platformViewBackdrop, isFalse);
         expect(overlay.useCompatibilityFallback, isTrue);
         expect(panel.quality, GlassQuality.standard);
+        expect(panel.useCompatibilityFallback, isTrue);
         expect(ordinaryChrome.quality, GlassQuality.premium);
         expect(ordinaryChrome.platformViewBackdrop, isFalse);
         expect(ordinaryChrome.useCompatibilityFallback, isFalse);
         expect(idlePlatformView.platformViewBackdrop, isTrue);
         expect(idlePlatformView.useCompatibilityFallback, isFalse);
+      } finally {
+        debugDefaultTargetPlatformOverride = previous;
+      }
+    },
+  );
+
+  testWidgets(
+    'Android WebView safety covers panels and chrome while preserving idle quality',
+    (tester) async {
+      final previous = debugDefaultTargetPlatformOverride;
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      try {
+        late BuildContext context;
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSiteLensTheme(
+              ThemePresetId.oceanBlue,
+              Brightness.light,
+            ),
+            home: Builder(
+              builder: (value) {
+                context = value;
+                return const SizedBox();
+              },
+            ),
+          ),
+        );
+        const browsing = SiteLensGlassQualityStrategy(
+          mode: SiteLensGlassQualityMode.high,
+          allSurfacesHighQuality: true,
+          webViewVisible: true,
+          shaderSupported: true,
+        );
+        for (final role in SiteLensSurfaceRole.values) {
+          final plan = browsing.resolve(context, role: role);
+          expect(plan.useCompatibilityFallback, isTrue);
+          expect(plan.platformViewBackdrop, isFalse);
+        }
+        const idle = SiteLensGlassQualityStrategy(
+          mode: SiteLensGlassQualityMode.high,
+          allSurfacesHighQuality: true,
+          shaderSupported: true,
+        );
+        expect(
+          idle.resolve(context, role: SiteLensSurfaceRole.panel).quality,
+          GlassQuality.premium,
+        );
+        expect(
+          idle
+              .resolve(context, role: SiteLensSurfaceRole.panel)
+              .useCompatibilityFallback,
+          isFalse,
+        );
       } finally {
         debugDefaultTargetPlatformOverride = previous;
       }

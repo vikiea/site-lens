@@ -51,7 +51,7 @@ void main() {
             );
           case '/publish':
             request.response.write(
-              '<html><body><section id="latest-addresses"><h2>最新地址</h2><p>正在读取最新可用的入口地址列表</p></section><a href="https://unrelated.example/">其他导航</a><script>setTimeout(() => { document.querySelector("#latest-addresses").innerHTML = `<h2>最新地址</h2><a href="https://\${document.documentElement.dataset.startPhase ? "scripts-must-not-run" : "business"}.example/">站点入口</a><a href="https://backup-publish.example/">备用发布页</a>`; }, 200);</script></body></html>',
+              '<html><body><section id="latest-addresses"><h2>最新地址</h2><p>正在读取最新可用的入口地址列表</p><a href="http://127.0.0.1:${server.port}/publish">本站</a></section><a href="https://unrelated.example/">其他导航</a><script>setTimeout(() => { document.querySelector("#latest-addresses").innerHTML = `<h2>最新地址</h2><a href="https://\${document.documentElement.dataset.startPhase ? "scripts-must-not-run" : "business"}.example/">站点入口</a><a href="https://backup-publish.example/">备用发布页</a>`; }, 200);</script></body></html>',
             );
             break;
           case '/private-network':

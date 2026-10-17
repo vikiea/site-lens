@@ -240,6 +240,20 @@ Uri userUri(String input) {
 
 String landingKey(Uri uri) => uri.removeFragment().toString();
 
+/// Stable page identity used when comparing browser URLs returned by WebView
+/// with URLs entered by the user. WebView commonly adds `/` to an empty path;
+/// fragments are navigation state, not a different publishing page.
+String webPageKey(Uri uri) {
+  final clean = uri.removeFragment();
+  return Uri(
+    scheme: clean.scheme.toLowerCase(),
+    host: clean.host.toLowerCase(),
+    port: clean.hasPort ? clean.port : null,
+    path: clean.path.isEmpty ? '/' : clean.path,
+    query: clean.query,
+  ).toString();
+}
+
 /// The name reserved for candidates that do not belong to any curated profile.
 /// Migration puts manual (source-less) candidates here so nothing is orphaned.
 const unassignedProfileName = '未归类';

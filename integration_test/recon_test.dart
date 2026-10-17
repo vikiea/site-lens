@@ -40,6 +40,7 @@ void main() {
             request.response.write(
               '<!doctype html><html><head><title>闭环发布页</title></head><body>'
               '<section id="latest-addresses"><h2>最新地址</h2>'
+              '<a href="http://127.0.0.1:$port/publish">本站</a>'
               '<a href="http://127.0.0.2:$port/site">入口一</a>'
               '<a href="http://127.0.0.3:$port/site">入口二</a>'
               '</section></body></html>',

@@ -97,18 +97,20 @@ class SiteLensGlassQualityStrategy {
     // Android browsing route uses the same clipped translucent fill as the
     // renderer fallback below. This changes only the sampling path; controls,
     // tint, shape, and interaction remain unchanged.
-    final androidWebViewOverlay =
-        isAndroid && webViewVisible && role == SiteLensSurfaceRole.platformView;
+    final androidWebViewComposition = isAndroid && webViewVisible;
     final platformViewBackdrop =
-        role == SiteLensSurfaceRole.platformView && !androidWebViewOverlay;
+        role == SiteLensSurfaceRole.platformView && !androidWebViewComposition;
     final shaderSupported =
         this.shaderSupported ?? ui.ImageFilter.isShaderFilterSupported;
-    // Android WebView overlays intentionally use this path even when shaders
-    // are available: it avoids a live backdrop read from a video surface. A
-    // shader-less renderer keeps the existing fallback for every non-platform
-    // surface as before.
+    // While an Android WebView remains mounted, every Site Lens glass surface
+    // uses the clipped fill. Standard/premium shader surfaces can still create
+    // capture layers that sample or retain a hybrid-composed video surface,
+    // even when the surface is a panel or a modal above the WebView. The fence
+    // is scoped to this route; pages without a WebView retain premium/shader
+    // rendering.
     final useCompatibilityFallback =
-        androidWebViewOverlay || (!shaderSupported && !platformViewBackdrop);
+        androidWebViewComposition ||
+        (!shaderSupported && !platformViewBackdrop);
 
     return SiteLensGlassRenderPlan(
       quality: requestedQuality,
@@ -151,9 +153,8 @@ class SiteLensGlassQualityStrategy {
       },
     };
     // Minimal is a renderer fallback, not a user-facing quality mode for these
-    // surfaces. PlatformView overlays remain standard; Android WebView
-    // overlays use the clipped fill selected in resolve() instead of a live
-    // backdrop read.
+    // surfaces. The Android WebView route uses the clipped fill selected in
+    // resolve() instead of a live backdrop read for every role.
     return quality == GlassQuality.minimal ? GlassQuality.standard : quality;
   }
 

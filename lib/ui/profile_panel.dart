@@ -187,13 +187,13 @@ class _ProfileCard extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.fromLTRB(0, 0, 0, 2),
                 child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
                     Icon(
                       stale
                           ? Icons.history
                           : recommended == null
-                          ? Icons.radar
+                          ? Icons.location_off_outlined
                           : Icons.check_circle_outline,
                       color: stale
                           ? colors.warning
