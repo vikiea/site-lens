@@ -15,7 +15,7 @@ on:
           - stable
           - beta
       tag:
-        description: Release tag, for example v0.1.0
+        description: Release tag, for example v0.1.9.alpha1
         required: true
         type: string
 
@@ -60,7 +60,7 @@ jobs:
           fi
           channel="$DISPATCH_CHANNEL"
           if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
-            if [[ "$tag" =~ -((alpha|beta|rc)[0-9A-Za-z.-]*)$ ]]; then
+            if [[ "$tag" =~ \.((alpha|beta|rc)(0|[1-9][0-9]*))$ ]]; then
               channel=beta
             else
               channel=stable
@@ -72,7 +72,7 @@ jobs:
           tag = sys.argv[1]
           channel = sys.argv[2]
           stable = r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
-          beta = stable + r"-(alpha|beta|rc)[0-9A-Za-z.-]*"
+          beta = stable + r"\.(alpha|beta|rc)(0|[1-9][0-9]*)"
           pattern = beta if channel == "beta" else stable
           if channel not in {"stable", "beta"} or not re.fullmatch(pattern, tag):
               raise SystemExit(f"invalid release tag: {tag}")
@@ -82,6 +82,19 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Generate categorized release notes
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          CHANNEL: ${{ steps.release.outputs.channel }}
+        run: |
+          set -euo pipefail
+          python3 tool/generate_release_notes.py \
+            --tag "$TAG" \
+            --channel "$CHANNEL" \
+            --output dist/release-notes.md
+          test -s dist/release-notes.md
+          sed -n '1,160p' dist/release-notes.md
 
       - name: Run repository checks
         shell: bash
@@ -150,10 +163,15 @@ jobs:
           set -euo pipefail
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             title="Site Lens $TAG"
-            args=("$TAG" --title "$title" --target "$(git rev-parse HEAD)" --generate-notes)
+            args=("$TAG" --title "$title" --target "$(git rev-parse HEAD)" --notes-file dist/release-notes.md)
             if [[ "$CHANNEL" == "beta" ]]; then
               args+=(--prerelease)
             fi
             gh release create "${args[@]}"
+          else
+            gh release edit "$TAG" --notes-file dist/release-notes.md
           fi
-          gh release upload "$TAG" dist/* --clobber
+          gh release upload "$TAG" \
+            "dist/site-lens-${TAG}.apk" \
+            "dist/site-lens-${TAG}.apk.sha256" \
+            --clobber

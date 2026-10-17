@@ -70,7 +70,7 @@ class ReleaseInfo {
   }
 }
 
-/// Stable release versions. Pre-releases are deliberately excluded.
+/// Stable and dotted prerelease versions used by Site Lens release tags.
 class AppVersion implements Comparable<AppVersion> {
   const AppVersion(this.major, this.minor, this.patch, [this.prerelease]);
   final int major;
@@ -80,7 +80,7 @@ class AppVersion implements Comparable<AppVersion> {
 
   factory AppVersion.parse(String value) {
     final match = RegExp(
-      r'^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+\d+)?$',
+      r'^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.((?:alpha|beta|rc)(?:0|[1-9]\d*)))?(?:\+\d+)?$',
     ).firstMatch(value);
     if (match == null) throw const FormatException('版本号格式错误');
     return AppVersion(
@@ -104,6 +104,16 @@ class AppVersion implements Comparable<AppVersion> {
     if (prerelease == null && other.prerelease == null) return 0;
     if (prerelease == null) return 1;
     if (other.prerelease == null) return -1;
+    final leftMatch = RegExp(r'^(alpha|beta|rc)(\d+)$').firstMatch(prerelease!);
+    final rightMatch = RegExp(r'^(alpha|beta|rc)(\d+)$')
+        .firstMatch(other.prerelease!);
+    if (leftMatch != null && rightMatch != null) {
+      final kindResult = const ['alpha', 'beta', 'rc']
+          .indexOf(leftMatch[1]!)
+          .compareTo(const ['alpha', 'beta', 'rc'].indexOf(rightMatch[1]!));
+      if (kindResult != 0) return kindResult;
+      return int.parse(leftMatch[2]!).compareTo(int.parse(rightMatch[2]!));
+    }
     final left = prerelease!.split('.');
     final right = other.prerelease!.split('.');
     for (var i = 0; i < math.max(left.length, right.length); i++) {
@@ -130,14 +140,14 @@ class AppVersion implements Comparable<AppVersion> {
 
   @override
   String toString() =>
-      '$major.$minor.$patch${prerelease == null ? '' : '-$prerelease'}';
+      '$major.$minor.$patch${prerelease == null ? '' : '.$prerelease'}';
   bool operator >(AppVersion other) => compareTo(other) > 0;
 
   @override
   bool operator ==(Object other) =>
       other is AppVersion && compareTo(other) == 0;
   @override
-  int get hashCode => Object.hash(major, minor, patch);
+  int get hashCode => Object.hash(major, minor, patch, prerelease);
 }
 
 class UpdateCheckResult {
@@ -428,29 +438,42 @@ class GitHubReleaseClient {
   }
 
   Future<ReleaseInfo> _fetchBeta() async {
-    final response = await _request(_betaUri);
-    if (response.statusCode != 200) {
-      await response.stream.listen((_) {}).cancel();
-      throw HttpException('测试版更新服务返回 HTTP ${response.statusCode}');
-    }
-    final bytes = <int>[];
-    await for (final chunk in response.stream.timeout(_timeout)) {
-      bytes.addAll(chunk);
-      if (bytes.length > 1024 * 1024) {
-        throw const FormatException('测试版发布列表超过大小限制');
+    final candidates =
+        <({String tag, Map<String, dynamic> item, AppVersion version})>[];
+    for (var page = 1; page <= 10; page++) {
+      final response = await _request(
+        _betaUri.replace(queryParameters: {'per_page': '30', 'page': '$page'}),
+      );
+      if (response.statusCode != 200) {
+        await response.stream.listen((_) {}).cancel();
+        throw HttpException('测试版更新服务返回 HTTP ${response.statusCode}');
       }
-    }
-    final decoded = jsonDecode(utf8.decode(bytes));
-    if (decoded is! List) throw const FormatException('测试版发布列表格式错误');
-    for (final item in decoded.whereType<Map<String, dynamic>>()) {
-      if (item['draft'] == true || item['prerelease'] != true) continue;
-      final tag = item['tag_name'];
-      if (tag is! String ||
-          !RegExp(
-            r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(?:alpha|beta|rc)[0-9A-Za-z.-]*$',
-          ).hasMatch(tag)) {
-        continue;
+      final bytes = <int>[];
+      await for (final chunk in response.stream.timeout(_timeout)) {
+        bytes.addAll(chunk);
+        if (bytes.length > 1024 * 1024) {
+          throw const FormatException('测试版发布列表超过大小限制');
+        }
       }
+      final decoded = jsonDecode(utf8.decode(bytes));
+      if (decoded is! List) throw const FormatException('测试版发布列表格式错误');
+      for (final item in decoded.whereType<Map<String, dynamic>>()) {
+        if (item['draft'] == true || item['prerelease'] != true) continue;
+        final tag = item['tag_name'];
+        if (tag is! String ||
+            !RegExp(
+              r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\.(?:alpha|beta|rc)(?:0|[1-9]\d*)$',
+            ).hasMatch(tag)) {
+          continue;
+        }
+        candidates.add((tag: tag, item: item, version: AppVersion.parse(tag)));
+      }
+      if (decoded.length < 30) break;
+    }
+    candidates.sort((left, right) => right.version.compareTo(left.version));
+    for (final candidate in candidates) {
+      final tag = candidate.tag;
+      final item = candidate.item;
       final html = item['html_url'] as String?;
       final page = html == null
           ? null
@@ -464,12 +487,18 @@ class GitHubReleaseClient {
                 .map((asset) => (asset['size'] as num?)?.toInt())
                 .firstOrNull
           : null;
-      return _releaseForTag(
-        tag,
-        body: item['body'] as String? ?? '',
-        htmlUrl: page,
-        apkSize: size,
-      );
+      try {
+        return await _releaseForTag(
+          tag,
+          body: item['body'] as String? ?? '',
+          htmlUrl: page,
+          apkSize: size,
+        );
+      } on FormatException {
+        // A newer prerelease without a valid checksum must not hide an older
+        // usable release from the update channel.
+        continue;
+      }
     }
     throw const FormatException('尚无可用的测试版发布版本');
   }

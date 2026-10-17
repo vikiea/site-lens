@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:site_lens/settings/app_settings.dart';
 import 'package:site_lens/update/update_service.dart';
 
 import 'fake_update_platform.dart';
@@ -26,7 +27,15 @@ void main() {
   test('parses semver tags and compares releases', () {
     expect(AppVersion.parse('v1.2.3'), const AppVersion(1, 2, 3));
     expect(AppVersion.parse('1.2.3+4'), const AppVersion(1, 2, 3));
-    expect(() => AppVersion.parse('1.2.3-beta.1'), throwsFormatException);
+    expect(AppVersion.parse('1.2.3.alpha1').toString(), '1.2.3.alpha1');
+    expect(() => AppVersion.parse('1.2.3-beta1'), throwsFormatException);
+    expect(() => AppVersion.parse('1.2.3.alpha.1'), throwsFormatException);
+    expect(() => AppVersion.parse('1.2.3.alpha01'), throwsFormatException);
+    expect(
+      AppVersion.parse('1.2.3.alpha10')
+          .compareTo(AppVersion.parse('1.2.3.alpha2')),
+      greaterThan(0),
+    );
     expect(AppVersion.parse('v1.3.0') > AppVersion.parse('1.2.9'), isTrue);
     expect(() => AppVersion.parse('v1.2'), throwsFormatException);
   });
@@ -40,6 +49,49 @@ void main() {
     expect(release.apkName, 'site-lens-v0.2.0.apk');
     expect(release.sha256, server.sha256Hex);
     expect(release.htmlUrl.toString(), contains('/releases/tag/v0.2.0'));
+  });
+
+  test(
+    'selects the highest dotted prerelease regardless of API order',
+    () async {
+      final client = GitHubReleaseClient(
+        client: _BetaReleaseClient([
+          'v0.2.0.beta2',
+          'v0.2.0.alpha1',
+          'v0.2.0.beta10',
+        ]),
+      );
+
+      final release = await client.fetchLatest(channel: UpdateChannel.beta);
+      expect(release.tagName, 'v0.2.0.beta10');
+    },
+  );
+
+  test(
+    'continues through release pages when the first page has no beta',
+    () async {
+      final client = GitHubReleaseClient(
+        client: _BetaReleaseClient(
+          List<String>.filled(30, 'v0.1.0'),
+          pageTwoTags: ['v0.2.0.alpha1'],
+        ),
+      );
+
+      final release = await client.fetchLatest(channel: UpdateChannel.beta);
+      expect(release.tagName, 'v0.2.0.alpha1');
+    },
+  );
+
+  test('falls back when the newest prerelease has no checksum', () async {
+    final client = GitHubReleaseClient(
+      client: _BetaReleaseClient(
+        ['v0.2.0.beta2', 'v0.2.0.beta10'],
+        badChecksumTags: {'v0.2.0.beta10'},
+      ),
+    );
+
+    final release = await client.fetchLatest(channel: UpdateChannel.beta);
+    expect(release.tagName, 'v0.2.0.beta2');
   });
 
   test(
@@ -573,6 +625,66 @@ class _ChecksumOnlyClient extends http.BaseClient {
   ) => http.StreamedResponse(
     Stream<List<int>>.value(response.bodyBytes),
     response.statusCode,
+    headers: response.headers,
+    request: request,
+  );
+}
+
+class _BetaReleaseClient extends http.BaseClient {
+  _BetaReleaseClient(
+    this.tags, {
+    this.pageTwoTags = const [],
+    this.badChecksumTags = const {},
+  });
+
+  final List<String> tags;
+  final List<String> pageTwoTags;
+  final Set<String> badChecksumTags;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    if (request.url.path == '/repos/vikiea/site-lens/releases') {
+      final selectedTags = request.url.queryParameters['page'] == '2'
+          ? pageTwoTags
+          : tags;
+      final body = jsonEncode(
+        selectedTags
+            .map(
+              (tag) => {
+                'tag_name': tag,
+                'draft': false,
+                'prerelease': true,
+                'html_url':
+                    'https://github.com/vikiea/site-lens/releases/tag/$tag',
+                'assets': const [],
+              },
+            )
+            .toList(),
+      );
+      return _response(http.Response(body, 200), request);
+    }
+    final match = RegExp(r'/releases/download/(v[^/]+)/')
+        .firstMatch(request.url.path);
+    if (match != null && request.url.path.endsWith('.sha256')) {
+      final tag = match.group(1)!;
+      if (badChecksumTags.contains(tag)) {
+        return _response(http.Response('', 404), request);
+      }
+      return _response(
+        http.Response('${'a' * 64}  site-lens-$tag.apk\n', 200),
+        request,
+      );
+    }
+    return _response(http.Response('', 404), request);
+  }
+
+  static http.StreamedResponse _response(
+    http.Response response,
+    http.BaseRequest request,
+  ) => http.StreamedResponse(
+    Stream<List<int>>.value(response.bodyBytes),
+    response.statusCode,
+    contentLength: response.contentLength,
     headers: response.headers,
     request: request,
   );

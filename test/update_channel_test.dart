@@ -20,9 +20,10 @@ void main() {
   });
 
   test('semantic versions order beta before the matching stable release', () {
-    final beta = AppVersion.parse('v0.2.0-beta.1');
+    final beta = AppVersion.parse('v0.2.0.beta1');
     final stable = AppVersion.parse('v0.2.0');
     expect(beta.compareTo(stable), lessThan(0));
-    expect(AppVersion.parse('v0.2.0-beta.2').compareTo(beta), greaterThan(0));
+    expect(AppVersion.parse('v0.2.0.beta2').compareTo(beta), greaterThan(0));
+    expect(AppVersion.parse('v0.2.0.rc1').compareTo(beta), greaterThan(0));
   });
 }
