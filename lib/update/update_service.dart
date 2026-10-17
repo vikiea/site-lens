@@ -397,7 +397,34 @@ class GitHubReleaseClient {
   }) => _fetchLatest(channel).timeout(_timeout);
 
   Future<ReleaseInfo> _fetchLatest(UpdateChannel channel) async {
-    if (channel == UpdateChannel.beta) return _fetchBeta();
+    if (channel == UpdateChannel.stable) return _fetchStable();
+
+    // The beta channel is a superset of stable: once a prerelease user has
+    // moved past the stable baseline, the next stable release must still be
+    // discoverable.  Query both sources and let the same semantic version
+    // ordering decide whether a prerelease or stable release wins.
+    final candidates = <ReleaseInfo>[];
+    Object? firstError;
+    StackTrace? firstStack;
+    for (final fetch in [_fetchBeta, _fetchStable]) {
+      try {
+        candidates.add(await fetch());
+      } catch (error, stack) {
+        firstError ??= error;
+        firstStack ??= stack;
+      }
+    }
+    if (candidates.isEmpty) {
+      if (firstError != null && firstStack != null) {
+        Error.throwWithStackTrace(firstError, firstStack);
+      }
+      throw const FormatException('尚无可用的测试版或正式发布版本');
+    }
+    candidates.sort((left, right) => right.version.compareTo(left.version));
+    return candidates.first;
+  }
+
+  Future<ReleaseInfo> _fetchStable() async {
     final tag = await _resolveLatestTag();
     return _releaseForTag(tag);
   }

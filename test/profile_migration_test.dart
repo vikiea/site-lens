@@ -101,7 +101,7 @@ void main() {
       expect(
         scripts.single.approvedDigest,
         ScriptMetadata.parse(scripts.single.source)
-            .digest(scripts.single.source, []),
+            .legacyDigest(scripts.single.source, []),
       );
       expect(scripts.single.source.length, greaterThan(1000000));
 

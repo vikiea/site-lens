@@ -67,6 +67,39 @@ void main() {
     },
   );
 
+  test('beta channel also discovers a newer stable release', () async {
+    final client = GitHubReleaseClient(
+      client: _BetaReleaseClient(['v0.2.0.beta2'], stableTag: 'v0.2.0'),
+    );
+
+    final release = await client.fetchLatest(channel: UpdateChannel.beta);
+    expect(release.tagName, 'v0.2.0');
+  });
+
+  test(
+    'beta channel falls back to stable when no prerelease is available',
+    () async {
+      final client = GitHubReleaseClient(
+        client: _BetaReleaseClient(const [], stableTag: 'v0.2.0'),
+      );
+
+      final release = await client.fetchLatest(channel: UpdateChannel.beta);
+      expect(release.tagName, 'v0.2.0');
+    },
+  );
+
+  test(
+    'beta channel keeps a newer prerelease over an older stable release',
+    () async {
+      final client = GitHubReleaseClient(
+        client: _BetaReleaseClient(['v0.3.0.alpha1'], stableTag: 'v0.2.0'),
+      );
+
+      final release = await client.fetchLatest(channel: UpdateChannel.beta);
+      expect(release.tagName, 'v0.3.0.alpha1');
+    },
+  );
+
   test(
     'continues through release pages when the first page has no beta',
     () async {
@@ -635,14 +668,32 @@ class _BetaReleaseClient extends http.BaseClient {
     this.tags, {
     this.pageTwoTags = const [],
     this.badChecksumTags = const {},
+    this.stableTag,
   });
 
   final List<String> tags;
   final List<String> pageTwoTags;
   final Set<String> badChecksumTags;
+  final String? stableTag;
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    if (request.url.path.endsWith('/releases/latest')) {
+      if (stableTag == null) {
+        return _response(http.Response('', 404), request);
+      }
+      return _response(
+        http.Response.bytes(
+          const [],
+          302,
+          headers: {
+            'location':
+                'https://github.com/vikiea/site-lens/releases/tag/$stableTag',
+          },
+        ),
+        request,
+      );
+    }
     if (request.url.path == '/repos/vikiea/site-lens/releases') {
       final selectedTags = request.url.queryParameters['page'] == '2'
           ? pageTwoTags
