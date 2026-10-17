@@ -112,7 +112,46 @@ jobs:
           test -n "$pubspec_code"
           minimum_code="$DISPATCH_MINIMUM_VERSION_CODE"
           if (( pubspec_code > minimum_code )); then minimum_code="$pubspec_code"; fi
-          version_args=(--tag "$tag" --channel "$channel" --published-codes-file dist/published-version-codes.txt)
+          # Older stable releases predate versionCode release-note records.
+          # Read the current stable APK's manifest so the shared sequence also
+          # includes the versionCode shipped from main.
+          stable_tag="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+            --json tagName,isPrerelease,isDraft \
+            --jq '[.[] | select(.isPrerelease == false and .isDraft == false)][0].tagName // empty')"
+          main_stable_code=0
+          if [[ -n "$stable_tag" ]]; then
+            stable_apk_name="$(gh release view "$stable_tag" --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq '.assets[] | select(.name | endswith(".apk")) | .name' | head -1)"
+            test -n "$stable_apk_name" || { echo "stable release $stable_tag has no APK asset" >&2; exit 1; }
+            mkdir -p dist/stable-baseline
+            gh release download "$stable_tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "$stable_apk_name" \
+              --dir dist/stable-baseline
+            apkanalyzer_bin="$(command -v apkanalyzer || true)"
+            if [[ -z "$apkanalyzer_bin" && -n "${ANDROID_HOME:-}" ]]; then
+              for candidate in \
+                "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" \
+                "$ANDROID_HOME/cmdline-tools/bin/apkanalyzer"; do
+                if [[ -x "$candidate" ]]; then
+                  apkanalyzer_bin="$candidate"
+                  break
+                fi
+              done
+            fi
+            test -n "$apkanalyzer_bin" || { echo "apkanalyzer is required to read the stable APK versionCode" >&2; exit 1; }
+            main_stable_code="$("$apkanalyzer_bin" manifest version-code "dist/stable-baseline/$stable_apk_name")"
+            [[ "$main_stable_code" =~ ^[1-9][0-9]*$ ]] || {
+              echo "invalid stable APK versionCode: $main_stable_code" >&2
+              exit 1
+            }
+          fi
+          version_args=(
+            --tag "$tag"
+            --channel "$channel"
+            --published-codes-file dist/published-version-codes.txt
+            --main-stable-code "$main_stable_code"
+          )
           if [[ "$DISPATCH_VERSION_CODE" != "auto" && -n "$DISPATCH_VERSION_CODE" ]]; then
             version_args+=(--override "$DISPATCH_VERSION_CODE")
           fi
