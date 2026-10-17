@@ -27,6 +27,9 @@ class MainActivity : FlutterActivity() {
     private var hosts: NativeWebHostRegistry? = null
     private var pendingNotification: Pair<String, String>? = null
     private var notificationPermissionAsked = false
+    private var nativeMedia: NativeMediaRuntime? = null
+    private var nativeDownloads: NativeDownloadRuntime? = null
+    private var nativeExport: NativeExportRuntime? = null
 
     private fun postNotification(title: String, body: String) {
         val manager = getSystemService(NotificationManager::class.java)
@@ -73,6 +76,9 @@ class MainActivity : FlutterActivity() {
         hosts = NativeWebHostRegistry(this, flutterEngine)
         registerDeviceChannel(flutterEngine)
         registerUpdateChannel(flutterEngine)
+        registerNativeMediaChannel(flutterEngine)
+        registerNativeDownloadChannel(flutterEngine)
+        registerNativeExportChannel(flutterEngine)
     }
 
     private fun registerDeviceChannel(flutterEngine: FlutterEngine) {
@@ -143,6 +149,21 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    private fun registerNativeMediaChannel(flutterEngine: FlutterEngine) {
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/native_media")
+        nativeMedia = NativeMediaRuntime(this).also { it.attach(channel) }
+    }
+
+    private fun registerNativeDownloadChannel(flutterEngine: FlutterEngine) {
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/native_download")
+        nativeDownloads = NativeDownloadRuntime(this).also { channel.setMethodCallHandler(it) }
+    }
+
+    private fun registerNativeExportChannel(flutterEngine: FlutterEngine) {
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/native_export")
+        nativeExport = NativeExportRuntime(this).also { channel.setMethodCallHandler(it) }
     }
 
     private fun canInstallPackages(): Boolean =
@@ -242,6 +263,9 @@ class MainActivity : FlutterActivity() {
     override fun onResume() { super.onResume(); hosts?.foreground(true) }
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
         hosts?.dispose(); hosts = null
+        nativeMedia?.dispose(); nativeMedia = null
+        nativeDownloads?.let { nativeDownloads = null }
+        nativeExport?.let { nativeExport = null }
         super.cleanUpFlutterEngine(flutterEngine)
     }
 

@@ -30,6 +30,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.io.File
+import java.io.ByteArrayInputStream
 import java.util.UUID
 
 private fun webUri(value: String): Uri {
@@ -165,6 +166,12 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
         require(host.purpose == HostPurpose.BROWSING || scripts.isEmpty()) { "Probe hosts cannot run user scripts" }
         host.revoke(); host.scripts = scripts
     }
+    override fun applyFilter(hostId: Long, context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto) {
+        val host = host(hostId)
+        require(context.hostId == hostId) { "Filter host identity mismatch" }
+        require(context.generation >= host.generation) { "Filter generation is stale" }
+        host.applyFilter(context, policy, snapshot)
+    }
     override fun setHostActivity(hostId: Long, isCurrent: Boolean, visible: Boolean, foreground: Boolean, allowBackgroundPlayback: Boolean): Boolean =
         host(hostId).media.activity(isCurrent, visible, foreground, allowBackgroundPlayback)
     fun foreground(value: Boolean) { isForeground = value; hosts.values.forEach { it.media.foregroundState(value) } }
@@ -239,13 +246,35 @@ class ScriptBinding(val script: ScriptRegistration, val generation: Long, val to
     var proxy: JavaScriptReplyProxy? = null
 }
 
+/** In-memory request/page filtering state. It is replaced atomically before a
+ * navigation and is intentionally independent of Dart, disk and network. */
+private data class NativeFilterState(
+    val enabled: Boolean = false,
+    val pageFiltering: Boolean = false,
+    val exceptions: Set<String> = emptySet(),
+    val blockedDomains: Set<String> = emptySet(),
+    val rules: List<NativeFilterRule> = emptyList(),
+    val snapshotId: String = "",
+)
+
+private data class NativeFilterRule(val pattern: String, val block: Boolean, val cosmetic: Boolean, val hostOnly: Boolean)
+
+private const val FILTER_RUNTIME_ASSET = "flutter_assets/web_assets/filter_runtime.js"
+
 @Suppress("SetJavaScriptEnabled")
 class NativeWebHost(private val activity: Activity, val id: Long, val purpose: HostPurpose, private val events: WebHostEvents, initialPreferences: HostPreferences) {
     val webView = SiteLensWebView(activity)
 
     /// Policy owned by Dart; the host only enforces it. `applyPreferences` keeps a
     /// live host in step with a switch the user flipped mid-session.
-    val media = BrowserMediaController(activity, webView, purpose == HostPurpose.BROWSING)
+    val media = BrowserMediaController(
+        activity,
+        webView,
+        purpose == HostPurpose.BROWSING,
+    ) { candidate ->
+        val url = candidate["url"] as? String
+        if (url != null && url.isNotBlank()) event("mediaCandidate", JSONObject(candidate).toString())
+    }
     var preferences: HostPreferences = initialPreferences
         private set
 
@@ -287,6 +316,8 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     var scripts = emptyList<ScriptRegistration>()
     val bindings = mutableListOf<ScriptBinding>()
     private val injections = mutableListOf<ScriptHandler>()
+    private var filterInjection: ScriptHandler? = null
+    @Volatile private var filterState = NativeFilterState()
     private var accepting = false
     private var expectedUrl: String? = null
     // Kept across same-document navigation so SPA/hash episode changes do not
@@ -327,6 +358,74 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     private var pageLoadGeneration = -1L
     private var pageStartedUrl: String? = null
     private val profileName = if (purpose == HostPurpose.BROWSING) null else "site-lens-probe-${UUID.randomUUID()}"
+
+    fun applyFilter(context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto) {
+        check(context.hostId == id) { "Filter host identity mismatch" }
+        check(context.generation >= generation) { "Filter generation is stale" }
+        val rules = runCatching {
+            val array = JSONArray(snapshot.rules)
+            (0 until array.length()).mapNotNull { index ->
+                val value = array.optJSONObject(index) ?: return@mapNotNull null
+                val pattern = value.optString("pattern").trim()
+                if (pattern.isEmpty()) null else NativeFilterRule(
+                    pattern = pattern,
+                    block = value.optBoolean("block", true),
+                    cosmetic = value.optBoolean("cosmetic", false),
+                    hostOnly = value.optBoolean("hostOnly", false),
+                )
+            }
+        }.getOrDefault(emptyList())
+        filterState = NativeFilterState(
+            enabled = policy.enabled && snapshot.state != "missing" && snapshot.state != "failed" && snapshot.state != "corrupt",
+            pageFiltering = policy.pageFiltering,
+            exceptions = policy.domainExceptions.map { it.lowercase() }.toSet(),
+            blockedDomains = policy.blockedDomains.map { it.lowercase() }.toSet(),
+            rules = rules,
+            snapshotId = snapshot.id,
+        )
+        refreshFilterInjection()
+    }
+
+    private fun refreshFilterInjection() {
+        runCatching { filterInjection?.remove() }
+        filterInjection = null
+        val state = filterState
+        if (!state.enabled || !state.pageFiltering || !hasStart || destroyed) return
+        val source = runCatching { activity.assets.open(FILTER_RUNTIME_ASSET).bufferedReader().use { it.readText() } }.getOrNull() ?: return
+        val cosmetic = state.rules.filter { it.block && it.cosmetic }.map { it.pattern }.take(128)
+        val config = JSONObject()
+            .put("enabled", true)
+            .put("selectors", JSONArray(cosmetic))
+            .put("snapshotId", state.snapshotId)
+        filterInjection = runCatching {
+            if (hasWorld) {
+                val world = WebViewCompat.getExecutionWorld(webView, JavaScriptExecutionWorld.PAGE_WORLD_NAME)
+                WebViewCompat.addJavaScriptOnEvent(webView, source.replace("__SITE_LENS_FILTER_CONFIG__", config.toString()), WebViewCompat.INJECTION_EVENT_DOCUMENT_START, setOf("*"), world)
+            } else WebViewCompat.addDocumentStartJavaScript(webView, source.replace("__SITE_LENS_FILTER_CONFIG__", config.toString()), setOf("*"))
+        }.getOrNull()
+    }
+
+    private fun filterAllows(url: Uri): Boolean {
+        val state = filterState
+        if (!state.enabled) return true
+        val host = url.host?.lowercase() ?: return true
+        if (state.exceptions.any { host == it || host.endsWith(".$it") }) return true
+        if (state.blockedDomains.any { host == it || host.endsWith(".$it") }) return false
+        val text = url.toString().lowercase()
+        for (rule in state.rules) {
+            val pattern = rule.pattern.lowercase()
+            val matched = if (rule.hostOnly || pattern.startsWith("||")) {
+                val rawExpected = pattern.removePrefix("||")
+                val delimiter = rawExpected.indexOfAny(charArrayOf('/', ':', '^'))
+                val expected = if (delimiter >= 0) rawExpected.substring(0, delimiter) else rawExpected
+                host == expected || host.endsWith(".$expected")
+            } else {
+                text.contains(pattern.replace("*", ""))
+            }
+            if (matched) return !rule.block
+        }
+        return true
+    }
     init {
         if (purpose != HostPurpose.BROWSING && !hasProfiles) {
             webView.destroy()
@@ -441,6 +540,23 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             WebViewCompat.addNavigationListener(webView, navigationListener!!)
         }
         webView.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                // Keep the top-level document available so a bad or stale
+                // snapshot cannot strand the user on a blank page. Subresources
+                // are synchronously rejected from the in-memory snapshot.
+                if (!request.isForMainFrame && !filterAllows(request.url)) {
+                    event("filtered", "请求已阻止", request.url.toString())
+                    return WebResourceResponse(
+                        "text/plain",
+                        "utf-8",
+                        204,
+                        "No Content",
+                        mapOf("Cache-Control" to "no-store"),
+                        ByteArrayInputStream(ByteArray(0)),
+                    )
+                }
+                return super.shouldInterceptRequest(view, request)
+            }
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 if (!request.isForMainFrame) return false
                 try { webUri(request.url.toString()) } catch (_: Exception) { return true }
@@ -550,6 +666,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         entryFollowing = false; entryHops = 0; entryNavigation = null; entryArmed = false
         historyArmed = false
         injections.forEach { runCatching { it.remove() } }; injections.clear()
+        runCatching { filterInjection?.remove() }; filterInjection = null
         bindings.forEach { runCatching { WebViewCompat.removeWebMessageListener(webView, it.world, "lensBridge") } }; bindings.clear()
         event("invalidated")
     }

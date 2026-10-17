@@ -7,7 +7,12 @@ import org.json.JSONObject
 import java.util.UUID
 
 /** Media telemetry has no navigation, network, storage, or userscript authority. */
-class BrowserMediaController(private val activity: Activity, private val view: WebView, private val browsing: Boolean) {
+class BrowserMediaController(
+    private val activity: Activity,
+    private val view: WebView,
+    private val browsing: Boolean,
+    private val onCandidate: ((Map<String, Any?>) -> Unit)? = null,
+) {
     val supported = WebViewFeature.isFeatureSupported(WebViewFeature.MUTE_AUDIO) &&
         WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) &&
         WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)
@@ -42,6 +47,18 @@ class BrowserMediaController(private val activity: Activity, private val view: W
                             playing = data.getBoolean("playing")
                             title = data.optString("title", "当前标签").take(512)
                             updateNotification()
+                        }
+                        val candidates = data.optJSONArray("candidates")
+                        if (candidates != null) {
+                            for (index in 0 until candidates.length()) {
+                                val candidate = candidates.optJSONObject(index) ?: continue
+                                onCandidate?.invoke(mapOf(
+                                    "url" to candidate.optString("url"),
+                                    "title" to candidate.optString("title"),
+                                    "mime" to candidate.optString("mime"),
+                                    "durationMs" to if (candidate.has("durationMs")) candidate.optLong("durationMs") else null,
+                                ))
+                            }
                         }
                     } catch (_: Exception) { /* Untrusted page telemetry. */ }
                 }

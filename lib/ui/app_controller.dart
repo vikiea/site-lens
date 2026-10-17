@@ -353,14 +353,22 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     await db.saveFilterPolicy(next, profileId: profileId);
     if (profileId == null) {
       filterPolicy = next;
-      hosts.setFilterEngine(filterSnapshots.activeEngine, policy: next);
+      hosts.setFilterEngine(
+        filterSnapshots.activeEngine,
+        policy: next,
+        snapshot: filterSnapshots.activeSnapshot,
+      );
       notifyListeners();
     }
   }
 
   Future<FilterSnapshot> refreshFilterSource(FilterSource source) async {
     final snapshot = await filterSources.refresh(source);
-    hosts.setFilterEngine(filterSnapshots.activeEngine, policy: filterPolicy);
+    hosts.setFilterEngine(
+      filterSnapshots.activeEngine,
+      policy: filterPolicy,
+      snapshot: filterSnapshots.activeSnapshot,
+    );
     notifyListeners();
     return snapshot;
   }
@@ -548,7 +556,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         glassQualityCache?.quality ?? GlassQuality.standard,
     };
     _applySettings();
-    hosts.setFilterEngine(filterSnapshots.activeEngine, policy: filterPolicy);
+    hosts.setFilterEngine(
+      filterSnapshots.activeEngine,
+      policy: filterPolicy,
+      snapshot: filterSnapshots.activeSnapshot,
+    );
     await hosts.applyPreferences(hostPreferences);
     await syncMediaPolicy();
     notifyListeners();

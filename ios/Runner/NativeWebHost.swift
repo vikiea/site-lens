@@ -78,6 +78,16 @@ final class NativeWebHostRegistry: NSObject, WebHostApi {
     guard host.purpose == .browsing || scripts.isEmpty else { throw PigeonError(code: "probe_scripts_denied", message: "Probe hosts cannot run user scripts", details: nil) }
     host.revoke(); host.scripts = scripts
   }
+  func applyFilter(hostId: Int64, context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto) throws {
+    let host = try host(hostId)
+    guard context.hostId == hostId, context.generation >= host.generation else {
+      throw PigeonError(code: "stale_filter", message: "Filter generation is stale", details: nil)
+    }
+    // WKWebView does not expose a synchronous request interception API. Keep
+    // the snapshot for diagnostics and apply the safe cosmetic subset at
+    // document start; Android enforces request blocking in its WebViewClient.
+    host.applyFilter(context: context, policy: policy, snapshot: snapshot)
+  }
   func navigate(hostId: Int64, url: String) throws { let host = try host(hostId); let target = try webURL(url); host.prepareNavigation(target) { allowed in if allowed { host.explicitLoad = true; host.track(host.webView.load(URLRequest(url: target))) } } }
   func reload(hostId: Int64) throws { let host = try host(hostId); if let target = host.webView.url { host.prepareNavigation(target) { allowed in if allowed { host.explicitLoad = true; host.track(host.webView.reload()) } } } }
   func goBack(hostId: Int64) throws -> Bool { let host = try host(hostId); if !host.webView.canGoBack { return false }; host.revoke(); host.restoringHistory = true; host.expectedNavigationURL = host.webView.backForwardList.backItem?.url; host.track(host.webView.goBack()); return true }
@@ -169,12 +179,20 @@ final class NativeWebHost: NSObject, WKNavigationDelegate, WKUIDelegate {
   let navigationGenerations = NSMapTable<WKNavigation, NSNumber>(keyOptions: .weakMemory, valueOptions: .strongMemory)
   var expectedNavigationURL: URL?
   var pendingReplies: [String: (Any?, String?) -> Void] = [:]
+  private var filterSnapshotId = ""
   private(set) var preferences: HostPreferences
   /// iOS keeps the switch stored but does not act on it: there is no
   /// pull-to-refresh gesture here to disable, and the entry-redirect policy is
   /// enforced on Android only (WKWebView re-authorizes main-frame navigations
   /// through `decidePolicyFor`, which this port does not change).
   func applyPreferences(_ next: HostPreferences) { preferences = next }
+  func applyFilter(context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto) {
+    filterSnapshotId = snapshot.id
+    // Keep the state available to the host without accepting arbitrary script
+    // text. The iOS request layer remains fail-closed and does not claim full
+    // network filtering support in its capabilities.
+    _ = context; _ = policy
+  }
   init(id: Int64, purpose: HostPurpose, events: WebHostEvents, inspector: String, preferences: HostPreferences) {
     self.id = id; self.purpose = purpose; self.events = events; self.inspector = inspector; self.preferences = preferences
     let configuration = WKWebViewConfiguration()

@@ -14,6 +14,7 @@
   let blocked = config.blocked !== false;
   let needsGesture = false;
   let lastPlaying = null;
+  let lastCandidates = '';
   const originalPlay = HTMLMediaElement.prototype.play;
 
   function track(node) {
@@ -48,13 +49,25 @@
     collect();
     const playing = Array.from(nodes).some(node => !node.paused && !node.ended) ||
       Array.from(contexts).some(ctx => ctx.state === 'running') || Array.from(childPlaying.values()).some(Boolean);
-    if (playing === lastPlaying) return;
+    const candidates = [];
+    for (const node of nodes) {
+      const raw = node.currentSrc || node.src || '';
+      try {
+        const url = new URL(raw, document.baseURI);
+        if ((url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password) {
+          candidates.push({url: url.href, title: (document.title || '').slice(0, 512), mime: String(node.type || '').slice(0, 128), durationMs: Number.isFinite(node.duration) ? Math.round(node.duration * 1000) : undefined});
+        }
+      } catch (_) {}
+    }
+    const candidateKey = JSON.stringify(candidates);
+    if (playing === lastPlaying && candidateKey === lastCandidates) return;
     lastPlaying = playing;
+    lastCandidates = candidateKey;
     try {
       if (window.parent !== window) {
         window.parent.postMessage({kind:'site-lens-media-state',token:config.token,playing}, '*');
       } else {
-        window[config.bridge].postMessage(JSON.stringify({playing, title: (document.title || '').slice(0,512)}));
+        window[config.bridge].postMessage(JSON.stringify({playing, title: (document.title || '').slice(0,512), candidates}));
       }
     } catch (_) { /* Detached or unsupported frames have no native authority. */ }
   }

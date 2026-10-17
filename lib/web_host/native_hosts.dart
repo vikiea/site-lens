@@ -35,6 +35,7 @@ class HostSession {
   final mediaCandidates = <String, MediaCandidate>{};
   FilterEngine? filterEngine;
   FilterPolicy filterPolicy = const FilterPolicy();
+  FilterSnapshot? filterSnapshot;
 }
 
 class ScriptMenu {
@@ -64,6 +65,7 @@ class NativeHosts extends WebHostEvents {
   final sessions = <int, HostSession>{};
   FilterEngine? filterEngine;
   FilterPolicy filterPolicy = const FilterPolicy();
+  FilterSnapshot? filterSnapshot;
 
   /// Policy [AppController] owns and pushes to every host: the app decides, the
   /// native host only enforces. New hosts get the current value at creation, and
@@ -84,9 +86,66 @@ class NativeHosts extends WebHostEvents {
   void setFilterEngine(
     FilterEngine? next, {
     FilterPolicy policy = const FilterPolicy(),
+    FilterSnapshot? snapshot,
   }) {
     filterEngine = next;
     filterPolicy = policy;
+    filterSnapshot = snapshot;
+    for (final session in sessions.values.toList()) {
+      if (!session.disposed) unawaited(_applyFilter(session));
+    }
+  }
+
+  Future<void> _applyFilter(HostSession session) async {
+    if (session.disposed) return;
+    final snapshot = filterSnapshot;
+    final engine = filterEngine;
+    final rules = engine == null
+        ? const <Map<String, Object?>>[]
+        : engine.rules
+              .map(
+                (rule) => <String, Object?>{
+                  'pattern': rule.pattern,
+                  'block': rule.block,
+                  'cosmetic': rule.cosmetic,
+                  'hostOnly': rule.hostOnly,
+                },
+              )
+              .toList(growable: false);
+    final source = session.url.isEmpty ? 'https://invalid.local/' : session.url;
+    try {
+      await api.applyFilter(
+        session.id,
+        HostFilterContextDto(
+          hostId: session.id,
+          generation: session.generation,
+          sourceUrl: source,
+          snapshotId: snapshot?.id ?? '',
+        ),
+        FilterPolicyDto(
+          enabled: filterPolicy.enabled,
+          pageFiltering: filterPolicy.pageFiltering,
+          domainExceptions: filterPolicy.domainExceptions.toList(
+            growable: false,
+          ),
+          blockedDomains: filterPolicy.blockedDomains.toList(growable: false),
+        ),
+        FilterSnapshotDto(
+          id: snapshot?.id ?? '',
+          version: snapshot?.version ?? '',
+          sha256: snapshot?.sha256 ?? '',
+          state: snapshot?.state.name ?? FilterSnapshotState.missing.name,
+          rules: jsonEncode(rules),
+        ),
+      );
+    } catch (error) {
+      // Older/iOS hosts can lack a request interception channel. Keep Dart's
+      // filtering authority active and expose the degraded capability instead
+      // of allowing an unawaited platform exception to fail a later test/UI
+      // operation.
+      session.errorKind = 'filterUnavailable';
+      session.error = error.toString();
+    }
   }
 
   /// Called when the page asks for a new window (`window.open`,
@@ -107,6 +166,11 @@ class NativeHosts extends WebHostEvents {
     if (purpose != HostPurpose.browsing && !capabilities.privateProbes) {
       await destroy(session);
       throw StateError('检测数据隔离不可用：${capabilities.reason}');
+    }
+    if (filterEngine != null ||
+        filterPolicy.enabled ||
+        filterSnapshot != null) {
+      await _applyFilter(session);
     }
     return session;
   }
@@ -212,6 +276,7 @@ class NativeHosts extends WebHostEvents {
       session.generation = event.generation;
       session.filterEngine = filterEngine;
       session.filterPolicy = filterPolicy;
+      session.filterSnapshot = filterSnapshot;
       session.loaded = false;
       session.error = null;
       session.errorKind = null;
@@ -229,6 +294,50 @@ class NativeHosts extends WebHostEvents {
     if (event.kind == 'newWindow') {
       final target = event.detail.isEmpty ? event.url : event.detail;
       if (target.isNotEmpty) onNewWindow?.call(event.hostId, target);
+    }
+    if (event.kind == 'mediaCandidate' &&
+        session.purpose == HostPurpose.browsing) {
+      try {
+        final raw = jsonDecode(event.detail) as Map<String, dynamic>;
+        final source = webUri(session.url);
+        final media = webUri(raw['url'] as String? ?? '');
+        final candidate = MediaCandidate(
+          id: 'dom:${session.id}:${session.generation}:${media.removeFragment()}',
+          hostId: session.id,
+          generation: session.generation,
+          sourceUrl: source,
+          mediaUrl: media.removeFragment(),
+          title: (raw['title'] as String? ?? '').trim().substring(
+            0,
+            (raw['title'] as String? ?? '').length.clamp(0, 512),
+          ),
+          mime: (raw['mime'] as String? ?? '').trim().substring(
+            0,
+            (raw['mime'] as String? ?? '').length.clamp(0, 128),
+          ),
+          source: MediaCandidateSource.dom,
+          durationMs: (raw['durationMs'] as num?)?.toInt(),
+          createdAt: DateTime.now().toUtc(),
+        );
+        const MediaCandidateValidator().validate(
+          candidate,
+          hostId: session.id,
+          generation: session.generation,
+          sourceUrl: source,
+        );
+        if (session.filterEngine?.evaluate(
+              candidate.mediaUrl,
+              policy: session.filterPolicy,
+            ) !=
+            FilterDecision.block) {
+          session.mediaCandidates[candidate.id] = candidate;
+          unawaited(db.saveMediaCandidate(candidate));
+          changed.value++;
+        }
+      } catch (_) {
+        // Media telemetry is untrusted page data; malformed candidates are
+        // ignored and never become persisted tasks.
+      }
     }
     if (event.kind == 'hostInvalidated') {
       session.errorKind = event.kind;
@@ -276,6 +385,7 @@ class NativeHosts extends WebHostEvents {
     // effect on the next navigation and never changes an active page's rules.
     session.filterEngine = filterEngine;
     session.filterPolicy = filterPolicy;
+    session.filterSnapshot = filterSnapshot;
     if (session.purpose != HostPurpose.browsing) {
       await NetworkPolicy.publicNavigation(webUri(url));
       return [];
