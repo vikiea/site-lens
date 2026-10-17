@@ -173,8 +173,8 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
     // ones the entry-redirect switch applies to.
     override fun navigate(hostId: Long, url: String) { webUri(url); val host = host(hostId); host.prepareNavigation(url, host.preferences.followEntryRedirects) { host.webView.loadUrl(url) } }
     override fun reload(hostId: Long) { val host = host(hostId); host.prepareNavigation(host.webView.url ?: return, host.preferences.followEntryRedirects) { host.webView.reload() } }
-    override fun goBack(hostId: Long): Boolean { val host = host(hostId); if (host.exitFullscreen()) return true; if (!host.webView.canGoBack()) return false; host.revoke(); host.webView.goBack(); return true }
-    override fun goForward(hostId: Long): Boolean { val host = host(hostId); if (host.exitFullscreen()) return true; if (!host.webView.canGoForward()) return false; host.revoke(); host.webView.goForward(); return true }
+    override fun goBack(hostId: Long): Boolean = host(hostId).goHistory(-1)
+    override fun goForward(hostId: Long): Boolean = host(hostId).goHistory(1)
     override fun stop(hostId: Long) { val host = host(hostId); host.revoke(); host.webView.stopLoading() }
     override fun destroy(hostId: Long) { hosts.remove(hostId)?.dispose() }
     override fun notify(hostId: Long, title: String, body: String) {
@@ -312,6 +312,11 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     private var entryArmed = false
     private var activeNavigation: Navigation? = null
     private var activePage: Page? = null
+    // App-owned back/forward is armed only after the target's scripts have
+    // been fetched and immediately before WebView starts the history load.
+    // Page-started history remains fail-closed, while the toolbar can restore
+    // a known history entry without producing a false warning.
+    private var historyArmed = false
     private var customView: View? = null
     private var customCallback: WebChromeClient.CustomViewCallback? = null
     private var originalOrientation: Int? = null
@@ -373,6 +378,13 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                     if (entryFollowing && entryArmed && leased) {
                         entryNavigation = navigation; entryArmed = false
                     }
+                    // The toolbar arms a single, known history target after its
+                    // scripts have been prepared. Consume that lease exactly at
+                    // the matching navigation start; arbitrary page history is
+                    // still rejected below.
+                    val appHistoryLease = historyArmed &&
+                        (leased || (expectedUrl == null && navigation.isHistory))
+                    if (appHistoryLease) historyArmed = false
                     // A redirect of the entry is followed in onNavigationRedirected,
                     // where the listener proves it belongs to the same in-flight
                     // navigation the app started. A *start* that does not match the
@@ -381,7 +393,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                     // isolated world can navigate the frame from document start,
                     // which is before the commit that closes the entry window.
                     if ((navigation.isSameDocument || navigation.isHistory || !leased) &&
-                        !sameDocumentLease && !sameOriginRedirect) {
+                        !sameDocumentLease && !sameOriginRedirect && !appHistoryLease) {
                         revoke(); event("scriptsSuspended", "无法确认新文档或历史恢复，特权脚本关闭直至显式刷新")
                     }
                     expectedUrl = if (sameOriginRedirect) navigation.url else null
@@ -419,6 +431,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                         // clearing here: claiming the window also requires
                         // entryFollowing, which this clears (as revoke() does).
                         entryFollowing = false; entryHops = 0; entryNavigation = null
+                        historyArmed = false
                         activePage = navigation.page; event("committed", url = navigation.url)
                     }
                     if (navigation.didCommitErrorPage()) { revoke(); event("networkError", "WebView committed an error page") }
@@ -473,7 +486,16 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) { refreshLayout?.isRefreshing = false; handler.cancel(); revoke(); event("certificateError", "TLS/证书验证失败，不会忽略证书错误；若启用了代理/MITM，请检查代理证书", error.url) }
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) { if (request.isForMainFrame) { refreshLayout?.isRefreshing = false; revoke(); event("networkError", error.description.toString(), request.url.toString()) } }
             override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) { if (request.isForMainFrame) { refreshLayout?.isRefreshing = false; event("httpError", "HTTP ${errorResponse.statusCode}", request.url.toString()) } }
-            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean { refreshLayout?.isRefreshing = false; revoke(); event("hostInvalidated", "Web content process terminated; reopen browsing to recover"); dispose(); return true }
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                refreshLayout?.isRefreshing = false
+                // The renderer may reject WebViewCompat cleanup calls after it
+                // has gone away. Never let recovery from a renderer death turn
+                // into an application crash on the UI thread.
+                runCatching { revoke() }
+                event("hostInvalidated", "Web content process terminated; reopen browsing to recover")
+                runCatching { dispose() }
+                return true
+            }
         }
         webView.webChromeClient = object : WebChromeClient() {
             override fun onReceivedTitle(view: WebView, title: String?) { event("title", title ?: "") }
@@ -504,10 +526,17 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 return true
             }
             override fun onShowCustomView(view: View, callback: CustomViewCallback) {
-                if (customView != null) { callback.onCustomViewHidden(); return }
+                if (customView != null) { runCatching { callback.onCustomViewHidden() }; return }
+                (view.parent as? ViewGroup)?.removeView(view)
                 customView = view; customCallback = callback; originalOrientation = activity.requestedOrientation
-                (activity.window.decorView as ViewGroup).addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-                event("fullscreen", "entered")
+                try {
+                    (activity.window.decorView as ViewGroup).addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                    event("fullscreen", "entered")
+                } catch (_: RuntimeException) {
+                    customView = null; customCallback = null
+                    originalOrientation = null
+                    runCatching { callback.onCustomViewHidden() }
+                }
             }
             override fun onHideCustomView() { hideFullscreen() }
             override fun onPermissionRequest(request: PermissionRequest) { request.deny() }
@@ -519,8 +548,9 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     fun revoke() {
         accepting = false; generation++; expectedUrl = null; leasedOrigin = null; pageError = null
         entryFollowing = false; entryHops = 0; entryNavigation = null; entryArmed = false
-        injections.forEach { it.remove() }; injections.clear()
-        bindings.forEach { WebViewCompat.removeWebMessageListener(webView, it.world, "lensBridge") }; bindings.clear()
+        historyArmed = false
+        injections.forEach { runCatching { it.remove() } }; injections.clear()
+        bindings.forEach { runCatching { WebViewCompat.removeWebMessageListener(webView, it.world, "lensBridge") } }; bindings.clear()
         event("invalidated")
     }
     fun prepareNavigation(
@@ -548,6 +578,55 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             scripts = result.getOrThrow()
             install(url); load()
         }
+    }
+    /**
+     * Starts an app-owned history traversal after preparing the same document
+     * start scripts used by a direct navigation. Calling revoke() here would
+     * clear expectedUrl before NavigationListener sees the history entry and
+     * would turn every toolbar back gesture into a false scriptsSuspended error.
+     */
+    private fun prepareHistoryNavigation(url: String?, load: () -> Unit) {
+        revoke(); val ticket = generation
+        entryFollowing = false; entryHops = 0; entryNavigation = null
+        val targetUrl = url?.takeIf { runCatching { webUri(it) }.isSuccess }
+        expectedUrl = targetUrl
+        leasedOrigin = webOrigin(targetUrl)
+        if (targetUrl == null) {
+            // A history stack can contain about:blank or another non-web
+            // entry. There is no script lease to fetch for those documents,
+            // but the app-owned traversal is still a valid back/forward action.
+            historyArmed = true
+            load()
+            return
+        }
+        events.getScriptsForNavigation(id, ticket, targetUrl) { result ->
+            if (destroyed || generation != ticket) return@getScriptsForNavigation
+            if (result.isFailure) {
+                refreshLayout?.isRefreshing = false
+                expectedUrl = null; leasedOrigin = null
+                event("networkError", result.exceptionOrNull()?.message ?: "Navigation policy rejected")
+                return@getScriptsForNavigation
+            }
+            scripts = result.getOrThrow()
+            historyArmed = true
+            install(targetUrl)
+            load()
+        }
+    }
+
+    /** App-owned back/forward with a pre-authorized history target. */
+    fun goHistory(delta: Int): Boolean {
+        if (exitFullscreen()) return true
+        val list = webView.copyBackForwardList()
+        val targetIndex = list.currentIndex + delta
+        if (targetIndex !in 0 until list.size) return false
+        val target = list.getItemAtIndex(targetIndex)?.url
+        prepareHistoryNavigation(target) {
+            if (!destroyed) {
+                if (delta < 0) webView.goBack() else webView.goForward()
+            }
+        }
+        return true
     }
     private fun install(url: String) {
         expectedUrl = url; leasedOrigin = webOrigin(url); accepting = true
@@ -597,16 +676,20 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     private fun hideFullscreen() {
         val view = customView ?: return
         (view.parent as? ViewGroup)?.removeView(view); customView = null
-        customCallback?.onCustomViewHidden(); customCallback = null
-        originalOrientation?.let { activity.requestedOrientation = it }; originalOrientation = null
+        runCatching { customCallback?.onCustomViewHidden() }; customCallback = null
+        originalOrientation?.let { runCatching { activity.requestedOrientation = it } }; originalOrientation = null
         event("fullscreen", "exited")
     }
     fun dispose() {
         if (destroyed) return
-        media.dispose(); revoke(); hideFullscreen(); destroyed = true
-        navigationListener?.let { WebViewCompat.removeNavigationListener(webView, it) }; navigationListener = null
-        webView.stopLoading(); (platformView.parent as? ViewGroup)?.removeView(platformView)
-        webView.destroy()
+        runCatching { media.dispose() }
+        runCatching { revoke() }
+        runCatching { hideFullscreen() }
+        destroyed = true
+        navigationListener?.let { runCatching { WebViewCompat.removeNavigationListener(webView, it) } }; navigationListener = null
+        runCatching { webView.stopLoading() }
+        runCatching { (platformView.parent as? ViewGroup)?.removeView(platformView) }
+        runCatching { webView.destroy() }
         if (profileName != null) {
             // ProfileStore deletion of a loaded profile may be rejected. Clear the
             // isolated cookie/storage; never touch the default browsing profile.

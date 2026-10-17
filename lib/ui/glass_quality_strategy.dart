@@ -64,7 +64,8 @@ class SiteLensGlassQualityStrategy {
 
   /// Whether an Android WebView is currently visible in the browsing route.
   /// Premium glass is kept available everywhere else; while a native view is
-  /// composited, Flutter glass uses the 0.1.3-safe optical tier.
+  /// composited, Flutter glass uses the 0.1.3-safe optical tier and avoids a
+  /// live backdrop read over the Android WebView.
   final bool webViewVisible;
   final bool? shaderSupported;
   final GlassQuality? adaptiveQualityOverride;
@@ -89,14 +90,25 @@ class SiteLensGlassQualityStrategy {
       isAndroid: isAndroid,
       adaptiveQuality: adaptiveQuality,
     );
-    final platformViewBackdrop = role == SiteLensSurfaceRole.platformView;
+    // A live BackdropFilter over an Android hybrid-composed WebView forces the
+    // rasterizer to sample a native video surface on every frame. That path is
+    // the common trigger for playback-page raster crashes on affected WebView /
+    // GPU combinations. Keep the live backdrop on other platforms, while the
+    // Android browsing route uses the same clipped translucent fill as the
+    // renderer fallback below. This changes only the sampling path; controls,
+    // tint, shape, and interaction remain unchanged.
+    final androidWebViewOverlay =
+        isAndroid && webViewVisible && role == SiteLensSurfaceRole.platformView;
+    final platformViewBackdrop =
+        role == SiteLensSurfaceRole.platformView && !androidWebViewOverlay;
     final shaderSupported =
         this.shaderSupported ?? ui.ImageFilter.isShaderFilterSupported;
-    // A renderer without shader-filter support must stay on the same clipped
-    // fallback used by 0.1.3 for every Flutter surface. Platform-view
-    // overlays remain on their live backdrop path because the fallback cannot
-    // sample a native WebView either.
-    final useCompatibilityFallback = !shaderSupported && !platformViewBackdrop;
+    // Android WebView overlays intentionally use this path even when shaders
+    // are available: it avoids a live backdrop read from a video surface. A
+    // shader-less renderer keeps the existing fallback for every non-platform
+    // surface as before.
+    final useCompatibilityFallback =
+        androidWebViewOverlay || (!shaderSupported && !platformViewBackdrop);
 
     return SiteLensGlassRenderPlan(
       quality: requestedQuality,
@@ -139,8 +151,9 @@ class SiteLensGlassQualityStrategy {
       },
     };
     // Minimal is a renderer fallback, not a user-facing quality mode for these
-    // surfaces. PlatformView overlays remain standard so their live backdrop
-    // path can sample the native WebView safely.
+    // surfaces. PlatformView overlays remain standard; Android WebView
+    // overlays use the clipped fill selected in resolve() instead of a live
+    // backdrop read.
     return quality == GlassQuality.minimal ? GlassQuality.standard : quality;
   }
 
