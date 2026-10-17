@@ -41,6 +41,15 @@ class NativeDownloadRuntime {
   Future<void> cancel(String taskId) =>
       _channel.invokeMethod<void>('cancel', {'taskId': taskId});
 
+  Future<void> pause(String taskId) =>
+      _channel.invokeMethod<void>('pause', {'taskId': taskId});
+
+  Future<Map<String, Object?>> resume(String taskId) async =>
+      await _channel.invokeMapMethod<String, Object?>('resume', {
+        'taskId': taskId,
+      }) ??
+      const <String, Object?>{};
+
   Future<void> delete(String taskId) =>
       _channel.invokeMethod<void>('delete', {'taskId': taskId});
 }

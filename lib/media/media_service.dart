@@ -441,6 +441,75 @@ class MediaDownloadService {
   final NativeDownloadRuntime? native;
   final _active = <String, Cancellation>{};
 
+  Future<void> reconcileNative() async {
+    final runtime = native;
+    if (runtime == null) return;
+    for (final task in tasks.tasks) {
+      final status = await runtime.status(task.id);
+      final state = status['state'] as String?;
+      final bytes = (status['bytesDownloaded'] as num?)?.toInt();
+      final total = (status['totalBytes'] as num?)?.toInt();
+      if (bytes != null)
+        tasks.updateProgress(task.id, bytes, totalBytes: total);
+      final localUri = status['localUri'] as String?;
+      if (localUri != null && localUri.startsWith('file://')) {
+        tasks.setLocalRef(task.id, Uri.parse(localUri).toFilePath());
+      }
+      final current = tasks.task(task.id);
+      if (current == null) continue;
+      if (state == 'completed' && current.state != MediaTaskState.playable) {
+        if (current.state == MediaTaskState.downloading ||
+            current.state == MediaTaskState.paused) {
+          tasks.transition(task.id, MediaTaskState.completed);
+        }
+        if (tasks.task(task.id)?.state == MediaTaskState.completed) {
+          tasks.transition(task.id, MediaTaskState.playable);
+        }
+      } else if (state == 'paused' &&
+          current.state == MediaTaskState.downloading) {
+        tasks.transition(task.id, MediaTaskState.paused);
+      } else if (state == 'failed' &&
+          current.state == MediaTaskState.downloading) {
+        tasks.transition(
+          task.id,
+          MediaTaskState.failed,
+          errorCode: _errorCode(status['errorCode']?.toString()),
+        );
+      }
+    }
+  }
+
+  Future<MediaTask> pauseNative(String taskId) async {
+    final runtime = native;
+    final current = tasks.task(taskId) ?? (throw StateError('媒体任务不存在'));
+    if (runtime == null) {
+      if (current.state == MediaTaskState.downloading)
+        return tasks.transition(taskId, MediaTaskState.paused);
+      return current;
+    }
+    await runtime.pause(taskId);
+    if (tasks.task(taskId)?.state == MediaTaskState.downloading) {
+      return tasks.transition(taskId, MediaTaskState.paused);
+    }
+    return tasks.task(taskId)!;
+  }
+
+  Future<MediaTask> resumeNative(
+    String taskId,
+    MediaCandidate candidate,
+  ) async {
+    final runtime = native;
+    final current = tasks.task(taskId) ?? (throw StateError('媒体任务不存在'));
+    if (runtime == null) return start(current, candidate);
+    if (current.state == MediaTaskState.paused)
+      tasks.transition(taskId, MediaTaskState.downloading);
+    final status = await runtime.resume(taskId);
+    final bytes = (status['bytesDownloaded'] as num?)?.toInt();
+    final total = (status['totalBytes'] as num?)?.toInt();
+    if (bytes != null) tasks.updateProgress(taskId, bytes, totalBytes: total);
+    return tasks.task(taskId)!;
+  }
+
   Future<MediaTask> startNative(
     MediaTask task,
     MediaCandidate candidate,
@@ -470,10 +539,7 @@ class MediaDownloadService {
         tasks.transition(
           task.id,
           MediaTaskState.failed,
-          errorCode:
-              error is StateError && error.message.toString().contains('授权')
-              ? MediaErrorCode.authorizationRequired
-              : MediaErrorCode.network,
+          errorCode: _errorCode(error.toString()),
         );
       }
       rethrow;
@@ -484,6 +550,10 @@ class MediaDownloadService {
     if (bytes != null) {
       current = tasks.updateProgress(task.id, bytes, totalBytes: total);
     }
+    final localUri = status['localUri'] as String?;
+    if (localUri != null && localUri.startsWith('file://')) {
+      current = tasks.setLocalRef(task.id, Uri.parse(localUri).toFilePath());
+    }
     if (state == 'completed') {
       current = tasks.transition(task.id, MediaTaskState.completed);
       current = tasks.transition(task.id, MediaTaskState.playable);
@@ -491,7 +561,7 @@ class MediaDownloadService {
       current = tasks.transition(
         task.id,
         MediaTaskState.failed,
-        errorCode: MediaErrorCode.network,
+        errorCode: _errorCode(status['errorCode']?.toString()),
       );
     }
     return current;
@@ -560,9 +630,7 @@ class MediaDownloadService {
       return current;
     } on StateError catch (error) {
       if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
-        final code = error.message.contains('授权')
-            ? MediaErrorCode.authorizationRequired
-            : MediaErrorCode.network;
+        final code = _errorCode(error.toString());
         current = tasks.transition(
           task.id,
           MediaTaskState.failed,
@@ -576,6 +644,20 @@ class MediaDownloadService {
   }
 
   void pause(String taskId) => _active[taskId]?.cancel();
+
+  static String _errorCode(String? raw) {
+    final value = (raw ?? '').toLowerCase();
+    if (value.contains('auth') ||
+        value.contains('401') ||
+        value.contains('403') ||
+        value.contains('授权')) {
+      return MediaErrorCode.authorizationRequired;
+    }
+    if (value.contains('disk') || value.contains('space'))
+      return MediaErrorCode.diskFull;
+    if (value.contains('cancel')) return MediaErrorCode.cancelled;
+    return MediaErrorCode.network;
+  }
 
   static int _contentLength(
     FetchResponse response,
@@ -767,6 +849,7 @@ class Mp4ExportService {
     String taskId,
     HlsCacheInput input, {
     Cancellation? cancellation,
+    void Function(int progress)? onProgress,
   }) async {
     final task = tasks.task(taskId);
     if (task == null) throw StateError('媒体任务不存在');
@@ -782,6 +865,7 @@ class Mp4ExportService {
       keys: input.keys,
     );
     final cancel = cancellation ?? Cancellation();
+    final report = onProgress ?? (_) {};
     final root = await _directoryProvider();
     final outputDirectory = Directory('${root.path}/media_exports');
     await outputDirectory.create(recursive: true);
@@ -791,15 +875,17 @@ class Mp4ExportService {
     tasks.retain(taskId);
     try {
       cancel.check();
+      report(0);
       final muxer = _muxer;
       if (muxer != null) {
         await muxer(
           input: input,
           outputPath: temporary.path,
-          onProgress: (_) {},
+          onProgress: report,
           cancellation: cancel,
         );
       } else if (native != null) {
+        cancel.onCancel(native!.cancel);
         await native!.muxHls(
           playlist: input.playlist.toFilePath(),
           output: temporary.path,
@@ -811,12 +897,17 @@ class Mp4ExportService {
       if (!await temporary.exists() || await temporary.length() == 0) {
         throw StateError('导出文件为空');
       }
+      if (native != null && !await native!.validateOutput(temporary.path)) {
+        throw StateError('输出校验失败');
+      }
+      report(100);
       await temporary.rename(output.path);
       return Mp4ExportTask(
         id: id,
         mediaTaskId: taskId,
         state: ExportState.deliverable,
         outputPath: output.path,
+        progress: 100,
       );
     } on Cancelled {
       if (await temporary.exists()) await temporary.delete();
@@ -826,6 +917,7 @@ class Mp4ExportService {
         state: ExportState.cancelled,
         outputPath: output.path,
         errorCode: MediaErrorCode.cancelled,
+        progress: 0,
       );
     } catch (error) {
       if (await temporary.exists()) await temporary.delete();
@@ -835,10 +927,21 @@ class Mp4ExportService {
         state: ExportState.failed,
         outputPath: output.path,
         errorCode: error is StateError ? error.message : 'export_failed',
+        progress: 0,
       );
     } finally {
       tasks.release(taskId);
     }
+  }
+
+  Future<Mp4ExportTask> deliver(Mp4ExportTask task, Uri destination) async {
+    if (task.state != ExportState.deliverable || task.outputPath == null) {
+      throw StateError('导出文件尚未校验完成');
+    }
+    final runtime = native;
+    if (runtime == null) throw StateError(MediaErrorCode.unsupported);
+    await runtime.deliver(source: task.outputPath!, destination: destination);
+    return task.copyWith(state: ExportState.delivered, progress: 100);
   }
 }
 
@@ -860,12 +963,23 @@ class Mp4ExportTask {
     required this.state,
     this.outputPath,
     this.errorCode,
+    this.progress = 0,
   });
   final String id;
   final String mediaTaskId;
   final ExportState state;
   final String? outputPath;
   final String? errorCode;
+  final int progress;
+
+  Mp4ExportTask copyWith({ExportState? state, int? progress}) => Mp4ExportTask(
+    id: id,
+    mediaTaskId: mediaTaskId,
+    state: state ?? this.state,
+    outputPath: outputPath,
+    errorCode: errorCode,
+    progress: progress ?? this.progress,
+  );
 }
 
 class RelayAuthorization {

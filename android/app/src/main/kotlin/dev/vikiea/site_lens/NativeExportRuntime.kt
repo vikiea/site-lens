@@ -17,6 +17,7 @@ import java.nio.ByteBuffer
  * line or remote URI can reach this code. */
 class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCallHandler {
     private val filesRoot = context.filesDir.canonicalFile
+    @Volatile private var cancelled = false
 
     init { System.loadLibrary("site_lens_export") }
 
@@ -35,6 +36,11 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                     muxHls(playlist, output)
                     result.success(mapOf("output" to output))
                 }
+                "validateOutput" -> {
+                    val path = call.argument<String>("path") ?: error("缺少输出文件")
+                    result.success(validateOutput(path))
+                }
+                "cancel" -> { cancelled = true; result.success(null) }
                 "deliver" -> {
                     val source = call.argument<String>("source") ?: error("缺少输出文件")
                     val destination = call.argument<String>("destination") ?: error("缺少 SAF 目标")
@@ -56,6 +62,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
     }
 
     private fun muxHls(playlistPath: String, outputPath: String) {
+        cancelled = false
         validateLocal(playlistPath)
         val output = File(outputPath).canonicalFile
         require(nativeValidatePath(output.path, filesRoot.path)) { "输出路径越界" }
@@ -77,6 +84,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         val timestampOffsets = mutableMapOf<String, Long>()
         try {
             for (segment in segments) {
+                check(!cancelled) { "导出已取消" }
                 val extractor = MediaExtractor()
                 extractor.setDataSource(segment.path)
                 try {
@@ -101,6 +109,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                     val buffer = ByteBuffer.allocate(1024 * 1024)
                     val info = MediaCodec.BufferInfo()
                     while (true) {
+                        check(!cancelled) { "导出已取消" }
                         buffer.clear()
                         val size = extractor.readSampleData(buffer, 0)
                         if (size < 0) break
@@ -131,6 +140,19 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             if (temp.exists()) temp.delete()
             throw error
         }
+    }
+
+    private fun validateOutput(path: String): Boolean {
+        val file = File(path).canonicalFile
+        if (!file.isFile || file.length() <= 0L) return false
+        require(nativeValidatePath(file.path, filesRoot.path)) { "输出路径越界" }
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(file.path)
+            extractor.trackCount > 0 && (0 until extractor.trackCount).any { index ->
+                extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.let { it.startsWith("audio/") || it.startsWith("video/") } == true
+            }
+        } finally { extractor.release() }
     }
 
     private fun deliver(sourcePath: String, destination: Uri) {

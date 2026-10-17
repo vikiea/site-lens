@@ -263,6 +263,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> initialize() async {
     WidgetsBinding.instance.addObserver(this);
     await mediaTasks.restore();
+    await mediaDownloads.reconcileNative();
     await load();
     await restoreSavedSessions();
     // Schedule/cancel the periodic survival check in the background. It waits

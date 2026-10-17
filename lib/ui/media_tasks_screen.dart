@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../domain/models.dart';
@@ -40,6 +41,16 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     if (bytes != null) {
       widget.app.mediaTasks.updateProgress(task.id, bytes, totalBytes: total);
     }
+    final localUri = status['localUri'] as String?;
+    if (localUri != null && localUri.startsWith('file://')) {
+      widget.app.mediaTasks.setLocalRef(
+        task.id,
+        Uri.parse(localUri).toFilePath(),
+      );
+    }
+    if (state == 'paused' && task.state == MediaTaskState.downloading) {
+      widget.app.mediaTasks.transition(task.id, MediaTaskState.paused);
+    }
     if (state == 'completed' && task.state == MediaTaskState.downloading) {
       widget.app.mediaTasks.transition(task.id, MediaTaskState.completed);
       widget.app.mediaTasks.transition(task.id, MediaTaskState.playable);
@@ -48,6 +59,12 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   }
 
   Future<void> _play(MediaTask task) async {
+    final cached = await widget.app.mediaTasks.cachedFile(task.id);
+    if (cached != null) {
+      await widget.app.nativeMedia.openLocal(task, cached);
+      if (mounted) setState(() {});
+      return;
+    }
     final candidate = await widget.app.db.mediaCandidate(task.candidateId);
     if (candidate == null) throw StateError('媒体候选已不存在');
     await widget.app.nativeMedia.open(
@@ -60,6 +77,17 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(const SnackBar(content: Text('原生播放器已打开')));
+  }
+
+  Future<void> _togglePause(MediaTask task) async {
+    final candidate = await widget.app.db.mediaCandidate(task.candidateId);
+    if (candidate == null) throw StateError('媒体候选已不存在');
+    if (task.state == MediaTaskState.downloading) {
+      await widget.app.mediaDownloads.pauseNative(task.id);
+    } else if (task.state == MediaTaskState.paused) {
+      await widget.app.mediaDownloads.resumeNative(task.id, candidate);
+    }
+    if (mounted) setState(() {});
   }
 
   Future<void> _cast(MediaTask task) async {
@@ -82,6 +110,30 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     }
   }
 
+  Future<void> _export(MediaTask task) async {
+    final file = await widget.app.mediaTasks.cachedFile(task.id);
+    if (file == null || !file.path.toLowerCase().endsWith('.m3u8')) {
+      throw StateError('当前缓存不是可导出的本地 HLS 清单');
+    }
+    final input = await const HlsPlaylistParser().parseFile(file.uri);
+    final result = await widget.app.mediaExports.export(task.id, input);
+    if (result.state != ExportState.deliverable) {
+      throw StateError(result.errorCode ?? '导出失败');
+    }
+    final destination = await FilePicker.platform.saveFile(
+      dialogTitle: '导出 MP4',
+      fileName: '${task.id}.mp4',
+      type: FileType.custom,
+      allowedExtensions: ['mp4'],
+    );
+    if (destination == null) return;
+    await widget.app.mediaExports.deliver(result, Uri.parse(destination));
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('MP4 已交付')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final tasks = widget.app.mediaTasks.tasks;
@@ -95,6 +147,44 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           32,
         ),
         children: [
+          if (widget.app.nativeMedia.active != null)
+            SiteLensPanel(
+              child: Row(
+                children: [
+                  const Icon(Icons.play_circle_filled),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '原生播放：${widget.app.nativeMedia.active!.state.name}',
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '暂停',
+                    icon: const Icon(Icons.pause),
+                    onPressed: () => _run(() async {
+                      await widget.app.nativeMedia.pause();
+                      if (mounted) setState(() {});
+                    }),
+                  ),
+                  IconButton(
+                    tooltip: '继续',
+                    icon: const Icon(Icons.play_arrow),
+                    onPressed: () => _run(() async {
+                      await widget.app.nativeMedia.play();
+                      if (mounted) setState(() {});
+                    }),
+                  ),
+                  IconButton(
+                    tooltip: '停止',
+                    icon: const Icon(Icons.stop),
+                    onPressed: () => _run(() async {
+                      await widget.app.nativeMedia.stop();
+                      if (mounted) setState(() {});
+                    }),
+                  ),
+                ],
+              ),
+            ),
           SiteLensPanel(
             child: Text(
               '下载、播放和导出任务独立于标签页保存。凭据不会写入任务或缓存；需要登录态时会回到重新授权。',
@@ -137,6 +227,8 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                         unawaited(_run(() => _play(task)));
                       case 'cast':
                         unawaited(_run(() => _cast(task)));
+                      case 'export':
+                        unawaited(_run(() => _export(task)));
                       case 'cancel':
                         unawaited(
                           _run(() async {
@@ -155,6 +247,8 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                             if (mounted) setState(() {});
                           }),
                         );
+                      case 'pause':
+                        unawaited(_run(() => _togglePause(task)));
                       case 'delete':
                         unawaited(
                           _run(() async {
@@ -178,7 +272,17 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                         value: 'cast',
                         child: Text('DLNA 投屏'),
                       ),
+                    if (task.state == MediaTaskState.playable)
+                      const PopupMenuItem(
+                        value: 'export',
+                        child: Text('导出 MP4'),
+                      ),
                     if (task.state == MediaTaskState.downloading)
+                      const PopupMenuItem(value: 'pause', child: Text('暂停下载')),
+                    if (task.state == MediaTaskState.paused)
+                      const PopupMenuItem(value: 'pause', child: Text('继续下载')),
+                    if (task.state == MediaTaskState.downloading ||
+                        task.state == MediaTaskState.paused)
                       const PopupMenuItem(value: 'cancel', child: Text('取消下载')),
                     const PopupMenuItem(value: 'delete', child: Text('删除任务')),
                   ],

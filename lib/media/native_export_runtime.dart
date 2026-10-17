@@ -23,6 +23,12 @@ class NativeExportRuntime {
     return result?['output'] as String? ?? output;
   }
 
+  Future<bool> validateOutput(String path) async =>
+      await _channel.invokeMethod<bool>('validateOutput', {'path': path}) ??
+      false;
+
+  Future<void> cancel() => _channel.invokeMethod<void>('cancel');
+
   Future<void> deliver({required String source, required Uri destination}) =>
       _channel.invokeMethod<void>('deliver', {
         'source': source,

@@ -19,6 +19,8 @@ class NativeDownloadRuntime(private val context: Context) : MethodChannel.Method
                 "start" -> result.success(start(call))
                 "status" -> result.success(status(call.argument<String>("taskId") ?: error("缺少任务 ID")))
                 "cancel" -> { cancel(call.argument<String>("taskId") ?: error("缺少任务 ID")); result.success(null) }
+                "pause" -> { pause(call.argument<String>("taskId") ?: error("缺少任务 ID")); result.success(null) }
+                "resume" -> result.success(resume(call.argument<String>("taskId") ?: error("缺少任务 ID")))
                 "delete" -> { delete(call.argument<String>("taskId") ?: error("缺少任务 ID")); result.success(null) }
                 else -> result.notImplemented()
             }
@@ -39,19 +41,22 @@ class NativeDownloadRuntime(private val context: Context) : MethodChannel.Method
             .setAllowedOverMetered(true)
             .setAllowedOverRoaming(false)
             .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "site-lens/$taskId.media")
-        val existing = repository.read(taskId)?.downloadId ?: -1L
+        val saved = repository.read(taskId)
+        val existing = saved?.downloadId ?: -1L
         if (existing != -1L) {
             val current = query(existing)
             if (current["state"] != "failed" && current["state"] != "cancelled") return current
         }
         val id = manager.enqueue(request)
-        repository.save(NativeMediaTaskRepository.Record(taskId, id, call.argument<String>("candidateId") ?: "", call.argument<Number>("generation")?.toLong() ?: 0L))
+        repository.save(NativeMediaTaskRepository.Record(taskId, id, call.argument<String>("candidateId") ?: "", call.argument<Number>("generation")?.toLong() ?: 0L, uri.toString(), call.argument<String>("title") ?: "", false))
         return query(id)
     }
 
     private fun status(taskId: String): Map<String, Any?> {
-        val id = repository.read(taskId)?.downloadId ?: -1L
-        return if (id == -1L) mapOf("taskId" to taskId, "state" to "missing") else query(id) + mapOf("taskId" to taskId)
+        val record = repository.read(taskId)
+        if (record == null) return mapOf("taskId" to taskId, "state" to "missing")
+        if (record.paused || record.downloadId < 0L) return mapOf("taskId" to taskId, "state" to "paused")
+        return query(record.downloadId) + mapOf("taskId" to taskId)
     }
 
     private fun query(id: Long): Map<String, Any?> {
@@ -65,20 +70,48 @@ class NativeDownloadRuntime(private val context: Context) : MethodChannel.Method
                 DownloadManager.STATUS_SUCCESSFUL -> "completed"
                 else -> "failed"
             }
+            val reason = it.getIntOrNull(DownloadManager.COLUMN_REASON)
             return mapOf(
                 "downloadId" to id,
                 "state" to state,
                 "bytesDownloaded" to it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)),
                 "totalBytes" to it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)).takeIf { value -> value >= 0 },
                 "localUri" to it.getString(it.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI)),
+                "errorCode" to reason?.toString(),
             )
         }
+    }
+
+    private fun android.database.Cursor.getIntOrNull(column: String): Int? {
+        val index = getColumnIndex(column)
+        return if (index < 0 || isNull(index)) null else getInt(index)
     }
 
     private fun cancel(taskId: String) {
         val id = repository.read(taskId)?.downloadId ?: -1L
         if (id != -1L) manager.remove(id)
         repository.remove(taskId)
+    }
+
+    private fun pause(taskId: String) {
+        val record = repository.read(taskId) ?: return
+        if (record.downloadId >= 0L) manager.remove(record.downloadId)
+        repository.save(record.copy(downloadId = -1L, paused = true))
+    }
+
+    private fun resume(taskId: String): Map<String, Any?> {
+        val record = repository.read(taskId) ?: error("媒体任务不存在")
+        require(record.url.isNotBlank()) { "媒体任务缺少恢复地址" }
+        val request = DownloadManager.Request(Uri.parse(record.url))
+            .setTitle(record.title.take(120))
+            .setDescription("Site Lens 媒体下载")
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setAllowedOverMetered(true)
+            .setAllowedOverRoaming(false)
+            .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "site-lens/$taskId.media")
+        val id = manager.enqueue(request)
+        repository.save(record.copy(downloadId = id, paused = false))
+        return query(id) + mapOf("taskId" to taskId)
     }
 
     private fun delete(taskId: String) {

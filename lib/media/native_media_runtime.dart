@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/services.dart';
 
@@ -34,6 +35,17 @@ class NativeMediaRuntime {
     final raw = await _channel.invokeMapMethod<String, Object?>('open', {
       'sessionId': sessionId,
       'url': candidate.mediaUrl.toString(),
+    });
+    return _decode(raw ?? const <String, Object?>{});
+  }
+
+  Future<NativePlaybackSession> openLocal(MediaTask task, File file) async {
+    if (!await file.exists() || await file.length() == 0) {
+      throw StateError('本地缓存不存在');
+    }
+    final raw = await _channel.invokeMapMethod<String, Object?>('openLocal', {
+      'sessionId': 'play_${task.id}',
+      'path': file.path,
     });
     return _decode(raw ?? const <String, Object?>{});
   }
