@@ -594,6 +594,61 @@ class HostFilterContext {
 
 enum MediaCandidateSource { dom, registered }
 
+/// Infers a transport MIME from a media URL when a page did not expose a
+/// `type` attribute.  A URL is only metadata here; the native player still
+/// validates and opens the original address selected by the user.
+String inferMediaMime(Uri url) {
+  final path = url.path.toLowerCase();
+  if (path.endsWith('.m3u8') || path.endsWith('.m3u')) {
+    return 'application/vnd.apple.mpegurl';
+  }
+  if (path.endsWith('.mpd')) return 'application/dash+xml';
+  if (path.endsWith('.mp4') || path.endsWith('.m4v')) return 'video/mp4';
+  if (path.endsWith('.webm')) return 'video/webm';
+  if (path.endsWith('.mov')) return 'video/quicktime';
+  if (path.endsWith('.mkv')) return 'video/x-matroska';
+  if (path.endsWith('.ts')) return 'video/mp2t';
+  if (path.endsWith('.ogv')) return 'video/ogg';
+  if (path.endsWith('.mp3')) return 'audio/mpeg';
+  if (path.endsWith('.m4a')) return 'audio/mp4';
+  if (path.endsWith('.oga') || path.endsWith('.ogg')) return 'audio/ogg';
+  if (path.endsWith('.wav')) return 'audio/wav';
+  return '';
+}
+
+/// HLS and signed player URLs often differ only in short-lived authorization
+/// parameters.  Keep the full URL for playback, but use this stable identity
+/// to collapse repeated DOM/resource observations into one candidate.
+String mediaCandidateKey(Uri url) {
+  final clean = url.removeFragment();
+  if (clean.queryParameters.isEmpty) return clean.toString();
+  const volatile = {
+    'auth',
+    'auth_key',
+    'expires',
+    'expire',
+    'exp',
+    'hmac',
+    'sig',
+    'sign',
+    'signature',
+    't',
+    'time',
+    'timestamp',
+    'token',
+    'v',
+    'via',
+    'via_bm',
+  };
+  final retained = <String, String>{};
+  for (final entry in clean.queryParameters.entries) {
+    if (!volatile.contains(entry.key.toLowerCase())) {
+      retained[entry.key] = entry.value;
+    }
+  }
+  return clean.replace(queryParameters: retained).toString();
+}
+
 class MediaCandidate {
   const MediaCandidate({
     required this.id,
@@ -618,6 +673,15 @@ class MediaCandidate {
   final MediaCandidateSource source;
   final int? durationMs;
   final DateTime? createdAt;
+
+  String get effectiveMime => mime.trim().isEmpty
+      ? inferMediaMime(mediaUrl)
+      : mime.trim().toLowerCase();
+
+  bool get isHls =>
+      effectiveMime.contains('mpegurl') ||
+      mediaUrl.path.toLowerCase().endsWith('.m3u8') ||
+      mediaUrl.path.toLowerCase().endsWith('.m3u');
 
   bool get playable =>
       ['http', 'https'].contains(mediaUrl.scheme) &&

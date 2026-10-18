@@ -1609,8 +1609,8 @@ class _FilterSourceRow extends StatelessWidget {
     ),
     title: Text(source.label),
     subtitle: Text(
-      '${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)} · ${source.url}',
-      maxLines: 2,
+      '${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)} · ${source.url}${source.error == null ? '' : '\n${source.error}'}',
+      maxLines: 3,
       overflow: TextOverflow.ellipsis,
     ),
     trailing: PopupMenuButton<String>(
@@ -3386,7 +3386,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                   overflow: TextOverflow.ellipsis,
                 ),
                 subtitle: Text(
-                  '${candidate.mime.isEmpty ? '未知格式' : candidate.mime} · ${candidate.source.name}',
+                  '${candidate.effectiveMime.isEmpty ? '未知格式' : candidate.effectiveMime} · ${_mediaCandidateSourceLabel(candidate.source)}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -3453,6 +3453,12 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     );
   }
 }
+
+String _mediaCandidateSourceLabel(MediaCandidateSource source) =>
+    switch (source) {
+      MediaCandidateSource.dom => '页面嗅探',
+      MediaCandidateSource.registered => '脚本登记',
+    };
 
 /// The browser toolbar: one fixed row of seven equal controls, pinned to the
 /// bottom edge over the page. It never wraps, scrolls or folds — the controls

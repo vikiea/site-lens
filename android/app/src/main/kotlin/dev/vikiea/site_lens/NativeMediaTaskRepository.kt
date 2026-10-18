@@ -14,6 +14,7 @@ class NativeMediaTaskRepository(context: Context) {
         val candidateId: String,
         val generation: Long,
         val url: String = "",
+        val sourceUrl: String = "",
         val title: String = "",
         val paused: Boolean = false,
     )
@@ -24,6 +25,7 @@ class NativeMediaTaskRepository(context: Context) {
             .putString("${record.taskId}.candidateId", record.candidateId)
             .putLong("${record.taskId}.generation", record.generation)
             .putString("${record.taskId}.url", record.url)
+            .putString("${record.taskId}.sourceUrl", record.sourceUrl)
             .putString("${record.taskId}.title", record.title)
             .putBoolean("${record.taskId}.paused", record.paused)
             .putBoolean("${record.taskId}.known", true)
@@ -39,6 +41,7 @@ class NativeMediaTaskRepository(context: Context) {
             prefs.getString("$taskId.candidateId", "") ?: "",
             prefs.getLong("$taskId.generation", 0L),
             prefs.getString("$taskId.url", "") ?: "",
+            prefs.getString("$taskId.sourceUrl", "") ?: "",
             prefs.getString("$taskId.title", "") ?: "",
             prefs.getBoolean("$taskId.paused", false),
         )
@@ -50,6 +53,7 @@ class NativeMediaTaskRepository(context: Context) {
             .remove("$taskId.candidateId")
             .remove("$taskId.generation")
             .remove("$taskId.url")
+            .remove("$taskId.sourceUrl")
             .remove("$taskId.title")
             .remove("$taskId.paused")
             .remove("$taskId.known")

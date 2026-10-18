@@ -406,12 +406,35 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _seedBuiltInFilterSources() async {
+    final existing = await db.filterSources();
+    final specsByLabel = {
+      for (final spec in builtInFilterSources) spec.label: spec,
+    };
+    for (final source in existing.where((item) => item.kind == 'builtin')) {
+      final spec = specsByLabel[source.label];
+      if (spec == null || source.url.toString() == spec.url) continue;
+      await db.saveFilterSource(
+        FilterSource(
+          id: source.id,
+          label: source.label,
+          url: webUri(spec.url),
+          profileId: source.profileId,
+          kind: source.kind,
+          version: source.version,
+          license: source.license,
+          sha256: source.sha256,
+          status: FilterSourceStatus.missing,
+          fileRef: source.fileRef,
+          refreshedAt: source.refreshedAt,
+          error: null,
+        ),
+      );
+    }
     if (await db.setting(_filterSourceSeedSetting) ==
         builtInFilterSourceSeedVersion) {
       return;
     }
-    final existing = await db.filterSources();
-    final existingUrls = existing
+    final existingUrls = (await db.filterSources())
         .map((source) => source.url.toString())
         .toSet();
     var nextId = await db.nextFilterSourceId();

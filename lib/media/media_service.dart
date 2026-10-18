@@ -213,10 +213,11 @@ class MediaCandidateCollector {
       if (raw is! String) continue;
       final uri = Uri.tryParse(raw);
       if (uri == null || !['http', 'https'].contains(uri.scheme)) continue;
-      final key = uri.removeFragment().toString();
+      final key = mediaCandidateKey(uri);
       if (!seen.add(key)) continue;
       final title = (element['title'] as String? ?? '').trim();
-      final mime = (element['mime'] as String? ?? '').trim();
+      final rawMime = (element['mime'] as String? ?? '').trim();
+      final mime = rawMime.isEmpty ? inferMediaMime(uri) : rawMime;
       final candidate = MediaCandidate(
         id: 'dom:$hostId:$generation:${sha256.convert(utf8.encode(key))}',
         hostId: hostId,
@@ -585,6 +586,9 @@ class MediaDownloadService {
     if (task.candidateId != candidate.id) {
       throw StateError(MediaErrorCode.staleGeneration);
     }
+    if (candidate.isHls) {
+      return _startHls(task, candidate, maxBytes: maxBytes);
+    }
     final cancel = Cancellation();
     _active[task.id] = cancel;
     var current = tasks.task(task.id) ?? task;
@@ -647,6 +651,229 @@ class MediaDownloadService {
     } finally {
       _active.remove(task.id);
     }
+  }
+
+  /// Downloads an HLS playlist and its referenced local resources. Android's
+  /// DownloadManager can fetch a single URL, but a `.m3u8` is only an index;
+  /// handing it to DownloadManager leaves a task at zero bytes or stores an
+  /// unusable playlist. Rewriting every referenced segment to an app-private
+  /// file makes the result playable and exportable after the source tab closes.
+  Future<MediaTask> _startHls(
+    MediaTask task,
+    MediaCandidate candidate, {
+    required int maxBytes,
+  }) async {
+    final cancel = Cancellation();
+    _active[task.id] = cancel;
+    var current = tasks.task(task.id) ?? task;
+    Directory? staging;
+    try {
+      current = tasks.transition(task.id, MediaTaskState.downloading);
+      final directory = await tasks.cacheDirectory();
+      staging = Directory('${directory.path}/${task.cacheKey}.hls.part');
+      if (await staging.exists()) await staging.delete(recursive: true);
+      await staging.create(recursive: true);
+      final finalDirectory = Directory(
+        '${directory.path}/${task.cacheKey}.hls',
+      );
+      if (await finalDirectory.exists()) {
+        await finalDirectory.delete(recursive: true);
+      }
+      var playlistUri = candidate.mediaUrl;
+      var fetched = await _fetchHlsText(playlistUri, cancel);
+      playlistUri = fetched.url;
+      var playlistText = fetched.text;
+      for (var depth = 0; depth < 3; depth++) {
+        final variant = _selectHlsVariant(playlistUri, playlistText);
+        if (variant == null) break;
+        fetched = await _fetchHlsText(variant, cancel);
+        playlistUri = fetched.url;
+        playlistText = fetched.text;
+      }
+      if (_selectHlsVariant(playlistUri, playlistText) != null) {
+        throw const FormatException('HLS 变体层级过深');
+      }
+      if (!playlistText.contains('#EXTM3U')) {
+        throw const FormatException('媒体地址不是有效 HLS 清单');
+      }
+
+      final resources = <String, String>{};
+      var totalBytes = utf8.encode(playlistText).length;
+      var segmentCount = 0;
+      var hasSegment = false;
+      final output = <String>[];
+      final lines = playlistText.split(RegExp(r'\r?\n'));
+      for (var index = 0; index < lines.length; index++) {
+        cancel.check();
+        final line = lines[index];
+        if (line.startsWith('#EXT-X-BYTERANGE:')) {
+          throw const FormatException('暂不支持 HLS 字节范围分片');
+        }
+        if (line.startsWith('#EXT-X-KEY:') || line.startsWith('#EXT-X-MAP:')) {
+          final method = _hlsAttribute(line, 'METHOD');
+          final raw = _hlsAttribute(line, 'URI');
+          if (raw != null && (method == null || method != 'NONE')) {
+            final local = await _downloadHlsResource(
+              raw,
+              playlistUri,
+              staging,
+              resources,
+              cancel,
+              totalBytes,
+              maxBytes,
+            );
+            totalBytes += local.bytes;
+            output.add(line.replaceFirst('URI="$raw"', 'URI="${local.name}"'));
+          } else {
+            output.add(line);
+          }
+          continue;
+        }
+        final trimmed = line.trim();
+        if (trimmed.isEmpty || trimmed.startsWith('#')) {
+          output.add(line);
+          continue;
+        }
+        if (++segmentCount > 2048) {
+          throw const FormatException('HLS 分片数量过多');
+        }
+        final local = await _downloadHlsResource(
+          trimmed,
+          playlistUri,
+          staging,
+          resources,
+          cancel,
+          totalBytes,
+          maxBytes,
+        );
+        totalBytes += local.bytes;
+        hasSegment = true;
+        output.add(local.name);
+        current = tasks.updateProgress(task.id, totalBytes);
+      }
+      if (!hasSegment) throw const FormatException('HLS 清单没有媒体分片');
+      final temporaryPlaylist = File('${staging.path}/index.m3u8');
+      await temporaryPlaylist.writeAsString(output.join('\n'), flush: true);
+      await staging.rename(finalDirectory.path);
+      final finalFile = File('${finalDirectory.path}/index.m3u8');
+      current = tasks.updateProgress(task.id, totalBytes);
+      current = tasks.transition(task.id, MediaTaskState.completed);
+      current = tasks.transition(task.id, MediaTaskState.playable);
+      return tasks.setLocalRef(task.id, finalFile.path);
+    } on Cancelled {
+      if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
+        current = tasks.transition(task.id, MediaTaskState.paused);
+      }
+      return current;
+    } on StateError catch (error) {
+      if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
+        current = tasks.transition(
+          task.id,
+          MediaTaskState.failed,
+          errorCode: _errorCode(error.toString()),
+        );
+      }
+      rethrow;
+    } catch (error) {
+      if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
+        current = tasks.transition(
+          task.id,
+          MediaTaskState.failed,
+          errorCode: _errorCode(error.toString()),
+        );
+      }
+      rethrow;
+    } finally {
+      if (staging != null && await staging.exists()) {
+        await staging.delete(recursive: true);
+      }
+      _active.remove(task.id);
+    }
+  }
+
+  Future<({Uri url, String text})> _fetchHlsText(
+    Uri url,
+    Cancellation cancel,
+  ) async {
+    final response = await http.fetch(
+      url,
+      connect: const {'*'},
+      document: url,
+      cancel: cancel,
+      maxBytes: 16 * 1024 * 1024,
+    );
+    if (response.status < 200 || response.status >= 300) {
+      throw StateError('HLS 清单 HTTP ${response.status}');
+    }
+    return (url: response.url, text: utf8.decode(response.bytes));
+  }
+
+  Uri? _selectHlsVariant(Uri playlist, String text) {
+    final variants = <({int bandwidth, Uri url})>[];
+    final lines = text.split(RegExp(r'\r?\n'));
+    for (var index = 0; index < lines.length; index++) {
+      final line = lines[index].trim();
+      if (!line.startsWith('#EXT-X-STREAM-INF:')) continue;
+      final bandwidth =
+          int.tryParse(
+            RegExp(r'BANDWIDTH=(\d+)').firstMatch(line)?.group(1) ?? '',
+          ) ??
+          0;
+      final next = lines
+          .skip(index + 1)
+          .map((value) => value.trim())
+          .firstWhere(
+            (value) => value.isNotEmpty && !value.startsWith('#'),
+            orElse: () => '',
+          );
+      if (next.isNotEmpty) {
+        variants.add((bandwidth: bandwidth, url: playlist.resolve(next)));
+      }
+    }
+    if (variants.isEmpty) return null;
+    variants.sort((a, b) => b.bandwidth.compareTo(a.bandwidth));
+    return variants.first.url;
+  }
+
+  String? _hlsAttribute(String line, String name) =>
+      RegExp('$name="([^"]+)"').firstMatch(line)?.group(1);
+
+  Future<({String name, int bytes})> _downloadHlsResource(
+    String raw,
+    Uri playlist,
+    Directory staging,
+    Map<String, String> resources,
+    Cancellation cancel,
+    int downloaded,
+    int maxBytes,
+  ) async {
+    final remote = playlist.resolve(raw);
+    if (!['http', 'https'].contains(remote.scheme) ||
+        remote.userInfo.isNotEmpty) {
+      throw const FormatException('HLS 分片地址无效');
+    }
+    final key = remote.removeFragment().toString();
+    final existing = resources[key];
+    if (existing != null) return (name: existing, bytes: 0);
+    final response = await http.fetch(
+      remote,
+      connect: const {'*'},
+      document: playlist,
+      cancel: cancel,
+      maxBytes: min(64 * 1024 * 1024, maxBytes - downloaded),
+    );
+    if (response.status < 200 || response.status >= 300) {
+      throw StateError('HLS 分片 HTTP ${response.status}');
+    }
+    if (response.bytes.isEmpty) throw StateError('HLS 分片响应为空');
+    if (downloaded + response.bytes.length > maxBytes) {
+      throw StateError('媒体响应超过 $maxBytes 字节');
+    }
+    final name = 'resource_${resources.length.toString().padLeft(5, '0')}.bin';
+    await File('${staging.path}/$name')
+        .writeAsBytes(response.bytes, flush: true);
+    resources[key] = name;
+    return (name: name, bytes: response.bytes.length);
   }
 
   void pause(String taskId) => _active[taskId]?.cancel();

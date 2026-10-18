@@ -52,6 +52,11 @@ assert.deepEqual(
   ],
   'DOM media attributes and loaded media resources must be reported',
 );
+assert.deepEqual(
+  telemetry.at(-1).candidates.map(candidate => candidate.mime),
+  ['application/vnd.apple.mpegurl', 'video/mp4'],
+  'media MIME is inferred when the page omits a type attribute',
+);
 assert.equal(media.paused,true);
 await assert.rejects(media.play(),{name:'NotAllowedError'});
 window.__siteLensMediaControl.apply('unblock');

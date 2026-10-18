@@ -25,6 +25,44 @@ class MediaTasksScreen extends StatefulWidget {
 
 class _MediaTasksScreenState extends State<MediaTasksScreen> {
   bool busy = false;
+  Timer? _poller;
+  bool _polling = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.app.nativeDownloads != null) {
+      _poller = Timer.periodic(const Duration(seconds: 2), (_) {
+        unawaited(_pollNativeTasks());
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _poller?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _pollNativeTasks() async {
+    if (!mounted || busy || _polling) return;
+    _polling = true;
+    try {
+      for (final task in widget.app.mediaTasks.tasks) {
+        if (task.state == MediaTaskState.downloading ||
+            task.state == MediaTaskState.paused) {
+          try {
+            await _refreshNative(task);
+          } catch (_) {
+            // The task row retains its last durable state; a transient native
+            // status failure must not interrupt the settings/media screen.
+          }
+        }
+      }
+    } finally {
+      _polling = false;
+    }
+  }
 
   Future<void> _run(Future<void> Function() action) async {
     if (busy) return;
@@ -56,6 +94,13 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     if (state == 'completed' && task.state == MediaTaskState.downloading) {
       widget.app.mediaTasks.transition(task.id, MediaTaskState.completed);
       widget.app.mediaTasks.transition(task.id, MediaTaskState.playable);
+    }
+    if (state == 'failed' && task.state == MediaTaskState.downloading) {
+      widget.app.mediaTasks.transition(
+        task.id,
+        MediaTaskState.failed,
+        errorCode: status['errorCode']?.toString(),
+      );
     }
     if (mounted) setState(() {});
   }

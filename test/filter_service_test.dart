@@ -1,6 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
+
+import 'dart:io';
+import 'dart:convert';
+
 import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/filter/filter_service.dart';
+import 'package:site_lens/network/transport.dart';
 
 void main() {
   test('compiles cosmetic rules and only allow-listed scriptlets', () {
@@ -107,4 +112,59 @@ void main() {
     expect(diagnostic.reason, contains('未支持'));
     expect(result.engine.diagnostics['degraded'], isTrue);
   });
+
+  test(
+    'built-in sources fall back to a mirror after the primary fails',
+    () async {
+      final root = await Directory.systemTemp.createTemp('site-lens-filter-');
+      addTearDown(() => root.delete(recursive: true));
+      final primary = Uri.parse(
+        'https://easylist-downloads.adblockplus.org/easylist.txt',
+      );
+      final mirror = Uri.parse('https://easylist.to/easylist/easylist.txt');
+      final http = _FilterHttp(primary, mirror);
+      final source = FilterSource(
+        id: 1,
+        label: 'EasyList（广告）',
+        url: primary,
+        kind: 'builtin',
+      );
+      final snapshot = await FilterSourceManager(
+        store: FilterSnapshotStore(directoryProvider: () async => root),
+        http: http,
+      ).refresh(source);
+      expect(snapshot.sourceUrl, mirror);
+      expect(http.calls, [primary, mirror]);
+    },
+  );
+}
+
+class _FilterHttp extends ControlledHttp {
+  _FilterHttp(this.primary, this.mirror);
+  final Uri primary;
+  final Uri mirror;
+  final calls = <Uri>[];
+
+  @override
+  Future<FetchResponse> fetch(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    String method = 'GET',
+    Map<String, String> headers = const {},
+    String? body,
+    Duration timeout = const Duration(seconds: 15),
+    int maxBytes = 1024 * 1024,
+  }) async {
+    calls.add(url);
+    if (url == primary) throw const SocketException('primary unavailable');
+    if (url != mirror) throw StateError('unexpected source');
+    return FetchResponse(
+      url: url,
+      status: 200,
+      bytes: utf8.encode('[Adblock Plus 2.0]\n||ads.example^\n'),
+      headers: const {},
+    );
+  }
 }

@@ -27,6 +27,7 @@ class NativeDownloadRuntime {
       'candidateId': candidate.id,
       'generation': candidate.generation,
       'url': candidate.mediaUrl.toString(),
+      'sourceUrl': candidate.sourceUrl.toString(),
       'title': title ?? candidate.title,
     });
     return value ?? const <String, Object?>{};

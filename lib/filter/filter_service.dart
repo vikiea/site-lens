@@ -15,30 +15,34 @@ class BuiltInFilterSourceSpec {
     required this.label,
     required this.url,
     required this.license,
+    this.fallbackUrls = const <String>[],
   });
 
   final String key;
   final String label;
   final String url;
   final String license;
+  final List<String> fallbackUrls;
 }
 
 /// Recommended public lists are seeded as source metadata only. Their rule
 /// text is downloaded after the user opens the filter settings and refreshes a
 /// source, so APKs do not bundle third-party list contents or stale snapshots.
-const builtInFilterSourceSeedVersion = 'v1';
+const builtInFilterSourceSeedVersion = 'v2';
 const builtInFilterSources = <BuiltInFilterSourceSpec>[
   BuiltInFilterSourceSpec(
     key: 'easylist',
     label: 'EasyList（广告）',
-    url: 'https://easylist.to/easylist/easylist.txt',
+    url: 'https://easylist-downloads.adblockplus.org/easylist.txt',
     license: 'GPL-3.0',
+    fallbackUrls: ['https://easylist.to/easylist/easylist.txt'],
   ),
   BuiltInFilterSourceSpec(
     key: 'easyprivacy',
     label: 'EasyPrivacy（跟踪）',
-    url: 'https://easylist.to/easylist/easyprivacy.txt',
+    url: 'https://easylist-downloads.adblockplus.org/easyprivacy.txt',
     license: 'GPL-3.0',
+    fallbackUrls: ['https://easylist.to/easylist/easyprivacy.txt'],
   ),
   BuiltInFilterSourceSpec(
     key: 'easylistchina',
@@ -49,8 +53,12 @@ const builtInFilterSources = <BuiltInFilterSourceSpec>[
   BuiltInFilterSourceSpec(
     key: 'ublock-filters',
     label: 'uBlock filters（基础）',
-    url: 'https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt',
+    url: 'https://cdn.jsdelivr.net/gh/uBlockOrigin/uAssets@master/filters/filters.txt',
     license: 'GPL-3.0',
+    fallbackUrls: [
+      'https://ublockorigin.github.io/uAssets/filters/filters.txt',
+      'https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt',
+    ],
   ),
 ];
 
@@ -504,6 +512,15 @@ class FilterSourceManager {
   final ControlledHttp http;
   final int maxBytes;
 
+  List<Uri> _candidateUrls(FilterSource source) {
+    final spec = builtInFilterSources.where(
+      (item) => item.label == source.label,
+    );
+    final urls = <String>[source.url.toString()];
+    if (spec.isNotEmpty) urls.addAll(spec.first.fallbackUrls);
+    return urls.map(webUri).toSet().toList(growable: false);
+  }
+
   Future<FilterSnapshot> refresh(
     FilterSource source, {
     Cancellation? cancellation,
@@ -526,17 +543,50 @@ class FilterSourceManager {
     );
     await db?.saveFilterSource(pending);
     try {
-      final response = await http.fetch(
-        source.url,
-        connect: const {'*'},
-        document: source.url,
-        cancel: cancel,
-        maxBytes: maxBytes,
-      );
-      if (response.status < 200 || response.status >= 300) {
-        throw StateError('规则源 HTTP ${response.status}');
+      FetchResponse? response;
+      Object? lastError;
+      for (final url in _candidateUrls(source)) {
+        try {
+          final candidate = await http.fetch(
+            url,
+            connect: const {'*'},
+            document: url,
+            cancel: cancel,
+            maxBytes: maxBytes,
+          );
+          if (candidate.status < 200 || candidate.status >= 300) {
+            throw StateError('规则源 HTTP ${candidate.status}');
+          }
+          response = candidate;
+          break;
+        } catch (error) {
+          lastError = error;
+          cancel.check();
+          // Android installations may expose the site through a configured
+          // system proxy while a direct socket is unavailable. Built-in lists
+          // are fixed public hosts, so retry them through the platform HTTP
+          // stack without extending this path to arbitrary user URLs.
+          if (db != null && source.kind == 'builtin') {
+            try {
+              final candidate = await _fetchThroughPlatform(
+                url,
+                cancel,
+                maxBytes,
+              );
+              if (candidate.status < 200 || candidate.status >= 300) {
+                throw StateError('规则源 HTTP ${candidate.status}');
+              }
+              response = candidate;
+              break;
+            } catch (platformError) {
+              lastError = platformError;
+              cancel.check();
+            }
+          }
+        }
       }
-      final text = utf8.decode(response.bytes);
+      final loaded = response ?? (throw lastError ?? StateError('规则源不可用'));
+      final text = utf8.decode(loaded.bytes);
       cancel.check();
       final id =
           'filter-${source.id}-${DateTime.now().toUtc().microsecondsSinceEpoch}';
@@ -544,7 +594,7 @@ class FilterSourceManager {
         id: id,
         sourceId: source.id,
         version: source.version,
-        sourceUrl: response.url,
+        sourceUrl: loaded.url,
         source: text,
         fileRef: source.fileRef ?? 'source-${source.id}',
       );
@@ -553,7 +603,7 @@ class FilterSourceManager {
         FilterSource(
           id: source.id,
           label: source.label,
-          url: source.url,
+          url: loaded.url,
           profileId: source.profileId,
           kind: source.kind,
           version: source.version,
@@ -594,6 +644,62 @@ class FilterSourceManager {
         ),
       );
       rethrow;
+    }
+  }
+
+  Future<FetchResponse> _fetchThroughPlatform(
+    Uri url,
+    Cancellation cancel,
+    int maxBytes,
+  ) async {
+    final client = HttpClient()
+      ..findProxy = HttpClient.findProxyFromEnvironment;
+    cancel.onCancel(() => client.close(force: true));
+    var current = url;
+    try {
+      for (var redirects = 0; redirects <= 5; redirects++) {
+        cancel.check();
+        NetworkPolicy.validateTarget(current, const {'*'}, url);
+        final request = await client.getUrl(current);
+        request.followRedirects = false;
+        request.headers.set(
+          HttpHeaders.userAgentHeader,
+          'Site-Lens filter refresh',
+        );
+        final response = await request.close();
+        final location = response.headers.value(HttpHeaders.locationHeader);
+        if ([301, 302, 303, 307, 308].contains(response.statusCode) &&
+            location != null) {
+          if (redirects == 5) throw StateError('规则源重定向过多');
+          final next = webUri(current.resolve(location).toString());
+          if (current.scheme == 'https' && next.scheme != 'https') {
+            throw StateError('规则源禁止 HTTPS 降级');
+          }
+          current = next;
+          continue;
+        }
+        final bytes = <int>[];
+        await for (final chunk in response) {
+          cancel.check();
+          if (bytes.length + chunk.length > maxBytes) {
+            throw StateError('规则源超过 $maxBytes 字节');
+          }
+          bytes.addAll(chunk);
+        }
+        final headers = <String, String>{};
+        response.headers.forEach((key, values) {
+          headers[key] = values.join(', ');
+        });
+        return FetchResponse(
+          url: current,
+          status: response.statusCode,
+          bytes: bytes,
+          headers: headers,
+        );
+      }
+      throw StateError('规则源重定向过多');
+    } finally {
+      client.close(force: true);
     }
   }
 }

@@ -37,6 +37,8 @@ class NativeDownloadRuntime(private val context: Context) : MethodChannel.Method
         val request = DownloadManager.Request(uri)
             .setTitle((call.argument<String>("title") ?: "Site Lens media").take(120))
             .setDescription("Site Lens 媒体下载")
+            .addRequestHeader("Referer", call.argument<String>("sourceUrl") ?: "")
+            .addRequestHeader("User-Agent", "Site-Lens/0.2 (Android)")
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setAllowedOverMetered(true)
             .setAllowedOverRoaming(false)
@@ -48,7 +50,7 @@ class NativeDownloadRuntime(private val context: Context) : MethodChannel.Method
             if (current["state"] != "failed" && current["state"] != "cancelled") return current
         }
         val id = manager.enqueue(request)
-        repository.save(NativeMediaTaskRepository.Record(taskId, id, call.argument<String>("candidateId") ?: "", call.argument<Number>("generation")?.toLong() ?: 0L, uri.toString(), call.argument<String>("title") ?: "", false))
+        repository.save(NativeMediaTaskRepository.Record(taskId, id, call.argument<String>("candidateId") ?: "", call.argument<Number>("generation")?.toLong() ?: 0L, uri.toString(), call.argument<String>("sourceUrl") ?: "", call.argument<String>("title") ?: "", false))
         return query(id)
     }
 
@@ -105,6 +107,8 @@ class NativeDownloadRuntime(private val context: Context) : MethodChannel.Method
         val request = DownloadManager.Request(Uri.parse(record.url))
             .setTitle(record.title.take(120))
             .setDescription("Site Lens 媒体下载")
+            .addRequestHeader("Referer", record.sourceUrl)
+            .addRequestHeader("User-Agent", "Site-Lens/0.2 (Android)")
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setAllowedOverMetered(true)
             .setAllowedOverRoaming(false)

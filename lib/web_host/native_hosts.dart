@@ -284,8 +284,10 @@ class NativeHosts extends WebHostEvents {
         final raw = jsonDecode(event.detail) as Map<String, dynamic>;
         final source = webUri(session.url);
         final media = webUri(raw['url'] as String? ?? '');
+        final key = mediaCandidateKey(media);
+        final rawMime = (raw['mime'] as String? ?? '').trim();
         final candidate = MediaCandidate(
-          id: 'dom:${session.id}:${session.generation}:${media.removeFragment()}',
+          id: 'dom:${session.id}:${session.generation}:$key',
           hostId: session.id,
           generation: session.generation,
           sourceUrl: source,
@@ -294,9 +296,12 @@ class NativeHosts extends WebHostEvents {
             0,
             (raw['title'] as String? ?? '').length.clamp(0, 512),
           ),
-          mime: (raw['mime'] as String? ?? '').trim().substring(
+          mime: (rawMime.isEmpty ? inferMediaMime(media) : rawMime).substring(
             0,
-            (raw['mime'] as String? ?? '').length.clamp(0, 128),
+            (rawMime.isEmpty ? inferMediaMime(media) : rawMime).length.clamp(
+              0,
+              128,
+            ),
           ),
           source: MediaCandidateSource.dom,
           durationMs: (raw['durationMs'] as num?)?.toInt(),
@@ -560,11 +565,12 @@ class NativeHosts extends WebHostEvents {
         final sourceUrl = webUri(request.documentUrl);
         final mediaUrl = webUri(args['url'] as String? ?? '');
         final title = args['title'] as String? ?? '';
-        final mime = args['mime'] as String? ?? '';
+        final rawMime = (args['mime'] as String? ?? '').trim();
+        final mime = rawMime.isEmpty ? inferMediaMime(mediaUrl) : rawMime;
         final candidate = MediaCandidate(
           id:
               args['candidateId'] as String? ??
-              '${request.scriptId}:${request.generation}:$mediaUrl',
+              '${request.scriptId}:${request.generation}:${mediaCandidateKey(mediaUrl)}',
           hostId: request.hostId,
           generation: request.generation,
           sourceUrl: sourceUrl,

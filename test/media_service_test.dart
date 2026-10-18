@@ -39,17 +39,19 @@ class FakeNativeDownloads extends NativeDownloadRuntime {
   }
 }
 
-MediaCandidate candidate({String url = 'https://cdn.example/video.mp4'}) =>
-    MediaCandidate(
-      id: 'candidate-1',
-      hostId: 7,
-      generation: 3,
-      sourceUrl: Uri.parse('https://example.com/watch'),
-      mediaUrl: Uri.parse(url),
-      title: 'video',
-      mime: 'video/mp4',
-      source: MediaCandidateSource.dom,
-    );
+MediaCandidate candidate({
+  String url = 'https://cdn.example/video.mp4',
+  String mime = 'video/mp4',
+}) => MediaCandidate(
+  id: 'candidate-1',
+  hostId: 7,
+  generation: 3,
+  sourceUrl: Uri.parse('https://example.com/watch'),
+  mediaUrl: Uri.parse(url),
+  title: 'video',
+  mime: mime,
+  source: MediaCandidateSource.dom,
+);
 
 void main() {
   test('native playback controller enforces one session and safe controls', () {
@@ -90,12 +92,67 @@ void main() {
       elements: [
         {'url': 'https://cdn.example/video.mp4', 'mime': 'video/mp4'},
         {'url': 'https://cdn.example/video.mp4#fragment'},
+        {'url': 'https://cdn.example/live/index.m3u8?token=one'},
+        {'url': 'https://cdn.example/live/index.m3u8?token=two'},
         {'url': 'blob:https://example.com/id'},
         {'url': 'file:///private/video.mp4'},
       ],
     );
-    expect(values, hasLength(1));
-    expect(values.single.mediaUrl.toString(), 'https://cdn.example/video.mp4');
+    expect(values, hasLength(2));
+    expect(
+      values.map((value) => value.effectiveMime),
+      containsAll(['video/mp4', 'application/vnd.apple.mpegurl']),
+    );
+  });
+
+  test('HLS downloads a local playlist, segments and encryption key', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'site-lens-hls-download-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final playlistUrl = Uri.parse('https://cdn.example/video/index.m3u8');
+    final http = _MapHttp({
+      playlistUrl.toString(): FetchResponse(
+        url: playlistUrl,
+        status: 200,
+        bytes: utf8.encode(
+          '#EXTM3U\n'
+          '#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\n'
+          '#EXTINF:1,\nseg.ts\n'
+          '#EXT-X-ENDLIST\n',
+        ),
+        headers: const {},
+      ),
+      'https://cdn.example/video/key.bin': FetchResponse(
+        url: Uri.parse('https://cdn.example/video/key.bin'),
+        status: 200,
+        bytes: [1, 2, 3, 4],
+        headers: {},
+      ),
+      'https://cdn.example/video/seg.ts': FetchResponse(
+        url: Uri.parse('https://cdn.example/video/seg.ts'),
+        status: 200,
+        bytes: [5, 6, 7],
+        headers: {},
+      ),
+    });
+    final store = MediaTaskStore(directoryProvider: () async => root);
+    final hls = candidate(
+      url: playlistUrl.toString(),
+      mime: 'application/vnd.apple.mpegurl',
+    );
+    final task = store.create(hls);
+    final result = await MediaDownloadService(
+      tasks: store,
+      http: http,
+    ).start(task, hls);
+    expect(result.state, MediaTaskState.playable);
+    expect(result.bytesDownloaded, greaterThan(0));
+    final cached = await store.cachedFile(task.id);
+    expect(cached, isNotNull);
+    expect(await cached!.readAsString(), contains('resource_'));
+    expect(cached.parent.listSync(), hasLength(3));
+    expect(http.calls, hasLength(3));
   });
 
   test('native task reconciliation restores progress, local URI and playable state', () async {
@@ -467,4 +524,28 @@ class _StatusHttp extends ControlledHttp {
     bytes: const [],
     headers: const {},
   );
+}
+
+class _MapHttp extends ControlledHttp {
+  _MapHttp(this.responses);
+  final Map<String, FetchResponse> responses;
+  final calls = <String>[];
+
+  @override
+  Future<FetchResponse> fetch(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    String method = 'GET',
+    Map<String, String> headers = const {},
+    String? body,
+    Duration timeout = const Duration(seconds: 15),
+    int maxBytes = 1024 * 1024,
+  }) async {
+    calls.add(url.toString());
+    final response = responses[url.toString()];
+    if (response == null) throw StateError('missing $url');
+    return response;
+  }
 }

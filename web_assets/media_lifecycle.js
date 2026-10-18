@@ -59,20 +59,54 @@
     return /(?:\.m3u8|\.mp4|\.m3u|\.mpd|\.webm)(?:[?#]|$)/i.test(raw) ||
       /^(?:video|audio)\//i.test(mime) || /mpegurl|dash\+xml/i.test(mime);
   }
+  function inferMime(raw) {
+    const path = String(raw).split(/[?#]/, 1)[0].toLowerCase();
+    if (/\.m3u8?$/.test(path)) return 'application/vnd.apple.mpegurl';
+    if (/\.mpd$/.test(path)) return 'application/dash+xml';
+    if (/\.(?:mp4|m4v)$/.test(path)) return 'video/mp4';
+    if (/\.webm$/.test(path)) return 'video/webm';
+    if (/\.mov$/.test(path)) return 'video/quicktime';
+    if (/\.mkv$/.test(path)) return 'video/x-matroska';
+    if (/\.ts$/.test(path)) return 'video/mp2t';
+    if (/\.mp3$/.test(path)) return 'audio/mpeg';
+    if (/\.m4a$/.test(path)) return 'audio/mp4';
+    if (/\.ogg?$/.test(path)) return 'audio/ogg';
+    return '';
+  }
+  function candidateKey(url) {
+    const volatile = /^(?:auth|auth_key|expires?|exp|hmac|sig(?:nature)?|sign|t|time|timestamp|token|v|via|via_bm)$/i;
+    for (const key of Array.from(url.searchParams.keys())) {
+      if (volatile.test(key)) url.searchParams.delete(key);
+    }
+    return url.href;
+  }
   function addCandidate(output, seen, raw, mime = '', durationMs, force = false, title) {
     if (typeof raw !== 'string' || !raw.trim()) return;
     try {
       const url = new URL(raw, document.baseURI);
+      const suppliedMime = String(mime || '').trim();
+      const resolvedMime = /^(?:video|audio)\//i.test(suppliedMime) ||
+          /mpegurl|dash\+xml/i.test(suppliedMime)
+        ? suppliedMime
+        : inferMime(url.href);
       if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password ||
-          (!force && !looksMedia(url.href, mime)) || seen.has(url.href)) return;
+          (!force && !looksMedia(url.href, resolvedMime))) return;
       const candidate = {
         url: url.href,
         title: String(title ?? document.title ?? '').slice(0, 512),
-        mime: String(mime || '').slice(0, 128),
+        mime: resolvedMime.slice(0, 128),
       };
       if (Number.isFinite(durationMs)) candidate.durationMs = Math.round(durationMs);
-      seen.add(url.href);
-      output.push(candidate);
+      const key = candidateKey(url);
+      const previous = seen.get(key);
+      if (previous == null) {
+        seen.set(key, output.length);
+        output.push(candidate);
+      } else {
+        const existing = output[previous];
+        const score = (value) => (value.mime ? 4 : 0) + (value.url.includes('?') ? 2 : 0) + value.url.length / 100000;
+        if (score(candidate) > score(existing)) output[previous] = candidate;
+      }
     } catch (_) {}
   }
   function report() {
@@ -80,7 +114,7 @@
     const playing = Array.from(nodes).some(node => !node.paused && !node.ended) ||
       Array.from(contexts).some(ctx => ctx.state === 'running') || Array.from(childPlaying.values()).some(Boolean);
     const candidates = [];
-    const seen = new Set();
+    const seen = new Map();
     for (const node of nodes) {
       const raw = node.currentSrc || node.src || '';
       addCandidate(candidates, seen, raw, node.type, Number.isFinite(node.duration) ? node.duration * 1000 : undefined, true);
