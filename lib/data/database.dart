@@ -119,6 +119,13 @@ class AppDatabase extends GeneratedDatabase {
       // WAL + a busy timeout keep that from failing on a write conflict.
       await customStatement('PRAGMA journal_mode = WAL');
       await customStatement('PRAGMA busy_timeout = 5000');
+      // v0.1.13 introduced the profile-local script state while keeping the
+      // schema version at 5. A small number of installs therefore report
+      // version 5 even though their older profile_scripts table is missing
+      // the new columns. Repair that shape before any script import or list
+      // query can touch it. This is deliberately idempotent so it also covers
+      // an interrupted migration and does not require clearing user data.
+      await _ensureProfileScriptColumns();
     },
   );
 
@@ -145,20 +152,33 @@ class AppDatabase extends GeneratedDatabase {
   /// once; subsequent changes stay local to the selected profile.
   Future<void> _migrateV4toV5() => transaction(() async {
     migrationDebugHook?.call('v4-to-v5');
+    await _ensureProfileScriptColumns();
+  });
+
+  Future<void> _ensureProfileScriptColumns() async {
+    if (!await _tableExists('profile_scripts')) return;
+    var repaired = false;
     if (!await _columnExists('profile_scripts', 'enabled')) {
       await customStatement(
         'ALTER TABLE profile_scripts ADD COLUMN enabled INTEGER NOT NULL DEFAULT 0',
       );
+      repaired = true;
     }
     if (!await _columnExists('profile_scripts', 'approved_digest')) {
       await customStatement(
         'ALTER TABLE profile_scripts ADD COLUMN approved_digest TEXT',
       );
+      repaired = true;
     }
-    await customStatement(
-      'UPDATE profile_scripts SET enabled=COALESCE((SELECT enabled FROM scripts WHERE scripts.id=profile_scripts.script_id),0), approved_digest=(SELECT approved_digest FROM scripts WHERE scripts.id=profile_scripts.script_id)',
-    );
-  });
+    // Keep the one-time v4 global state migration and the repair path
+    // consistent. Existing profile bindings inherit the script's current
+    // approval state; later toggles remain profile-local.
+    if (repaired) {
+      await customStatement(
+        'UPDATE profile_scripts SET enabled=COALESCE((SELECT enabled FROM scripts WHERE scripts.id=profile_scripts.script_id),0), approved_digest=(SELECT approved_digest FROM scripts WHERE scripts.id=profile_scripts.script_id)',
+      );
+    }
+  }
 
   /// v1 -> v2 migration. Runs inside a single transaction so a failure at any
   /// step leaves the database exactly at v1 with the user's data intact.
@@ -249,6 +269,14 @@ class AppDatabase extends GeneratedDatabase {
   Future<bool> _columnExists(String table, String column) async {
     final rows = await customSelect('PRAGMA table_info($table)').get();
     return rows.any((r) => r.read<String>('name') == column);
+  }
+
+  Future<bool> _tableExists(String table) async {
+    final row = await customSelect(
+      "SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name=?",
+      variables: [Variable(table)],
+    ).getSingleOrNull();
+    return row != null;
   }
 
   Future<int?> _profileIdForPageUrl(String url) async => (await customSelect(

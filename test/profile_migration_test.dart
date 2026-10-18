@@ -260,6 +260,63 @@ void main() {
   });
 
   test(
+    'repairs a v5 database whose profile script state columns are missing',
+    () async {
+      final file = File('${dir.path}/site_lens.sqlite');
+      final raw = sqlite3.open(file.path);
+      raw.execute(
+        'CREATE TABLE profiles(id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL)',
+      );
+      raw.execute(
+        'CREATE TABLE scripts(id TEXT PRIMARY KEY, name TEXT NOT NULL, source TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, approved_digest TEXT)',
+      );
+      raw.execute(
+        'CREATE TABLE profile_scripts(profile_id INTEGER NOT NULL, script_id TEXT NOT NULL, content_hash TEXT NOT NULL, PRIMARY KEY(profile_id,script_id))',
+      );
+      raw.execute("INSERT INTO profiles VALUES(1,'旧档案','2026-10-18')");
+      raw.execute("INSERT INTO profile_scripts VALUES(1,'script','hash')");
+      raw.execute('PRAGMA user_version=5');
+      raw.close();
+
+      final db = AppDatabase(NativeDatabase(file));
+      addTearDown(db.close);
+      await db.customSelect('SELECT 1').get();
+
+      // This is the exact write performed by a .user.js import. It must be
+      // safe even when the previous release left user_version at 5 too early.
+      await db.saveScript(
+        const InstalledScript(
+          id: 'script',
+          name: '脚本',
+          source: '// ==UserScript==\n// @name Script\n// @match https://example.com/*\n// ==/UserScript==\n',
+        ),
+      );
+
+      final columns = await db
+          .customSelect('PRAGMA table_info(profile_scripts)')
+          .get();
+      expect(
+        columns.map((row) => row.read<String>('name')),
+        containsAll(<String>['enabled', 'approved_digest']),
+      );
+      final link = (await db.profileScripts()).single;
+      expect(link.enabled, isFalse);
+      expect(link.approvedDigest, isNull);
+
+      // Once repaired, opening the app again must not reapply the global
+      // script switch over a profile-local choice.
+      await db.setProfileScriptEnabled(1, 'script', true, digest: 'approved');
+      await db.close();
+      final reopened = AppDatabase(NativeDatabase(file));
+      addTearDown(reopened.close);
+      await reopened.customSelect('SELECT 1').get();
+      final preserved = (await reopened.profileScripts()).single;
+      expect(preserved.enabled, isTrue);
+      expect(preserved.approvedDigest, 'approved');
+    },
+  );
+
+  test(
     'migration is retry-safe when user_version lags the committed data',
     () async {
       final file = _copyFixture(dir);
