@@ -68,6 +68,7 @@ class NativeHosts extends WebHostEvents {
   FilterEngine? filterEngine;
   FilterPolicy filterPolicy = const FilterPolicy();
   FilterSnapshot? filterSnapshot;
+  Map<int, FilterPolicy> profileFilterPolicies = const {};
 
   /// Policy [AppController] owns and pushes to every host: the app decides, the
   /// native host only enforces. New hosts get the current value at creation, and
@@ -89,19 +90,29 @@ class NativeHosts extends WebHostEvents {
     FilterEngine? next, {
     FilterPolicy policy = const FilterPolicy(),
     FilterSnapshot? snapshot,
+    Map<int, FilterPolicy> profilePolicies = const {},
   }) {
     filterEngine = next;
     filterPolicy = policy;
     filterSnapshot = snapshot;
+    profileFilterPolicies = Map.unmodifiable(profilePolicies);
     for (final session in sessions.values.toList()) {
-      if (!session.disposed) unawaited(_applyFilter(session));
+      if (!session.disposed) {
+        session.filterPolicy = _policyFor(session);
+        unawaited(_applyFilter(session));
+      }
     }
   }
+
+  FilterPolicy _policyFor(HostSession session) =>
+      profileFilterPolicies[session.profileId] ?? filterPolicy;
 
   Future<void> _applyFilter(HostSession session) async {
     if (session.disposed) return;
     final snapshot = filterSnapshot;
     final source = session.url.isEmpty ? 'https://invalid.local/' : session.url;
+    final policy = _policyFor(session);
+    session.filterPolicy = policy;
     try {
       await api.applyFilter(
         session.id,
@@ -113,7 +124,7 @@ class NativeHosts extends WebHostEvents {
             snapshotId: snapshot?.id ?? '',
           ),
         ),
-        HostDtoCodec.policy(filterPolicy),
+        HostDtoCodec.policy(policy),
         HostDtoCodec.snapshot(value: snapshot, engine: filterEngine),
       );
     } catch (error) {
@@ -150,8 +161,9 @@ class NativeHosts extends WebHostEvents {
       await destroy(session);
       throw StateError('检测数据隔离不可用：${capabilities.reason}');
     }
+    final sessionPolicy = _policyFor(session);
     if (filterEngine != null ||
-        filterPolicy.enabled ||
+        !sessionPolicy.isDefault ||
         filterSnapshot != null) {
       await _applyFilter(session);
     }
@@ -267,7 +279,7 @@ class NativeHosts extends WebHostEvents {
       session.mediaCandidates.clear();
       session.generation = event.generation;
       session.filterEngine = filterEngine;
-      session.filterPolicy = filterPolicy;
+      session.filterPolicy = _policyFor(session);
       session.filterSnapshot = filterSnapshot;
       session.loaded = false;
       session.error = null;
@@ -393,7 +405,7 @@ class NativeHosts extends WebHostEvents {
     // Bind the immutable snapshot to this document. A later refresh takes
     // effect on the next navigation and never changes an active page's rules.
     session.filterEngine = filterEngine;
-    session.filterPolicy = filterPolicy;
+    session.filterPolicy = _policyFor(session);
     session.filterSnapshot = filterSnapshot;
     if (session.purpose != HostPurpose.browsing) {
       await NetworkPolicy.publicNavigation(webUri(url));

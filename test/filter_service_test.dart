@@ -1,8 +1,10 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:drift/native.dart';
 
 import 'dart:io';
 import 'dart:convert';
 
+import 'package:site_lens/data/database.dart';
 import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/filter/filter_service.dart';
 import 'package:site_lens/network/transport.dart';
@@ -137,6 +139,70 @@ void main() {
       expect(http.calls, [primary, mirror]);
     },
   );
+
+  test(
+    'rebuilds one active bundle from the newest snapshot of each source',
+    () async {
+      final root = await Directory.systemTemp.createTemp('site-lens-bundle-');
+      addTearDown(() => root.delete(recursive: true));
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final store = FilterSnapshotStore(directoryProvider: () async => root);
+      final manager = FilterSourceManager(store: store, db: db);
+      await db.saveFilterSource(
+        FilterSource(
+          id: 1,
+          label: '广告',
+          url: Uri.parse('https://filters.example/ads.txt'),
+        ),
+      );
+      await db.saveFilterSource(
+        FilterSource(
+          id: 2,
+          label: '跟踪',
+          url: Uri.parse('https://filters.example/privacy.txt'),
+        ),
+      );
+      for (final item in [
+        (1, 'https://filters.example/ads.txt', '||ads.example^'),
+        (2, 'https://filters.example/privacy.txt', '||tracker.example^'),
+      ]) {
+        final snapshot = await store.publish(
+          id: 'source-${item.$1}',
+          sourceId: item.$1,
+          version: '1',
+          sourceUrl: Uri.parse(item.$2),
+          source: item.$3,
+          fileRef: 'source-${item.$1}',
+        );
+        await db.saveFilterSnapshot(snapshot);
+      }
+      final bundle = await manager.rebuildBundle();
+      expect(bundle, isNotNull);
+      expect(bundle!.sourceId, isNull);
+      expect(store.activeSnapshot!.id, bundle.id);
+      final engine = store.activeEngine!;
+      const policy = FilterPolicy(enabled: true);
+      expect(
+        engine.evaluate(Uri.parse('https://ads.example/a'), policy: policy),
+        FilterDecision.block,
+      );
+      expect(
+        engine.evaluate(Uri.parse('https://tracker.example/a'), policy: policy),
+        FilterDecision.block,
+      );
+    },
+  );
+
+  test('returns only explicit profile policies for inheritance', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    await db.saveFilterPolicy(const FilterPolicy(enabled: true), profileId: 7);
+    final policies = await db.explicitProfileFilterPolicies();
+    expect(policies.keys, {7});
+    expect(policies[7]!.enabled, isTrue);
+    expect(policies.containsKey(8), isFalse);
+  });
 }
 
 class _FilterHttp extends ControlledHttp {

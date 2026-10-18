@@ -228,6 +228,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   List<InstalledScript> installed = [];
   List<ProbeResult> history = [];
   List<FilterSource> filterSourceList = [];
+  Map<int, FilterPolicy> profileFilterPolicies = const {};
   HostCapabilities? capabilities;
   bool checkingHostCapabilities = false;
   String? hostCapabilityError;
@@ -416,13 +417,16 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     await db.saveFilterPolicy(next, profileId: profileId);
     if (profileId == null) {
       filterPolicy = next;
-      hosts.setFilterEngine(
-        filterSnapshots.activeEngine,
-        policy: next,
-        snapshot: filterSnapshots.activeSnapshot,
-      );
-      notifyListeners();
+    } else {
+      profileFilterPolicies = {...profileFilterPolicies, profileId: next};
     }
+    hosts.setFilterEngine(
+      filterSnapshots.activeEngine,
+      policy: filterPolicy,
+      snapshot: filterSnapshots.activeSnapshot,
+      profilePolicies: profileFilterPolicies,
+    );
+    notifyListeners();
   }
 
   Future<void> _seedBuiltInFilterSources() async {
@@ -505,8 +509,14 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     await db.deleteFilterSource(id);
     if (filterSnapshots.activeSnapshot?.sourceId == id) {
       filterSnapshots.clear();
-      hosts.setFilterEngine(null, policy: filterPolicy);
     }
+    final bundle = await filterSources.rebuildBundle();
+    hosts.setFilterEngine(
+      filterSnapshots.activeEngine,
+      policy: filterPolicy,
+      snapshot: bundle ?? filterSnapshots.activeSnapshot,
+      profilePolicies: profileFilterPolicies,
+    );
     filterSourceList = await db.filterSources();
     notifyListeners();
   }
@@ -518,6 +528,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         filterSnapshots.activeEngine,
         policy: filterPolicy,
         snapshot: filterSnapshots.activeSnapshot,
+        profilePolicies: profileFilterPolicies,
       );
       return snapshot;
     } finally {
@@ -738,6 +749,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     profileScriptLinks = await read(db.profileScripts, profileScriptLinks);
     installed = await read(db.scripts, installed);
     filterPolicy = await read(db.filterPolicy, filterPolicy);
+    profileFilterPolicies = await read(
+      db.explicitProfileFilterPolicies,
+      profileFilterPolicies,
+    );
     try {
       await _seedBuiltInFilterSources();
     } catch (_) {
@@ -747,7 +762,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final latestFilter = await read(db.latestFilterSnapshot, null);
     if (latestFilter != null) {
       try {
-        await filterSnapshots.load(latestFilter);
+        if (latestFilter.sourceId == null) {
+          await filterSnapshots.load(latestFilter);
+        } else {
+          await filterSources.rebuildBundle();
+        }
       } catch (_) {
         // Keep browsing available with no active snapshot; diagnostics are
         // retained in Drift and the next manual refresh can recover it.
@@ -774,6 +793,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       filterSnapshots.activeEngine,
       policy: filterPolicy,
       snapshot: filterSnapshots.activeSnapshot,
+      profilePolicies: profileFilterPolicies,
     );
     if (suppressCorruption) {
       try {

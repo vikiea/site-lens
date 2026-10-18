@@ -377,7 +377,12 @@ class FilterCompiler {
         continue;
       }
       rules.add(
-        FilterRule(pattern: pattern, block: !exception, hostOnly: hostRule),
+        FilterRule(
+          pattern: pattern,
+          block: !exception,
+          hostOnly: hostRule,
+          exception: exception,
+        ),
       );
     }
     final engine = FilterEngine(
@@ -491,19 +496,27 @@ class FilterSnapshotStore {
         snapshot.fileRef.isEmpty) {
       throw StateError('规则快照不可用');
     }
+    final result = await compileSnapshot(snapshot);
+    _active = result.engine;
+    _activeSnapshot = snapshot;
+    return result;
+  }
+
+  Future<FilterCompileResult> compileSnapshot(FilterSnapshot snapshot) async {
+    if (snapshot.state == FilterSnapshotState.corrupt ||
+        snapshot.fileRef.isEmpty) {
+      throw StateError('规则快照不可用');
+    }
     final file = File(snapshot.fileRef);
     if (!await file.exists()) throw StateError('规则快照文件缺失');
     final bytes = await file.readAsBytes();
     if (sha256.convert(bytes).toString() != snapshot.sha256) {
       throw StateError('规则快照文件摘要不匹配');
     }
-    final result = const FilterCompiler().compile(
+    return const FilterCompiler().compile(
       utf8.decode(bytes),
       snapshotId: snapshot.id,
     );
-    _active = result.engine;
-    _activeSnapshot = snapshot;
-    return result;
   }
 }
 
@@ -522,6 +535,76 @@ class FilterSourceManager {
   final AppDatabase? db;
   final ControlledHttp http;
   final int maxBytes;
+
+  /// Rebuilds one deterministic active bundle from the newest usable snapshot
+  /// of every source. Existing source snapshots remain independently stored so
+  /// a failed refresh can fall back without losing the previous source.
+  Future<FilterSnapshot?> rebuildBundle() async {
+    final database = db;
+    if (database == null) return store.activeSnapshot;
+    final sourceSnapshots = await database.latestFilterSnapshotsBySource();
+    if (sourceSnapshots.isEmpty) {
+      store.clear();
+      return null;
+    }
+    sourceSnapshots.sort(
+      (a, b) => (a.sourceId ?? 0).compareTo(b.sourceId ?? 0),
+    );
+    final parts = <String>[];
+    var unsupported = 0;
+    for (final snapshot in sourceSnapshots.reversed) {
+      final compiled = await store.compileSnapshot(snapshot);
+      unsupported += snapshot.unsupportedRuleCount;
+      parts.add('! Site Lens source ${snapshot.sourceId}\n');
+      parts.addAll(compiled.engine.rules.map((rule) => _ruleToSource(rule)));
+    }
+    final source = parts.join('\n');
+    final first = sourceSnapshots.first;
+    final bundleId =
+        'filter-bundle-${DateTime.now().toUtc().microsecondsSinceEpoch}';
+    final bundle = await store.publish(
+      id: bundleId,
+      sourceId: null,
+      version: 'bundle-v1',
+      sourceUrl: first.sourceUrl,
+      source: source,
+      fileRef: 'bundle-${sha256.convert(utf8.encode(source)).toString()}',
+    );
+    final result = bundle.unsupportedRuleCount == unsupported
+        ? bundle
+        : FilterSnapshot(
+            id: bundle.id,
+            sourceId: bundle.sourceId,
+            version: bundle.version,
+            sourceUrl: bundle.sourceUrl,
+            sha256: bundle.sha256,
+            state: unsupported == 0
+                ? FilterSnapshotState.valid
+                : FilterSnapshotState.degraded,
+            createdAt: bundle.createdAt,
+            fileRef: bundle.fileRef,
+            unsupportedRuleCount: unsupported,
+            error: unsupported == 0 ? null : '已合并；$unsupported 条规则语法未支持',
+          );
+    await database.saveFilterSnapshot(result);
+    await store.load(result);
+    return result;
+  }
+
+  String _ruleToSource(FilterRule rule) {
+    if (rule.scriptlet != null) {
+      final domain = rule.pattern == '*' ? '' : rule.pattern;
+      final args = rule.scriptletArgs.join(',');
+      return '$domain##+js(${rule.scriptlet}${args.isEmpty ? '' : ',$args'})';
+    }
+    if (rule.cosmetic) {
+      final domains = rule.domains.isEmpty
+          ? (rule.domain == null || rule.domain == '*' ? '' : rule.domain!)
+          : rule.domains.join(',');
+      return '$domains${rule.exception ? '#@#' : '##'}${rule.pattern}';
+    }
+    return '${rule.exception ? '@@' : ''}${rule.pattern}';
+  }
 
   List<Uri> _candidateUrls(FilterSource source) {
     final spec = builtInFilterSources.where(
@@ -630,11 +713,17 @@ class FilterSourceManager {
               : '已生效；${snapshot.unsupportedRuleCount} 条规则语法未支持',
         ),
       );
-      return snapshot;
+      final bundle = await rebuildBundle();
+      if (bundle == null) throw StateError('没有可用规则快照');
+      return bundle;
     } catch (error) {
       // The active store intentionally remains on [previous]. Keep this local
       // fallback assertion as a regression guard for future store changes.
-      assert(identical(previous, store.activeSnapshot));
+      if (previous == null) {
+        store.clear();
+      } else {
+        await store.load(previous);
+      }
       await db?.saveFilterSource(
         FilterSource(
           id: source.id,

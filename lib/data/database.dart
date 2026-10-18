@@ -1088,6 +1088,28 @@ class AppDatabase extends GeneratedDatabase {
     );
   }
 
+  /// Returns only explicitly stored profile policies. An absent profile row
+  /// inherits the global policy; callers must not populate this map with the
+  /// default value for every profile.
+  Future<Map<int, FilterPolicy>> explicitProfileFilterPolicies() async {
+    final rows = await customSelect(
+      'SELECT * FROM filter_policies WHERE profile_id <> 0 ORDER BY profile_id',
+    ).get();
+    return {
+      for (final row in rows)
+        row.read<int>('profile_id'): FilterPolicy(
+          enabled: row.read<int>('enabled') == 1,
+          pageFiltering: row.read<int>('page_filtering') == 1,
+          domainExceptions: (jsonDecode(
+            row.read<String>('domain_exceptions'),
+          ) as List).whereType<String>().toSet(),
+          blockedDomains: (jsonDecode(
+            row.read<String>('blocked_domains'),
+          ) as List).whereType<String>().toSet(),
+        ),
+    };
+  }
+
   Future<void> saveFilterPolicy(FilterPolicy policy, {int? profileId}) =>
       customStatement(
         'INSERT INTO filter_policies(profile_id,enabled,page_filtering,domain_exceptions,blocked_domains,updated_at) VALUES(?,?,?,?,?,?) '
@@ -1221,6 +1243,42 @@ class AppDatabase extends GeneratedDatabase {
     ).getSingleOrNull();
     if (row == null) return null;
     return filterSnapshot(row.read<String>('id'));
+  }
+
+  /// Returns the newest usable source snapshot for every source. Bundle
+  /// snapshots have a null source_id and are intentionally excluded; the
+  /// caller can rebuild a deterministic bundle from these source snapshots.
+  Future<List<FilterSnapshot>> latestFilterSnapshotsBySource() async {
+    final rows = await customSelect(
+      'SELECT * FROM filter_snapshots '
+      'WHERE source_id IS NOT NULL AND state IN (?,?) '
+      'ORDER BY created_at DESC',
+      variables: [
+        Variable.withString('valid'),
+        Variable.withString('degraded'),
+      ],
+    ).get();
+    final seen = <int>{};
+    final result = <FilterSnapshot>[];
+    for (final row in rows) {
+      final sourceId = row.readNullable<int>('source_id');
+      if (sourceId == null || !seen.add(sourceId)) continue;
+      result.add(
+        FilterSnapshot(
+          id: row.read<String>('id'),
+          sourceId: sourceId,
+          version: row.read<String>('version'),
+          sourceUrl: webUri(row.read<String>('source_url')),
+          sha256: row.read<String>('sha256'),
+          state: FilterSnapshotState.values.byName(row.read<String>('state')),
+          createdAt: DateTime.parse(row.read<String>('created_at')),
+          fileRef: row.read<String>('file_ref'),
+          unsupportedRuleCount: row.read<int>('unsupported_rule_count'),
+          error: row.readNullable<String>('error'),
+        ),
+      );
+    }
+    return result;
   }
 
   Future<void> saveMediaCandidate(MediaCandidate candidate) => customStatement(
