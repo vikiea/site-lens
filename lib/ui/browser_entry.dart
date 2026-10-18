@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'app_controller.dart';
 import '../domain/models.dart';
@@ -69,6 +70,19 @@ String tabPath(ActiveBrowserSession tab) {
   return '${current.host}$path';
 }
 
+Future<void> _copyBrowserTabUrl(
+  BuildContext context,
+  ActiveBrowserSession tab,
+) async {
+  final url = tab.currentUrl.toString();
+  if (url.isEmpty) return;
+  await Clipboard.setData(ClipboardData(text: url));
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text('已复制标签页链接'), duration: Duration(seconds: 1)),
+  );
+}
+
 /// One tab in the switcher grid. The "thumbnail" is a stylised preview of the
 /// tab's current document (label + host + path), not a live capture.
 class BrowserTabCard extends StatelessWidget {
@@ -101,6 +115,7 @@ class BrowserTabCard extends StatelessWidget {
         radius: 20,
         child: InkWell(
           onTap: onSelect,
+          onLongPress: () => _copyBrowserTabUrl(context, tab),
           borderRadius: BorderRadius.circular(20),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
@@ -344,6 +359,7 @@ class BrowserTabsPage extends StatelessWidget {
                   ],
                 ),
                 onTap: () => onResume(tab),
+                onLongPress: () => _copyBrowserTabUrl(context, tab),
               ),
             ),
             const SizedBox(height: SiteLensMetrics.itemGap),

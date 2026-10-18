@@ -11,6 +11,15 @@
   const contexts = new Set();
   const resumeContexts = new Set();
   const childPlaying = new Map();
+  const childCandidates = new Map();
+  const mediaAttributes = [
+    'data-play-src',
+    'data-video-src',
+    'data-media-src',
+    'data-m3u8',
+    'data-hls',
+    'data-src',
+  ];
   let blocked = config.blocked !== false;
   let needsGesture = false;
   let lastPlaying = null;
@@ -36,6 +45,7 @@
   function collect() {
     const children = Array.from({length:Math.min(window.frames.length,64)}, (_,i) => window.frames[i]);
     for (const frame of childPlaying.keys()) if (!children.includes(frame)) childPlaying.delete(frame);
+    for (const frame of childCandidates.keys()) if (!children.includes(frame)) childCandidates.delete(frame);
     for (const node of nodes) {
       if (node.isConnected) connectedBefore.add(node);
       if ((!node.isConnected && connectedBefore.has(node)) ||
@@ -45,19 +55,54 @@
     }
     document.querySelectorAll('video,audio').forEach(track);
   }
+  function looksMedia(raw, mime) {
+    return /(?:\.m3u8|\.mp4|\.m3u|\.mpd|\.webm)(?:[?#]|$)/i.test(raw) ||
+      /^(?:video|audio)\//i.test(mime) || /mpegurl|dash\+xml/i.test(mime);
+  }
+  function addCandidate(output, seen, raw, mime = '', durationMs, force = false, title) {
+    if (typeof raw !== 'string' || !raw.trim()) return;
+    try {
+      const url = new URL(raw, document.baseURI);
+      if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password ||
+          (!force && !looksMedia(url.href, mime)) || seen.has(url.href)) return;
+      const candidate = {
+        url: url.href,
+        title: String(title ?? document.title ?? '').slice(0, 512),
+        mime: String(mime || '').slice(0, 128),
+      };
+      if (Number.isFinite(durationMs)) candidate.durationMs = Math.round(durationMs);
+      seen.add(url.href);
+      output.push(candidate);
+    } catch (_) {}
+  }
   function report() {
     collect();
     const playing = Array.from(nodes).some(node => !node.paused && !node.ended) ||
       Array.from(contexts).some(ctx => ctx.state === 'running') || Array.from(childPlaying.values()).some(Boolean);
     const candidates = [];
+    const seen = new Set();
     for (const node of nodes) {
       const raw = node.currentSrc || node.src || '';
-      try {
-        const url = new URL(raw, document.baseURI);
-        if ((url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password) {
-          candidates.push({url: url.href, title: (document.title || '').slice(0, 512), mime: String(node.type || '').slice(0, 128), durationMs: Number.isFinite(node.duration) ? Math.round(node.duration * 1000) : undefined});
-        }
-      } catch (_) {}
+      addCandidate(candidates, seen, raw, node.type, Number.isFinite(node.duration) ? node.duration * 1000 : undefined, true);
+    }
+    const selector = mediaAttributes.map(name => `[${name}]`).join(',');
+    document.querySelectorAll(selector).forEach(element => {
+      if (!element || typeof element.getAttribute !== 'function') return;
+      const mime = element.getAttribute('type') || '';
+      for (const name of mediaAttributes) {
+        addCandidate(candidates, seen, element.getAttribute(name), mime);
+      }
+    });
+    if (typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
+      for (const entry of performance.getEntriesByType('resource').slice(-256)) {
+        addCandidate(candidates, seen, entry.name, entry.initiatorType || '');
+      }
+    }
+    for (const child of childCandidates.values()) {
+      if (!Array.isArray(child)) continue;
+      for (const candidate of child) {
+        addCandidate(candidates, seen, candidate?.url, candidate?.mime, candidate?.durationMs, true, candidate?.title);
+      }
     }
     const candidateKey = JSON.stringify(candidates);
     if (playing === lastPlaying && candidateKey === lastCandidates) return;
@@ -65,7 +110,7 @@
     lastCandidates = candidateKey;
     try {
       if (window.parent !== window) {
-        window.parent.postMessage({kind:'site-lens-media-state',token:config.token,playing}, '*');
+        window.parent.postMessage({kind:'site-lens-media-state',token:config.token,playing,candidates}, '*');
       } else {
         window[config.bridge].postMessage(JSON.stringify({playing, title: (document.title || '').slice(0,512), candidates}));
       }
@@ -158,6 +203,8 @@
       if (children.includes(event.source)) {
         for (const frame of childPlaying.keys()) if (!children.includes(frame)) childPlaying.delete(frame);
         childPlaying.set(event.source,data.playing); report();
+        childCandidates.set(event.source, Array.isArray(data.candidates) ? data.candidates : []);
+        report();
       }
     }
     if (event.source === window.parent && data && data.kind === 'site-lens-media' &&
@@ -169,4 +216,5 @@
     new MutationObserver(() => report()).observe(document, {childList:true,subtree:true});
   }
   document.addEventListener('DOMContentLoaded', () => { collect(); if (blocked) pause(); else report(); });
+  if (typeof setInterval === 'function') setInterval(() => report(), 1500);
 })();

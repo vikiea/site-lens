@@ -3191,6 +3191,10 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                               _closeMoreNavigation();
                               unawaited(_addTab());
                             },
+                            onMediaCandidates: () {
+                              _closeMoreNavigation();
+                              unawaited(_showMediaCandidatesSheet());
+                            },
                             onMenus: () {
                               _closeMoreNavigation();
                               unawaited(_menus());
@@ -3306,17 +3310,6 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                     ),
                   ),
                 );
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.ondemand_video),
-              title: const Text('媒体候选'),
-              subtitle: Text(
-                '当前文档已登记 ${current == null ? 0 : widget.app.hosts.mediaCandidates(current).length} 个可审查地址',
-              ),
-              onTap: () {
-                Navigator.pop(c);
-                unawaited(_showMediaCandidatesSheet());
               },
             ),
             const Divider(),
@@ -3567,12 +3560,14 @@ class _BrowserNavButton extends StatelessWidget {
 class _BrowserMoreNavigation extends StatelessWidget {
   const _BrowserMoreNavigation({
     required this.onNewTab,
+    required this.onMediaCandidates,
     required this.onMenus,
     required this.onCloseTab,
     required this.onFilterDiagnostics,
   });
 
   final VoidCallback onNewTab;
+  final VoidCallback onMediaCandidates;
   final VoidCallback onMenus;
   final VoidCallback onCloseTab;
   final VoidCallback onFilterDiagnostics;
@@ -3591,6 +3586,13 @@ class _BrowserMoreNavigation extends StatelessWidget {
               tooltip: '新建标签页',
               icon: Icons.add,
               onPressed: onNewTab,
+            ),
+          ),
+          Expanded(
+            child: _BrowserNavButton(
+              tooltip: '媒体嗅探与候选',
+              icon: Icons.ondemand_video,
+              onPressed: onMediaCandidates,
             ),
           ),
           Expanded(
