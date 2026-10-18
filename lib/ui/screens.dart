@@ -3406,6 +3406,16 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
           shrinkWrap: true,
           children: [
             const ListTile(title: Text('当前文档媒体候选')),
+            if (candidates.length > 1)
+              ListTile(
+                leading: const Icon(Icons.download_for_offline_outlined),
+                title: const Text('一键下载全部媒体'),
+                subtitle: const Text('已下载或正在下载的项目会自动跳过'),
+                onTap: () async {
+                  Navigator.pop(c);
+                  await _downloadMediaCandidates(current, candidates);
+                },
+              ),
             if (candidates.isEmpty)
               const ListTile(
                 title: Text('没有可用候选'),
@@ -3431,29 +3441,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                   icon: const Icon(Icons.download_for_offline_outlined),
                   onPressed: () async {
                     Navigator.pop(c);
-                    if (mounted) {
-                      showShortToast(context, '已加入下载');
-                    }
-                    try {
-                      final authorized = widget.app.hosts
-                          .authorizeMediaCandidate(current.id, candidate.id);
-                      final task = widget.app.mediaTasks.create(authorized);
-                      await widget.app.mediaDownloads.startNative(
-                        task,
-                        authorized,
-                      );
-                      if (mounted) {
-                        showShortToast(context, '已缓存');
-                      }
-                    } catch (error) {
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text('媒体任务未完成：${friendlyError(error)}'),
-                          ),
-                        );
-                      }
-                    }
+                    await _downloadMediaCandidates(current, [candidate]);
                   },
                 ),
                 onTap: () async {
@@ -3497,6 +3485,52 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
         ),
       ),
     );
+  }
+
+  Future<void> _downloadMediaCandidates(
+    HostSession current,
+    List<MediaCandidate> candidates,
+  ) async {
+    var added = 0;
+    var skipped = 0;
+    var failed = 0;
+    final starts = <Future<void>>[];
+    for (final candidate in candidates) {
+      try {
+        final authorized = widget.app.hosts.authorizeMediaCandidate(
+          current.id,
+          candidate.id,
+        );
+        final existing = widget.app.mediaTasks.taskForCandidate(authorized);
+        if (existing != null &&
+            existing.state != MediaTaskState.failed &&
+            existing.state != MediaTaskState.cancelled) {
+          skipped++;
+          continue;
+        }
+        final task = widget.app.mediaTasks.create(authorized);
+        added++;
+        starts.add(
+          widget.app.mediaDownloads
+              .startNative(task, authorized)
+              .then<void>(
+                (_) {},
+                onError: (Object _) {
+                  failed++;
+                },
+              ),
+        );
+      } catch (_) {
+        failed++;
+      }
+    }
+    await Future.wait(starts);
+    if (!mounted) return;
+    final parts = <String>[];
+    if (added > 0) parts.add('已加入 $added 个');
+    if (skipped > 0) parts.add('跳过 $skipped 个');
+    if (failed > 0) parts.add('$failed 个失败');
+    showShortToast(context, parts.isEmpty ? '没有可下载媒体' : parts.join('，'));
   }
 }
 

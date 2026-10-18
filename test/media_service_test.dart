@@ -20,6 +20,7 @@ class FakeNativeDownloads extends NativeDownloadRuntime {
     MediaTask task,
     MediaCandidate candidate, {
     String? title,
+    String? seriesDirectory,
   }) async {
     calls.add('start:${task.id}');
     return statuses[task.id] ?? {'state': 'downloading'};
@@ -40,11 +41,12 @@ class FakeNativeDownloads extends NativeDownloadRuntime {
 }
 
 MediaCandidate candidate({
+  String id = 'candidate-1',
   String url = 'https://cdn.example/video.mp4',
   String mime = 'video/mp4',
   String title = 'video',
 }) => MediaCandidate(
-  id: 'candidate-1',
+  id: id,
   hostId: 7,
   generation: 3,
   sourceUrl: Uri.parse('https://example.com/watch'),
@@ -71,6 +73,20 @@ void main() {
       ),
     );
     expect(task.episodeLabel, '第3集');
+  });
+
+  test('media tasks deduplicate observation IDs for the same stream', () {
+    final store = MediaTaskStore();
+    final first = store.create(candidate(id: 'observation-1'));
+    final second = store.create(candidate(id: 'observation-2'));
+    expect(second.id, first.id);
+    expect(store.tasks, hasLength(1));
+  });
+
+  test('series directory names remove episode markers safely', () {
+    expect(mediaSeriesDirectoryName('母衣半暖默许春朝 - 第3集'), '母衣半暖默许春朝');
+    expect(mediaSeriesDirectoryName('A/B: episode=12'), 'A_B');
+    expect(mediaSeriesDirectoryName(''), '未命名媒体');
   });
 
   test('media retry clears the previous human-readable failure reason', () {

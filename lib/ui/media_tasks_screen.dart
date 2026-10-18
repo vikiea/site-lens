@@ -372,6 +372,28 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            formatMediaDuration(_session.positionMs),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontFeatures: [FontFeature.tabularFigures()],
+                            ),
+                          ),
+                          Text(
+                            formatMediaDuration(_session.durationMs),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontFeatures: [FontFeature.tabularFigures()],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                     Slider(
                       min: 0,
                       max: math.max(1, _session.durationMs).toDouble(),
@@ -526,13 +548,17 @@ class MediaTasksScreen extends StatefulWidget {
 }
 
 class _MediaTasksScreenState extends State<MediaTasksScreen> {
-  bool busy = false;
   Timer? _poller;
   bool _polling = false;
+  StreamSubscription<NativePlaybackSession>? _mediaStates;
+  final _operations = <String>{};
 
   @override
   void initState() {
     super.initState();
+    _mediaStates = widget.app.nativeMedia.states.listen((_) {
+      if (mounted) setState(() {});
+    });
     if (widget.app.nativeDownloads != null) {
       _poller = Timer.periodic(const Duration(seconds: 2), (_) {
         unawaited(_pollNativeTasks());
@@ -543,14 +569,16 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   @override
   void dispose() {
     _poller?.cancel();
+    _mediaStates?.cancel();
     super.dispose();
   }
 
   Future<void> _pollNativeTasks() async {
-    if (!mounted || busy || _polling) return;
+    if (!mounted || _polling) return;
     _polling = true;
     try {
       for (final task in widget.app.mediaTasks.tasks) {
+        if (_operations.contains(task.id)) continue;
         if (task.state == MediaTaskState.downloading ||
             task.state == MediaTaskState.paused) {
           try {
@@ -566,12 +594,15 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     }
   }
 
-  Future<void> _run(Future<void> Function() action) async {
-    if (busy) return;
-    setState(() => busy = true);
+  Future<void> _run(Future<void> Function() action, {String? taskId}) async {
+    final key = taskId ?? '__global__';
+    if (!_operations.add(key)) return;
     await safely(context, action);
-    if (mounted) setState(() => busy = false);
+    _operations.remove(key);
+    if (mounted) setState(() {});
   }
+
+  bool _taskBusy(String taskId) => _operations.contains(taskId);
 
   Future<void> _refreshNative(MediaTask task) async {
     final native = widget.app.nativeDownloads;
@@ -764,6 +795,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   @override
   Widget build(BuildContext context) {
     final tasks = widget.app.mediaTasks.tasks;
+    final activePlayback = widget.app.nativeMedia.active;
     return SiteLensPageScaffold(
       title: '媒体任务',
       body: ListView(
@@ -774,7 +806,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           32,
         ),
         children: [
-          if (widget.app.nativeMedia.active != null)
+          if (activePlayback != null)
             SiteLensPanel(
               child: Row(
                 children: [
@@ -782,38 +814,40 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      '原生播放：${_mediaTaskStateLabel(_nativeStateAsTaskState(widget.app.nativeMedia.active!.state))}',
+                      '原生播放：${_mediaTaskStateLabel(_nativeStateAsTaskState(activePlayback.state))}',
                     ),
                   ),
                   IconButton(
-                    tooltip: '暂停',
-                    icon: const Icon(Icons.pause),
+                    tooltip: activePlayback.state == NativePlaybackState.playing
+                        ? '暂停'
+                        : '播放',
+                    icon: Icon(
+                      activePlayback.state == NativePlaybackState.playing
+                          ? Icons.pause
+                          : Icons.play_arrow,
+                    ),
                     onPressed: () => _run(() async {
-                      await widget.app.nativeMedia.pause(
-                        sessionId: widget.app.nativeMedia.active?.id,
-                      );
+                      if (activePlayback.state == NativePlaybackState.playing) {
+                        await widget.app.nativeMedia.pause(
+                          sessionId: activePlayback.id,
+                        );
+                      } else {
+                        await widget.app.nativeMedia.play(
+                          sessionId: activePlayback.id,
+                        );
+                      }
                       if (mounted) setState(() {});
-                    }),
-                  ),
-                  IconButton(
-                    tooltip: '继续',
-                    icon: const Icon(Icons.play_arrow),
-                    onPressed: () => _run(() async {
-                      await widget.app.nativeMedia.play(
-                        sessionId: widget.app.nativeMedia.active?.id,
-                      );
-                      if (mounted) setState(() {});
-                    }),
+                    }, taskId: activePlayback.id),
                   ),
                   IconButton(
                     tooltip: '停止',
                     icon: const Icon(Icons.stop),
                     onPressed: () => _run(() async {
                       await widget.app.nativeMedia.stop(
-                        sessionId: widget.app.nativeMedia.active?.id,
+                        sessionId: activePlayback.id,
                       );
                       if (mounted) setState(() {});
-                    }),
+                    }, taskId: activePlayback.id),
                   ),
                 ],
               ),
@@ -855,22 +889,35 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                         '${_mediaTaskStateLabel(task.state)} · ${_taskProgressLabel(task)}${_taskErrorLabel(task).isEmpty ? '' : ' · ${_taskErrorLabel(task)}'}',
                       ),
                       onTap: task.state == MediaTaskState.playable
-                          ? () => unawaited(_run(() => _play(task)))
+                          ? () => unawaited(
+                              _run(() => _play(task), taskId: task.id),
+                            )
                           : null,
                       trailing: PopupMenuButton<String>(
-                        enabled: !busy,
+                        enabled: !_taskBusy(task.id),
                         onSelected: (value) {
                           switch (value) {
                             case 'refresh':
-                              unawaited(_run(() => _refreshNative(task)));
+                              unawaited(
+                                _run(
+                                  () => _refreshNative(task),
+                                  taskId: task.id,
+                                ),
+                              );
                             case 'details':
                               unawaited(_showDetails(task, snapshot.data));
                             case 'play':
-                              unawaited(_run(() => _play(task)));
+                              unawaited(
+                                _run(() => _play(task), taskId: task.id),
+                              );
                             case 'cast':
-                              unawaited(_run(() => _cast(task)));
+                              unawaited(
+                                _run(() => _cast(task), taskId: task.id),
+                              );
                             case 'export':
-                              unawaited(_run(() => _export(task)));
+                              unawaited(
+                                _run(() => _export(task), taskId: task.id),
+                              );
                             case 'cancel':
                               unawaited(
                                 _run(() async {
@@ -889,13 +936,18 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                                     );
                                   }
                                   if (mounted) setState(() {});
-                                }),
+                                }, taskId: task.id),
                               );
                             case 'pause':
-                              unawaited(_run(() => _togglePause(task)));
+                              unawaited(
+                                _run(() => _togglePause(task), taskId: task.id),
+                              );
                             case 'retry':
                               unawaited(
-                                _run(() => _retry(task, snapshot.data)),
+                                _run(
+                                  () => _retry(task, snapshot.data),
+                                  taskId: task.id,
+                                ),
                               );
                             case 'delete':
                               unawaited(
@@ -906,7 +958,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                                   }
                                   await widget.app.mediaTasks.delete(task.id);
                                   if (mounted) setState(() {});
-                                }),
+                                }, taskId: task.id),
                               );
                           }
                         },

@@ -9,4 +9,10 @@ void main() {
     expect(formatBytes(116 * 1024 * 1024), '116 MB');
     expect(formatBytes(-1), '未知大小');
   });
+
+  test('media duration formatting uses readable elapsed time', () {
+    expect(formatMediaDuration(0), '--:--');
+    expect(formatMediaDuration(65_000), '01:05');
+    expect(formatMediaDuration(3_661_000), '1:01:01');
+  });
 }

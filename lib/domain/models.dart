@@ -669,6 +669,27 @@ String mediaCandidateGroupKey(Uri url) {
   return mediaCandidateKey(clean);
 }
 
+/// Stable, filesystem-safe directory name for a media series. Episode
+/// markers are removed so all episodes in one title share a parent folder.
+String mediaSeriesDirectoryName(String title) {
+  var value = title.trim().replaceAll(RegExp(r'\s+'), ' ');
+  value = value.replaceAll(
+    RegExp(
+      r'(?:\s*[-|_·:/]?\s*(?:第\s*\d+\s*[集话期]|(?:episode|ep|e)\s*[:=_-]?\s*\d+))\s*$',
+      caseSensitive: false,
+    ),
+    '',
+  );
+  value = value
+      .replaceAll(RegExp(r'[\\/:*?"<>|\u0000-\u001f]'), '_')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim()
+      .replaceAll(RegExp(r'[. ]+$'), '');
+  if (value.isEmpty) return '未命名媒体';
+  final runes = value.runes.toList();
+  return String.fromCharCodes(runes.take(80));
+}
+
 class MediaCandidate {
   const MediaCandidate({
     required this.id,
@@ -840,6 +861,8 @@ class MediaTask {
     if (episode.isEmpty || title.contains(episode)) return title;
     return '$title - $episode';
   }
+
+  String get seriesDirectoryName => mediaSeriesDirectoryName(displayTitle);
 
   MediaTask copyWith({
     MediaTaskState? state,
