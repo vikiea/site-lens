@@ -923,6 +923,27 @@ class _AdvancedArea extends StatelessWidget {
             ),
           ),
           const Divider(),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.shield_outlined),
+            title: const Text('档案过滤策略'),
+            subtitle: Text(
+              app.profileFilterPolicies.containsKey(profile.id)
+                  ? '已单独配置；仅影响此档案的浏览标签'
+                  : '跟随全局广告过滤策略',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => ProfileFilterSettingsScreen(
+                  app: app,
+                  profileId: profile.id,
+                  profileName: profile.name,
+                ),
+              ),
+            ),
+          ),
+          const Divider(),
           Wrap(
             spacing: 8,
             runSpacing: 8,
@@ -966,6 +987,227 @@ class _AdvancedArea extends StatelessWidget {
     await app.db.setProfileReadySelector(profile.id, value);
     await app.load();
   }
+}
+
+/// Profile-scoped filter controls. Sources remain global, while the policy
+/// toggles and domain exceptions can be customized without affecting another
+/// profile. An absent row deliberately inherits the global policy.
+class ProfileFilterSettingsScreen extends StatefulWidget {
+  const ProfileFilterSettingsScreen({
+    super.key,
+    required this.app,
+    required this.profileId,
+    required this.profileName,
+  });
+
+  final AppController app;
+  final int profileId;
+  final String profileName;
+
+  @override
+  State<ProfileFilterSettingsScreen> createState() =>
+      _ProfileFilterSettingsScreenState();
+}
+
+class _ProfileFilterSettingsScreenState
+    extends State<ProfileFilterSettingsScreen> {
+  bool busy = false;
+
+  FilterPolicy get policy =>
+      widget.app.profileFilterPolicies[widget.profileId] ??
+      widget.app.filterPolicy;
+
+  bool get explicit =>
+      widget.app.profileFilterPolicies.containsKey(widget.profileId);
+
+  Future<void> _run(Future<void> Function() action) async {
+    if (busy) return;
+    setState(() => busy = true);
+    try {
+      await action();
+    } catch (error) {
+      if (mounted) showError(context, error);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> _editDomains({required bool blocked}) async {
+    final current = blocked ? policy.blockedDomains : policy.domainExceptions;
+    final value = await showDialog<String>(
+      context: context,
+      builder: (_) => _ProfileDomainDialog(
+        title: blocked ? '编辑档案拦截域名' : '编辑档案例外域名',
+        initial: current.join('\n'),
+      ),
+    );
+    if (value == null || !mounted) return;
+    final parsed = _parseProfileDomains(value);
+    if (parsed.$2.isNotEmpty) {
+      showError(context, FormatException('无效域名：${parsed.$2.join(', ')}'));
+      return;
+    }
+    await _run(() async {
+      final next = blocked
+          ? policy.copyWith(blockedDomains: parsed.$1)
+          : policy.copyWith(domainExceptions: parsed.$1);
+      await widget.app.updateFilterPolicy(next, profileId: widget.profileId);
+    });
+  }
+
+  Future<void> _reset() async {
+    if (!explicit) return;
+    await _run(() => widget.app.clearFilterPolicy(profileId: widget.profileId));
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: widget.app,
+    builder: (context, _) => SiteLensPageScaffold(
+      title: '${widget.profileName} · 过滤策略',
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(
+          SiteLensMetrics.pagePadding,
+          12,
+          SiteLensMetrics.pagePadding,
+          32,
+        ),
+        children: [
+          SiteLensNotice(
+            tone: SiteLensNoticeTone.info,
+            text: explicit
+                ? '此档案使用单独策略。规则源仍由全局管理，域名例外和开关只影响此档案的浏览标签。'
+                : '此档案当前跟随全局策略。修改下面任一项会创建单独策略，不会影响其他档案。',
+          ),
+          const SizedBox(height: SiteLensMetrics.sectionGap),
+          SiteLensPanel(
+            padding: EdgeInsets.zero,
+            child: Column(
+              children: [
+                SwitchListTile(
+                  title: const Text('启用广告过滤'),
+                  subtitle: const Text('按全局规则源拦截此档案的网页请求'),
+                  value: policy.enabled,
+                  onChanged: busy
+                      ? null
+                      : (value) => _run(
+                          () => widget.app.updateFilterPolicy(
+                            policy.copyWith(enabled: value),
+                            profileId: widget.profileId,
+                          ),
+                        ),
+                ),
+                const Divider(height: 1, indent: 18, endIndent: 18),
+                SwitchListTile(
+                  title: const Text('隐藏页面广告元素'),
+                  subtitle: const Text('应用规则源中的 CSS 隐藏规则'),
+                  value: policy.pageFiltering,
+                  onChanged: busy
+                      ? null
+                      : (value) => _run(
+                          () => widget.app.updateFilterPolicy(
+                            policy.copyWith(pageFiltering: value),
+                            profileId: widget.profileId,
+                          ),
+                        ),
+                ),
+                const Divider(height: 1, indent: 18, endIndent: 18),
+                SiteLensActionRow(
+                  icon: Icons.block_outlined,
+                  title: '拦截域名',
+                  subtitle: policy.blockedDomains.isEmpty
+                      ? '未添加档案专属拦截域名'
+                      : '${policy.blockedDomains.length} 个域名',
+                  onTap: busy ? null : () => _editDomains(blocked: true),
+                ),
+                const Divider(height: 1, indent: 18, endIndent: 18),
+                SiteLensActionRow(
+                  icon: Icons.check_circle_outline,
+                  title: '例外域名',
+                  subtitle: policy.domainExceptions.isEmpty
+                      ? '未添加档案专属例外域名'
+                      : '${policy.domainExceptions.length} 个域名，优先放行',
+                  onTap: busy ? null : () => _editDomains(blocked: false),
+                ),
+              ],
+            ),
+          ),
+          if (explicit) ...[
+            const SizedBox(height: SiteLensMetrics.itemGap),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: busy ? null : _reset,
+                icon: const Icon(Icons.restore),
+                label: const Text('恢复跟随全局策略'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    ),
+  );
+}
+
+class _ProfileDomainDialog extends StatefulWidget {
+  const _ProfileDomainDialog({required this.title, required this.initial});
+
+  final String title;
+  final String initial;
+
+  @override
+  State<_ProfileDomainDialog> createState() => _ProfileDomainDialogState();
+}
+
+class _ProfileDomainDialogState extends State<_ProfileDomainDialog> {
+  late final controller = TextEditingController(text: widget.initial);
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => SiteLensAlertDialog(
+    title: Text(widget.title),
+    content: TextField(
+      controller: controller,
+      autofocus: true,
+      minLines: 4,
+      maxLines: 8,
+      keyboardType: TextInputType.multiline,
+      decoration: const InputDecoration(
+        helperText: '每行一个域名，也支持 *.example.com；保存后重新加载页面生效。',
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      FilledButton(
+        onPressed: () => Navigator.pop(context, controller.text),
+        child: const Text('保存'),
+      ),
+    ],
+  );
+}
+
+(Set<String>, List<String>) _parseProfileDomains(String input) {
+  final values = <String>{};
+  final invalid = <String>[];
+  for (final raw in input.split(RegExp(r'[\s,]+'))) {
+    final value = raw.trim().toLowerCase().replaceFirst(RegExp(r'^\*\.'), '');
+    if (value.isEmpty) continue;
+    if (!RegExp(r'^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$').hasMatch(value) ||
+        value.contains('..')) {
+      invalid.add(raw.trim());
+    } else {
+      values.add(value);
+    }
+  }
+  return (values, invalid);
 }
 
 class _NewProfile {

@@ -429,6 +429,26 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Removes an explicit profile policy so the profile inherits the global
+  /// policy again. The native hosts are updated immediately; the next
+  /// navigation also receives the inherited policy through [setFilterEngine].
+  Future<void> clearFilterPolicy({int? profileId}) async {
+    await db.deleteFilterPolicy(profileId: profileId);
+    if (profileId == null) {
+      filterPolicy = const FilterPolicy();
+    } else {
+      final next = {...profileFilterPolicies}..remove(profileId);
+      profileFilterPolicies = next;
+    }
+    hosts.setFilterEngine(
+      filterSnapshots.activeEngine,
+      policy: filterPolicy,
+      snapshot: filterSnapshots.activeSnapshot,
+      profilePolicies: profileFilterPolicies,
+    );
+    notifyListeners();
+  }
+
   Future<void> _seedBuiltInFilterSources() async {
     final existing = await db.filterSources();
     final seedVersion = await db.setting(_filterSourceSeedSetting);

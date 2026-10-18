@@ -493,7 +493,10 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     private fun filterAllows(request: WebResourceRequest): Boolean {
         val url = request.url
         val state = filterState
-        if (!state.enabled) return true
+        // The document navigation remains available even when a stale or
+        // degraded snapshot is active. Filtering subresources keeps the
+        // browser recoverable and matches the Dart engine's document policy.
+        if (request.isForMainFrame || !state.enabled) return true
         val host = url.host?.lowercase() ?: return true
         if (state.exceptions.any { host == it || host.endsWith(".$it") }) return true
         if (state.blockedDomains.any { host == it || host.endsWith(".$it") }) return false
@@ -564,16 +567,21 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         if (!filterState.enabled) return
         if (blocked) filterBlockedCount++ else filterAllowedCount++
         val total = filterBlockedCount + filterAllowedCount
-        if (total % 32 == 0) {
-            event(
-                "filterStats",
-                JSONObject()
-                    .put("blocked", filterBlockedCount)
-                    .put("allowed", filterAllowedCount)
-                    .put("snapshotId", filterState.snapshotId)
-                    .toString(),
-            )
-        }
+        if (total % 32 == 0) emitFilterStats()
+    }
+
+    private fun emitFilterStats() {
+        if (!filterState.enabled) return
+        val total = filterBlockedCount + filterAllowedCount
+        if (total == 0) return
+        event(
+            "filterStats",
+            JSONObject()
+                .put("blocked", filterBlockedCount)
+                .put("allowed", filterAllowedCount)
+                .put("snapshotId", filterState.snapshotId)
+                .toString(),
+        )
     }
     init {
         if (purpose != HostPurpose.BROWSING && !hasProfiles) {
@@ -760,6 +768,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 // lifecycle or mark the newer document as loaded.
                 if (pageLoadGeneration == generation && sameWebUrl(pageStartedUrl, url)) {
                     runCatching { media.pageFinished() }
+                    emitFilterStats()
                     refreshLayout?.isRefreshing = false
                     event("loaded", url = view.url ?: url)
                 }

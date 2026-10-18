@@ -746,13 +746,16 @@ class FilterSourceManager {
     }
     final options = <String>[];
     if (rule.domains.isNotEmpty || rule.excludedDomains.isNotEmpty) {
-      options.add(
-        'domain=${[...rule.domains, ...rule.excludedDomains.map((domain) => '~$domain')].join('|')}',
-      );
+      final domainOptions = [
+        ...rule.domains,
+        ...rule.excludedDomains.map((domain) => '~$domain'),
+      ]..sort();
+      options.add('domain=${domainOptions.join('|')}');
     }
     if (rule.thirdParty == true) options.add('third-party');
     if (rule.thirdParty == false) options.add('~third-party');
-    options.addAll(rule.resourceTypes);
+    final resourceTypes = rule.resourceTypes.toList()..sort();
+    options.addAll(resourceTypes);
     final suffix = options.isEmpty ? '' : '\$${options.join(',')}';
     return '${rule.exception ? '@@' : ''}${rule.pattern}$suffix';
   }

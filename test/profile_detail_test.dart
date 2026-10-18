@@ -112,4 +112,30 @@ void main() {
       );
     },
   );
+
+  testWidgets('profile filter policy can be customized and reset to global', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: ProfileFilterSettingsScreen(
+          app: app,
+          profileId: profile.id,
+          profileName: profile.name,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('当前跟随全局策略'), findsOneWidget);
+
+    await tester.tap(find.text('启用广告过滤'));
+    await tester.pumpAndSettle();
+    expect(app.profileFilterPolicies.containsKey(profile.id), isTrue);
+    expect(find.text('恢复跟随全局策略'), findsOneWidget);
+
+    await tester.tap(find.text('恢复跟随全局策略'));
+    await tester.pumpAndSettle();
+    expect(app.profileFilterPolicies.containsKey(profile.id), isFalse);
+  });
 }
