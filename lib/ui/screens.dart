@@ -982,10 +982,15 @@ Future<bool> confirmScript(
 ) async {
   final meta = ScriptMetadata.parse(script.source);
   if (!meta.canEnable) throw StateError(meta.errors.join('\n'));
-  if (app.capabilities?.documentStart != true) {
+  // Script management can be opened before the first browsing tab exists, so
+  // there may not be a cached host capability result yet. Probe a temporary
+  // browsing host on demand instead of making users visit Settings first.
+  final capabilities = app.capabilities ?? await _checkScriptCapabilities(app);
+  if (!context.mounted) return false;
+  if (!capabilities.documentStart) {
     throw StateError('缺少安全生命周期注入能力，无法启用脚本');
   }
-  if (!meta.pageWorld && app.capabilities?.isolatedScripts != true) {
+  if (!meta.pageWorld && !capabilities.isolatedScripts) {
     throw StateError('本机缺少安全隔离与同环境消息能力，不能启用特权脚本');
   }
   return await showDialog<bool>(
@@ -1011,6 +1016,14 @@ Future<bool> confirmScript(
         ),
       ) ??
       false;
+}
+
+Future<HostCapabilities> _checkScriptCapabilities(AppController app) async {
+  try {
+    return await app.checkHostCapabilities();
+  } catch (_) {
+    throw StateError('无法检查网页增强能力，请稍后重试');
+  }
 }
 
 Future<void> scriptDetails(
