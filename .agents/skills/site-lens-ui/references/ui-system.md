@@ -45,6 +45,7 @@ Use `SiteLensColors.of(context)` for backdrop, panel, navigation, divider, secti
 - Browser toolbar: fixed equal-width row using `SiteLensSurfaceRole.platformView`; no wrapping or per-button surfaces.
 - Panels: `SiteLensPanel` or `SiteLensGlassSurface`, with content padding from tokens. Segmented tracks inside a light glass panel use the recessed well tint so the track and selected pill remain distinct from a white panel surface.
 - Composite information panels: related sections such as detection results, backup addresses, and history may share one `SiteLensPanel`; separate sections use `Divider(height: 1)` and foldable `ExpansionTile` rows inside that single glass boundary. Use `SiteLensMetrics.itemGap` only between separate semantic panels, never between sections that have been intentionally merged.
+- Foldable panels use the shared theme/primitive and remain shadow-free in every interaction state. Expansion must not add Material elevation, a drop shadow, an opaque slab, or a pressed shadow; use the existing glass tint, overlay and shape tokens for feedback.
 - Rows: use shared action/status row primitives when several pages need the same icon-title-description-trailing layout.
 - Feedback: use the shared notice/error surface for persistent page feedback; reserve snack bars for short-lived confirmation.
 - Dialogs and sheets: keep Material semantics and actions, but use the themed opaque overlay or a liquid-glass wrapper. Do not restore default elevation or default opaque blue/grey surfaces.
@@ -60,6 +61,7 @@ Use `SiteLensColors.of(context)` for backdrop, panel, navigation, divider, secti
 - Are long Chinese labels readable and safely truncated?
 - Are focus, semantics, hit targets, and dismiss actions preserved?
 - Does the same screen read correctly in light mode, dark mode, and a non-default seed preset?
+- Do foldable panels remain shadow-free and visually stable before, during, and after expansion in light mode, dark mode, and a non-default seed preset?
 
 ## Lists
 

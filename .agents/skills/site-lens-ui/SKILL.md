@@ -12,8 +12,10 @@ Use this skill for UI work in this repository. Read [references/ui-system.md](re
 - Treat liquid glass as the visual surface system and Material as Flutter's application, behavior, semantics, focus, and accessibility infrastructure. Do not replace `MaterialApp`, `ThemeData`, `Scaffold`, `Navigator`, or Material behavior wholesale.
 - Use `SiteLensBackdrop`, `SiteLensGlassSurface`, `SiteLensPanel`, and `SiteLensGlassGroup` for app surfaces. Use `SiteLensSurfaceRole.platformView` only for controls over the native WebView.
 - Keep the background static, low saturation, and theme tinted. Do not add page-local gradients, shadows, opaque cards, or a second spacing/radius system.
+- Foldable panels keep the same no-shadow hierarchy while collapsed, pressed, focused, hovered, and expanded; interaction feedback comes from glass tint/overlay and shape, never elevation or a drop shadow.
 - The bottom navigation is a floating, narrow glass chrome surface. It must use the liquid-glass path, keep one row of icon-plus-label destinations, and use a tinted selected capsule without a solid navigation slab.
 - Prefer shared UI primitives and theme tokens over one-off `Container`, `BoxDecoration`, `Card`, `TextStyle`, `BorderRadius`, or hard-coded colors in screens.
+- Foldable panels use the shared foldable-panel primitive/theme; do not introduce raw `ExpansionTile` defaults with elevation, pressed shadows, opaque backgrounds, or page-local shape overrides.
 - Preserve existing business behavior, fail-closed navigation and script rules, WebView lifecycle, and data flows while changing presentation.
 
 ## Implementation workflow
