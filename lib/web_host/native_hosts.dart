@@ -176,8 +176,16 @@ class NativeHosts extends WebHostEvents {
     await api.navigate(session.id, url.toString());
   }
 
-  List<MediaCandidate> mediaCandidates(HostSession session) =>
-      List.unmodifiable(session.mediaCandidates.values);
+  List<MediaCandidate> mediaCandidates(HostSession session) {
+    final grouped = <String, MediaCandidate>{};
+    for (final candidate in session.mediaCandidates.values) {
+      // Keep the newest observation for signed HLS URLs. This collapses
+      // repeated DOM/player callbacks before they reach the bottom sheet,
+      // while preserving the full URL that the user can authorize.
+      grouped[mediaCandidateDisplayGroupKey(candidate)] = candidate;
+    }
+    return List.unmodifiable(grouped.values);
+  }
 
   List<MediaCandidate> mediaCandidatesForHost(int hostId, {int? generation}) {
     final session = sessions[hostId];
@@ -318,11 +326,11 @@ class NativeHosts extends WebHostEvents {
               policy: session.filterPolicy,
             ) !=
             FilterDecision.block) {
-          final groupKey = mediaCandidateGroupKey(candidate.mediaUrl);
+          final groupKey = mediaCandidateDisplayGroupKey(candidate);
           session.mediaCandidates.removeWhere(
             (_, value) =>
                 value.id != candidate.id &&
-                mediaCandidateGroupKey(value.mediaUrl) == groupKey,
+                mediaCandidateDisplayGroupKey(value) == groupKey,
           );
           session.mediaCandidates[candidate.id] = candidate;
           unawaited(db.saveMediaCandidate(candidate));
@@ -601,11 +609,11 @@ class NativeHosts extends WebHostEvents {
             FilterDecision.block) {
           throw StateError('媒体地址被当前过滤快照阻止');
         }
-        final groupKey = mediaCandidateGroupKey(candidate.mediaUrl);
+        final groupKey = mediaCandidateDisplayGroupKey(candidate);
         session.mediaCandidates.removeWhere(
           (_, value) =>
               value.id != candidate.id &&
-              mediaCandidateGroupKey(value.mediaUrl) == groupKey,
+              mediaCandidateDisplayGroupKey(value) == groupKey,
         );
         session.mediaCandidates[candidate.id] = candidate;
         await db.saveMediaCandidate(candidate);

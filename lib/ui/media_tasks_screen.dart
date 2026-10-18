@@ -13,10 +13,9 @@ import 'ui_primitives.dart';
 import 'ui_util.dart';
 import 'app_theme.dart';
 
-/// In-app surface for the native MediaPlayer texture. The old native bridge
-/// could start playback without attaching a video surface, which made a
-/// successful "opened" toast look like a no-op. This route keeps the texture
-/// and controls visible until the user leaves it.
+/// In-app surface for the native Media3 texture. The route keeps the texture
+/// and controls visible until the user leaves it, including while a stream is
+/// buffering or reports a decoder error.
 class NativeMediaPlayerScreen extends StatefulWidget {
   const NativeMediaPlayerScreen({
     super.key,

@@ -748,6 +748,20 @@ class MediaCandidate {
   }
 }
 
+/// A display/session identity for one media stream. Pages commonly report the
+/// same HLS playlist from several video elements with different signed URLs.
+/// The selected candidate still keeps its complete URL for playback.
+String mediaCandidateDisplayGroupKey(MediaCandidate candidate) {
+  final title = candidate.title
+      .trim()
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .toLowerCase();
+  if (candidate.isHls && title.isNotEmpty) {
+    return 'hls-title:${candidate.sourceUrl.origin.toLowerCase()}:$title:${candidate.effectiveMime}';
+  }
+  return mediaCandidateGroupKey(candidate.mediaUrl);
+}
+
 enum MediaTaskState {
   queued,
   downloading,

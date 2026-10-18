@@ -38,6 +38,8 @@ class NativeMediaRuntime {
       'sessionId': sessionId,
       'candidateId': candidate.id,
       'url': candidate.mediaUrl.toString(),
+      'mime': candidate.effectiveMime,
+      'sourceUrl': sourceUrl.toString(),
     });
     return _decode(raw ?? const <String, Object?>{});
   }
@@ -50,6 +52,7 @@ class NativeMediaRuntime {
       'sessionId': 'play_${task.id}',
       'candidateId': task.candidateId,
       'path': file.path,
+      'mime': inferMediaMime(file.uri),
     });
     return _decode(raw ?? const <String, Object?>{});
   }

@@ -7,8 +7,10 @@ plugins {
 }
 
 val releaseRequested = gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = true) }
-val signerFile = file(System.getenv("SITE_LENS_SIGNING_PROPERTIES")
-    ?: "${System.getProperty("user.home")}/.config/site-lens/signing.properties")
+val signerPath = System.getenv("SITE_LENS_SIGNING_PROPERTIES")
+    ?.takeIf { it.isNotBlank() }
+    ?: "${System.getProperty("user.home")}/.config/site-lens/signing.properties"
+val signerFile = file(signerPath)
 val signer = Properties().apply { if (signerFile.isFile) signerFile.inputStream().use { load(it) } }
 check(!releaseRequested || signerFile.isFile) {
     "Formal signer missing. Configure SITE_LENS_SIGNING_PROPERTIES outside the repository."
@@ -92,6 +94,11 @@ dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.webkit:webkit:1.17.1")
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
+    // MediaPlayer cannot reliably decode HLS playlists emitted by modern
+    // WebView pages. Media3 supplies a maintained HLS renderer and buffering
+    // stack for the native texture player.
+    implementation("androidx.media3:media3-exoplayer:1.5.1")
+    implementation("androidx.media3:media3-exoplayer-hls:1.5.1")
 }
 
 // Formal release builds must never silently fall back to a debug certificate.

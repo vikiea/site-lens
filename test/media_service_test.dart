@@ -116,6 +116,27 @@ void main() {
     );
   });
 
+  test('titled HLS observations collapse to one display candidate', () {
+    final first = candidate(
+      url: 'https://cdn.example/live/index.m3u8?token=one',
+      mime: 'application/vnd.apple.mpegurl',
+    );
+    final second = MediaCandidate(
+      id: 'candidate-2',
+      hostId: first.hostId,
+      generation: first.generation,
+      sourceUrl: first.sourceUrl,
+      mediaUrl: Uri.parse('https://cdn.example/live/index.m3u8?token=two'),
+      title: first.title,
+      mime: first.mime,
+      source: first.source,
+    );
+    expect(
+      mediaCandidateDisplayGroupKey(first),
+      mediaCandidateDisplayGroupKey(second),
+    );
+  });
+
   test('HLS downloads a local playlist, segments and encryption key', () async {
     final root = await Directory.systemTemp.createTemp(
       'site-lens-hls-download-',
