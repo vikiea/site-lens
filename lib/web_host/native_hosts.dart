@@ -38,6 +38,8 @@ class HostSession {
   FilterEngine? filterEngine;
   FilterPolicy filterPolicy = const FilterPolicy();
   FilterSnapshot? filterSnapshot;
+  int filterBlocked = 0;
+  int filterAllowed = 0;
 }
 
 class ScriptMenu {
@@ -99,6 +101,8 @@ class NativeHosts extends WebHostEvents {
     for (final session in sessions.values.toList()) {
       if (!session.disposed) {
         session.filterPolicy = _policyFor(session);
+        session.filterBlocked = 0;
+        session.filterAllowed = 0;
         unawaited(_applyFilter(session));
       }
     }
@@ -280,6 +284,8 @@ class NativeHosts extends WebHostEvents {
       session.generation = event.generation;
       session.filterEngine = filterEngine;
       session.filterPolicy = _policyFor(session);
+      session.filterBlocked = 0;
+      session.filterAllowed = 0;
       session.filterSnapshot = filterSnapshot;
       session.loaded = false;
       session.error = null;
@@ -295,6 +301,17 @@ class NativeHosts extends WebHostEvents {
       session.fullscreen = event.detail == 'entered';
     }
     if (event.kind == 'interaction') session.interactions++;
+    if (event.kind == 'filterStats') {
+      try {
+        final stats = jsonDecode(event.detail) as Map<String, dynamic>;
+        session.filterBlocked =
+            (stats['blocked'] as num?)?.toInt() ?? session.filterBlocked;
+        session.filterAllowed =
+            (stats['allowed'] as num?)?.toInt() ?? session.filterAllowed;
+      } catch (_) {
+        // A diagnostic event must never break navigation state.
+      }
+    }
     if (event.kind == 'newWindow') {
       final target = event.detail.isEmpty ? event.url : event.detail;
       if (target.isNotEmpty) onNewWindow?.call(event.hostId, target);

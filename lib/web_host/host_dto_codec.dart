@@ -13,6 +13,11 @@ import 'web_host.g.dart';
 class HostDtoCodec {
   const HostDtoCodec._();
 
+  /// StandardMessageCodec ultimately crosses Android Binder. Refuse an
+  /// oversized rule payload before the native call so a large public list
+  /// degrades visibly instead of crashing the WebView or Flutter process.
+  static const maxFilterRulePayloadBytes = 512 * 1024;
+
   static const safeFilterSnapshotFields = <String>{
     'id',
     'version',
@@ -85,12 +90,16 @@ class HostDtoCodec {
             )
             .toList(growable: false) ??
         const <Map<String, Object?>>[];
+    final encodedRules = jsonEncode(rules);
+    if (encodedRules.length > maxFilterRulePayloadBytes) {
+      throw StateError('过滤快照过大，当前宿主暂不加载');
+    }
     return FilterSnapshotDto(
       id: value?.id ?? '',
       version: value?.version ?? '',
       sha256: value?.sha256 ?? '',
       state: value?.state.name ?? FilterSnapshotState.missing.name,
-      rules: jsonEncode(rules),
+      rules: encodedRules,
     );
   }
 }

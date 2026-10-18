@@ -362,6 +362,8 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     private val injections = mutableListOf<ScriptHandler>()
     private var filterInjection: ScriptHandler? = null
     @Volatile private var filterState = NativeFilterState()
+    private var filterBlockedCount = 0
+    private var filterAllowedCount = 0
     private var accepting = false
     private var expectedUrl: String? = null
     // Kept across same-document navigation so SPA/hash episode changes do not
@@ -448,6 +450,8 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             rules = rules,
             snapshotId = snapshot.id,
         )
+        filterBlockedCount = 0
+        filterAllowedCount = 0
         refreshFilterInjection()
     }
 
@@ -457,9 +461,10 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         val state = filterState
         if (!state.enabled || !state.pageFiltering || !hasStart || destroyed) return
         val source = runCatching { activity.assets.open(FILTER_RUNTIME_ASSET).bufferedReader().use { it.readText() } }.getOrNull() ?: return
-        val cosmetic = state.rules.filter { it.block && !it.exception && it.cosmetic && it.scriptlet == null && isSafeCosmeticSelector(it.pattern) }.map { rule ->
+        val cosmetic = state.rules.filter { it.cosmetic && it.scriptlet == null && isSafeCosmeticSelector(it.pattern) }.map { rule ->
             JSONObject().put("selector", rule.pattern).put("domain", rule.domain ?: "*")
                 .put("domains", JSONArray(rule.domains)).put("excludedDomains", JSONArray(rule.excludedDomains))
+                .put("exception", rule.exception)
         }.take(128)
         val scriptlets = state.rules.filter { it.scriptlet != null }.map { rule ->
             JSONObject().put("domain", rule.pattern).put("name", rule.scriptlet)
@@ -545,6 +550,29 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             accept.contains("text/html") -> "subdocument"
             accept.contains("json") || accept.contains("xml") || request.method.equals("POST", ignoreCase = true) -> "xhr"
             else -> "other"
+        }
+    }
+
+    private fun redactedFilterUrl(url: Uri): String {
+        val query = url.queryParameterNames.joinToString("&") { "$it=…" }
+        return url.buildUpon().clearQuery().apply {
+            if (query.isNotEmpty()) encodedQuery(query)
+        }.build().toString()
+    }
+
+    private fun recordFilterDecision(blocked: Boolean) {
+        if (!filterState.enabled) return
+        if (blocked) filterBlockedCount++ else filterAllowedCount++
+        val total = filterBlockedCount + filterAllowedCount
+        if (total % 32 == 0) {
+            event(
+                "filterStats",
+                JSONObject()
+                    .put("blocked", filterBlockedCount)
+                    .put("allowed", filterAllowedCount)
+                    .put("snapshotId", filterState.snapshotId)
+                    .toString(),
+            )
         }
     }
     init {
@@ -670,7 +698,8 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 // snapshot cannot strand the user on a blank page. Subresources
                 // are synchronously rejected from the in-memory snapshot.
                 if (!request.isForMainFrame && !filterAllows(request)) {
-                    event("filtered", "请求已阻止", request.url.toString())
+                    recordFilterDecision(blocked = true)
+                    event("filtered", "请求已阻止", redactedFilterUrl(request.url))
                     return WebResourceResponse(
                         "text/plain",
                         "utf-8",
@@ -680,6 +709,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                         ByteArrayInputStream(ByteArray(0)),
                     )
                 }
+                if (!request.isForMainFrame) recordFilterDecision(blocked = false)
                 return super.shouldInterceptRequest(view, request)
             }
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {

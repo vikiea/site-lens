@@ -13,7 +13,7 @@ const nodes = [
 const styles = [];
 const document = {
   documentElement: {
-    querySelectorAll: selector => selector === '.sponsor' ? [nodes[0]] : [],
+    querySelectorAll: selector => selector === '.ad' ? [nodes[0]] : [],
   },
   head: {
     appendChild: style => styles.push(style),
@@ -30,7 +30,9 @@ const config = {
     enabled: true,
     snapshotId: 'snapshot-test',
     selectors: [
+      {selector: '.ad', domains: ['example.com']},
       {selector: '.sponsor', domains: ['example.com']},
+      {selector: '.sponsor', domains: ['example.com'], exception: true},
       {selector: 'div:has-text(ad)', domains: ['example.com']},
       {selector: '.excluded', domains: ['example.com'], excludedDomains: ['example.com']},
     ],
@@ -39,6 +41,7 @@ const config = {
 vm.runInNewContext(source.replace('__SITE_LENS_FILTER_CONFIG__', JSON.stringify(config)), context);
 assert.deepEqual(removed, ['valid']);
 assert.equal(styles.length, 1);
-assert.equal(styles[0].css.includes('.sponsor{display:none!important}'), true);
+assert.equal(styles[0].css.includes('.sponsor{display:none!important}'), false);
+assert.equal(styles[0].css.includes('.ad{display:none!important}'), true);
 assert.equal(styles[0].css.includes('has-text'), false);
 console.log('filter runtime contract: ok');

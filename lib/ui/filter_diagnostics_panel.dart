@@ -50,8 +50,16 @@ class FilterDiagnosticsPanel extends StatelessWidget {
             _line(context, '快照状态', state),
             _line(context, '快照版本', snapshot?.version ?? '无有效快照'),
             _line(context, '快照摘要', _shortHash(snapshot?.sha256)),
-            _line(context, '阻止请求', '${diagnostics['blocked'] ?? 0}'),
-            _line(context, '放行请求', '${diagnostics['allowed'] ?? 0}'),
+            _line(
+              context,
+              '阻止请求',
+              '${session?.filterBlocked ?? diagnostics['blocked'] ?? 0}',
+            ),
+            _line(
+              context,
+              '放行请求',
+              '${session?.filterAllowed ?? diagnostics['allowed'] ?? 0}',
+            ),
             _line(
               context,
               '未支持规则',

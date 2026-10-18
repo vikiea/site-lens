@@ -52,29 +52,41 @@
       });
     } catch (_) {}
   };
-  const remove = root => {
+  const effectiveSelectors = () => {
+    const blocked = new Set();
     for (const item of selectorRules) {
       const selector = typeof item === 'string' ? item : item.selector;
       const domain = typeof item === 'string' ? '*' : item.domain;
       if (!hostMatches(domain, typeof item === 'string' ? null : item.domains, typeof item === 'string' ? null : item.excludedDomains)) continue;
+      if (typeof item !== 'string' && item.exception) blocked.delete(selector);
+      else blocked.add(selector);
+    }
+    return [...blocked];
+  };
+  const remove = root => {
+    for (const selector of effectiveSelectors()) {
       try { root.querySelectorAll(selector).forEach(node => node.remove()); } catch (_) {}
     }
   };
   const install = () => {
-    if (!document.documentElement) return;
+    if (!document.documentElement) return false;
     scriptlets.slice(0, 32).forEach(applyScriptlet);
     remove(document);
-    if (selectorRules.length) {
+    const selectors = effectiveSelectors();
+    if (selectors.length) {
       const style = document.createElement('style');
       style.dataset.siteLensFilter = String(config.snapshotId || '');
-      style.textContent = selectorRules
-        .filter(item => hostMatches(typeof item === 'string' ? '*' : item.domain, typeof item === 'string' ? null : item.domains, typeof item === 'string' ? null : item.excludedDomains))
-        .map(item => `${typeof item === 'string' ? item : item.selector}{display:none!important}`)
+      style.textContent = selectors
+        .map(selector => `${selector}{display:none!important}`)
         .join('\n');
       (document.head || document.documentElement).appendChild(style);
     }
+    return true;
   };
-  install();
+  if (!install()) {
+    document.addEventListener('DOMContentLoaded', install, { once: true });
+    setTimeout(install, 0);
+  }
   try {
     new MutationObserver(records => {
       for (const record of records) {
