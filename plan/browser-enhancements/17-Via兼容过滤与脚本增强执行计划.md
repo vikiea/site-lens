@@ -201,6 +201,6 @@ F1 的契约完成后才能修改 F2-F5；F2 的规则语义决定 F3 的 Native
 - 计划提交：`db09b09`。
 - F1-F5 每次提交前均完成 `git diff --check`、目标分析/测试和独立 diff 审查；`8dc9b80` 补充了档案级策略页面、Native 顶层文档放行和页面完成时的过滤统计回传。
 - `8dc9b80` 提交前的 `python3 tool/verify_level.py --auto` 已通过 `./tool/check.sh`；L2 的真实 Android 集成因当前没有 `DEVICE` 被工具标记为阻断。
-- Android Gradle 已在临时完整 JDK、代理和缓存 Gradle 下进入工程配置，但当前环境没有 Android SDK（`platforms;android-35`），因此 Kotlin/Java compile task 未完成；`make build-release` 同样因 “No Android SDK found” 停止。两者均不能当作编译或正式 APK 通过。
-- 真实 Android WebView、后台生命周期、正式签名 APK、Beta/Stable 发布和设备验收仍属于 F6/F7 未完成门禁。
+- 使用临时完整 JDK、代理和 Android SDK 后，`:app:compileDebugKotlin` 已 BUILD SUCCESSFUL（99 tasks），`make build-debug` 已生成并通过 `verify_android_artifact.py --debug` 的 `dev.vikiea.site_lens.debug` APK。
+- `make build-release` 已实际执行，但按仓库安全门禁因外部 `SITE_LENS_SIGNING_PROPERTIES` 缺失而停止；正式签名 APK、真实 Android WebView、后台生命周期、Beta/Stable 发布和设备验收仍属于 F6/F7 未完成门禁。
 
