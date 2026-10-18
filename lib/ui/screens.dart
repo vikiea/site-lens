@@ -3429,7 +3429,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                       current.id,
                       candidate.id,
                     );
-                    await widget.app.nativeMedia.open(
+                    final session = await widget.app.nativeMedia.open(
                       authorized,
                       hostId: current.id,
                       generation: current.generation,
@@ -3439,9 +3439,14 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                       sessionId: 'candidate_${candidate.id}',
                     );
                     if (mounted) {
-                      ScaffoldMessenger.of(
-                        context,
-                      ).showSnackBar(const SnackBar(content: Text('原生播放器已打开')));
+                      await Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => NativeMediaPlayerScreen(
+                            app: widget.app,
+                            session: session,
+                          ),
+                        ),
+                      );
                     }
                   } catch (error) {
                     if (mounted) {

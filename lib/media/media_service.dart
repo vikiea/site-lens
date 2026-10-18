@@ -38,6 +38,7 @@ class NativePlaybackSession {
     required this.id,
     required this.candidateId,
     required this.state,
+    this.textureId,
     this.positionMs = 0,
     this.speed = 1,
     this.errorCode,
@@ -46,6 +47,7 @@ class NativePlaybackSession {
   final String id;
   final String candidateId;
   final NativePlaybackState state;
+  final int? textureId;
   final int positionMs;
   final double speed;
   final String? errorCode;

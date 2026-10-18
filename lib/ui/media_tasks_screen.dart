@@ -13,6 +13,131 @@ import 'ui_primitives.dart';
 import 'ui_util.dart';
 import 'app_theme.dart';
 
+/// In-app surface for the native MediaPlayer texture. The old native bridge
+/// could start playback without attaching a video surface, which made a
+/// successful "opened" toast look like a no-op. This route keeps the texture
+/// and controls visible until the user leaves it.
+class NativeMediaPlayerScreen extends StatefulWidget {
+  const NativeMediaPlayerScreen({
+    super.key,
+    required this.app,
+    required this.session,
+  });
+
+  final AppController app;
+  final NativePlaybackSession session;
+
+  @override
+  State<NativeMediaPlayerScreen> createState() =>
+      _NativeMediaPlayerScreenState();
+}
+
+class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
+  late NativePlaybackSession _session = widget.session;
+  bool _closing = false;
+  StreamSubscription<NativePlaybackSession>? _states;
+
+  Future<void> _command(Future<NativePlaybackSession> Function() action) async {
+    if (_closing) return;
+    try {
+      final next = await action();
+      if (mounted) setState(() => _session = next);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('播放器操作失败：$error')));
+      }
+    }
+  }
+
+  Future<void> _close() async {
+    if (_closing) return;
+    _closing = true;
+    try {
+      await widget.app.nativeMedia.close();
+    } catch (_) {
+      // The native session may already have completed or failed.
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _states = widget.app.nativeMedia.states.listen((next) {
+      if (mounted && next.id == _session.id) setState(() => _session = next);
+    });
+  }
+
+  @override
+  void dispose() {
+    _states?.cancel();
+    unawaited(_close());
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+    onPopInvokedWithResult: (didPop, _) {
+      if (!didPop) unawaited(_close());
+    },
+    child: Scaffold(
+      appBar: AppBar(title: const Text('媒体播放')),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Expanded(
+              child: ColoredBox(
+                color: Colors.black,
+                child: Center(
+                  child: _session.textureId == null
+                      ? const CircularProgressIndicator(color: Colors.white)
+                      : Texture(textureId: _session.textureId!),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+              child: Column(
+                children: [
+                  Text('状态：${_session.state.name}'),
+                  if (_session.errorCode != null)
+                    Text(
+                      '错误：${_session.errorCode}',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      IconButton(
+                        tooltip: '播放',
+                        icon: const Icon(Icons.play_arrow),
+                        onPressed: () => _command(widget.app.nativeMedia.play),
+                      ),
+                      IconButton(
+                        tooltip: '暂停',
+                        icon: const Icon(Icons.pause),
+                        onPressed: () => _command(widget.app.nativeMedia.pause),
+                      ),
+                      IconButton(
+                        tooltip: '停止',
+                        icon: const Icon(Icons.stop),
+                        onPressed: () => _command(widget.app.nativeMedia.stop),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
 /// Durable media task surface. The screen is deliberately independent from a
 /// browser tab: a task can be resumed after its source tab is gone.
 class MediaTasksScreen extends StatefulWidget {
@@ -108,13 +233,20 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   Future<void> _play(MediaTask task) async {
     final cached = await widget.app.mediaTasks.cachedFile(task.id);
     if (cached != null) {
-      await widget.app.nativeMedia.openLocal(task, cached);
-      if (mounted) setState(() {});
+      final session = await widget.app.nativeMedia.openLocal(task, cached);
+      if (mounted) {
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) =>
+                NativeMediaPlayerScreen(app: widget.app, session: session),
+          ),
+        );
+      }
       return;
     }
     final candidate = await widget.app.db.mediaCandidate(task.candidateId);
     if (candidate == null) throw StateError('媒体候选已不存在');
-    await widget.app.nativeMedia.open(
+    final session = await widget.app.nativeMedia.open(
       candidate,
       hostId: task.hostId,
       generation: task.generation,
@@ -122,8 +254,12 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
       sessionId: 'play_${task.id}',
     );
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('原生播放器已打开')));
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            NativeMediaPlayerScreen(app: widget.app, session: session),
+      ),
+    );
   }
 
   Future<void> _togglePause(MediaTask task) async {

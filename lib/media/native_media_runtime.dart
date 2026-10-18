@@ -87,6 +87,7 @@ class NativeMediaRuntime {
     final value = NativePlaybackSession(
       id: raw['sessionId'] as String? ?? '',
       candidateId: raw['candidateId'] as String? ?? '',
+      textureId: (raw['textureId'] as num?)?.toInt(),
       state: NativePlaybackState.values.firstWhere(
         (state) => state.name == raw['state'],
         orElse: () => NativePlaybackState.stopped,

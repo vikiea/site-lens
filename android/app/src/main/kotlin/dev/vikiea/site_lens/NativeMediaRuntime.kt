@@ -4,8 +4,10 @@ import android.content.Context
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
+import android.view.Surface
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.view.TextureRegistry
 import java.util.UUID
 
 /**
@@ -16,12 +18,17 @@ import java.util.UUID
  * it is deliberately isolated behind the same lifecycle that the planned
  * Media3 adapter will implement.
  */
-class NativeMediaRuntime(private val context: Context) : MethodChannel.MethodCallHandler {
+class NativeMediaRuntime(
+    private val context: Context,
+    private val textures: TextureRegistry,
+) : MethodChannel.MethodCallHandler {
     private var player: MediaPlayer? = null
     private var sessionId: String? = null
     private var candidateId: String? = null
     private var speed: Float = 1f
     private var channel: MethodChannel? = null
+    private var textureEntry: TextureRegistry.SurfaceTextureEntry? = null
+    private var surface: Surface? = null
     private var state: String = "stopped"
 
     fun attach(channel: MethodChannel) {
@@ -72,6 +79,7 @@ class NativeMediaRuntime(private val context: Context) : MethodChannel.MethodCal
         speed = 1f
         val next = MediaPlayer()
         player = next
+        attachSurface(next)
         next.setOnPreparedListener { media ->
             state = "playing"
             media.start()
@@ -103,6 +111,7 @@ class NativeMediaRuntime(private val context: Context) : MethodChannel.MethodCal
         speed = 1f
         val next = MediaPlayer()
         player = next
+        attachSurface(next)
         next.setOnPreparedListener { media -> state = "playing"; media.start(); emit("playing") }
         next.setOnCompletionListener { state = "completed"; emit("completed") }
         next.setOnInfoListener { _, what, _ ->
@@ -127,6 +136,7 @@ class NativeMediaRuntime(private val context: Context) : MethodChannel.MethodCal
         return mapOf(
             "sessionId" to sessionId,
             "candidateId" to candidateId,
+            "textureId" to textureEntry?.id(),
             "state" to currentState,
             "positionMs" to (runCatching { active?.currentPosition ?: 0 }.getOrDefault(0)),
             "durationMs" to (runCatching { active?.duration ?: 0 }.getOrDefault(0)),
@@ -142,10 +152,21 @@ class NativeMediaRuntime(private val context: Context) : MethodChannel.MethodCal
             media.release()
         }
         player = null
+        surface?.release()
+        surface = null
+        textureEntry?.release()
+        textureEntry = null
         sessionId = null
         candidateId = null
         speed = 1f
         state = "stopped"
+    }
+
+    private fun attachSurface(next: MediaPlayer) {
+        val entry = textures.createSurfaceTexture()
+        textureEntry = entry
+        surface = Surface(entry.surfaceTexture())
+        next.setSurface(surface)
     }
 
     fun dispose() {

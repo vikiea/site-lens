@@ -65,6 +65,21 @@ private fun canonicalWebUrl(value: String?): String? {
 /** How many redirects an app-started entry may follow before it must be re-authorized. */
 private const val MAX_ENTRY_REDIRECTS = 5
 
+/** Keeps Android's left-edge back gesture from being consumed as pull-to-refresh. */
+private class BrowserRefreshLayout(context: Context) : SwipeRefreshLayout(context) {
+    private val backGestureEdge = 32f * resources.displayMetrics.density
+    private var downX = Float.NaN
+
+    override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> downX = event.x
+            MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_UP -> downX = Float.NaN
+        }
+        if (!downX.isNaN() && downX <= backGestureEdge) return false
+        return super.onInterceptTouchEvent(event)
+    }
+}
+
 /** True when [expected] and [actual] address the same canonical document. */
 private fun sameWebUrl(expected: String?, actual: String?): Boolean {
     val left = canonicalWebUrl(expected) ?: return false
@@ -313,7 +328,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     // Pull-to-refresh is a browsing affordance only; discovery/probe hosts must
     // not gain a user-visible refresh gesture or alter their lifecycle.
     private val refreshLayout: SwipeRefreshLayout? = if (purpose == HostPurpose.BROWSING) {
-        SwipeRefreshLayout(activity).apply {
+        BrowserRefreshLayout(activity).apply {
             // The pull gesture costs the page (and its user scripts) their own
             // pull-to-refresh, so it is a switch the user owns: off leaves the
             // gesture to the site.

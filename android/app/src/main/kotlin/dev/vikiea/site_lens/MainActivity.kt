@@ -156,7 +156,7 @@ class MainActivity : FlutterActivity() {
 
     private fun registerNativeMediaChannel(flutterEngine: FlutterEngine) {
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/native_media")
-        nativeMedia = NativeMediaRuntime(this).also { it.attach(channel) }
+        nativeMedia = NativeMediaRuntime(this, flutterEngine.renderer).also { it.attach(channel) }
     }
 
     private fun registerNativeDownloadChannel(flutterEngine: FlutterEngine) {

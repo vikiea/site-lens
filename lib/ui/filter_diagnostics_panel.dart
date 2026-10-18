@@ -73,7 +73,8 @@ class FilterDiagnosticsPanel extends StatelessWidget {
       return '宿主不支持 document-start，页面规则和脚本化页面过滤已关闭';
     }
     if (snapshot?.state == FilterSnapshotState.degraded) {
-      return '规则源含未支持语义，已按固定默认策略处理';
+      final count = snapshot?.unsupportedRuleCount ?? 0;
+      return '当前使用安全兼容编译器；基础请求和页面规则继续生效，$count 条高级 uBlock 语法未执行。完整支持需要接入完整 uBlock 解析器和脚本运行时。';
     }
     if (snapshot?.state == FilterSnapshotState.failed ||
         snapshot?.state == FilterSnapshotState.corrupt) {
