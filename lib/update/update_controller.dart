@@ -7,6 +7,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../settings/app_settings.dart';
+import 'github_token_store.dart';
 import 'update_service.dart';
 
 /// App-level owner of the software update flow.
@@ -15,7 +16,10 @@ import 'update_service.dart';
 /// user leaves, keeps the fragment on disk so a process restart can resume it,
 /// and owns the in-app completion notice state.
 final updateControllerProvider = Provider<UpdateController>((ref) {
-  final controller = UpdateController();
+  final tokenStore = GitHubTokenStore();
+  final controller = UpdateController(
+    service: UpdateService(tokenLoader: tokenStore.read),
+  );
   ref.onDispose(controller.dispose);
   return controller;
 });
@@ -474,6 +478,9 @@ class UpdateController extends ChangeNotifier with WidgetsBindingObserver {
 }
 
 String readableUpdateError(Object error) => switch (error) {
+  GitHubApiException(statusCode: 401) => 'GitHub Token 无效或已过期，请在更新设置中重新配置',
+  GitHubApiException(statusCode: 403) => 'GitHub API 请求受限，请配置 Token 后重试',
+  GitHubApiException(:final message) => message,
   HttpException(:final message) => message,
   FormatException(:final message) => message,
   _ => '更新失败，请检查网络后重试',

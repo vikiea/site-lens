@@ -40,6 +40,31 @@ void main() {
     expect(() => AppVersion.parse('v1.2'), throwsFormatException);
   });
 
+  test('uses the configured token only for GitHub API requests', () async {
+    final httpClient = _TokenCaptureClient();
+    final client = GitHubReleaseClient(
+      client: httpClient,
+      tokenLoader: () async => 'github_pat_test_token',
+    );
+
+    final release = await client.fetchLatest(channel: UpdateChannel.beta);
+    expect(release.tagName, 'v0.2.0.beta2');
+    expect(httpClient.apiAuthorization, 'Bearer github_pat_test_token');
+    expect(httpClient.checksumAuthorization, isNull);
+  });
+
+  test('surfaces GitHub API authorization failures', () async {
+    final client = GitHubReleaseClient(
+      client: _TokenCaptureClient(status: 403),
+      tokenLoader: () async => 'github_pat_test_token',
+    );
+
+    expect(
+      client.fetchLatest(channel: UpdateChannel.beta),
+      throwsA(isA<GitHubApiException>()),
+    );
+  });
+
   test('resolves latest release without the GitHub API', () async {
     final server = FakeAssetServer(bytes: fixtureBytes(32));
     final client = GitHubReleaseClient(client: FakeUpdateHttpClient(server));
@@ -618,6 +643,57 @@ void main() {
 /// The wrong bytes for the "asset republished" case.
 List<int> wrongBytes(int length) =>
     List<int>.generate(length, (index) => (index * 7) % 253);
+
+class _TokenCaptureClient extends http.BaseClient {
+  _TokenCaptureClient({this.status = 200});
+
+  final int status;
+  String? apiAuthorization;
+  String? checksumAuthorization;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    if (request.url.path == '/repos/vikiea/site-lens/releases') {
+      apiAuthorization = request.headers['authorization'];
+      if (status != 200) return _response(http.Response('', status), request);
+      final body = jsonEncode([
+        {
+          'tag_name': 'v0.2.0.beta2',
+          'draft': false,
+          'prerelease': true,
+          'html_url':
+              'https://github.com/vikiea/site-lens/releases/tag/v0.2.0.beta2',
+          'assets': [
+            {'name': 'site-lens-v0.2.0.beta2.apk', 'size': 123},
+          ],
+        },
+      ]);
+      return _response(http.Response(body, 200), request);
+    }
+    if (request.url.path.endsWith('/releases/latest')) {
+      return _response(http.Response('', 404), request);
+    }
+    if (request.url.path.endsWith('.sha256')) {
+      checksumAuthorization = request.headers['authorization'];
+      return _response(
+        http.Response('${'a' * 64}  site-lens-v0.2.0.beta2.apk\n', 200),
+        request,
+      );
+    }
+    return _response(http.Response('', 404), request);
+  }
+
+  static http.StreamedResponse _response(
+    http.Response response,
+    http.BaseRequest request,
+  ) => http.StreamedResponse(
+    Stream<List<int>>.value(response.bodyBytes),
+    response.statusCode,
+    contentLength: response.contentLength,
+    headers: response.headers,
+    request: request,
+  );
+}
 
 class _ChecksumOnlyClient extends http.BaseClient {
   _ChecksumOnlyClient({this.prefix = '', this.status = 200});

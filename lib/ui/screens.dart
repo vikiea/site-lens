@@ -16,6 +16,7 @@ import '../domain/models.dart';
 import '../network/transport.dart';
 import '../scripts/metadata.dart';
 import '../update/update_controller.dart';
+import '../update/github_token_store.dart';
 import '../web_host/native_hosts.dart';
 import '../web_host/web_host.g.dart';
 import 'app_controller.dart';
@@ -1636,6 +1637,8 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
                 Divider(height: 1, indent: 18, endIndent: 18),
+                const _GitHubTokenEntry(),
+                Divider(height: 1, indent: 18, endIndent: 18),
                 ListTile(
                   leading: const Icon(Icons.alt_route_outlined),
                   title: const Text('更新渠道'),
@@ -1719,6 +1722,133 @@ class _SettingsPageState extends State<SettingsPage> {
           ],
         ),
       );
+}
+
+class _GitHubTokenEntry extends StatefulWidget {
+  const _GitHubTokenEntry();
+
+  @override
+  State<_GitHubTokenEntry> createState() => _GitHubTokenEntryState();
+}
+
+class _GitHubTokenEntryState extends State<_GitHubTokenEntry> {
+  final _store = GitHubTokenStore();
+  bool? _configured;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    final configured = await _store.hasToken();
+    if (mounted) setState(() => _configured = configured);
+  }
+
+  Future<void> _edit() async {
+    final controller = TextEditingController();
+    final result = await showDialog<_GitHubTokenDialogResult>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('GitHub API Token'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          obscureText: true,
+          autocorrect: false,
+          enableSuggestions: false,
+          decoration: const InputDecoration(
+            hintText: '粘贴 ghp_ 或 github_pat_ Token',
+            helperText: '仅保存在系统安全存储，不会进入备份或日志。',
+          ),
+        ),
+        actions: [
+          if (_configured == true)
+            TextButton(
+              onPressed: () => Navigator.pop(
+                context,
+                const _GitHubTokenDialogResult.clear(),
+              ),
+              child: const Text('清除'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(
+              context,
+              _GitHubTokenDialogResult.save(controller.text),
+            ),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (result == null || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      if (result.clear) {
+        await _store.clear();
+      } else {
+        await _store.save(result.value!);
+      }
+      if (mounted) {
+        setState(() {
+          _configured = !result.clear;
+          _busy = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              result.clear ? 'GitHub Token 已清除' : 'GitHub Token 已安全保存',
+            ),
+          ),
+        );
+      }
+    } on Object catch (error) {
+      if (mounted) {
+        setState(() => _busy = false);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Token 未保存：$error')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => ListTile(
+    leading: const Icon(Icons.key_outlined),
+    title: const Text('GitHub API Token'),
+    subtitle: Text(
+      _configured == null
+          ? '读取安全存储中…'
+          : _configured == true
+          ? '已配置，用于提高测试渠道查询额度'
+          : '未配置，测试渠道可能受 GitHub 匿名限流影响',
+    ),
+    trailing: _busy
+        ? const SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        : TextButton(
+            onPressed: _edit,
+            child: Text(_configured == true ? '管理' : '设置'),
+          ),
+    onTap: _busy ? null : _edit,
+  );
+}
+
+class _GitHubTokenDialogResult {
+  const _GitHubTokenDialogResult.save(this.value) : clear = false;
+  const _GitHubTokenDialogResult.clear() : value = null, clear = true;
+
+  final String? value;
+  final bool clear;
 }
 
 /// One theme preset in the collapsed 主题色 block: a swatch, a name and the
