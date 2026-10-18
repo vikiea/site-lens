@@ -3,6 +3,7 @@ package dev.vikiea.site_lens
 import android.content.Context
 import android.net.Uri
 import android.view.Surface
+import android.webkit.WebSettings
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -44,14 +45,14 @@ class NativeMediaRuntime(
                 "open" -> open(call, result)
                 "openLocal" -> openLocal(call, result)
                 "play" -> {
-                    require(player != null) { "没有活动播放会话" }
+                    requireSession(call)
                     player!!.play()
                     state = "playing"
                     emit("playing")
                     result.success(snapshot())
                 }
                 "pause" -> {
-                    require(player != null) { "没有活动播放会话" }
+                    requireSession(call)
                     player!!.pause()
                     state = "paused"
                     emit("paused")
@@ -59,19 +60,24 @@ class NativeMediaRuntime(
                 }
                 "seek" -> {
                     val position = call.argument<Number>("positionMs")?.toLong() ?: -1L
-                    require(position >= 0L && player != null) { "播放位置无效" }
+                    requireSession(call)
+                    require(position >= 0L) { "播放位置无效" }
                     player!!.seekTo(position)
                     result.success(snapshot())
                 }
                 "speed" -> {
                     val nextSpeed = call.argument<Number>("speed")?.toFloat() ?: 0f
-                    require(nextSpeed > 0f && nextSpeed <= 4f && player != null) { "播放倍速无效" }
+                    requireSession(call)
+                    require(nextSpeed > 0f && nextSpeed <= 4f) { "播放倍速无效" }
                     player!!.setPlaybackSpeed(nextSpeed)
                     speed = nextSpeed
                     result.success(snapshot())
                 }
                 "stop", "close" -> {
-                    stop()
+                    // A route can finish disposing after a newer route has
+                    // already opened another session. Ownership prevents the
+                    // stale route from stopping the new player.
+                    if (owns(call)) stop()
                     result.success(snapshot())
                 }
                 "state" -> result.success(snapshot())
@@ -82,6 +88,15 @@ class NativeMediaRuntime(
         }
     }
 
+    private fun owns(call: MethodCall): Boolean {
+        val requested = call.argument<String>("sessionId")
+        return requested.isNullOrBlank() || requested == sessionId
+    }
+
+    private fun requireSession(call: MethodCall) {
+        require(player != null && owns(call)) { "播放会话已结束或已切换" }
+    }
+
     private fun open(call: MethodCall, result: MethodChannel.Result) {
         val raw = call.argument<String>("url")?.trim() ?: error("缺少媒体地址")
         val uri = Uri.parse(raw)
@@ -90,13 +105,14 @@ class NativeMediaRuntime(
         }
         val mime = call.argument<String>("mime")?.trim().orEmpty()
         val sourceUrl = call.argument<String>("sourceUrl")?.trim().orEmpty()
-        val referer = if (sourceUrl.isEmpty()) null else Uri.parse(sourceUrl).let { source ->
+        val source = if (sourceUrl.isEmpty()) null else Uri.parse(sourceUrl).also { source ->
             require(source.scheme?.lowercase() in setOf("http", "https") && !source.host.isNullOrBlank() && source.userInfo == null) {
                 "来源页面地址无效"
             }
-            source.toString()
         }
-        start(call, result, uri, mime, referer)
+        val referer = source?.toString()
+        val origin = source?.let { "${it.scheme}://${it.host}${if (it.port != -1) ":${it.port}" else ""}" }
+        start(call, result, uri, mime, referer, origin)
     }
 
     private fun openLocal(call: MethodCall, result: MethodChannel.Result) {
@@ -111,7 +127,7 @@ class NativeMediaRuntime(
         }
         require(file.isFile && file.length() > 0) { "本地媒体不存在或为空" }
         val mime = call.argument<String>("mime")?.trim().orEmpty()
-        start(call, result, Uri.fromFile(file), mime, null)
+        start(call, result, Uri.fromFile(file), mime, null, null)
     }
 
     private fun start(
@@ -120,6 +136,7 @@ class NativeMediaRuntime(
         uri: Uri,
         mime: String,
         referer: String?,
+        origin: String?,
     ) {
         stop()
         sessionId = call.argument<String>("sessionId")?.takeIf { it.isNotBlank() }
@@ -131,7 +148,14 @@ class NativeMediaRuntime(
         if (referer != null) {
             val http = DefaultHttpDataSource.Factory()
                 .setAllowCrossProtocolRedirects(true)
-                .setDefaultRequestProperties(mapOf("Referer" to referer))
+                .setUserAgent(WebSettings.getDefaultUserAgent(context))
+                .setDefaultRequestProperties(
+                    buildMap {
+                        put("Referer", referer)
+                        if (origin != null) put("Origin", origin)
+                        put("Accept", "*/*")
+                    },
+                )
             playerBuilder.setMediaSourceFactory(DefaultMediaSourceFactory(http))
         }
         val next = playerBuilder.build()

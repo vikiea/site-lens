@@ -40,6 +40,9 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     if (_closing) return;
     try {
       final next = await action();
+      if (next.id != _session.id) {
+        throw StateError('播放会话已切换');
+      }
       if (mounted) setState(() => _session = next);
     } catch (error) {
       if (mounted) {
@@ -53,7 +56,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     if (_closing) return;
     _closing = true;
     try {
-      await widget.app.nativeMedia.close();
+      await widget.app.nativeMedia.close(sessionId: _session.id);
     } catch (_) {
       // The native session may already have completed or failed.
     }
@@ -66,6 +69,11 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
       if (mounted && next.id == _session.id) setState(() => _session = next);
     });
   }
+
+  bool get _canControl =>
+      !_closing &&
+      _session.state != NativePlaybackState.stopped &&
+      _session.state != NativePlaybackState.failed;
 
   @override
   void dispose() {
@@ -113,17 +121,35 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
                       IconButton(
                         tooltip: '播放',
                         icon: const Icon(Icons.play_arrow),
-                        onPressed: () => _command(widget.app.nativeMedia.play),
+                        onPressed: _canControl
+                            ? () => _command(
+                                () => widget.app.nativeMedia.play(
+                                  sessionId: _session.id,
+                                ),
+                              )
+                            : null,
                       ),
                       IconButton(
                         tooltip: '暂停',
                         icon: const Icon(Icons.pause),
-                        onPressed: () => _command(widget.app.nativeMedia.pause),
+                        onPressed: _canControl
+                            ? () => _command(
+                                () => widget.app.nativeMedia.pause(
+                                  sessionId: _session.id,
+                                ),
+                              )
+                            : null,
                       ),
                       IconButton(
                         tooltip: '停止',
                         icon: const Icon(Icons.stop),
-                        onPressed: () => _command(widget.app.nativeMedia.stop),
+                        onPressed: _canControl
+                            ? () => _command(
+                                () => widget.app.nativeMedia.stop(
+                                  sessionId: _session.id,
+                                ),
+                              )
+                            : null,
                       ),
                     ],
                   ),
@@ -346,7 +372,9 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                     tooltip: '暂停',
                     icon: const Icon(Icons.pause),
                     onPressed: () => _run(() async {
-                      await widget.app.nativeMedia.pause();
+                      await widget.app.nativeMedia.pause(
+                        sessionId: widget.app.nativeMedia.active?.id,
+                      );
                       if (mounted) setState(() {});
                     }),
                   ),
@@ -354,7 +382,9 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                     tooltip: '继续',
                     icon: const Icon(Icons.play_arrow),
                     onPressed: () => _run(() async {
-                      await widget.app.nativeMedia.play();
+                      await widget.app.nativeMedia.play(
+                        sessionId: widget.app.nativeMedia.active?.id,
+                      );
                       if (mounted) setState(() {});
                     }),
                   ),
@@ -362,7 +392,9 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                     tooltip: '停止',
                     icon: const Icon(Icons.stop),
                     onPressed: () => _run(() async {
-                      await widget.app.nativeMedia.stop();
+                      await widget.app.nativeMedia.stop(
+                        sessionId: widget.app.nativeMedia.active?.id,
+                      );
                       if (mounted) setState(() {});
                     }),
                   ),

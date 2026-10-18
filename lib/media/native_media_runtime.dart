@@ -57,18 +57,31 @@ class NativeMediaRuntime {
     return _decode(raw ?? const <String, Object?>{});
   }
 
-  Future<NativePlaybackSession> play() => _command('play');
-  Future<NativePlaybackSession> pause() => _command('pause');
-  Future<NativePlaybackSession> stop() => _command('stop');
-  Future<NativePlaybackSession> close() => _command('close');
+  Future<NativePlaybackSession> play({String? sessionId}) =>
+      _command('play', _sessionArgument(sessionId));
+  Future<NativePlaybackSession> pause({String? sessionId}) =>
+      _command('pause', _sessionArgument(sessionId));
+  Future<NativePlaybackSession> stop({String? sessionId}) =>
+      _command('stop', _sessionArgument(sessionId));
+  Future<NativePlaybackSession> close({String? sessionId}) =>
+      _command('close', _sessionArgument(sessionId));
 
-  Future<NativePlaybackSession> seek(Duration position) => _command(
-    'seek',
-    <String, Object?>{'positionMs': position.inMilliseconds},
-  );
+  Map<String, Object?> _sessionArgument(String? sessionId) => {
+    if ((sessionId ?? _active?.id)?.isNotEmpty ?? false)
+      'sessionId': sessionId ?? _active?.id,
+  };
 
-  Future<NativePlaybackSession> setSpeed(double speed) =>
-      _command('speed', <String, Object?>{'speed': speed});
+  Future<NativePlaybackSession> seek(Duration position, {String? sessionId}) =>
+      _command('seek', <String, Object?>{
+        ..._sessionArgument(sessionId),
+        'positionMs': position.inMilliseconds,
+      });
+
+  Future<NativePlaybackSession> setSpeed(double speed, {String? sessionId}) =>
+      _command('speed', <String, Object?>{
+        ..._sessionArgument(sessionId),
+        'speed': speed,
+      });
 
   Future<NativePlaybackSession> _command(
     String method, [

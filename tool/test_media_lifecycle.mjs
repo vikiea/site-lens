@@ -41,6 +41,8 @@ vm.runInContext(source,scope);
 const media=new Media();nodes.push(media);
 dataElements.push(new DataElement({'data-play-src':'/assets/movie.m3u8?token=1'}));
 performanceEntries.push({name:'https://cdn.example.test/movie.mp4?token=2',initiatorType:'fetch'});
+performanceEntries.push({name:'https://cdn.example.test/video/segment0.ts?auth=1',initiatorType:'video'});
+performanceEntries.push({name:'https://cdn.example.test/video/segment1.ts?auth=2',initiatorType:'video'});
 await media.play();
 assert.equal(media.paused,false);
 window.__siteLensMediaControl.apply('pause');

@@ -80,6 +80,17 @@
     }
     return url.href;
   }
+  // Resource timing exposes every HLS segment as a media resource. Those
+  // short-lived transport files are not playable candidates and must never be
+  // offered beside the manifest that references them. A real standalone TS
+  // source attached to a media element still passes through with force=true.
+  function isTransportResource(raw) {
+    try {
+      const path = new URL(raw, document.baseURI).pathname.toLowerCase();
+      return /\.(?:ts|m4s|aac|vtt)(?:$|\/)/i.test(path) ||
+        /(?:^|\/)(?:segment|chunk|fragment|part)[-_]?\d+/i.test(path);
+    } catch (_) { return false; }
+  }
   function addCandidate(output, seen, raw, mime = '', durationMs, force = false, title) {
     if (typeof raw !== 'string' || !raw.trim()) return;
     try {
@@ -129,6 +140,7 @@
     });
     if (typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
       for (const entry of performance.getEntriesByType('resource').slice(-256)) {
+        if (isTransportResource(entry.name)) continue;
         addCandidate(candidates, seen, entry.name, entry.initiatorType || '');
       }
     }
