@@ -233,7 +233,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> initialize() async {
     WidgetsBinding.instance.addObserver(this);
-    await load();
+    // A damaged legacy row must not abort the first frame. `load` keeps every
+    // successfully read collection and publishes the partial state together;
+    // the normal user-triggered loads still surface real storage failures.
+    await load(suppressCorruption: true);
     await restoreSavedSessions();
     // Schedule/cancel the periodic survival check in the background. It waits
     // for WorkManager's shared startup Future before registering, but never
@@ -242,16 +245,21 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     await drainBackgroundNotice();
     // Capabilities are observed on the first real host; cold-start restoration
     // must not construct an otherwise unused native WebView.
-    var previous = (await Connectivity().checkConnectivity())
-        .map((e) => e.name)
-        .join(',');
-    _network = Connectivity().onConnectivityChanged.listen((state) {
-      final current = state.map((e) => e.name).join(',');
-      if (current != previous) {
-        previous = current;
-        cancel('网络发生变化，请重新检测；旧结果不参与推荐');
-      }
-    });
+    try {
+      var previous = (await Connectivity().checkConnectivity())
+          .map((e) => e.name)
+          .join(',');
+      _network = Connectivity().onConnectivityChanged.listen((state) {
+        final current = state.map((e) => e.name).join(',');
+        if (current != previous) {
+          previous = current;
+          cancel('网络发生变化，请重新检测；旧结果不参与推荐');
+        }
+      });
+    } catch (_) {
+      // Connectivity is advisory. A plugin failure must not turn a successful
+      // data restore into a startup error banner or snackbar.
+    }
     // Startup restores metadata only; discovery runs on explicit user entry.
   }
 
@@ -419,7 +427,16 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       activeBrowser =
           browserTabs.where((t) => t.id == saved.activeId).firstOrNull ??
           browserTabs.firstOrNull;
-      if (saved.discarded > 0) error = '已跳过 ${saved.discarded} 条无法识别的标签记录';
+      // Invalid tab snapshots are disposable cache. They are intentionally
+      // dropped without an error banner so a damaged cache cannot obscure the
+      // restored site data.
+    } on FormatException {
+      // A corrupt snapshot is disposable cache, not business data. Clear it
+      // and let the site list render without a stale startup error.
+      try {
+        await sessionStore.clear();
+      } catch (_) {}
+      if (!_disposed) error = null;
     } catch (e) {
       if (!_disposed) error = '上次标签记录无法读取：$e';
     } finally {
@@ -482,8 +499,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Deletes a profile and removes its open browser tabs before deleting the
-  /// database row. Candidates are moved to the unassigned bucket by the
-  /// database layer; profile pages, health state and script links cascade.
+  /// database row. Owned candidates and compatibility source rows are removed
+  /// in the same database transaction; profile pages, health state and script
+  /// links cascade.
   Future<void> deleteProfile(int profileId) async {
     cancel('已删除站点档案，检测已停止');
     // Invalidate both already-open and still-creating tabs. A pending open may
@@ -502,15 +520,25 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     await load();
   }
 
-  Future<void> load() async {
-    sites = await db.candidates();
-    sources = await db.sources();
-    profiles = await db.profiles();
-    profilePages = await db.profilePages();
-    profileHealth = await db.profileHealthAll();
-    profileScriptLinks = await db.profileScripts();
-    installed = await db.scripts();
-    history = await db.recentProbes();
+  Future<void> load({bool suppressCorruption = false}) async {
+    Future<T> read<T>(Future<T> Function() action, T fallback) async {
+      if (!suppressCorruption) return action();
+      try {
+        return await action();
+      } catch (_) {
+        return fallback;
+      }
+    }
+
+    if (suppressCorruption) error = null;
+    sites = await read(db.candidates, sites);
+    sources = await read(db.sources, sources);
+    profiles = await read(db.profiles, profiles);
+    profilePages = await read(db.profilePages, profilePages);
+    profileHealth = await read(db.profileHealthAll, profileHealth);
+    profileScriptLinks = await read(db.profileScripts, profileScriptLinks);
+    installed = await read(db.scripts, installed);
+    history = await read(db.recentProbes, history);
     settings = await settingsRepository.read();
     glassQualityCache = await glassQualityCacheRepository.read();
     final cached = glassQualityCache;
@@ -524,7 +552,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         glassQualityCache?.quality ?? GlassQuality.standard,
     };
     _applySettings();
-    await hosts.applyPreferences(hostPreferences);
+    if (suppressCorruption) {
+      try {
+        await hosts.applyPreferences(hostPreferences);
+      } catch (_) {}
+    } else {
+      await hosts.applyPreferences(hostPreferences);
+    }
     await syncMediaPolicy();
     notifyListeners();
   }
@@ -545,11 +579,22 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Scripts explicitly bound to [profileId].
   List<InstalledScript> scriptsForProfile(int profileId) {
-    final ids = profileScriptLinks
+    final links = profileScriptLinks
         .where((l) => l.profileId == profileId)
-        .map((l) => l.scriptId)
-        .toSet();
-    return installed.where((s) => ids.contains(s.id)).toList();
+        .toList();
+    return installed
+        .where((s) => links.any((link) => link.scriptId == s.id))
+        .map((s) {
+          final link = links.firstWhere((l) => l.scriptId == s.id);
+          return InstalledScript(
+            id: s.id,
+            name: s.name,
+            source: s.source,
+            enabled: link.enabled,
+            approvedDigest: link.approvedDigest,
+          );
+        })
+        .toList();
   }
 
   /// Scripts with no profile binding: they stay globally active by @match.
@@ -1008,7 +1053,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       return '还没有导入任何脚本：到「脚本」页粘贴或导入 .user.js。';
     }
     final enabled = installed.where((s) => s.enabled).toList();
-    if (enabled.isEmpty) {
+    if (enabled.isEmpty && tab.host.registered.isEmpty) {
       return '没有已启用的脚本：到「脚本」页启用；被自动关闭的会在错误日志里写明原因。';
     }
     if (tab.loadedHost == null) return '选择标签加载后可查看生效脚本';
@@ -1016,6 +1061,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       return '宿主里没有已注册脚本（共 ${enabled.length} 个已启用）：确认或依赖完整性可能已失效'
           '（看「脚本」页错误日志），也可能是本机不支持安全隔离（见页面上的提示）；'
           '页面刚打开时刷新一次再看。';
+    }
+    final active = activeScriptsFor(tab);
+    if (active.isNotEmpty) {
+      return '本次文档生效脚本：${active.map((s) => s.name).join('、')}';
     }
     final where = tab.host.url.isEmpty ? '当前地址' : tab.host.url;
     return '已启用 ${enabled.length} 个脚本（${enabled.map((s) => s.name).join('、')}），'
@@ -1298,7 +1347,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final epoch = _tabLifecycleEpoch;
     HostSession? host;
     try {
-      host = await hosts.create(HostPurpose.browsing);
+      host = await hosts.create(
+        HostPurpose.browsing,
+        profileId: site.profileId,
+      );
       capabilities = host.capabilities;
       cancelToken?.check();
       if (epoch != _tabLifecycleEpoch) {
@@ -1369,7 +1421,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
     HostSession? host;
     try {
-      host = await hosts.create(HostPurpose.browsing);
+      host = await hosts.create(
+        HostPurpose.browsing,
+        profileId: tab.site.profileId,
+      );
       capabilities = host.capabilities;
       if (!browserTabs.contains(tab) || epoch != _tabLifecycleEpoch) {
         throw const Cancelled();

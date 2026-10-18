@@ -108,7 +108,7 @@ class BrowserSessionStore {
           throw const FormatException('重复或过多的标签');
         }
         tabs.add(tab);
-      } on FormatException {
+      } on Object {
         discarded++;
       }
     }

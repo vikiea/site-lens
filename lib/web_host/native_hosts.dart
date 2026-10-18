@@ -13,10 +13,11 @@ import '../scripts/script_service.dart';
 import 'web_host.g.dart';
 
 class HostSession {
-  HostSession(this.id, this.purpose, this.capabilities);
+  HostSession(this.id, this.purpose, this.capabilities, {this.profileId});
   final int id;
   final HostPurpose purpose;
   final HostCapabilities capabilities;
+  final int? profileId;
   int generation = 0;
   bool disposed = false;
   bool loaded = false;
@@ -84,10 +85,15 @@ class NativeHosts extends WebHostEvents {
   final _requests = <String, Cancellation>{};
   final _aborted = <String>{};
   int _nextId = 0;
-  Future<HostSession> create(HostPurpose purpose) async {
+  Future<HostSession> create(HostPurpose purpose, {int? profileId}) async {
     final id = ++_nextId;
     final capabilities = await api.create(id, purpose, preferences);
-    final session = HostSession(id, purpose, capabilities);
+    final session = HostSession(
+      id,
+      purpose,
+      capabilities,
+      profileId: profileId,
+    );
     sessions[id] = session;
     if (purpose != HostPurpose.browsing && !capabilities.privateProbes) {
       await destroy(session);
@@ -98,7 +104,7 @@ class NativeHosts extends WebHostEvents {
 
   Future<void> configure(HostSession session) async {
     final registrations = session.purpose == HostPurpose.browsing
-        ? await scripts.registrations()
+        ? await scripts.registrations(profileId: session.profileId)
         : <ScriptRegistration>[];
     session.registered
       ..clear()
@@ -225,7 +231,9 @@ class NativeHosts extends WebHostEvents {
     if (session.disposed || session.generation != generation) {
       throw const Cancelled();
     }
-    final registrations = await scripts.registrations();
+    final registrations = await scripts.registrations(
+      profileId: session.profileId,
+    );
     if (session.disposed || session.generation != generation) {
       throw const Cancelled();
     }
@@ -257,9 +265,27 @@ class NativeHosts extends WebHostEvents {
       final script = (await db.scripts())
           .where((s) => s.id == request.scriptId)
           .firstOrNull;
+      final binding = session.profileId == null
+          ? null
+          : (await db.profileScripts(profileId: session.profileId))
+                .where((link) => link.scriptId == request.scriptId)
+                .firstOrNull;
+      final boundScriptIds = (await db.profileScripts())
+          .map((link) => link.scriptId)
+          .toSet();
+      final enabled =
+          binding?.enabled ??
+          (script != null && !boundScriptIds.contains(request.scriptId)
+              ? script.enabled
+              : false);
+      final approvedDigest =
+          binding?.approvedDigest ??
+          (script != null && !boundScriptIds.contains(request.scriptId)
+              ? script.approvedDigest
+              : null);
       if (script == null ||
-          !script.enabled ||
-          script.approvedDigest != request.revision ||
+          !enabled ||
+          approvedDigest != request.revision ||
           (await SettingsRepository(db).read()).scriptsDisabled) {
         throw StateError('脚本已关闭或确认失效');
       }

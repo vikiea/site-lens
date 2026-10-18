@@ -331,9 +331,16 @@ void main() {
         expect(utf8.decode(importedResources.single.bytes), resourceBody);
 
         // The one-time local confirmation, then a real run on the device.
-        await controller.scripts.enable(imported, Cancellation());
+        await controller.scripts.enable(
+          imported,
+          Cancellation(),
+          profileId: newId,
+        );
         await controller.load();
-        host = await controller.hosts.create(HostPurpose.browsing);
+        host = await controller.hosts.create(
+          HostPurpose.browsing,
+          profileId: newId,
+        );
         await controller.hosts.configure(host);
         await controller.hosts.navigate(
           host,

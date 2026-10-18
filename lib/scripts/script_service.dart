@@ -39,7 +39,11 @@ class ScriptService {
     return script;
   }
 
-  Future<void> enable(InstalledScript script, Cancellation cancel) async {
+  Future<void> enable(
+    InstalledScript script,
+    Cancellation cancel, {
+    int? profileId,
+  }) async {
     final metadata = ScriptMetadata.parse(script.source);
     if (!metadata.canEnable) throw StateError(metadata.errors.join('\n'));
     final existing = await db.dependencies(script.id);
@@ -120,22 +124,45 @@ class ScriptService {
       }
       await db.pinDependencies(script.id, pinned);
       await db.pinResources(script.id, pinnedResources);
-      await db.setScriptEnabled(
-        script.id,
-        true,
-        digest: metadata.digest(script.source, pinned, pinnedResources),
-      );
+      final digest = metadata.digest(script.source, pinned, pinnedResources);
+      if (profileId == null) {
+        await db.setScriptEnabled(script.id, true, digest: digest);
+      } else {
+        await db.setProfileScriptEnabled(
+          profileId,
+          script.id,
+          true,
+          digest: digest,
+        );
+      }
     });
   }
 
-  Future<List<ScriptRegistration>> registrations() async {
+  Future<List<ScriptRegistration>> registrations({int? profileId}) async {
     if ((await SettingsRepository(db).read()).scriptsDisabled) return [];
     final runtime = await rootBundle.loadString(
       'web_assets/userscript_runtime.js',
     );
     final result = <ScriptRegistration>[];
-    for (final script in await db.scripts()) {
-      if (!script.enabled) continue;
+    final scripts = await db.scripts();
+    final links = await db.profileScripts();
+    final profileLinks = profileId == null
+        ? const <ProfileScript>[]
+        : links.where((link) => link.profileId == profileId).toList();
+    final boundIds = links.map((link) => link.scriptId).toSet();
+    for (final script in scripts) {
+      final binding = profileLinks
+          .where((link) => link.scriptId == script.id)
+          .firstOrNull;
+      // A bound script is opt-in per profile. Unbound scripts retain their
+      // original global @match behaviour and run in every browsing tab.
+      final enabled =
+          binding?.enabled ??
+          (boundIds.contains(script.id) ? false : script.enabled);
+      final approvedDigest =
+          binding?.approvedDigest ??
+          (boundIds.contains(script.id) ? null : script.approvedDigest);
+      if (!enabled) continue;
       final metadata = ScriptMetadata.parse(script.source);
       final deps = await db.dependencies(script.id);
       final intact =
@@ -160,9 +187,12 @@ class ScriptService {
       if (!metadata.canEnable ||
           !intact ||
           !resourcesIntact ||
-          script.approvedDigest !=
-              metadata.digest(script.source, deps, resources)) {
-        await db.setScriptEnabled(script.id, false);
+          approvedDigest != metadata.digest(script.source, deps, resources)) {
+        if (binding != null) {
+          await db.setProfileScriptEnabled(profileId!, script.id, false);
+        } else {
+          await db.setScriptEnabled(script.id, false);
+        }
         await db.logScriptError(script.id, '确认或依赖完整性已失效，自动关闭');
         continue;
       }
@@ -191,7 +221,7 @@ class ScriptService {
       result.add(
         ScriptRegistration(
           id: script.id,
-          revision: script.approvedDigest!,
+          revision: approvedDigest!,
           privileged: !metadata.pageWorld,
           rulesJson: metadata.rulesJson,
           source: runtime.replaceFirst('__LENS_CONFIG__', config),

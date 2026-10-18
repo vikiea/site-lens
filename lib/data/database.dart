@@ -33,6 +33,8 @@ const _v2Tables = <String>[
       'profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE, '
       'script_id TEXT NOT NULL REFERENCES scripts(id) ON DELETE CASCADE, '
       'content_hash TEXT NOT NULL, '
+      'enabled INTEGER NOT NULL DEFAULT 0, '
+      'approved_digest TEXT, '
       'PRIMARY KEY(profile_id, script_id))',
   'CREATE TABLE IF NOT EXISTS profile_health ('
       'profile_id INTEGER PRIMARY KEY REFERENCES profiles(id) ON DELETE CASCADE, '
@@ -81,7 +83,7 @@ class AppDatabase extends GeneratedDatabase {
   static void Function(String step)? migrationDebugHook;
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -109,6 +111,7 @@ class AppDatabase extends GeneratedDatabase {
       if (from < 2) await _migrateV1toV2();
       if (from < 3) await _migrateV2toV3();
       if (from < 4) await _migrateV3toV4();
+      if (from < 5) await _migrateV4toV5();
     },
     beforeOpen: (_) async {
       await customStatement('PRAGMA foreign_keys = ON');
@@ -135,6 +138,26 @@ class AppDatabase extends GeneratedDatabase {
         "UPDATE candidates SET ready_selector_override=CASE WHEN ready_selector='main' THEN NULL ELSE ready_selector END",
       );
     }
+  });
+
+  /// v4 -> v5: script activation belongs to a profile binding. Existing
+  /// installs used one global switch, so copy that state into every binding
+  /// once; subsequent changes stay local to the selected profile.
+  Future<void> _migrateV4toV5() => transaction(() async {
+    migrationDebugHook?.call('v4-to-v5');
+    if (!await _columnExists('profile_scripts', 'enabled')) {
+      await customStatement(
+        'ALTER TABLE profile_scripts ADD COLUMN enabled INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    if (!await _columnExists('profile_scripts', 'approved_digest')) {
+      await customStatement(
+        'ALTER TABLE profile_scripts ADD COLUMN approved_digest TEXT',
+      );
+    }
+    await customStatement(
+      'UPDATE profile_scripts SET enabled=COALESCE((SELECT enabled FROM scripts WHERE scripts.id=profile_scripts.script_id),0), approved_digest=(SELECT approved_digest FROM scripts WHERE scripts.id=profile_scripts.script_id)',
+    );
   });
 
   /// v1 -> v2 migration. Runs inside a single transaction so a failure at any
@@ -418,25 +441,45 @@ class AppDatabase extends GeneratedDatabase {
     ],
   );
   Future<void> deleteProfile(int id) => transaction(() async {
-    await _reassignCandidates(id);
+    final sourceRows = await customSelect(
+      'SELECT id FROM sources WHERE profile_id=?',
+      variables: [Variable(id)],
+    ).get();
+    final sourceIds = sourceRows.map((row) => row.read<int>('id')).toList();
+    final pageRows = await customSelect(
+      'SELECT url FROM profile_pages WHERE profile_id=?',
+      variables: [Variable(id)],
+    ).get();
+    final pageUrls = pageRows.map((row) => row.read<String>('url')).toList();
+    // A deleted profile owns its candidates. Leaving them with a NULL owner
+    // or manufacturing an "未归类" profile makes the deletion look partial
+    // and allows stale landings to reappear on the next load.
+    if (sourceIds.isEmpty) {
+      await customStatement('DELETE FROM candidates WHERE profile_id=?', [id]);
+    } else {
+      final placeholders = List.filled(sourceIds.length, '?').join(',');
+      await customStatement(
+        'DELETE FROM candidates WHERE profile_id=? OR source_id IN ($placeholders)',
+        [id, ...sourceIds],
+      );
+    }
+    // `sources` is a v1 compatibility table. Remove its mirror as part of the
+    // same transaction so an old source row cannot resurrect this profile on a
+    // later migration or import.
+    if (pageUrls.isEmpty) {
+      await customStatement('DELETE FROM sources WHERE profile_id=?', [id]);
+    } else {
+      final placeholders = List.filled(pageUrls.length, '?').join(',');
+      await customStatement(
+        'DELETE FROM sources WHERE profile_id=? OR (profile_id IS NULL AND url IN ($placeholders))',
+        [id, ...pageUrls],
+      );
+    }
     await customStatement('DELETE FROM profiles WHERE id=?', [id]);
     await customStatement('DELETE FROM settings WHERE key=?', [
       'profile_config_$id',
     ]);
   });
-
-  /// Moves every candidate owned by [id] into the "未归类" bucket. If [id] *is*
-  /// that bucket, a fresh bucket is created first so candidates never dangle.
-  Future<void> _reassignCandidates(int id) async {
-    var fallback = await _profileIdByName(unassignedProfileName);
-    if (fallback == null || fallback == id) {
-      fallback = await _insertProfile(unassignedProfileName, 'main');
-    }
-    await customStatement(
-      'UPDATE candidates SET profile_id=? WHERE profile_id=?',
-      [fallback, id],
-    );
-  }
 
   Future<List<ProfilePage>> profilePages({int? profileId}) async =>
       (await customSelect(
@@ -522,6 +565,8 @@ class AppDatabase extends GeneratedDatabase {
               profileId: r.read<int>('profile_id'),
               scriptId: r.read<String>('script_id'),
               contentHash: r.read<String>('content_hash'),
+              enabled: r.read<int>('enabled') == 1,
+              approvedDigest: r.readNullable<String>('approved_digest'),
             ),
           )
           .toList();
@@ -530,9 +575,19 @@ class AppDatabase extends GeneratedDatabase {
     String scriptId,
     String contentHash,
   ) => customStatement(
-    'INSERT INTO profile_scripts(profile_id,script_id,content_hash) VALUES(?,?,?) '
+    'INSERT INTO profile_scripts(profile_id,script_id,content_hash,enabled,approved_digest) VALUES(?,?,?,COALESCE((SELECT enabled FROM scripts WHERE id=?),0),(SELECT approved_digest FROM scripts WHERE id=?)) '
     'ON CONFLICT(profile_id,script_id) DO UPDATE SET content_hash=excluded.content_hash',
-    [profileId, scriptId, contentHash],
+    [profileId, scriptId, contentHash, scriptId, scriptId],
+  );
+
+  Future<void> setProfileScriptEnabled(
+    int profileId,
+    String scriptId,
+    bool enabled, {
+    String? digest,
+  }) => customStatement(
+    'UPDATE profile_scripts SET enabled=?,approved_digest=COALESCE(?,approved_digest) WHERE profile_id=? AND script_id=?',
+    [enabled ? 1 : 0, digest, profileId, scriptId],
   );
 
   /// Re-points every ownership row at the current content fingerprint. Called
@@ -540,7 +595,7 @@ class AppDatabase extends GeneratedDatabase {
   /// export never rely on a stale hash.
   Future<void> updateProfileScriptHashes(String scriptId, String contentHash) =>
       customStatement(
-        'UPDATE profile_scripts SET content_hash=? WHERE script_id=?',
+        'UPDATE profile_scripts SET content_hash=?,enabled=0,approved_digest=NULL WHERE script_id=?',
         [contentHash, scriptId],
       );
 
@@ -662,16 +717,26 @@ class AppDatabase extends GeneratedDatabase {
     );
   }
 
-  Future<List<ProbeResult>> recentProbes() async =>
-      (await customSelect(
-            'SELECT result FROM probes ORDER BY id DESC LIMIT 100',
-          ).get())
-          .map(
-            (r) => ProbeResult.fromJson(
-              jsonDecode(r.read<String>('result')) as Map<String, dynamic>,
-            ),
-          )
-          .toList();
+  Future<List<ProbeResult>> recentProbes() async {
+    final results = <ProbeResult>[];
+    for (final row in await customSelect(
+      'SELECT result FROM probes ORDER BY id DESC LIMIT 100',
+    ).get()) {
+      // Probe rows predate the current profile schema and may have been
+      // interrupted while being written by an older build. One malformed
+      // history item must never prevent the rest of the home screen from
+      // loading on a cold start.
+      try {
+        final decoded = jsonDecode(row.read<String>('result'));
+        if (decoded is! Map<String, dynamic>) continue;
+        results.add(ProbeResult.fromJson(decoded));
+      } on Object {
+        continue;
+      }
+    }
+    return results;
+  }
+
   Future<List<InstalledScript>> scripts() async =>
       (await customSelect('SELECT * FROM scripts ORDER BY name').get())
           .map(
@@ -684,10 +749,16 @@ class AppDatabase extends GeneratedDatabase {
             ),
           )
           .toList();
-  Future<void> saveScript(InstalledScript script) => customStatement(
-    'INSERT INTO scripts(id,name,source) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,source=excluded.source,enabled=0,approved_digest=NULL',
-    [script.id, script.name, script.source],
-  );
+  Future<void> saveScript(InstalledScript script) => transaction(() async {
+    await customStatement(
+      'INSERT INTO scripts(id,name,source) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,source=excluded.source,enabled=0,approved_digest=NULL',
+      [script.id, script.name, script.source],
+    );
+    await customStatement(
+      'UPDATE profile_scripts SET enabled=0,approved_digest=NULL WHERE script_id=?',
+      [script.id],
+    );
+  });
   Future<void> setScriptEnabled(String id, bool enabled, {String? digest}) =>
       customStatement(
         'UPDATE scripts SET enabled=?,approved_digest=COALESCE(?,approved_digest) WHERE id=?',
@@ -712,6 +783,10 @@ class AppDatabase extends GeneratedDatabase {
       transaction(() async {
         await customStatement(
           'UPDATE scripts SET enabled=0,approved_digest=NULL WHERE id=?',
+          [id],
+        );
+        await customStatement(
+          'UPDATE profile_scripts SET enabled=0,approved_digest=NULL WHERE script_id=?',
           [id],
         );
         await customStatement('DELETE FROM dependencies WHERE script_id=?', [
@@ -746,6 +821,10 @@ class AppDatabase extends GeneratedDatabase {
       transaction(() async {
         await customStatement(
           'UPDATE scripts SET enabled=0,approved_digest=NULL WHERE id=?',
+          [id],
+        );
+        await customStatement(
+          'UPDATE profile_scripts SET enabled=0,approved_digest=NULL WHERE script_id=?',
           [id],
         );
         await customStatement('DELETE FROM resources WHERE script_id=?', [id]);

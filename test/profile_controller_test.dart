@@ -55,7 +55,7 @@ void main() {
   });
 
   test(
-    'deleteProfile removes owned config and moves candidates to unassigned',
+    'deleteProfile removes owned config, candidates and source rows',
     () async {
       final id = await db.createProfile('P');
       await db.addCandidate(Uri.parse('https://a.example/'), profileId: id);
@@ -63,6 +63,11 @@ void main() {
         id,
         Uri.parse('https://publish.example/'),
         '#latest',
+      );
+      await db.addSource(
+        Uri.parse('https://publish.example/'),
+        'fixture publisher',
+        '@latest-addresses',
       );
       await db.saveScript(
         const InstalledScript(id: 'script', name: 'S', source: '// s'),
@@ -74,9 +79,8 @@ void main() {
       await app.deleteProfile(id);
 
       expect((await db.profiles()).where((p) => p.id == id), isEmpty);
-      final remaining = await db.candidates();
-      expect(remaining.single.url.host, 'a.example');
-      expect(remaining.single.profileId, isNot(id));
+      expect(await db.candidates(), isEmpty);
+      expect(await db.sources(), isEmpty);
       expect(await db.profilePages(profileId: id), isEmpty);
       expect(
         (await db.profileScripts()).where((l) => l.profileId == id),

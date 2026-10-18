@@ -28,29 +28,34 @@ void main() {
   });
 
   test(
-    'deleting a profile reassigns its candidates instead of orphaning',
+    'deleting a profile removes its candidates and compatibility sources',
     () async {
       final id = await db.createProfile('临时站');
       await db.addCandidate(Uri.parse('https://x.example/'), profileId: id);
+      await db.addProfilePage(
+        id,
+        Uri.parse('https://publish.example/'),
+        '@latest-addresses',
+      );
+      await db.addSource(
+        Uri.parse('https://publish.example/'),
+        '临时站发布页',
+        '@latest-addresses',
+      );
       await db.deleteProfile(id);
-      final fallback = (await db.profiles()).single;
-      expect(fallback.name, unassignedProfileName);
-      expect((await db.candidates()).single.profileId, fallback.id);
+      expect(await db.profiles(), isEmpty);
+      expect(await db.candidates(), isEmpty);
+      expect(await db.sources(), isEmpty);
     },
   );
 
-  test(
-    'deleting the 未归类 bucket itself keeps its candidates attached',
-    () async {
-      await db.addCandidate(Uri.parse('https://manual.example/'));
-      final first = (await db.profiles()).single;
-      await db.deleteProfile(first.id);
-      final remaining = (await db.profiles()).single;
-      expect(remaining.name, unassignedProfileName);
-      expect(remaining.id, isNot(first.id));
-      expect((await db.candidates()).single.profileId, remaining.id);
-    },
-  );
+  test('deleting the 未归类 bucket removes its candidates', () async {
+    await db.addCandidate(Uri.parse('https://manual.example/'));
+    final first = (await db.profiles()).single;
+    await db.deleteProfile(first.id);
+    expect(await db.profiles(), isEmpty);
+    expect(await db.candidates(), isEmpty);
+  });
 
   test('addSource mirrors into a profile page and keeps the name in sync', () async {
     await db.addSource(
@@ -116,5 +121,30 @@ void main() {
     );
     await db.unlinkProfileScript(id, 's1');
     expect(await db.profileScripts(), isEmpty);
+  });
+
+  test('script activation is isolated per profile binding', () async {
+    final first = await db.createProfile('甲站');
+    final second = await db.createProfile('乙站');
+    await db.saveScript(
+      const InstalledScript(id: 'shared', name: '共享', source: '// script'),
+    );
+    await db.linkProfileScript(first, 'shared', 'hash');
+    await db.linkProfileScript(second, 'shared', 'hash');
+    await db.setProfileScriptEnabled(first, 'shared', true, digest: 'digest-a');
+
+    final a = (await db.profileScripts(profileId: first)).single;
+    final b = (await db.profileScripts(profileId: second)).single;
+    expect(a.enabled, isTrue);
+    expect(a.approvedDigest, 'digest-a');
+    expect(b.enabled, isFalse);
+    expect(b.approvedDigest, isNull);
+
+    await db.setProfileScriptEnabled(first, 'shared', false);
+    expect(
+      (await db.profileScripts(profileId: second)).single.enabled,
+      isFalse,
+    );
+    expect((await db.scripts()).single.enabled, isFalse);
   });
 }
