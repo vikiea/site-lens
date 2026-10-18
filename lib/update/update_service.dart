@@ -333,14 +333,25 @@ class _ContentRange {
   final int total;
 }
 
+class GitHubApiException implements Exception {
+  const GitHubApiException(this.statusCode, this.message);
+
+  final int statusCode;
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 class GitHubReleaseClient {
-  GitHubReleaseClient({http.Client? client, Uri? latestUri})
+  GitHubReleaseClient({http.Client? client, Uri? latestUri, this.tokenLoader})
     : _client = client ?? http.Client(),
       _latestUri =
           latestUri ??
           Uri.https('github.com', '/$siteLensRepository/releases/latest');
 
   final http.Client _client;
+  final Future<String?> Function()? tokenLoader;
   final Uri _latestUri;
   Uri get _betaUri => Uri.https(
     'api.github.com',
@@ -359,10 +370,19 @@ class GitHubReleaseClient {
       _trustedUri(uri.toString());
       final request = http.Request(method, uri)..followRedirects = false;
       request.headers['User-Agent'] = 'SiteLens/$siteLensRepository';
-      request.headers['Accept'] = method == 'GET'
+      final isApi = uri.host == 'api.github.com';
+      request.headers['Accept'] = isApi
+          ? 'application/vnd.github+json'
+          : method == 'GET'
           ? 'application/octet-stream'
           : '*/*';
       request.headers.addAll(headers);
+      if (isApi) {
+        final token = await tokenLoader?.call();
+        if (token != null && token.isNotEmpty) {
+          request.headers['Authorization'] = 'Bearer $token';
+        }
+      }
       final response = await _client.send(request).timeout(_timeout);
       if (![301, 302, 303, 307, 308].contains(response.statusCode)) {
         return response;
@@ -413,6 +433,11 @@ class GitHubReleaseClient {
         firstError ??= error;
         firstStack ??= stack;
       }
+    }
+    if (firstError is GitHubApiException &&
+        (firstError.statusCode == 401 || firstError.statusCode == 403) &&
+        firstStack != null) {
+      Error.throwWithStackTrace(firstError, firstStack);
     }
     if (candidates.isEmpty) {
       if (firstError != null && firstStack != null) {
@@ -473,7 +498,10 @@ class GitHubReleaseClient {
       );
       if (response.statusCode != 200) {
         await response.stream.listen((_) {}).cancel();
-        throw HttpException('测试版更新服务返回 HTTP ${response.statusCode}');
+        throw GitHubApiException(
+          response.statusCode,
+          '测试版更新服务返回 HTTP ${response.statusCode}',
+        );
       }
       final bytes = <int>[];
       await for (final chunk in response.stream.timeout(_timeout)) {
@@ -695,9 +723,10 @@ class UpdateService {
     DateTime Function()? clock,
     List<Duration>? retryDelays,
     this.channel = UpdateChannel.stable,
+    this.tokenLoader,
     this.progressMinBytes = 256 * 1024,
     this.progressMinInterval = const Duration(milliseconds: 200),
-  }) : _client = client ?? GitHubReleaseClient(),
+  }) : _client = client ?? GitHubReleaseClient(tokenLoader: tokenLoader),
        platform = platform ?? MethodChannelUpdatePlatform(),
        retryDelays =
            retryDelays ??
@@ -709,6 +738,7 @@ class UpdateService {
        _clock = clock ?? DateTime.now;
 
   final GitHubReleaseClient _client;
+  final Future<String?> Function()? tokenLoader;
   UpdateChannel channel;
   final UpdatePlatform platform;
   final Future<PackageInfo> Function()? packageInfoLoader;

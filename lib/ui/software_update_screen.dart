@@ -39,8 +39,18 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
     _controller.setUpdateScreenVisible(true);
     _controller.addListener(_onControllerChanged);
     _lastState = _controller.downloadState;
-    unawaited(_controller.setChannel(widget.channel).catchError((_) {}));
-    unawaited(_controller.openUpdatePage());
+    unawaited(_initializeUpdatePage());
+  }
+
+  Future<void> _initializeUpdatePage() async {
+    try {
+      await _controller.setChannel(widget.channel);
+      if (!mounted) return;
+      await _controller.openUpdatePage();
+    } catch (_) {
+      // The page remains usable; an explicit check exposes the normal
+      // controller error state without racing the channel switch.
+    }
   }
 
   @override
