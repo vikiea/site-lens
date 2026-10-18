@@ -24,7 +24,8 @@ import 'data_management_screen.dart';
 import 'about_screen.dart';
 import 'software_update_screen.dart';
 import 'app_theme.dart';
-import '../settings/app_settings.dart' show AppPolicy, SiteLensGlassQualityMode;
+import '../settings/app_settings.dart'
+    show AppPolicy, SiteLensGlassQualityMode, UpdateChannel, UpdateChannelLabel;
 import 'glass_surface.dart';
 import 'browser_entry.dart';
 import 'profile_panel.dart';
@@ -1626,7 +1627,27 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
                 Divider(height: 1, indent: 18, endIndent: 18),
-                const _UpdateEntryRow(),
+                ListTile(
+                  leading: const Icon(Icons.alt_route_outlined),
+                  title: const Text('更新渠道'),
+                  subtitle: Text(app.settings.updateChannel.description),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                  child: SiteLensSegmented<UpdateChannel>(
+                    value: app.settings.updateChannel,
+                    onChanged: (value) => safely(
+                      context,
+                      () => app.updateSettings({'updateChannel': value.name}),
+                    ),
+                    options: const [
+                      (UpdateChannel.stable, '稳定版', Icons.verified_outlined),
+                      (UpdateChannel.beta, '测试版', Icons.science_outlined),
+                    ],
+                  ),
+                ),
+                Divider(height: 1, indent: 18, endIndent: 18),
+                _UpdateEntryRow(app: app),
               ],
             ),
           ),
@@ -1694,7 +1715,8 @@ class _SettingsPageState extends State<SettingsPage> {
 /// One theme preset in the collapsed 主题色 block: a swatch, a name and the
 /// current selection. No bottom sheet stands between the tap and the change.
 class _UpdateEntryRow extends ConsumerWidget {
-  const _UpdateEntryRow();
+  const _UpdateEntryRow({required this.app});
+  final AppController app;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1706,7 +1728,10 @@ class _UpdateEntryRow extends ConsumerWidget {
         title: '软件更新',
         subtitle: updateEntrySubtitle(controller),
         onTap: () => Navigator.of(context).push(
-          MaterialPageRoute<void>(builder: (_) => const SoftwareUpdateScreen()),
+          MaterialPageRoute<void>(
+            builder: (_) =>
+                SoftwareUpdateScreen(channel: app.settings.updateChannel),
+          ),
         ),
       ),
     );
@@ -1832,8 +1857,7 @@ class _GlassOpacitySliderState extends State<_GlassOpacitySlider> {
                 // Track hit testing includes the default marker's visual
                 // center. Snap that narrow band to the exact preset so a tap
                 // resets to 55 instead of landing on the Slider's padded 57.
-                final rounded =
-                    (raw - AppPolicy.defaultGlassOpacity).abs() <= 3
+                final rounded = (raw - AppPolicy.defaultGlassOpacity).abs() <= 3
                     ? AppPolicy.defaultGlassOpacity
                     : raw;
                 if (_lastHapticValue != rounded) {

@@ -34,6 +34,22 @@ extension ThemePresetWireId on ThemePresetId {
 
 enum ThemeModePreference { system, light, dark }
 
+/// Release channel used by the in-app update checker. Stable is the safe
+/// default; beta opt-in only changes which GitHub release is offered.
+enum UpdateChannel { stable, beta }
+
+extension UpdateChannelLabel on UpdateChannel {
+  String get label => switch (this) {
+    UpdateChannel.stable => '稳定版',
+    UpdateChannel.beta => '测试版',
+  };
+
+  String get description => switch (this) {
+    UpdateChannel.stable => '只检查正式发布版本',
+    UpdateChannel.beta => '优先检查 GitHub 上标记为 prerelease 的版本',
+  };
+}
+
 enum SiteLensGlassQualityMode { automatic, standard, high }
 
 extension SiteLensGlassQualityModeLabel on SiteLensGlassQualityMode {
@@ -53,6 +69,7 @@ class AppSettings {
   const AppSettings({
     this.themeMode = ThemeModePreference.system,
     this.themePreset = ThemePresetId.sunsetCoral,
+    this.updateChannel = UpdateChannel.stable,
     this.glassOpacity = AppPolicy.defaultGlassOpacity,
     this.glassQualityMode = SiteLensGlassQualityMode.automatic,
     this.highQualityAllSurfaces = false,
@@ -68,6 +85,7 @@ class AppSettings {
   });
   final ThemeModePreference themeMode;
   final ThemePresetId themePreset;
+  final UpdateChannel updateChannel;
 
   /// Absolute panel background fill opacity; no effect on content or optics.
   final int glassOpacity;
@@ -87,6 +105,7 @@ class AppSettings {
     'version': 2,
     'themeMode': themeMode.name,
     'themePreset': themePreset.wireId,
+    'updateChannel': updateChannel.name,
     'glassOpacity': glassOpacity,
     'glassQualityMode': glassQualityMode.name,
     'highQualityAllSurfaces': highQualityAllSurfaces,
@@ -140,6 +159,11 @@ class AppSettings {
               .where((v) => v.wireId == json['themePreset'])
               .firstOrNull ??
           ThemePresetId.sunsetCoral,
+      updateChannel: choice(
+        'updateChannel',
+        UpdateChannel.values,
+        UpdateChannel.stable,
+      ),
       glassOpacity: json.containsKey('glassOpacity')
           ? percentage('glassOpacity', AppPolicy.defaultGlassOpacity)
           : json['glassTransparency'] is num &&
@@ -171,6 +195,7 @@ class AppSettings {
     const fields = {
       'themeMode',
       'themePreset',
+      'updateChannel',
       'glassOpacity',
       'glassQualityMode',
       'highQualityAllSurfaces',
@@ -190,6 +215,7 @@ class AppSettings {
     const enums = {
       'themeMode': {'system', 'light', 'dark'},
       'glassQualityMode': {'automatic', 'standard', 'high'},
+      'updateChannel': {'stable', 'beta'},
       'themePreset': {
         'ocean_blue',
         'mist_pine',
