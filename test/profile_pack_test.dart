@@ -265,25 +265,23 @@ void main() {
     expect(await target.setting('pack_profile_${preview.fingerprint}'), '$id');
   });
 
-  test(
-    'import preserves a disabled landing and adopts unassigned ones',
-    () async {
-      final db = await _seeded();
-      final id = (await db.profiles()).single.id;
-      final cid = (await db.candidates(profileId: id)).single.id;
-      await db.setCandidateEnabled(cid, false);
-      final bytes = await ProfilePacks(db).export(id);
+  test('import preserves a disabled landing after profile deletion', () async {
+    final db = await _seeded();
+    final id = (await db.profiles()).single.id;
+    final cid = (await db.candidates(profileId: id)).single.id;
+    await db.setCandidateEnabled(cid, false);
+    final bytes = await ProfilePacks(db).export(id);
 
-      // Deleting the profile leaves the landing in the 未归类 bucket; importing
-      // the same pack must adopt it rather than report a conflict.
-      await db.deleteProfile(id);
-      final packs = ProfilePacks(db);
-      final preview = await packs.inspect(bytes);
-      final newId = await packs.import(preview);
-      final imported = (await db.candidates(profileId: newId)).single;
-      expect(imported.enabled, isFalse);
-      expect(imported.url.toString(), 'https://landing.example/');
-      await db.close();
-    },
-  );
+    // Deleting the profile removes its landing. Importing the same pack
+    // creates a fresh profile-owned landing instead of a ghost unclassified
+    // row.
+    await db.deleteProfile(id);
+    final packs = ProfilePacks(db);
+    final preview = await packs.inspect(bytes);
+    final newId = await packs.import(preview);
+    final imported = (await db.candidates(profileId: newId)).single;
+    expect(imported.enabled, isFalse);
+    expect(imported.url.toString(), 'https://landing.example/');
+    await db.close();
+  });
 }

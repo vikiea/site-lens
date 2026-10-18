@@ -171,6 +171,7 @@ class ProbeCoordinator extends ChangeNotifier {
   int round = 0;
   bool running = false;
   bool fullCoverage = false;
+  int? profileId;
   String? notice;
   final results = <int, ProbeResult>{};
   List<ProbeResult> get recommendations {
@@ -203,6 +204,7 @@ class ProbeCoordinator extends ChangeNotifier {
     results.clear();
     running = true;
     fullCoverage = all;
+    this.profileId = profileId;
     notice = null;
     notifyListeners();
     final pendingSaves = <Future<void>>[];

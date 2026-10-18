@@ -340,10 +340,14 @@ class ProfileScript {
     required this.profileId,
     required this.scriptId,
     required this.contentHash,
+    this.enabled = false,
+    this.approvedDigest,
   });
   final int profileId;
   final String scriptId;
   final String contentHash;
+  final bool enabled;
+  final String? approvedDigest;
 }
 
 /// Local "I already approved this pack fingerprint" memory. Never exported.

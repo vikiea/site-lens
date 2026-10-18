@@ -62,6 +62,7 @@ class ScriptService {
   Future<void> enable(
     InstalledScript script,
     Cancellation cancel, {
+    int? profileId,
     ScriptNetworkMode? networkMode,
     String? approvalReason,
     bool publicConfirmed = false,
@@ -160,17 +161,23 @@ class ScriptService {
       }
       await db.pinDependencies(script.id, pinned);
       await db.pinResources(script.id, pinnedResources);
-      await db.setScriptEnabled(
-        script.id,
-        true,
-        digest: metadata.digest(
-          script.source,
-          pinned,
-          pinnedResources,
-          mode,
-          approvalReason ?? script.approvalReason,
-        ),
+      final digest = metadata.digest(
+        script.source,
+        pinned,
+        pinnedResources,
+        mode,
+        approvalReason ?? script.approvalReason,
       );
+      if (profileId == null) {
+        await db.setScriptEnabled(script.id, true, digest: digest);
+      } else {
+        await db.setProfileScriptEnabled(
+          profileId,
+          script.id,
+          true,
+          digest: digest,
+        );
+      }
       await db.customStatement(
         'INSERT INTO script_approvals(script_id,network_mode,approval_reason,public_confirmed) VALUES(?,?,?,?) '
         'ON CONFLICT(script_id) DO UPDATE SET network_mode=excluded.network_mode,approval_reason=excluded.approval_reason,public_confirmed=excluded.public_confirmed',
@@ -188,14 +195,29 @@ class ScriptService {
     });
   }
 
-  Future<List<ScriptRegistration>> registrations() async {
+  Future<List<ScriptRegistration>> registrations({int? profileId}) async {
     if ((await SettingsRepository(db).read()).scriptsDisabled) return [];
     final runtime = await rootBundle.loadString(
       'web_assets/userscript_runtime.js',
     );
     final result = <ScriptRegistration>[];
-    for (final script in await db.scripts()) {
-      if (!script.enabled) continue;
+    final scripts = await db.scripts();
+    final links = await db.profileScripts();
+    final profileLinks = profileId == null
+        ? const <ProfileScript>[]
+        : links.where((link) => link.profileId == profileId).toList();
+    final boundIds = links.map((link) => link.scriptId).toSet();
+    for (final script in scripts) {
+      final binding = profileLinks
+          .where((link) => link.scriptId == script.id)
+          .firstOrNull;
+      final enabled =
+          binding?.enabled ??
+          (boundIds.contains(script.id) ? false : script.enabled);
+      final approvedDigest =
+          binding?.approvedDigest ??
+          (boundIds.contains(script.id) ? null : script.approvedDigest);
+      if (!enabled) continue;
       final metadata = ScriptMetadata.parse(script.source);
       final deps = await db.dependencies(script.id);
       final intact =
@@ -231,22 +253,35 @@ class ScriptService {
         resources,
       );
       final legacyApproval =
-          script.approvedDigest == legacyDigest &&
+          approvedDigest == legacyDigest &&
           mode == ScriptNetworkMode.declared &&
           !script.publicConfirmed;
       if (!metadata.canEnable ||
           !intact ||
           !resourcesIntact ||
-          (script.approvedDigest != currentDigest && !legacyApproval) ||
+          (approvedDigest != currentDigest && !legacyApproval) ||
           (mode == ScriptNetworkMode.public && !script.publicConfirmed)) {
-        await db.setScriptEnabled(script.id, false);
+        if (binding != null) {
+          await db.setProfileScriptEnabled(profileId!, script.id, false);
+        } else {
+          await db.setScriptEnabled(script.id, false);
+        }
         await db.logScriptError(script.id, '确认或依赖完整性已失效，自动关闭');
         continue;
       }
       if (legacyApproval) {
         // Upgrade the local approval in place. This does not enable an
         // imported/backup script because imported scripts have no digest.
-        await db.setScriptEnabled(script.id, true, digest: currentDigest);
+        if (binding != null) {
+          await db.setProfileScriptEnabled(
+            profileId!,
+            script.id,
+            true,
+            digest: currentDigest,
+          );
+        } else {
+          await db.setScriptEnabled(script.id, true, digest: currentDigest);
+        }
       }
       final sourcePath = await _writeSourceFile(script);
       final config = jsonEncode({

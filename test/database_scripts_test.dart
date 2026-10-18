@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/network/transport.dart';
 import 'package:site_lens/scripts/script_service.dart';
+import 'package:site_lens/scripts/metadata.dart';
 
 class DependencyHttp extends ControlledHttp {
   final calls = <Uri>[];
@@ -137,6 +138,21 @@ void main() {
     await SettingsRepository(db).update({'scriptsDisabled': true});
     expect(await service.registrations(), isEmpty);
   });
+  test(
+    'profile-bound activation only registers for its owning profile',
+    () async {
+      final first = await db.createProfile('甲站');
+      final second = await db.createProfile('乙站');
+      final script = await service.save(sample);
+      await db.linkProfileScript(first, script.id, scriptContentHash(sample));
+      await db.linkProfileScript(second, script.id, scriptContentHash(sample));
+      await service.enable(script, Cancellation(), profileId: first);
+
+      expect(await service.registrations(profileId: first), hasLength(1));
+      expect(await service.registrations(profileId: second), isEmpty);
+      expect(await service.registrations(), isEmpty);
+    },
+  );
   test(
     'large scripts are file-backed instead of crossing the bridge',
     () async {

@@ -39,15 +39,34 @@ void main() {
           case '/publish':
             request.response.write(
               '<!doctype html><html><head><title>闭环发布页</title></head><body>'
-              '<section id="latest-addresses"><h2>最新地址</h2>'
-              '<a href="http://127.0.0.1:$port/publish">本站</a>'
-              '<a href="http://127.0.0.2:$port/site">入口一</a>'
-              '<a href="http://127.0.0.3:$port/site">入口二</a>'
-              '</section></body></html>',
+              '<main><header><h1>闭环站点最新地址</h1></header>'
+              '<section><h2>官方地址列表</h2>'
+              '<a href="/publish">发布页</a>'
+              '<a href="/hop?to=http%3A%2F%2F127.0.0.2%3A$port%2Fsite">入口一</a>'
+              '<a href="/hop?to=http%3A%2F%2F127.0.0.3%3A$port%2Fsite">入口二</a>'
+              '<a href="https://docs.example/guide">使用文档</a>'
+              '<a href="https://social.example/">社区</a>'
+              '</section></main></body></html>',
             );
           case '/captcha':
             request.response.write(
               '<!doctype html><html><body><div class="g-recaptcha"></div></body></html>',
+            );
+          case '/plain':
+            request.response.write(
+              '<!doctype html><html><body><div id="main">'
+              '<h4>最新地址</h4><ul>'
+              '<li><a href="https://mirror.example/">https://mirror.example/</a></li>'
+              '<li><a href="https://docs.example/guide">使用文档</a></li>'
+              '</ul></div></body></html>',
+            );
+          case '/legacy':
+            request.response.write(
+              '<!doctype html><html><body><main>'
+              '<h1>地址发布页回家看看</h1>'
+              '<div class="content"><a href="https://legacy.example/">立即进入</a>'
+              '<a href="https://docs.example/guide">文档</a></div>'
+              '</main></body></html>',
             );
           case '/login':
             request.response.write(
@@ -96,6 +115,14 @@ void main() {
         // The user still confirms before anything is persisted.
         expect(await db.profiles(), isEmpty);
         expect(await db.profilePages(), isEmpty);
+
+        final plain = await controller.recon('http://127.0.0.1:$port/plain');
+        expect(plain.regionFound, isTrue);
+        expect(plain.links.map((u) => u.host), ['mirror.example']);
+
+        final legacy = await controller.recon('http://127.0.0.1:$port/legacy');
+        expect(legacy.regionFound, isTrue);
+        expect(legacy.links.map((u) => u.host), ['legacy.example']);
 
         // 2) Captcha and login pages are reported instead of guessed at.
         final captcha = await controller.recon(

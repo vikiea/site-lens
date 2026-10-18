@@ -34,7 +34,7 @@ void main() {
   );
 
   test(
-    'v2 pack adoption applies label, enabled and inherited selector policy',
+    'v2 pack import applies label, enabled and inherited selector policy',
     () async {
       final profile = await db.createProfile('站点', readySelector: 'article');
       final url = Uri.parse('https://adopt.example/');
@@ -48,12 +48,9 @@ void main() {
       final packs = ProfilePacks(db);
       final preview = await packs.inspect(await packs.export(profile));
       await db.deleteProfile(profile);
-      final old = (await db.candidates()).single;
-      await db.setCandidateEnabled(old.id, true);
-      await db.setCandidateReadySelectorOverride(old.id, '.old');
       final importedId = await packs.import(preview);
       final adopted = (await db.candidates(profileId: importedId)).single;
-      expect(adopted.id, old.id);
+      expect(adopted.id, isNot(0));
       expect(adopted.enabled, isFalse);
       expect(adopted.label, '地址');
       expect(adopted.readySelector, 'main');
