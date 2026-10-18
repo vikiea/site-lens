@@ -47,6 +47,7 @@ void main() {
             engine: compiled.engine,
             snapshot: snapshot,
             policy: const FilterPolicy(enabled: true),
+            onAddException: () async {},
           ),
         ),
       ),
@@ -58,6 +59,7 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('未支持规则'), findsOneWidget);
+    expect(find.text('本站加入例外'), findsOneWidget);
     expect(find.text('1'), findsWidgets);
   });
 }

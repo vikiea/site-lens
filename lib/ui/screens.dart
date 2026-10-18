@@ -3032,6 +3032,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   );
 
   Future<void> _showFilterDiagnostics() => _withToolbarHeld(() async {
+    final currentHost = host;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -3040,10 +3041,28 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
         child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 18),
           child: FilterDiagnosticsPanel(
-            session: host,
-            engine: host?.filterEngine,
-            snapshot: host?.filterSnapshot,
-            policy: host?.filterPolicy ?? const FilterPolicy(),
+            session: currentHost,
+            engine: currentHost?.filterEngine,
+            snapshot: currentHost?.filterSnapshot,
+            policy: currentHost?.filterPolicy ?? const FilterPolicy(),
+            onAddException: currentHost == null
+                ? null
+                : () async {
+                    final current = Uri.tryParse(currentHost.url);
+                    final domain = current?.host.toLowerCase();
+                    if (domain == null || domain.isEmpty) return;
+                    final policy = currentHost.filterPolicy.copyWith(
+                      domainExceptions: {
+                        ...currentHost.filterPolicy.domainExceptions,
+                        domain,
+                      },
+                    );
+                    await widget.app.updateFilterPolicy(
+                      policy,
+                      profileId: currentHost.profileId,
+                    );
+                    if (context.mounted) Navigator.of(context).pop();
+                  },
           ),
         ),
       ),

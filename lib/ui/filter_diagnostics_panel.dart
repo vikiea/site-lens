@@ -17,12 +17,14 @@ class FilterDiagnosticsPanel extends StatelessWidget {
     required this.engine,
     required this.snapshot,
     required this.policy,
+    this.onAddException,
   });
 
   final HostSession? session;
   final FilterEngine? engine;
   final FilterSnapshot? snapshot;
   final FilterPolicy policy;
+  final Future<void> Function()? onAddException;
 
   @override
   Widget build(BuildContext context) {
@@ -66,6 +68,20 @@ class FilterDiagnosticsPanel extends StatelessWidget {
               '${snapshot?.unsupportedRuleCount ?? diagnostics['unsupported'] ?? 0}',
             ),
             _line(context, '页面规则', '${diagnostics['cosmeticRules'] ?? 0}'),
+            if (onAddException != null &&
+                currentUrl != null &&
+                currentUrl.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: FilledButton.tonalIcon(
+                    onPressed: () => onAddException!(),
+                    icon: const Icon(Icons.check_circle_outline),
+                    label: const Text('本站加入例外'),
+                  ),
+                ),
+              ),
           ],
         ),
       ),
