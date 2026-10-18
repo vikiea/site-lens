@@ -318,4 +318,25 @@ void main() {
     expect(find.text('关于 Site Lens'), findsOneWidget);
     expect(find.text('软件更新'), findsOneWidget);
   });
+
+  testWidgets('GitHub token entry is only shown for the beta channel', (
+    tester,
+  ) async {
+    await pumpSettings(tester, app);
+    await tester.scrollUntilVisible(
+      find.text('更新渠道'),
+      300,
+      scrollable: find.byType(Scrollable),
+    );
+    expect(find.text('更新渠道'), findsOneWidget);
+    expect(find.text('GitHub API Token'), findsNothing);
+
+    await app.updateSettings({'updateChannel': UpdateChannel.beta.name});
+    await tester.pumpAndSettle();
+    expect(find.text('GitHub API Token'), findsOneWidget);
+
+    await app.updateSettings({'updateChannel': UpdateChannel.stable.name});
+    await tester.pumpAndSettle();
+    expect(find.text('GitHub API Token'), findsNothing);
+  });
 }

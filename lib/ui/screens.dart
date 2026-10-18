@@ -1653,9 +1653,11 @@ class _SettingsPageState extends State<SettingsPage> {
                     ),
                   ),
                 ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                const _GitHubTokenEntry(),
-                Divider(height: 1, indent: 18, endIndent: 18),
+                if (app.settings.updateChannel == UpdateChannel.beta) ...[
+                  Divider(height: 1, indent: 18, endIndent: 18),
+                  const _GitHubTokenEntry(),
+                  Divider(height: 1, indent: 18, endIndent: 18),
+                ],
                 ListTile(
                   leading: const Icon(Icons.alt_route_outlined),
                   title: const Text('更新渠道'),
