@@ -157,9 +157,12 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
 
     private fun deliver(sourcePath: String, destination: Uri) {
         validateLocal(sourcePath)
-        require(destination.scheme == "content") { "SAF 目标无效" }
         val source = File(sourcePath)
-        val output = context.contentResolver.openOutputStream(destination, "w") ?: error("无法打开 SAF 目标")
+        val output = when (destination.scheme) {
+            "content" -> context.contentResolver.openOutputStream(destination, "w")
+            "file" -> File(destination.path ?: error("文件目标无效")).outputStream()
+            else -> null
+        } ?: error("导出目标无效")
         source.inputStream().use { input -> output.use { input.copyTo(it) } }
     }
 }
