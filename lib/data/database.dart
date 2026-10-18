@@ -441,25 +441,45 @@ class AppDatabase extends GeneratedDatabase {
     ],
   );
   Future<void> deleteProfile(int id) => transaction(() async {
-    await _reassignCandidates(id);
+    final sourceRows = await customSelect(
+      'SELECT id FROM sources WHERE profile_id=?',
+      variables: [Variable(id)],
+    ).get();
+    final sourceIds = sourceRows.map((row) => row.read<int>('id')).toList();
+    final pageRows = await customSelect(
+      'SELECT url FROM profile_pages WHERE profile_id=?',
+      variables: [Variable(id)],
+    ).get();
+    final pageUrls = pageRows.map((row) => row.read<String>('url')).toList();
+    // A deleted profile owns its candidates. Leaving them with a NULL owner
+    // or manufacturing an "未归类" profile makes the deletion look partial
+    // and allows stale landings to reappear on the next load.
+    if (sourceIds.isEmpty) {
+      await customStatement('DELETE FROM candidates WHERE profile_id=?', [id]);
+    } else {
+      final placeholders = List.filled(sourceIds.length, '?').join(',');
+      await customStatement(
+        'DELETE FROM candidates WHERE profile_id=? OR source_id IN ($placeholders)',
+        [id, ...sourceIds],
+      );
+    }
+    // `sources` is a v1 compatibility table. Remove its mirror as part of the
+    // same transaction so an old source row cannot resurrect this profile on a
+    // later migration or import.
+    if (pageUrls.isEmpty) {
+      await customStatement('DELETE FROM sources WHERE profile_id=?', [id]);
+    } else {
+      final placeholders = List.filled(pageUrls.length, '?').join(',');
+      await customStatement(
+        'DELETE FROM sources WHERE profile_id=? OR (profile_id IS NULL AND url IN ($placeholders))',
+        [id, ...pageUrls],
+      );
+    }
     await customStatement('DELETE FROM profiles WHERE id=?', [id]);
     await customStatement('DELETE FROM settings WHERE key=?', [
       'profile_config_$id',
     ]);
   });
-
-  /// Moves every candidate owned by [id] into the "未归类" bucket. If [id] *is*
-  /// that bucket, a fresh bucket is created first so candidates never dangle.
-  Future<void> _reassignCandidates(int id) async {
-    var fallback = await _profileIdByName(unassignedProfileName);
-    if (fallback == null || fallback == id) {
-      fallback = await _insertProfile(unassignedProfileName, 'main');
-    }
-    await customStatement(
-      'UPDATE candidates SET profile_id=? WHERE profile_id=?',
-      [fallback, id],
-    );
-  }
 
   Future<List<ProfilePage>> profilePages({int? profileId}) async =>
       (await customSelect(
@@ -710,11 +730,7 @@ class AppDatabase extends GeneratedDatabase {
         final decoded = jsonDecode(row.read<String>('result'));
         if (decoded is! Map<String, dynamic>) continue;
         results.add(ProbeResult.fromJson(decoded));
-      } on FormatException {
-        continue;
-      } on TypeError {
-        continue;
-      } on ArgumentError {
+      } on Object {
         continue;
       }
     }

@@ -364,7 +364,7 @@ class ProfileDetailScreen extends StatelessWidget {
       builder: (dialogContext) => SiteLensAlertDialog(
         title: Text('删除“${profile.name}”？'),
         content: const Text(
-          '该档案的发布页、健康状态、脚本绑定和配置会被删除；候选落点会移到“未归类”，对应的历史检测记录会保留。浏览器中属于该档案的标签页会关闭。此操作不可撤销。',
+          '该档案的发布页、候选落点、健康状态、脚本绑定和配置都会被删除，对应的历史检测记录会保留。浏览器中属于该档案的标签页会关闭。此操作不可撤销。',
         ),
         actions: [
           TextButton(

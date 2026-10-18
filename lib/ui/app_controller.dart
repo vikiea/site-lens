@@ -233,7 +233,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> initialize() async {
     WidgetsBinding.instance.addObserver(this);
-    await load();
+    // A damaged legacy row must not abort the first frame. `load` keeps every
+    // successfully read collection and publishes the partial state together;
+    // the normal user-triggered loads still surface real storage failures.
+    await load(suppressCorruption: true);
     await restoreSavedSessions();
     // Schedule/cancel the periodic survival check in the background. It waits
     // for WorkManager's shared startup Future before registering, but never
@@ -242,16 +245,21 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     await drainBackgroundNotice();
     // Capabilities are observed on the first real host; cold-start restoration
     // must not construct an otherwise unused native WebView.
-    var previous = (await Connectivity().checkConnectivity())
-        .map((e) => e.name)
-        .join(',');
-    _network = Connectivity().onConnectivityChanged.listen((state) {
-      final current = state.map((e) => e.name).join(',');
-      if (current != previous) {
-        previous = current;
-        cancel('网络发生变化，请重新检测；旧结果不参与推荐');
-      }
-    });
+    try {
+      var previous = (await Connectivity().checkConnectivity())
+          .map((e) => e.name)
+          .join(',');
+      _network = Connectivity().onConnectivityChanged.listen((state) {
+        final current = state.map((e) => e.name).join(',');
+        if (current != previous) {
+          previous = current;
+          cancel('网络发生变化，请重新检测；旧结果不参与推荐');
+        }
+      });
+    } catch (_) {
+      // Connectivity is advisory. A plugin failure must not turn a successful
+      // data restore into a startup error banner or snackbar.
+    }
     // Startup restores metadata only; discovery runs on explicit user entry.
   }
 
@@ -419,7 +427,16 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       activeBrowser =
           browserTabs.where((t) => t.id == saved.activeId).firstOrNull ??
           browserTabs.firstOrNull;
-      if (saved.discarded > 0) error = '已跳过 ${saved.discarded} 条无法识别的标签记录';
+      // Invalid tab snapshots are disposable cache. They are intentionally
+      // dropped without an error banner so a damaged cache cannot obscure the
+      // restored site data.
+    } on FormatException {
+      // A corrupt snapshot is disposable cache, not business data. Clear it
+      // and let the site list render without a stale startup error.
+      try {
+        await sessionStore.clear();
+      } catch (_) {}
+      if (!_disposed) error = null;
     } catch (e) {
       if (!_disposed) error = '上次标签记录无法读取：$e';
     } finally {
@@ -482,8 +499,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Deletes a profile and removes its open browser tabs before deleting the
-  /// database row. Candidates are moved to the unassigned bucket by the
-  /// database layer; profile pages, health state and script links cascade.
+  /// database row. Owned candidates and compatibility source rows are removed
+  /// in the same database transaction; profile pages, health state and script
+  /// links cascade.
   Future<void> deleteProfile(int profileId) async {
     cancel('已删除站点档案，检测已停止');
     // Invalidate both already-open and still-creating tabs. A pending open may
@@ -502,15 +520,25 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     await load();
   }
 
-  Future<void> load() async {
-    sites = await db.candidates();
-    sources = await db.sources();
-    profiles = await db.profiles();
-    profilePages = await db.profilePages();
-    profileHealth = await db.profileHealthAll();
-    profileScriptLinks = await db.profileScripts();
-    installed = await db.scripts();
-    history = await db.recentProbes();
+  Future<void> load({bool suppressCorruption = false}) async {
+    Future<T> read<T>(Future<T> Function() action, T fallback) async {
+      if (!suppressCorruption) return action();
+      try {
+        return await action();
+      } catch (_) {
+        return fallback;
+      }
+    }
+
+    if (suppressCorruption) error = null;
+    sites = await read(db.candidates, sites);
+    sources = await read(db.sources, sources);
+    profiles = await read(db.profiles, profiles);
+    profilePages = await read(db.profilePages, profilePages);
+    profileHealth = await read(db.profileHealthAll, profileHealth);
+    profileScriptLinks = await read(db.profileScripts, profileScriptLinks);
+    installed = await read(db.scripts, installed);
+    history = await read(db.recentProbes, history);
     settings = await settingsRepository.read();
     glassQualityCache = await glassQualityCacheRepository.read();
     final cached = glassQualityCache;
@@ -524,7 +552,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         glassQualityCache?.quality ?? GlassQuality.standard,
     };
     _applySettings();
-    await hosts.applyPreferences(hostPreferences);
+    if (suppressCorruption) {
+      try {
+        await hosts.applyPreferences(hostPreferences);
+      } catch (_) {}
+    } else {
+      await hosts.applyPreferences(hostPreferences);
+    }
     await syncMediaPolicy();
     notifyListeners();
   }

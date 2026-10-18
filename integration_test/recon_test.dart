@@ -52,6 +52,22 @@ void main() {
             request.response.write(
               '<!doctype html><html><body><div class="g-recaptcha"></div></body></html>',
             );
+          case '/plain':
+            request.response.write(
+              '<!doctype html><html><body><div id="main">'
+              '<h4>最新地址</h4><ul>'
+              '<li><a href="https://mirror.example/">https://mirror.example/</a></li>'
+              '<li><a href="https://docs.example/guide">使用文档</a></li>'
+              '</ul></div></body></html>',
+            );
+          case '/legacy':
+            request.response.write(
+              '<!doctype html><html><body><main>'
+              '<h1>地址发布页回家看看</h1>'
+              '<div class="content"><a href="https://legacy.example/">立即进入</a>'
+              '<a href="https://docs.example/guide">文档</a></div>'
+              '</main></body></html>',
+            );
           case '/login':
             request.response.write(
               '<!doctype html><html><body>'
@@ -99,6 +115,14 @@ void main() {
         // The user still confirms before anything is persisted.
         expect(await db.profiles(), isEmpty);
         expect(await db.profilePages(), isEmpty);
+
+        final plain = await controller.recon('http://127.0.0.1:$port/plain');
+        expect(plain.regionFound, isTrue);
+        expect(plain.links.map((u) => u.host), ['mirror.example']);
+
+        final legacy = await controller.recon('http://127.0.0.1:$port/legacy');
+        expect(legacy.regionFound, isTrue);
+        expect(legacy.links.map((u) => u.host), ['legacy.example']);
 
         // 2) Captcha and login pages are reported instead of guessed at.
         final captcha = await controller.recon(
