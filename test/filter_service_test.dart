@@ -101,6 +101,73 @@ void main() {
     },
   );
 
+  test('request exceptions and supported ABP options are deterministic', () {
+    final result = const FilterCompiler().compile(
+      '||ads.example^\n'
+      '@@||ads.example/allowed^\n'
+      '||tracker.example^\$third-party\n'
+      '||private.example^\$domain=site.example|~news.example\n',
+      snapshotId: 'request-options',
+    );
+    const policy = FilterPolicy(enabled: true);
+    expect(
+      result.engine.evaluate(
+        Uri.parse('https://ads.example/blocked'),
+        policy: policy,
+      ),
+      FilterDecision.block,
+    );
+    expect(
+      result.engine.evaluate(
+        Uri.parse('https://ads.example/allowed'),
+        policy: policy,
+      ),
+      FilterDecision.allow,
+    );
+    expect(
+      result.engine.evaluate(
+        Uri.parse('https://tracker.example/pixel'),
+        policy: policy,
+        context: FilterRequestContext(
+          document: Uri.parse('https://site.example/'),
+          thirdParty: true,
+        ),
+      ),
+      FilterDecision.block,
+    );
+    expect(
+      result.engine.evaluate(
+        Uri.parse('https://tracker.example/pixel'),
+        policy: policy,
+        context: FilterRequestContext(
+          document: Uri.parse('https://tracker.example/'),
+          thirdParty: false,
+        ),
+      ),
+      FilterDecision.allow,
+    );
+    expect(
+      result.engine.evaluate(
+        Uri.parse('https://private.example/x'),
+        policy: policy,
+        context: FilterRequestContext(
+          document: Uri.parse('https://site.example/'),
+        ),
+      ),
+      FilterDecision.block,
+    );
+    expect(
+      result.engine.evaluate(
+        Uri.parse('https://private.example/x'),
+        policy: policy,
+        context: FilterRequestContext(
+          document: Uri.parse('https://news.example/'),
+        ),
+      ),
+      FilterDecision.allow,
+    );
+  });
+
   test('diagnostics redact query values and expose degraded rule state', () {
     final result = const FilterCompiler().compile(
       'example.com##+js(unsupported,foo)\n',

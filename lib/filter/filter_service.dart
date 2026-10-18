@@ -73,6 +73,30 @@ const builtInFilterSources = <BuiltInFilterSourceSpec>[
   ),
 ];
 
+enum FilterResourceType {
+  document,
+  script,
+  image,
+  stylesheet,
+  font,
+  media,
+  subdocument,
+  xhr,
+  other,
+}
+
+class FilterRequestContext {
+  const FilterRequestContext({
+    this.document,
+    this.resourceType,
+    this.thirdParty,
+  });
+
+  final Uri? document;
+  final FilterResourceType? resourceType;
+  final bool? thirdParty;
+}
+
 /// A deliberately small, deterministic rule representation.  The native
 /// request callback can evaluate this object without touching disk, Dart, or
 /// the network.  Unknown syntax is retained as diagnostics and follows the
@@ -87,6 +111,8 @@ class FilterRule {
     this.domains = const <String>[],
     this.excludedDomains = const <String>[],
     this.exception = false,
+    this.resourceTypes = const <String>{},
+    this.thirdParty,
     this.scriptlet,
     this.scriptletArgs = const <String>[],
   });
@@ -99,25 +125,64 @@ class FilterRule {
   final List<String> domains;
   final List<String> excludedDomains;
   final bool exception;
+  final Set<String> resourceTypes;
+  final bool? thirdParty;
 
   /// Name of an audited, built-in scriptlet. Remote rule text is never
   /// evaluated as JavaScript; unknown names stay in diagnostics.
   final String? scriptlet;
   final List<String> scriptletArgs;
 
-  bool matches(Uri url) {
+  bool matches(
+    Uri url, {
+    FilterRequestContext context = const FilterRequestContext(),
+  }) {
     if (cosmetic) return false;
+    if (resourceTypes.isNotEmpty &&
+        (context.resourceType == null ||
+            !resourceTypes.contains(context.resourceType!.name))) {
+      return false;
+    }
+    if (thirdParty != null &&
+        (context.thirdParty == null || context.thirdParty != thirdParty)) {
+      return false;
+    }
+    if (domains.isNotEmpty || excludedDomains.isNotEmpty) {
+      final documentHost = context.document?.host.toLowerCase();
+      if (documentHost == null) return false;
+      final excluded = excludedDomains.any(
+        (value) => documentHost == value || documentHost.endsWith('.$value'),
+      );
+      if (excluded) return false;
+      if (domains.isNotEmpty &&
+          !domains.any(
+            (value) =>
+                documentHost == value || documentHost.endsWith('.$value'),
+          )) {
+        return false;
+      }
+    }
     final target = url.removeFragment().toString().toLowerCase();
     final value = pattern.toLowerCase();
     if (value.isEmpty) return false;
     if (hostOnly || value.startsWith('||')) {
-      final host = value.substring(2).split(RegExp(r'[/:^]')).first;
-      return host.isNotEmpty &&
-          (url.host.toLowerCase() == host ||
-              url.host.toLowerCase().endsWith('.$host'));
+      final raw = value.substring(2);
+      final hostEnd = raw.indexOf(RegExp(r'[/^:]'));
+      final host = (hostEnd < 0 ? raw : raw.substring(0, hostEnd));
+      if (host.isEmpty ||
+          !(url.host.toLowerCase() == host ||
+              url.host.toLowerCase().endsWith('.$host'))) {
+        return false;
+      }
+      if (hostEnd < 0) return true;
+      final suffix = raw.substring(hostEnd);
+      if (suffix == '^') return true;
+      final targetPath = '${url.path}${url.hasQuery ? '?${url.query}' : ''}';
+      final needle = suffix.replaceAll('^', '');
+      return targetPath.contains(needle.replaceAll('*', ''));
     }
-    final needle = value.replaceAll('*', '');
-    return needle.isNotEmpty && target.contains(needle);
+    final expression = value.split('*').map(RegExp.escape).join('.*');
+    return expression.isNotEmpty && RegExp(expression).hasMatch(target);
   }
 
   bool cosmeticApplies(Uri url) {
@@ -185,6 +250,7 @@ class FilterEngine {
   FilterDecision evaluate(
     Uri url, {
     FilterPolicy policy = const FilterPolicy(),
+    FilterRequestContext context = const FilterRequestContext(),
   }) {
     final host = url.host.toLowerCase();
     if (policy.domainExceptions.any((d) => host == d || host.endsWith('.$d'))) {
@@ -199,15 +265,23 @@ class FilterEngine {
       allowedCount++;
       return FilterDecision.allow;
     }
+    var blocked = false;
+    var excepted = false;
     for (final rule in rules) {
-      if (rule.matches(url)) {
-        if (rule.block) {
-          blockedCount++;
-        } else {
-          allowedCount++;
-        }
-        return rule.block ? FilterDecision.block : FilterDecision.allow;
+      if (!rule.matches(url, context: context)) continue;
+      if (rule.exception || !rule.block) {
+        excepted = true;
+      } else {
+        blocked = true;
       }
+    }
+    if (excepted) {
+      allowedCount++;
+      return FilterDecision.allow;
+    }
+    if (blocked) {
+      blockedCount++;
+      return FilterDecision.block;
     }
     switch (defaultDecision) {
       case FilterDecision.allow:
@@ -247,8 +321,9 @@ class FilterEngine {
   FilterDiagnostic diagnose(
     Uri url, {
     FilterPolicy policy = const FilterPolicy(),
+    FilterRequestContext context = const FilterRequestContext(),
   }) {
-    final decision = evaluate(url, policy: policy);
+    final decision = evaluate(url, policy: policy, context: context);
     final reason = decision == FilterDecision.block
         ? '请求规则命中'
         : decision == FilterDecision.unsupported || unsupportedCount > 0
@@ -365,14 +440,76 @@ class FilterCompiler {
         );
         continue;
       }
-      final exception = line.startsWith('@@||');
-      final hostRule = line.startsWith('||') || line.startsWith('@@||');
-      final pattern = exception ? line.substring(2) : line;
+      final exception = line.startsWith('@@');
+      final withoutException = exception ? line.substring(2) : line;
+      final optionSeparator = withoutException.indexOf('\$');
+      final pattern = optionSeparator < 0
+          ? withoutException
+          : withoutException.substring(0, optionSeparator);
+      final options = optionSeparator < 0
+          ? const <String>[]
+          : withoutException
+                .substring(optionSeparator + 1)
+                .split(',')
+                .map((value) => value.trim().toLowerCase())
+                .where((value) => value.isNotEmpty)
+                .toList(growable: false);
+      final hostRule = pattern.startsWith('||');
       if (pattern.contains('##') || pattern.contains('#@#')) {
         unsupported.add(line);
         continue;
       }
-      if (!RegExp(r'^[\w.*|:/?=_\-^$]+$').hasMatch(pattern)) {
+      if (!RegExp(r'^[\w.*|:/?=_\-^]+$').hasMatch(pattern)) {
+        unsupported.add(line);
+        continue;
+      }
+      final domains = <String>[];
+      final excludedDomains = <String>[];
+      final resourceTypes = <String>{};
+      bool? thirdParty;
+      var optionsValid = true;
+      for (final option in options) {
+        if (option.startsWith('domain=')) {
+          for (final rawDomain in option.substring(7).split('|')) {
+            if (rawDomain.startsWith('~')) {
+              excludedDomains.add(rawDomain.substring(1));
+            } else {
+              domains.add(rawDomain);
+            }
+          }
+          continue;
+        }
+        if (option == 'third-party') {
+          thirdParty = true;
+          continue;
+        }
+        if (option == '~third-party') {
+          thirdParty = false;
+          continue;
+        }
+        const aliases = {
+          'document': 'document',
+          'subdocument': 'subdocument',
+          'script': 'script',
+          'image': 'image',
+          'stylesheet': 'stylesheet',
+          'font': 'font',
+          'media': 'media',
+          'xhr': 'xhr',
+          'xmlhttprequest': 'xhr',
+        };
+        final type = aliases[option];
+        if (type == null) {
+          optionsValid = false;
+          break;
+        }
+        resourceTypes.add(type);
+      }
+      if (!optionsValid ||
+          [
+            ...domains,
+            ...excludedDomains,
+          ].any((domain) => !_isValidDomainToken(domain))) {
         unsupported.add(line);
         continue;
       }
@@ -382,6 +519,10 @@ class FilterCompiler {
           block: !exception,
           hostOnly: hostRule,
           exception: exception,
+          domains: List.unmodifiable(domains),
+          excludedDomains: List.unmodifiable(excludedDomains),
+          resourceTypes: Set.unmodifiable(resourceTypes),
+          thirdParty: thirdParty,
         ),
       );
     }
@@ -603,7 +744,17 @@ class FilterSourceManager {
           : rule.domains.join(',');
       return '$domains${rule.exception ? '#@#' : '##'}${rule.pattern}';
     }
-    return '${rule.exception ? '@@' : ''}${rule.pattern}';
+    final options = <String>[];
+    if (rule.domains.isNotEmpty || rule.excludedDomains.isNotEmpty) {
+      options.add(
+        'domain=${[...rule.domains, ...rule.excludedDomains.map((domain) => '~$domain')].join('|')}',
+      );
+    }
+    if (rule.thirdParty == true) options.add('third-party');
+    if (rule.thirdParty == false) options.add('~third-party');
+    options.addAll(rule.resourceTypes);
+    final suffix = options.isEmpty ? '' : '\$${options.join(',')}';
+    return '${rule.exception ? '@@' : ''}${rule.pattern}$suffix';
   }
 
   List<Uri> _candidateUrls(FilterSource source) {

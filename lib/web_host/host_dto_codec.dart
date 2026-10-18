@@ -77,6 +77,8 @@ class HostDtoCodec {
                 'domains': rule.domains,
                 'excludedDomains': rule.excludedDomains,
                 'exception': rule.exception,
+                'resourceTypes': rule.resourceTypes.toList(growable: false),
+                'thirdParty': rule.thirdParty,
                 'scriptlet': rule.scriptlet,
                 'scriptletArgs': rule.scriptletArgs,
               },

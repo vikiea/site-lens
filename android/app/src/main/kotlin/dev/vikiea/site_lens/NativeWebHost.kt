@@ -297,6 +297,8 @@ private data class NativeFilterRule(
     val domains: List<String> = emptyList(),
     val excludedDomains: List<String> = emptyList(),
     val exception: Boolean = false,
+    val resourceTypes: List<String> = emptyList(),
+    val thirdParty: Boolean? = null,
     val scriptlet: String? = null,
     val scriptletArgs: List<String> = emptyList(),
 )
@@ -427,6 +429,10 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                         (0 until domains.length()).mapNotNull { domains.optString(it).takeIf(String::isNotBlank) }
                     } ?: emptyList(),
                     exception = value.optBoolean("exception", false),
+                    resourceTypes = value.optJSONArray("resourceTypes")?.let { types ->
+                        (0 until types.length()).mapNotNull { types.optString(it).takeIf(String::isNotBlank) }
+                    } ?: emptyList(),
+                    thirdParty = if (value.has("thirdParty") && !value.isNull("thirdParty")) value.optBoolean("thirdParty") else null,
                     scriptlet = value.optString("scriptlet").takeIf { it.isNotEmpty() },
                     scriptletArgs = value.optJSONArray("scriptletArgs")?.let { args ->
                         (0 until args.length()).mapNotNull { args.optString(it).takeIf { value -> value.isNotEmpty() } }
@@ -479,29 +485,67 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         return selector.matches(Regex("^[A-Za-z0-9_.*#\\-\\[\\]=\"': >+~(),]+$"))
     }
 
-    private fun filterAllows(url: Uri): Boolean {
+    private fun filterAllows(request: WebResourceRequest): Boolean {
+        val url = request.url
         val state = filterState
         if (!state.enabled) return true
         val host = url.host?.lowercase() ?: return true
         if (state.exceptions.any { host == it || host.endsWith(".$it") }) return true
         if (state.blockedDomains.any { host == it || host.endsWith(".$it") }) return false
-        val text = url.toString().lowercase()
+        val document = webView.url?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        val resourceType = requestResourceType(request)
+        val thirdParty = document?.host?.lowercase()?.let { documentHost ->
+            host != documentHost && !host.endsWith(".$documentHost") && !documentHost.endsWith(".$host")
+        }
+        var blocked = false
+        var exception = false
         for (rule in state.rules) {
             // Cosmetic selectors and audited scriptlets run in the document;
             // they are never request-blocking rules.
             if (rule.cosmetic) continue
+            if (rule.resourceTypes.isNotEmpty() && !rule.resourceTypes.contains(resourceType)) continue
+            if (rule.thirdParty != null && rule.thirdParty != thirdParty) continue
+            if (rule.domains.isNotEmpty() || rule.excludedDomains.isNotEmpty()) {
+                val documentHost = document?.host?.lowercase() ?: continue
+                if (rule.excludedDomains.any { documentHost == it || documentHost.endsWith(".$it") }) continue
+                if (rule.domains.isNotEmpty() && rule.domains.none { documentHost == it || documentHost.endsWith(".$it") }) continue
+            }
             val pattern = rule.pattern.lowercase()
             val matched = if (rule.hostOnly || pattern.startsWith("||")) {
                 val rawExpected = pattern.removePrefix("||")
                 val delimiter = rawExpected.indexOfAny(charArrayOf('/', ':', '^'))
                 val expected = if (delimiter >= 0) rawExpected.substring(0, delimiter) else rawExpected
-                host == expected || host.endsWith(".$expected")
+                val hostMatched = host == expected || host.endsWith(".$expected")
+                if (!hostMatched) false
+                else if (delimiter < 0 || rawExpected.substring(delimiter) == "^") true
+                else url.toString().lowercase().contains(rawExpected.substring(delimiter).replace("^", "").replace("*", ""))
             } else {
-                text.contains(pattern.replace("*", ""))
+                url.toString().lowercase().contains(pattern.replace("*", ""))
             }
-            if (matched) return !rule.block
+            if (!matched) continue
+            if (rule.exception || !rule.block) exception = true else blocked = true
         }
-        return true
+        return !blocked || exception
+    }
+
+    private fun requestResourceType(request: WebResourceRequest): String {
+        if (request.isForMainFrame) return "document"
+        val accept = request.requestHeaders.entries
+            .firstOrNull { it.key.equals("Accept", ignoreCase = true) }
+            ?.value
+            ?.lowercase()
+            ?: ""
+        val path = request.url.path?.lowercase() ?: ""
+        return when {
+            accept.contains("javascript") || path.endsWith(".js") -> "script"
+            accept.contains("text/css") || path.endsWith(".css") -> "stylesheet"
+            accept.contains("image/") || path.matches(Regex(".*\\.(png|jpe?g|gif|webp|svg|ico)$")) -> "image"
+            accept.contains("font/") || path.matches(Regex(".*\\.(woff2?|ttf|otf|eot)$")) -> "font"
+            accept.contains("audio/") || accept.contains("video/") || path.matches(Regex(".*\\.(mp4|m4a|webm|mp3|ts|m3u8)$")) -> "media"
+            accept.contains("text/html") -> "subdocument"
+            accept.contains("json") || accept.contains("xml") || request.method.equals("POST", ignoreCase = true) -> "xhr"
+            else -> "other"
+        }
     }
     init {
         if (purpose != HostPurpose.BROWSING && !hasProfiles) {
@@ -625,7 +669,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 // Keep the top-level document available so a bad or stale
                 // snapshot cannot strand the user on a blank page. Subresources
                 // are synchronously rejected from the in-memory snapshot.
-                if (!request.isForMainFrame && !filterAllows(request.url)) {
+                if (!request.isForMainFrame && !filterAllows(request)) {
                     event("filtered", "请求已阻止", request.url.toString())
                     return WebResourceResponse(
                         "text/plain",
