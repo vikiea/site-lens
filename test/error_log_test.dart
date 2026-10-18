@@ -31,7 +31,9 @@ void main() {
   test('readable errors hide connection implementation details', () {
     expect(
       readableError(
-        StateError('Connection reset by peer, uri = https://a.example/x'),
+        StateError(
+          'Connection closed while receiving data, uri = https://a.example/x',
+        ),
       ),
       '网络连接中断，请重试',
     );

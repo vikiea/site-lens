@@ -52,7 +52,6 @@ String readableError(Object error) {
       lower.contains('network is unreachable') ||
       lower.contains('failed host lookup')) {
     return lower.contains('connection closed') ||
-            lower.contains('connection reset') ||
             lower.contains('connection aborted')
         ? '网络连接中断，请重试'
         : '网络连接失败，请检查网络后重试';
