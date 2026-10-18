@@ -1,6 +1,8 @@
 package dev.vikiea.site_lens
 
+import android.app.Activity
 import android.content.Context
+import android.media.AudioManager
 import android.net.Uri
 import android.view.Surface
 import android.webkit.WebSettings
@@ -20,6 +22,7 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.TextureRegistry
 import java.io.File
 import java.util.UUID
+import kotlin.math.roundToInt
 
 /**
  * Process-local native playback session. Dart authorizes the candidate before
@@ -78,6 +81,17 @@ class NativeMediaRuntime(
                     speed = nextSpeed
                     result.success(snapshot())
                 }
+                "levels" -> result.success(levels())
+                "brightness" -> {
+                    val value = call.argument<Number>("value")?.toFloat() ?: error("亮度值无效")
+                    setBrightness(value)
+                    result.success(levels())
+                }
+                "volume" -> {
+                    val value = call.argument<Number>("value")?.toFloat() ?: error("音量值无效")
+                    setVolume(value)
+                    result.success(levels())
+                }
                 "stop", "close" -> {
                     // A route can finish disposing after a newer route has
                     // already opened another session. Ownership prevents the
@@ -107,6 +121,33 @@ class NativeMediaRuntime(
 
     private fun requireSession(call: MethodCall) {
         require(player != null && owns(call)) { "播放会话已结束或已切换" }
+    }
+
+    private fun levels(): Map<String, Any> {
+        val activity = context as? Activity
+        val brightness = activity?.window?.attributes?.screenBrightness
+            ?.takeIf { it >= 0f } ?: 0.5f
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        val current = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+        return mapOf(
+            "brightness" to brightness.coerceIn(0f, 1f),
+            "volume" to (current.toFloat() / max).coerceIn(0f, 1f),
+        )
+    }
+
+    private fun setBrightness(value: Float) {
+        val activity = context as? Activity ?: error("当前平台不支持亮度调节")
+        val attributes = activity.window.attributes
+        attributes.screenBrightness = value.coerceIn(0.05f, 1f)
+        activity.window.attributes = attributes
+    }
+
+    private fun setVolume(value: Float) {
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        val next = (value.coerceIn(0f, 1f) * max).roundToInt()
+        audio.setStreamVolume(AudioManager.STREAM_MUSIC, next.coerceIn(0, max), 0)
     }
 
     private fun open(call: MethodCall, result: MethodChannel.Result) {

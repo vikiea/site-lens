@@ -22,6 +22,53 @@ class NativeMediaRuntime {
   NativePlaybackSession? _active;
   NativePlaybackSession? get active => _active;
 
+  Future<({double brightness, double volume})> levels() async {
+    try {
+      final raw = await _channel.invokeMapMethod<String, Object?>('levels');
+      return (
+        brightness: (raw?['brightness'] as num?)?.toDouble() ?? 0.5,
+        volume: (raw?['volume'] as num?)?.toDouble() ?? 0.5,
+      );
+    } catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.native',
+        context: 'method=levels',
+        stack: stack,
+      );
+      rethrow;
+    }
+  }
+
+  Future<({double brightness, double volume})> setBrightness(double value) =>
+      _setLevel('brightness', value);
+
+  Future<({double brightness, double volume})> setVolume(double value) =>
+      _setLevel('volume', value);
+
+  Future<({double brightness, double volume})> _setLevel(
+    String method,
+    double value,
+  ) async {
+    try {
+      final raw = await _channel.invokeMapMethod<String, Object?>(method, {
+        'value': value.clamp(0, 1),
+      });
+      return (
+        brightness: (raw?['brightness'] as num?)?.toDouble() ?? value,
+        volume: (raw?['volume'] as num?)?.toDouble() ?? value,
+      );
+    } catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.native',
+        context: 'method=$method',
+        stack: stack,
+      );
+      rethrow;
+    }
+  }
+
   Future<NativePlaybackSession> open(
     MediaCandidate candidate, {
     required int hostId,

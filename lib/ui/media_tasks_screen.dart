@@ -22,6 +22,17 @@ const _playbackSpeeds = <double>[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3, 4, 8];
 String _speedLabel(double speed) =>
     speed == speed.roundToDouble() ? '${speed.round()}x' : '${speed}x';
 
+int mediaGestureSeekTarget({
+  required int positionMs,
+  required int durationMs,
+  required double deltaPx,
+  required double viewportWidth,
+}) {
+  if (viewportWidth <= 0 || durationMs <= 0) return positionMs;
+  final delta = (deltaPx / viewportWidth * durationMs).round();
+  return (positionMs + delta).clamp(0, durationMs).toInt();
+}
+
 String _mediaTaskStateLabel(MediaTaskState state) => switch (state) {
   MediaTaskState.queued => '排队中',
   MediaTaskState.downloading => '下载中',
@@ -66,10 +77,14 @@ class NativeMediaPlayerScreen extends StatefulWidget {
     super.key,
     required this.app,
     required this.session,
+    this.playlist = const [],
+    this.playlistIndex = 0,
   });
 
   final AppController app;
   final NativePlaybackSession session;
+  final List<MediaTask> playlist;
+  final int playlistIndex;
 
   @override
   State<NativeMediaPlayerScreen> createState() =>
@@ -87,6 +102,17 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   int _rotationQuarterTurns = 0;
   _VideoFitMode _fitMode = _VideoFitMode.contain;
   bool _closing = false;
+  Timer? _gestureHintTimer;
+  String? _gestureHint;
+  double _brightness = 0.5;
+  double _volume = 0.5;
+  double _horizontalDelta = 0;
+  double _verticalStart = 0;
+  double _verticalValue = 0.5;
+  bool _verticalLeft = true;
+  bool _longPressing = false;
+  double _speedBeforeLongPress = 1;
+  late int _playlistIndex;
 
   bool get _canControl =>
       !_closing &&
@@ -96,6 +122,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   @override
   void initState() {
     super.initState();
+    _playlistIndex = widget.playlistIndex;
     _states = widget.app.nativeMedia.states.listen((next) {
       if (!mounted || next.id != _session.id) return;
       setState(() => _session = next);
@@ -105,8 +132,31 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
       const Duration(milliseconds: 500),
       (_) => unawaited(_refreshState()),
     );
+    unawaited(_loadGestureLevels());
     unawaited(_applySystemUi());
     _scheduleHide();
+  }
+
+  Future<void> _loadGestureLevels() async {
+    try {
+      final levels = await widget.app.nativeMedia.levels();
+      if (!mounted) return;
+      setState(() {
+        _brightness = levels.brightness;
+        _volume = levels.volume;
+      });
+    } catch (_) {
+      // Brightness/volume gestures remain optional on unsupported platforms.
+    }
+  }
+
+  void _showGestureHint(String text) {
+    if (!mounted) return;
+    _gestureHintTimer?.cancel();
+    setState(() => _gestureHint = text);
+    _gestureHintTimer = Timer(const Duration(milliseconds: 900), () {
+      if (mounted) setState(() => _gestureHint = null);
+    });
   }
 
   void _scheduleHide() {
@@ -129,6 +179,109 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     setState(() => _controlsVisible = !_controlsVisible);
     unawaited(_applySystemUi());
     _scheduleHide();
+  }
+
+  void _onDoubleTap() {
+    if (!_canControl) return;
+    unawaited(
+      _command(
+        _session.state == NativePlaybackState.playing
+            ? () => widget.app.nativeMedia.pause(sessionId: _session.id)
+            : () => widget.app.nativeMedia.play(sessionId: _session.id),
+      ),
+    );
+  }
+
+  void _onHorizontalDragStart(DragStartDetails _) {
+    _horizontalDelta = 0;
+    _hideTimer?.cancel();
+  }
+
+  void _onHorizontalDragUpdate(DragUpdateDetails details) {
+    if (!_canControl) return;
+    _horizontalDelta += details.primaryDelta ?? 0;
+    final target = mediaGestureSeekTarget(
+      positionMs: _session.positionMs,
+      durationMs: _session.durationMs,
+      deltaPx: _horizontalDelta,
+      viewportWidth: MediaQuery.sizeOf(context).width,
+    );
+    _showGestureHint(
+      '${_horizontalDelta >= 0 ? '快进' : '快退'} ${formatMediaDuration(target)}',
+    );
+  }
+
+  void _onHorizontalDragEnd(DragEndDetails _) {
+    if (!_canControl) return;
+    final target = mediaGestureSeekTarget(
+      positionMs: _session.positionMs,
+      durationMs: _session.durationMs,
+      deltaPx: _horizontalDelta,
+      viewportWidth: MediaQuery.sizeOf(context).width,
+    );
+    _horizontalDelta = 0;
+    unawaited(_seekTo(target.toDouble()));
+    _scheduleHide();
+  }
+
+  void _onVerticalDragStart(DragStartDetails details) {
+    _verticalLeft =
+        details.localPosition.dx < MediaQuery.sizeOf(context).width / 2;
+    _verticalStart = details.localPosition.dy;
+    _verticalValue = _verticalLeft ? _brightness : _volume;
+    _hideTimer?.cancel();
+  }
+
+  void _onVerticalDragUpdate(DragUpdateDetails details) {
+    if (!_canControl) return;
+    final distance = _verticalStart - details.localPosition.dy;
+    final value =
+        (_verticalValue + distance / MediaQuery.sizeOf(context).height).clamp(
+          0.0,
+          1.0,
+        );
+    if (_verticalLeft) {
+      _brightness = value;
+      _showGestureHint('亮度 ${(value * 100).round()}%');
+      unawaited(_setBrightness(value));
+    } else {
+      _volume = value;
+      _showGestureHint('音量 ${(value * 100).round()}%');
+      unawaited(_setVolume(value));
+    }
+  }
+
+  Future<void> _setBrightness(double value) async {
+    try {
+      final levels = await widget.app.nativeMedia.setBrightness(value);
+      if (mounted) setState(() => _brightness = levels.brightness);
+    } catch (_) {
+      _showGestureHint('当前设备不支持亮度调节');
+    }
+  }
+
+  Future<void> _setVolume(double value) async {
+    try {
+      final levels = await widget.app.nativeMedia.setVolume(value);
+      if (mounted) setState(() => _volume = levels.volume);
+    } catch (_) {
+      _showGestureHint('当前设备不支持音量调节');
+    }
+  }
+
+  void _onLongPressStart(LongPressStartDetails _) {
+    if (!_canControl || _longPressing) return;
+    _longPressing = true;
+    _speedBeforeLongPress = _session.speed;
+    unawaited(_setSpeed(2));
+    _showGestureHint('2x');
+  }
+
+  void _onLongPressEnd(LongPressEndDetails _) {
+    if (!_longPressing) return;
+    _longPressing = false;
+    unawaited(_setSpeed(_speedBeforeLongPress));
+    _showGestureHint(_speedLabel(_speedBeforeLongPress));
   }
 
   Future<void> _applySystemUi() => SystemChrome.setEnabledSystemUIMode(
@@ -208,6 +361,40 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     );
   }
 
+  Future<NativePlaybackSession> _openPlaylistTask(MediaTask task) async {
+    final cached = await widget.app.mediaTasks.cachedFile(task.id);
+    if (cached != null) {
+      return widget.app.nativeMedia.openLocal(task, cached);
+    }
+    final candidate = await widget.app.db.mediaCandidate(task.candidateId);
+    if (candidate == null) throw StateError('下一集媒体候选已不存在');
+    return widget.app.nativeMedia.open(
+      candidate,
+      hostId: task.hostId,
+      generation: task.generation,
+      sourceUrl: task.sourceUrl,
+      sessionId: 'play_${task.id}',
+    );
+  }
+
+  Future<void> _switchPlaylist(int offset) async {
+    if (!_canControl || widget.playlist.isEmpty) return;
+    final targetIndex = _playlistIndex + offset;
+    if (targetIndex < 0 || targetIndex >= widget.playlist.length) return;
+    try {
+      final next = await _openPlaylistTask(widget.playlist[targetIndex]);
+      if (!mounted) return;
+      setState(() {
+        _session = next;
+        _playlistIndex = targetIndex;
+      });
+      _showGestureHint(widget.playlist[targetIndex].displayName);
+      _scheduleHide();
+    } catch (error) {
+      if (mounted) showError(context, error);
+    }
+  }
+
   Widget _videoViewport() => LayoutBuilder(
     builder: (context, constraints) {
       final maxWidth = constraints.maxWidth;
@@ -279,6 +466,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   void dispose() {
     _states?.cancel();
     _hideTimer?.cancel();
+    _gestureHintTimer?.cancel();
     _statePoller?.cancel();
     unawaited(SystemChrome.setPreferredOrientations([]));
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
@@ -300,8 +488,37 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
             GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: _toggleControls,
+              onDoubleTap: _onDoubleTap,
+              onHorizontalDragStart: _onHorizontalDragStart,
+              onHorizontalDragUpdate: _onHorizontalDragUpdate,
+              onHorizontalDragEnd: _onHorizontalDragEnd,
+              onVerticalDragStart: _onVerticalDragStart,
+              onVerticalDragUpdate: _onVerticalDragUpdate,
+              onLongPressStart: _onLongPressStart,
+              onLongPressEnd: _onLongPressEnd,
               child: _videoViewport(),
             ),
+            if (_gestureHint != null)
+              Center(
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 10,
+                      ),
+                      child: Text(
+                        _gestureHint!,
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             if (_session.state == NativePlaybackState.buffering ||
                 _session.state == NativePlaybackState.preparing)
               const Center(
@@ -453,6 +670,14 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         IconButton(
+                          tooltip: '上一集',
+                          color: Colors.white,
+                          icon: const Icon(Icons.skip_previous),
+                          onPressed: _playlistIndex > 0
+                              ? () => _switchPlaylist(-1)
+                              : null,
+                        ),
+                        IconButton(
                           tooltip: '快退 10 秒',
                           color: Colors.white,
                           icon: const Icon(Icons.replay_10),
@@ -486,6 +711,14 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
                           color: Colors.white,
                           icon: const Icon(Icons.forward_10),
                           onPressed: _canControl ? () => _seekBy(10) : null,
+                        ),
+                        IconButton(
+                          tooltip: '下一集',
+                          color: Colors.white,
+                          icon: const Icon(Icons.skip_next),
+                          onPressed: _playlistIndex < widget.playlist.length - 1
+                              ? () => _switchPlaylist(1)
+                              : null,
                         ),
                         IconButton(
                           tooltip: '停止',
@@ -656,14 +889,20 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   }
 
   Future<void> _play(MediaTask task) async {
+    final playlist = mediaPlaylistForTasks(widget.app.mediaTasks.tasks, task);
+    final playlistIndex = playlist.indexWhere((item) => item.id == task.id);
     final cached = await widget.app.mediaTasks.cachedFile(task.id);
     if (cached != null) {
       final session = await widget.app.nativeMedia.openLocal(task, cached);
       if (mounted) {
         await Navigator.of(context).push(
           MaterialPageRoute<void>(
-            builder: (_) =>
-                NativeMediaPlayerScreen(app: widget.app, session: session),
+            builder: (_) => NativeMediaPlayerScreen(
+              app: widget.app,
+              session: session,
+              playlist: playlist,
+              playlistIndex: playlistIndex < 0 ? 0 : playlistIndex,
+            ),
           ),
         );
       }
@@ -681,8 +920,12 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     if (!mounted) return;
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) =>
-            NativeMediaPlayerScreen(app: widget.app, session: session),
+        builder: (_) => NativeMediaPlayerScreen(
+          app: widget.app,
+          session: session,
+          playlist: playlist,
+          playlistIndex: playlistIndex < 0 ? 0 : playlistIndex,
+        ),
       ),
     );
   }

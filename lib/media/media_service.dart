@@ -34,6 +34,42 @@ String? mediaEpisodeLabel(String value) {
   return number == null ? null : '第${int.parse(number)}集';
 }
 
+List<MediaTask> mediaPlaylistForTasks(
+  Iterable<MediaTask> tasks,
+  MediaTask current,
+) {
+  final items = tasks
+      .where(
+        (task) =>
+            task.seriesDirectoryName == current.seriesDirectoryName &&
+            (task.state == MediaTaskState.completed ||
+                task.state == MediaTaskState.playable),
+      )
+      .toList();
+  if (!items.any((task) => task.id == current.id) &&
+      (current.state == MediaTaskState.completed ||
+          current.state == MediaTaskState.playable)) {
+    items.add(current);
+  }
+  int? episode(MediaTask task) {
+    final match = RegExp(r'(\d+)').firstMatch(task.episodeLabel ?? '');
+    return match == null ? null : int.tryParse(match.group(1)!);
+  }
+
+  items.sort((left, right) {
+    final a = episode(left);
+    final b = episode(right);
+    if (a != null && b != null && a != b) return a.compareTo(b);
+    if (a != null && b == null) return -1;
+    if (a == null && b != null) return 1;
+    final title = left.displayName.toLowerCase().compareTo(
+      right.displayName.toLowerCase(),
+    );
+    return title == 0 ? left.updatedAt.compareTo(right.updatedAt) : title;
+  });
+  return List.unmodifiable(items);
+}
+
 enum NativePlaybackState {
   preparing,
   playing,

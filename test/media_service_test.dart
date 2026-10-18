@@ -89,6 +89,42 @@ void main() {
     expect(mediaSeriesDirectoryName(''), '未命名媒体');
   });
 
+  test('media playlist groups one series and sorts episodes', () {
+    final store = MediaTaskStore();
+    final first = store.create(
+      candidate(
+        title: '系列 - 第1集',
+        id: 'episode-1',
+        url: 'https://cdn.example/episode-1.mp4',
+      ),
+    );
+    final second = store.create(
+      candidate(
+        title: '系列 - 第2集',
+        id: 'episode-2',
+        url: 'https://cdn.example/episode-2.mp4',
+      ),
+    );
+    final other = store.create(
+      candidate(
+        title: '其他系列 - 第1集',
+        id: 'other-1',
+        url: 'https://cdn.example/other-1.mp4',
+      ),
+    );
+    for (final task in [first, second, other]) {
+      store.transition(task.id, MediaTaskState.downloading);
+      store.transition(task.id, MediaTaskState.completed);
+      store.transition(task.id, MediaTaskState.playable);
+    }
+
+    final playlist = mediaPlaylistForTasks(store.tasks, second);
+    expect(
+      playlist.map((task) => task.episodeLabel),
+      ['第1集', '第2集'],
+    );
+  });
+
   test('media retry clears the previous human-readable failure reason', () {
     final store = MediaTaskStore();
     final task = store.create(candidate());

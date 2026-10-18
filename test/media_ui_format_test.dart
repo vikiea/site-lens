@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/ui/ui_util.dart';
+import 'package:site_lens/ui/media_tasks_screen.dart';
 
 void main() {
   test('media byte formatting uses the correct binary unit', () {
@@ -14,5 +15,26 @@ void main() {
     expect(formatMediaDuration(0), '--:--');
     expect(formatMediaDuration(65_000), '01:05');
     expect(formatMediaDuration(3_661_000), '1:01:01');
+  });
+
+  test('horizontal player gesture maps the full viewport to the duration', () {
+    expect(
+      mediaGestureSeekTarget(
+        positionMs: 30_000,
+        durationMs: 120_000,
+        deltaPx: 100,
+        viewportWidth: 400,
+      ),
+      60_000,
+    );
+    expect(
+      mediaGestureSeekTarget(
+        positionMs: 30_000,
+        durationMs: 120_000,
+        deltaPx: -400,
+        viewportWidth: 400,
+      ),
+      0,
+    );
   });
 }
