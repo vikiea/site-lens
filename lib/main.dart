@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,6 +8,7 @@ import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import 'background/health_worker.dart';
 import 'data/database.dart';
+import 'diagnostics/error_log.dart';
 import 'ui/app_controller.dart';
 import 'ui/app_theme.dart';
 import 'ui/glass_surface.dart';
@@ -16,8 +18,21 @@ import 'ui/update_notice.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    AppErrorLogger.capture(
+      details.exception,
+      module: 'flutter',
+      context: details.library,
+    );
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    AppErrorLogger.capture(error, module: 'platform');
+    return false;
+  };
   try {
     final database = await AppDatabase.open();
+    AppErrorLogger(database);
     // Liquid glass is composed through wrap() below and loads shader programs
     // on demand. Do not prewarm during Android startup: emulator Impeller
     // rasterization can crash while a warmup future is active.
@@ -34,7 +49,9 @@ Future<void> main() async {
     runApp(
       MaterialApp(
         home: Scaffold(
-          body: SafeArea(child: Center(child: Text('本地数据库无法打开，请检查存储空间。\n$e'))),
+          body: const SafeArea(
+            child: Center(child: Text('本地数据库无法打开，请检查存储空间后重试。')),
+          ),
         ),
       ),
     );

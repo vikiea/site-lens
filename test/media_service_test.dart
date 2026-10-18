@@ -63,6 +63,32 @@ void main() {
     expect(task.displayName, '母衣半暖默许春朝 - 第3集');
   });
 
+  test('media task prefers the episode marker in the media URL', () {
+    final task = MediaTaskStore().create(
+      candidate(
+        title: '母衣半暖默许春朝 - 第1集',
+        url: 'https://cdn.example/episode-3/video.mp4',
+      ),
+    );
+    expect(task.episodeLabel, '第3集');
+  });
+
+  test('media retry clears the previous human-readable failure reason', () {
+    final store = MediaTaskStore();
+    final task = store.create(candidate());
+    store.transition(task.id, MediaTaskState.downloading);
+    final failed = store.transition(
+      task.id,
+      MediaTaskState.failed,
+      errorCode: MediaErrorCode.network,
+      errorReason: '网络连接中断，请重试',
+    );
+    expect(failed.errorReason, '网络连接中断，请重试');
+    final retrying = store.transition(task.id, MediaTaskState.downloading);
+    expect(retrying.errorCode, isNull);
+    expect(retrying.errorReason, isNull);
+  });
+
   test('native playback controller enforces one session and safe controls', () {
     final controller = NativePlaybackController();
     final opening = controller.open(

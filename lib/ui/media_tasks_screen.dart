@@ -45,6 +45,12 @@ String _mediaErrorLabel(String? code) => switch (code) {
   _ => '下载失败，可重试',
 };
 
+String _taskErrorLabel(MediaTask task) {
+  final reason = task.errorReason?.trim();
+  if (reason != null && reason.isNotEmpty) return reason;
+  return _mediaErrorLabel(task.errorCode);
+}
+
 String _shortMediaName(String value) {
   final runes = value.runes.toList();
   if (runes.length <= 13) return value;
@@ -690,11 +696,8 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                     ? formatBytes(task.bytesDownloaded)
                     : '${formatBytes(task.bytesDownloaded)} / ${formatBytes(task.totalBytes!)}',
               ),
-              if (_mediaErrorLabel(task.errorCode).isNotEmpty)
-                _MediaDetailRow(
-                  label: '提示',
-                  value: _mediaErrorLabel(task.errorCode),
-                ),
+              if (_taskErrorLabel(task).isNotEmpty)
+                _MediaDetailRow(label: '错误原因', value: _taskErrorLabel(task)),
               if (resolved != null)
                 _MediaDetailRow(label: '格式', value: resolved.effectiveMime),
               if (resolved != null)
@@ -849,7 +852,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                         overflow: TextOverflow.ellipsis,
                       ),
                       subtitle: Text(
-                        '${_mediaTaskStateLabel(task.state)} · ${_taskProgressLabel(task)}${_mediaErrorLabel(task.errorCode).isEmpty ? '' : ' · ${_mediaErrorLabel(task.errorCode)}'}',
+                        '${_mediaTaskStateLabel(task.state)} · ${_taskProgressLabel(task)}${_taskErrorLabel(task).isEmpty ? '' : ' · ${_taskErrorLabel(task)}'}',
                       ),
                       onTap: task.state == MediaTaskState.playable
                           ? () => unawaited(_run(() => _play(task)))

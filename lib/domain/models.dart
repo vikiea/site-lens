@@ -813,6 +813,7 @@ class MediaTask {
     this.bytesDownloaded = 0,
     this.totalBytes,
     this.errorCode,
+    this.errorReason,
     this.localRef,
   });
 
@@ -829,6 +830,7 @@ class MediaTask {
   final int bytesDownloaded;
   final int? totalBytes;
   final String? errorCode;
+  final String? errorReason;
   final String? localRef;
 
   String get displayName {
@@ -846,6 +848,7 @@ class MediaTask {
     int? bytesDownloaded,
     Object? totalBytes = _unset,
     Object? errorCode = _unset,
+    Object? errorReason = _unset,
     Object? localRef = _unset,
   }) => MediaTask(
     id: id,
@@ -867,6 +870,9 @@ class MediaTask {
     errorCode: identical(errorCode, _unset)
         ? this.errorCode
         : errorCode as String?,
+    errorReason: identical(errorReason, _unset)
+        ? this.errorReason
+        : errorReason as String?,
     localRef: identical(localRef, _unset) ? this.localRef : localRef as String?,
   );
 
@@ -886,6 +892,7 @@ class MediaTask {
     'bytesDownloaded': bytesDownloaded,
     'totalBytes': totalBytes,
     'errorCode': errorCode,
+    'errorReason': errorReason,
     'localRef': localRef,
   };
 
@@ -903,8 +910,29 @@ class MediaTask {
     bytesDownloaded: (json['bytesDownloaded'] as num?)?.toInt() ?? 0,
     totalBytes: (json['totalBytes'] as num?)?.toInt(),
     errorCode: json['errorCode'] as String?,
+    errorReason: json['errorReason'] as String?,
     localRef: json['localRef'] as String?,
   );
+}
+
+class AppErrorLog {
+  const AppErrorLog({
+    required this.id,
+    required this.happenedAt,
+    required this.level,
+    required this.module,
+    required this.message,
+    required this.details,
+    this.context,
+  });
+
+  final int id;
+  final DateTime happenedAt;
+  final String level;
+  final String module;
+  final String message;
+  final String details;
+  final String? context;
 }
 
 class CastDevice {

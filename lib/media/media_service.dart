@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../data/database.dart';
+import '../diagnostics/error_log.dart';
 import '../domain/models.dart';
 import '../network/transport.dart';
 import 'native_download_runtime.dart';
@@ -25,7 +26,7 @@ class MediaErrorCode {
 
 String? mediaEpisodeLabel(String value) {
   final match = RegExp(
-    r'(?:第\s*(\d+)\s*[集话期]|\b(?:ep|e)\s*[-_ ]?(\d+)\b)',
+    r'(?:第\s*(\d+)\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*(\d+)\b)',
     caseSensitive: false,
   ).firstMatch(value);
   final number = match?.group(1) ?? match?.group(2);
@@ -323,14 +324,26 @@ class MediaTaskStore {
       state: MediaTaskState.queued,
       updatedAt: DateTime.now().toUtc(),
       displayTitle: candidate.title.trim(),
-      episodeLabel: mediaEpisodeLabel(
-        '${candidate.title} ${candidate.sourceUrl.path} ${candidate.mediaUrl.path}',
-      ),
+      episodeLabel: _candidateEpisodeLabel(candidate),
     );
     _tasks[id] = task;
     _byCacheKey[key] = id;
     if (db != null) unawaited(db!.saveMediaTask(task));
     return task;
+  }
+
+  static String? _candidateEpisodeLabel(MediaCandidate candidate) {
+    // A page title can remain constant while the player URL changes per
+    // episode. Prefer the media/source URL marker, then fall back to title.
+    for (final value in [
+      candidate.mediaUrl.toString(),
+      candidate.sourceUrl.toString(),
+      candidate.title,
+    ]) {
+      final label = mediaEpisodeLabel(value);
+      if (label != null) return label;
+    }
+    return null;
   }
 
   Future<void> restore() async {
@@ -344,7 +357,12 @@ class MediaTaskStore {
       ..addEntries(persisted.map((task) => MapEntry(task.cacheKey, task.id)));
   }
 
-  MediaTask transition(String id, MediaTaskState state, {String? errorCode}) {
+  MediaTask transition(
+    String id,
+    MediaTaskState state, {
+    Object? errorCode = _unset,
+    Object? errorReason = _unset,
+  }) {
     final task = _tasks[id];
     if (task == null) throw StateError('媒体任务不存在');
     final allowed = switch (task.state) {
@@ -385,11 +403,25 @@ class MediaTaskStore {
     if (!allowed.contains(state) && state != task.state) {
       throw StateError('非法媒体任务状态迁移 ${task.state.name} -> ${state.name}');
     }
-    final next = task.copyWith(state: state, errorCode: errorCode);
+    final next = task.copyWith(
+      state: state,
+      errorCode: state == MediaTaskState.downloading
+          ? null
+          : identical(errorCode, _unset)
+          ? task.errorCode
+          : errorCode as String?,
+      errorReason: state == MediaTaskState.downloading
+          ? null
+          : identical(errorReason, _unset)
+          ? task.errorReason
+          : errorReason as String?,
+    );
     _tasks[id] = next;
     if (db != null) unawaited(db!.saveMediaTask(next));
     return next;
   }
+
+  static const _unset = Object();
 
   MediaTask updateProgress(String id, int bytesDownloaded, {int? totalBytes}) {
     final task = _tasks[id];
@@ -514,6 +546,7 @@ class MediaDownloadService {
           task.id,
           MediaTaskState.failed,
           errorCode: _errorCode(status['errorCode']?.toString()),
+          errorReason: _nativeErrorReason(status['errorCode']?.toString()),
         );
       }
     }
@@ -562,11 +595,17 @@ class MediaDownloadService {
     try {
       status = await runtime.resume(taskId);
     } catch (error) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.download',
+        context: 'resumeNative:$taskId',
+      );
       if (tasks.task(taskId)?.state == MediaTaskState.downloading) {
         tasks.transition(
           taskId,
           MediaTaskState.failed,
           errorCode: _errorCode(error.toString()),
+          errorReason: readableError(error),
         );
       }
       rethrow;
@@ -608,11 +647,17 @@ class MediaDownloadService {
     try {
       status = await runtime.start(current, candidate);
     } catch (error) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.download',
+        context: 'startNative:${task.id}',
+      );
       if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
         tasks.transition(
           task.id,
           MediaTaskState.failed,
           errorCode: _errorCode(error.toString()),
+          errorReason: readableError(error),
         );
       }
       rethrow;
@@ -635,6 +680,7 @@ class MediaDownloadService {
         task.id,
         MediaTaskState.failed,
         errorCode: _errorCode(status['errorCode']?.toString()),
+        errorReason: _nativeErrorReason(status['errorCode']?.toString()),
       );
     }
     return current;
@@ -708,12 +754,33 @@ class MediaDownloadService {
       }
       return current;
     } on StateError catch (error) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.download',
+        context: 'download:${task.id}',
+      );
       if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
         final code = _errorCode(error.toString());
         current = tasks.transition(
           task.id,
           MediaTaskState.failed,
           errorCode: code,
+          errorReason: readableError(error),
+        );
+      }
+      rethrow;
+    } catch (error) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.download',
+        context: 'download:${task.id}',
+      );
+      if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
+        current = tasks.transition(
+          task.id,
+          MediaTaskState.failed,
+          errorCode: _errorCode(error.toString()),
+          errorReason: readableError(error),
         );
       }
       rethrow;
@@ -855,20 +922,32 @@ class MediaDownloadService {
       }
       return current;
     } on StateError catch (error) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.download',
+        context: 'hls:${task.id}',
+      );
       if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
         current = tasks.transition(
           task.id,
           MediaTaskState.failed,
           errorCode: _errorCode(error.toString()),
+          errorReason: readableError(error),
         );
       }
       rethrow;
     } catch (error) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.download',
+        context: 'hls:${task.id}',
+      );
       if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
         current = tasks.transition(
           task.id,
           MediaTaskState.failed,
           errorCode: _errorCode(error.toString()),
+          errorReason: readableError(error),
         );
       }
       rethrow;
@@ -1085,6 +1164,17 @@ class MediaDownloadService {
     }
     if (value.contains('cancel')) return MediaErrorCode.cancelled;
     return MediaErrorCode.network;
+  }
+
+  static String _nativeErrorReason(String? raw) {
+    final value = (raw ?? '').trim();
+    if (value.isEmpty) return '后台下载失败，请重试';
+    return switch (_errorCode(value)) {
+      MediaErrorCode.authorizationRequired => '下载地址需要重新授权',
+      MediaErrorCode.diskFull => '设备存储空间不足',
+      MediaErrorCode.cancelled => '下载已取消',
+      _ => '网络连接中断，已保留已下载内容，可重试',
+    };
   }
 
   static int _contentLength(

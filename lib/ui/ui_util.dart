@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../domain/models.dart';
+import '../diagnostics/error_log.dart';
 import '../network/transport.dart';
 import 'app_theme.dart';
 import 'ui_primitives.dart';
@@ -28,7 +29,8 @@ String formatBytes(int bytes) {
 
 void showShortToast(BuildContext context, String message) {
   if (!context.mounted) return;
-  ScaffoldMessenger.of(context).showSnackBar(
+  final messenger = ScaffoldMessenger.of(context)..clearSnackBars();
+  messenger.showSnackBar(
     SnackBar(content: Text(message), duration: const Duration(seconds: 1)),
   );
 }
@@ -162,6 +164,7 @@ Future<void> safely(
   try {
     await action();
   } catch (e) {
+    AppErrorLogger.capture(e, module: 'ui');
     if (context.mounted) showError(context, e);
   }
 }

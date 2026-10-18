@@ -31,6 +31,7 @@ import 'glass_surface.dart';
 import 'browser_entry.dart';
 import 'profile_panel.dart';
 import 'media_tasks_screen.dart';
+import 'error_logs_screen.dart';
 import 'filter_diagnostics_panel.dart';
 import 'ui_util.dart';
 import 'ui_primitives.dart';
@@ -2005,6 +2006,17 @@ class _SettingsPageState extends State<SettingsPage> {
             padding: EdgeInsets.zero,
             child: Column(
               children: [
+                SiteLensActionRow(
+                  icon: Icons.bug_report_outlined,
+                  title: '错误日志',
+                  subtitle: '查看经过脱敏的应用错误记录，便于反馈问题',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => ErrorLogsScreen(app: app),
+                    ),
+                  ),
+                ),
+                Divider(height: 1, indent: 18, endIndent: 18),
                 SwitchListTile(
                   title: const Text('当前标签后台播放（Android）'),
                   subtitle: Text(

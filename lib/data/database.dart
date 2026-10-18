@@ -93,7 +93,7 @@ const _v5Tables = <String>[
       'host_id INTEGER NOT NULL, generation INTEGER NOT NULL, source_url TEXT NOT NULL, '
       'cache_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL, updated_at TEXT NOT NULL, '
       'display_title TEXT NOT NULL DEFAULT \'\', episode_label TEXT, '
-      'bytes_downloaded INTEGER NOT NULL DEFAULT 0, total_bytes INTEGER, error_code TEXT, local_ref TEXT)',
+      'bytes_downloaded INTEGER NOT NULL DEFAULT 0, total_bytes INTEGER, error_code TEXT, error_reason TEXT, local_ref TEXT)',
   'CREATE TABLE IF NOT EXISTS script_approvals ('
       'script_id TEXT PRIMARY KEY REFERENCES scripts(id) ON DELETE CASCADE, '
       "network_mode TEXT NOT NULL DEFAULT 'declared', approval_reason TEXT, "
@@ -107,6 +107,15 @@ const _v7TaskTitleColumn =
     'ALTER TABLE media_tasks ADD COLUMN display_title TEXT NOT NULL DEFAULT \'\'';
 const _v7TaskEpisodeColumn =
     'ALTER TABLE media_tasks ADD COLUMN episode_label TEXT';
+
+const _v8TaskErrorReasonColumn =
+    'ALTER TABLE media_tasks ADD COLUMN error_reason TEXT';
+
+const _v8ErrorLogsTable =
+    'CREATE TABLE IF NOT EXISTS app_error_logs('
+    'id INTEGER PRIMARY KEY AUTOINCREMENT, '
+    'happened_at TEXT NOT NULL, level TEXT NOT NULL, module TEXT NOT NULL, '
+    'message TEXT NOT NULL, details TEXT NOT NULL, context TEXT)';
 
 // Drift's SQL API keeps the small schema explicit and permits in-memory tests.
 // No browser cookie or password is copied into this database.
@@ -127,7 +136,7 @@ class AppDatabase extends GeneratedDatabase {
   static void Function(String step)? migrationDebugHook;
 
   @override
-  int get schemaVersion => 7;
+  int get schemaVersion => 8;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -148,6 +157,7 @@ class AppDatabase extends GeneratedDatabase {
         ..._v3Tables,
         'CREATE TABLE health_run_leases(name TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at INTEGER NOT NULL)',
         ..._v5Tables,
+        _v8ErrorLogsTable,
       ]) {
         await customStatement(sql);
       }
@@ -159,6 +169,7 @@ class AppDatabase extends GeneratedDatabase {
       if (from < 5) await _migrateV4toV5();
       if (from < 6) await _migrateV5toV6();
       if (from < 7) await _migrateV6toV7();
+      if (from < 8) await _migrateV7toV8();
     },
     beforeOpen: (_) async {
       await customStatement('PRAGMA foreign_keys = ON');
@@ -246,6 +257,15 @@ class AppDatabase extends GeneratedDatabase {
       await customStatement(_v7TaskEpisodeColumn);
     }
     migrationDebugHook?.call('v7-done');
+  });
+
+  Future<void> _migrateV7toV8() => transaction(() async {
+    migrationDebugHook?.call('v7-to-v8');
+    if (!await _columnExists('media_tasks', 'error_reason')) {
+      await customStatement(_v8TaskErrorReasonColumn);
+    }
+    await customStatement(_v8ErrorLogsTable);
+    migrationDebugHook?.call('v8-done');
   });
 
   /// v1 -> v2 migration. Runs inside a single transaction so a failure at any
@@ -1243,8 +1263,8 @@ class AppDatabase extends GeneratedDatabase {
   }
 
   Future<void> saveMediaTask(MediaTask task) => customStatement(
-    'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,state,updated_at,display_title,episode_label,bytes_downloaded,total_bytes,error_code,local_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
-    'ON CONFLICT(id) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at,display_title=excluded.display_title,episode_label=excluded.episode_label,bytes_downloaded=excluded.bytes_downloaded,total_bytes=excluded.total_bytes,error_code=excluded.error_code,local_ref=excluded.local_ref',
+    'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,state,updated_at,display_title,episode_label,bytes_downloaded,total_bytes,error_code,error_reason,local_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
+    'ON CONFLICT(id) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at,display_title=excluded.display_title,episode_label=excluded.episode_label,bytes_downloaded=excluded.bytes_downloaded,total_bytes=excluded.total_bytes,error_code=excluded.error_code,error_reason=excluded.error_reason,local_ref=excluded.local_ref',
     [
       task.id,
       task.candidateId,
@@ -1259,6 +1279,7 @@ class AppDatabase extends GeneratedDatabase {
       task.bytesDownloaded,
       task.totalBytes,
       task.errorCode,
+      task.errorReason,
       task.localRef,
     ],
   );
@@ -1281,6 +1302,7 @@ class AppDatabase extends GeneratedDatabase {
               bytesDownloaded: row.read<int>('bytes_downloaded'),
               totalBytes: row.readNullable<int>('total_bytes'),
               errorCode: row.readNullable<String>('error_code'),
+              errorReason: row.readNullable<String>('error_reason'),
               localRef: row.readNullable<String>('local_ref'),
             ),
           )
@@ -1288,4 +1310,52 @@ class AppDatabase extends GeneratedDatabase {
 
   Future<void> deleteMediaTask(String id) =>
       customStatement('DELETE FROM media_tasks WHERE id=?', [id]);
+
+  Future<void> appendAppError({
+    required String level,
+    required String module,
+    required String message,
+    required String details,
+    String? context,
+  }) async {
+    await customStatement(
+      'INSERT INTO app_error_logs(happened_at,level,module,message,details,context) VALUES(?,?,?,?,?,?)',
+      [
+        DateTime.now().toUtc().toIso8601String(),
+        level,
+        module,
+        message,
+        details,
+        context,
+      ],
+    );
+    // Keep the archive useful and bounded on long-lived devices. The newest
+    // 500 records are enough for diagnosis without turning logs into storage.
+    await customStatement(
+      'DELETE FROM app_error_logs WHERE id NOT IN (SELECT id FROM app_error_logs ORDER BY happened_at DESC, id DESC LIMIT 500)',
+    );
+  }
+
+  Future<List<AppErrorLog>> appErrorLogs({int limit = 200}) async {
+    final safeLimit = limit.clamp(1, 500);
+    final rows = await customSelect(
+      'SELECT * FROM app_error_logs ORDER BY happened_at DESC, id DESC LIMIT $safeLimit',
+    ).get();
+    return rows
+        .map(
+          (row) => AppErrorLog(
+            id: row.read<int>('id'),
+            happenedAt: DateTime.parse(row.read<String>('happened_at')),
+            level: row.read<String>('level'),
+            module: row.read<String>('module'),
+            message: row.read<String>('message'),
+            details: row.read<String>('details'),
+            context: row.readNullable<String>('context'),
+          ),
+        )
+        .toList();
+  }
+
+  Future<void> clearAppErrorLogs() =>
+      customStatement('DELETE FROM app_error_logs');
 }

@@ -13,6 +13,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../data/database.dart';
+import '../diagnostics/error_log.dart';
 import '../browser/browser_session.dart';
 import '../browser/browser_session_store.dart';
 export '../browser/browser_session.dart'
@@ -65,6 +66,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     BrowserSessionStore? sessionStore,
   }) {
     settingsRepository = SettingsRepository(db);
+    errorLogger = AppErrorLogger(db);
     glassQualityCacheRepository = SiteLensGlassQualityCacheRepository(db);
     this.sessionStore = sessionStore ?? BrowserSessionStore(db);
     scripts = ScriptService(db, ControlledHttp());
@@ -87,6 +89,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(_openLinkInNewTab(hostId, url));
     };
     hosts.onInvalidated = (host) {
+      if (host.error != null) {
+        AppErrorLogger.capture(
+          host.error!,
+          module: 'webview',
+          context: 'host:${host.id}',
+        );
+      }
       for (final tab in browserTabs) {
         if (identical(tab.loadedHost, host)) {
           tab.invalidate(host.error ?? '网页进程已退出');
@@ -105,6 +114,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     )..addListener(notifyListeners);
   }
   final AppDatabase db;
+  late final AppErrorLogger errorLogger;
   late final SettingsRepository settingsRepository;
   late final SiteLensGlassQualityCacheRepository glassQualityCacheRepository;
   late final BrowserSessionStore sessionStore;
@@ -181,6 +191,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           await hosts.destroy(h);
         }
       } catch (e) {
+        AppErrorLogger.capture(e, module: 'media.policy');
         if (!h.disposed && !_disposed) {
           error = '播放策略应用失败：${friendlyError(e)}';
         }
@@ -271,7 +282,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> initialize() async {
     WidgetsBinding.instance.addObserver(this);
     await mediaTasks.restore();
-    await mediaDownloads.reconcileNative();
+    try {
+      await mediaDownloads.reconcileNative();
+    } catch (error) {
+      AppErrorLogger.capture(error, module: 'media.reconcile');
+    }
     // A damaged legacy row must not abort the first frame; load keeps every
     // successfully read collection and publishes the partial state together.
     await load(suppressCorruption: true);
@@ -1831,6 +1846,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     _shutdownFuture = Future.wait<void>([flush, close, nativeMedia.dispose()])
         .whenComplete(settingsRepository.dispose);
     unawaited(_shutdownFuture!.catchError((Object _) {}));
+    AppErrorLogger.detach(errorLogger);
     super.dispose();
   }
 }

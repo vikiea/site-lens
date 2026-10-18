@@ -46,10 +46,16 @@ String readableError(Object error) {
       error is HandshakeException ||
       lower.contains('socketexception') ||
       lower.contains('connection reset') ||
+      lower.contains('connection closed') ||
+      lower.contains('connection aborted') ||
       lower.contains('connection refused') ||
       lower.contains('network is unreachable') ||
       lower.contains('failed host lookup')) {
-    return '网络连接失败，请检查网络后重试';
+    return lower.contains('connection closed') ||
+            lower.contains('connection reset') ||
+            lower.contains('connection aborted')
+        ? '网络连接中断，请重试'
+        : '网络连接失败，请检查网络后重试';
   }
   if (lower.contains('timeoutexception') || lower.contains('timed out')) {
     return '操作超时，请稍后重试';
@@ -68,6 +74,11 @@ String readableError(Object error) {
   }
   if (lower.contains('error_code_') || lower.contains('source error')) {
     return '媒体源暂时不可用，请返回页面重试';
+  }
+  if (lower.contains('uri =') ||
+      lower.contains('http://') ||
+      lower.contains('https://')) {
+    return '请求失败，请稍后重试';
   }
   final cleaned = raw
       .replaceFirst(
