@@ -69,6 +69,8 @@ void main() {
     );
     expect(controller.seek(1200).positionMs, 1200);
     expect(controller.setSpeed(1.5).speed, 1.5);
+    expect(controller.setSpeed(8).speed, 8);
+    expect(() => controller.setSpeed(8.1), throwsRangeError);
     expect(
       () => controller.transition(NativePlaybackState.completed),
       returnsNormally,
@@ -260,6 +262,10 @@ void main() {
       throwsA(isA<StateError>()),
     );
     expect(store.task(task.id)?.state, MediaTaskState.failed);
+    expect(
+      store.transition(task.id, MediaTaskState.downloading).state,
+      MediaTaskState.downloading,
+    );
   });
 
   test(

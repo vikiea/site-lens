@@ -3427,6 +3427,11 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                   icon: const Icon(Icons.download_for_offline_outlined),
                   onPressed: () async {
                     Navigator.pop(c);
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('已加入媒体任务，正在下载…')),
+                      );
+                    }
                     try {
                       final authorized = widget.app.hosts
                           .authorizeMediaCandidate(current.id, candidate.id);

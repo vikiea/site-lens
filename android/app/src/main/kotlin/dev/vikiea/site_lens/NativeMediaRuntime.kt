@@ -72,7 +72,7 @@ class NativeMediaRuntime(
                 "speed" -> {
                     val nextSpeed = call.argument<Number>("speed")?.toFloat() ?: 0f
                     requireSession(call)
-                    require(nextSpeed > 0f && nextSpeed <= 4f) { "播放倍速无效" }
+                    require(nextSpeed > 0f && nextSpeed <= 8f) { "播放倍速无效" }
                     player!!.setPlaybackSpeed(nextSpeed)
                     speed = nextSpeed
                     result.success(snapshot())
@@ -195,6 +195,10 @@ class NativeMediaRuntime(
                 emit(state)
             }
 
+            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                emit(state)
+            }
+
             override fun onPlayerError(error: PlaybackException) {
                 state = "failed"
                 emit("failed", "${error.errorCodeName}:${error.message ?: "播放失败"}")
@@ -242,6 +246,8 @@ class NativeMediaRuntime(
             "state" to currentState,
             "positionMs" to (active?.currentPosition ?: 0L).coerceAtLeast(0L),
             "durationMs" to if (duration >= 0L) duration else 0L,
+            "videoWidth" to (active?.videoSize?.width ?: 0),
+            "videoHeight" to (active?.videoSize?.height ?: 0),
             "speed" to speed,
             "errorCode" to error,
         )

@@ -113,6 +113,8 @@ class NativeMediaRuntime {
       ),
       positionMs: (raw['positionMs'] as num?)?.toInt() ?? 0,
       durationMs: (raw['durationMs'] as num?)?.toInt() ?? 0,
+      videoWidth: (raw['videoWidth'] as num?)?.toInt() ?? 0,
+      videoHeight: (raw['videoHeight'] as num?)?.toInt() ?? 0,
       speed: (raw['speed'] as num?)?.toDouble() ?? 1,
       errorCode: raw['errorCode'] as String?,
     );

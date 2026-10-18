@@ -41,6 +41,8 @@ class NativePlaybackSession {
     this.textureId,
     this.positionMs = 0,
     this.durationMs = 0,
+    this.videoWidth = 0,
+    this.videoHeight = 0,
     this.speed = 1,
     this.errorCode,
   });
@@ -51,6 +53,8 @@ class NativePlaybackSession {
   final int? textureId;
   final int positionMs;
   final int durationMs;
+  final int videoWidth;
+  final int videoHeight;
   final double speed;
   final String? errorCode;
 }
@@ -129,6 +133,8 @@ class NativePlaybackController {
       candidateId: current.candidateId,
       state: next,
       positionMs: current.positionMs,
+      videoWidth: current.videoWidth,
+      videoHeight: current.videoHeight,
       speed: current.speed,
       errorCode: errorCode,
     );
@@ -148,6 +154,8 @@ class NativePlaybackController {
       candidateId: current.candidateId,
       state: current.state,
       positionMs: positionMs,
+      videoWidth: current.videoWidth,
+      videoHeight: current.videoHeight,
       speed: current.speed,
       errorCode: current.errorCode,
     );
@@ -156,7 +164,7 @@ class NativePlaybackController {
 
   NativePlaybackSession setSpeed(double speed) {
     final current = _active;
-    if (current == null || speed <= 0 || speed > 4) {
+    if (current == null || speed <= 0 || speed > 8) {
       throw RangeError('播放倍速无效');
     }
     _active = NativePlaybackSession(
@@ -164,6 +172,8 @@ class NativePlaybackController {
       candidateId: current.candidateId,
       state: current.state,
       positionMs: current.positionMs,
+      videoWidth: current.videoWidth,
+      videoHeight: current.videoHeight,
       speed: speed,
       errorCode: current.errorCode,
     );
@@ -354,7 +364,10 @@ class MediaTaskStore {
         MediaTaskState.cancelled,
         MediaTaskState.failed,
       },
-      MediaTaskState.cancelled || MediaTaskState.failed => <MediaTaskState>{},
+      MediaTaskState.cancelled || MediaTaskState.failed => {
+        MediaTaskState.downloading,
+        MediaTaskState.cancelled,
+      },
     };
     if (!allowed.contains(state) && state != task.state) {
       throw StateError('非法媒体任务状态迁移 ${task.state.name} -> ${state.name}');
@@ -515,11 +528,24 @@ class MediaDownloadService {
   ) async {
     final runtime = native;
     final current = tasks.task(taskId) ?? (throw StateError('媒体任务不存在'));
-    if (runtime == null) return start(current, candidate);
-    if (current.state == MediaTaskState.paused) {
+    if (runtime == null || candidate.isHls) return start(current, candidate);
+    if (current.state == MediaTaskState.paused ||
+        current.state == MediaTaskState.failed) {
       tasks.transition(taskId, MediaTaskState.downloading);
     }
-    final status = await runtime.resume(taskId);
+    Map<String, Object?> status;
+    try {
+      status = await runtime.resume(taskId);
+    } catch (error) {
+      if (tasks.task(taskId)?.state == MediaTaskState.downloading) {
+        tasks.transition(
+          taskId,
+          MediaTaskState.failed,
+          errorCode: _errorCode(error.toString()),
+        );
+      }
+      rethrow;
+    }
     final bytes = (status['bytesDownloaded'] as num?)?.toInt();
     final total = (status['totalBytes'] as num?)?.toInt();
     if (bytes != null) tasks.updateProgress(taskId, bytes, totalBytes: total);
@@ -548,7 +574,9 @@ class MediaDownloadService {
     }
     var current = tasks.task(task.id) ?? task;
     if (current.state == MediaTaskState.queued ||
-        current.state == MediaTaskState.paused) {
+        current.state == MediaTaskState.paused ||
+        current.state == MediaTaskState.failed ||
+        current.state == MediaTaskState.cancelled) {
       current = tasks.transition(task.id, MediaTaskState.downloading);
     }
     Map<String, Object?> status;

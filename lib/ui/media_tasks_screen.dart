@@ -14,6 +14,60 @@ import 'ui_primitives.dart';
 import 'ui_util.dart';
 import 'app_theme.dart';
 
+enum _VideoFitMode { contain, cover, fill }
+
+const _playbackSpeeds = <double>[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3, 4, 8];
+
+String _speedLabel(double speed) =>
+    speed == speed.roundToDouble() ? '${speed.round()}x' : '${speed}x';
+
+String _mediaTaskStateLabel(MediaTaskState state) => switch (state) {
+  MediaTaskState.queued => '排队中',
+  MediaTaskState.downloading => '下载中',
+  MediaTaskState.paused => '已暂停',
+  MediaTaskState.completed => '已完成',
+  MediaTaskState.playable => '可播放',
+  MediaTaskState.cancelled => '已取消',
+  MediaTaskState.failed => '失败',
+  MediaTaskState.reauthorize => '需要重新授权',
+};
+
+String _mediaErrorLabel(String? code) => switch (code) {
+  null || '' => '',
+  MediaErrorCode.staleGeneration => '页面已更新，请重新嗅探',
+  MediaErrorCode.invalidUrl => '媒体地址无效',
+  MediaErrorCode.unsupported => '暂不支持此媒体格式',
+  MediaErrorCode.authorizationRequired => '需要重新授权后下载',
+  MediaErrorCode.diskFull => '存储空间不足',
+  MediaErrorCode.network => '网络连接失败',
+  MediaErrorCode.cancelled => '已取消',
+  MediaErrorCode.relayDenied => '媒体中继未获授权',
+  _ => '下载失败，可重试',
+};
+
+String _formatBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  var value = bytes.toDouble();
+  var unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  final digits = value >= 100
+      ? 0
+      : value >= 10
+      ? 1
+      : 2;
+  return '${value.toStringAsFixed(digits)} ${units[unit]}';
+}
+
+String _shortMediaName(String value) {
+  final runes = value.runes.toList();
+  if (runes.length <= 13) return value;
+  return '${String.fromCharCodes(runes.take(8))}…${String.fromCharCodes(runes.skip(runes.length - 5))}';
+}
+
 /// In-app surface for the native Media3 texture. The route keeps the texture
 /// and controls visible until the user leaves it, including while a stream is
 /// buffering or reports a decoder error.
@@ -40,6 +94,8 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   bool _controlsVisible = true;
   bool _seeking = false;
   bool _landscape = false;
+  int _rotationQuarterTurns = 0;
+  _VideoFitMode _fitMode = _VideoFitMode.contain;
   bool _closing = false;
 
   bool get _canControl =>
@@ -143,6 +199,64 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     if (mounted) setState(() {});
   }
 
+  void _rotateVideo() {
+    if (!mounted) return;
+    setState(() => _rotationQuarterTurns = (_rotationQuarterTurns + 1) % 4);
+    _scheduleHide();
+  }
+
+  Future<void> _setSpeed(double speed) async {
+    await _command(
+      () => widget.app.nativeMedia.setSpeed(speed, sessionId: _session.id),
+    );
+  }
+
+  Widget _videoViewport() => LayoutBuilder(
+    builder: (context, constraints) {
+      final maxWidth = constraints.maxWidth;
+      final maxHeight = constraints.maxHeight;
+      final quarterTurn = _rotationQuarterTurns.isOdd;
+      final visualWidth = quarterTurn ? maxHeight : maxWidth;
+      final visualHeight = quarterTurn ? maxWidth : maxHeight;
+      final sourceRatio = _session.videoWidth > 0 && _session.videoHeight > 0
+          ? _session.videoWidth / _session.videoHeight
+          : 16 / 9;
+      var fittedWidth = visualWidth;
+      var fittedHeight = visualHeight;
+      if (_fitMode == _VideoFitMode.contain) {
+        if (visualWidth / visualHeight > sourceRatio) {
+          fittedWidth = visualHeight * sourceRatio;
+        } else {
+          fittedHeight = visualWidth / sourceRatio;
+        }
+      } else if (_fitMode == _VideoFitMode.cover) {
+        if (visualWidth / visualHeight > sourceRatio) {
+          fittedHeight = visualWidth / sourceRatio;
+        } else {
+          fittedWidth = visualHeight * sourceRatio;
+        }
+      }
+      final width = quarterTurn ? fittedHeight : fittedWidth;
+      final height = quarterTurn ? fittedWidth : fittedHeight;
+      return ClipRect(
+        child: Center(
+          child: RotatedBox(
+            quarterTurns: _rotationQuarterTurns,
+            child: SizedBox(
+              width: width,
+              height: height,
+              child: _session.textureId == null
+                  ? const Center(
+                      child: CircularProgressIndicator(color: Colors.white),
+                    )
+                  : Texture(textureId: _session.textureId!),
+            ),
+          ),
+        ),
+      );
+    },
+  );
+
   Future<void> _close() async {
     if (_closing) return;
     _closing = true;
@@ -176,11 +290,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
             GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: _toggleControls,
-              child: Center(
-                child: _session.textureId == null
-                    ? const CircularProgressIndicator(color: Colors.white)
-                    : Texture(textureId: _session.textureId!),
-              ),
+              child: _videoViewport(),
             ),
             if (_session.state == NativePlaybackState.buffering ||
                 _session.state == NativePlaybackState.preparing)
@@ -201,15 +311,67 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
                       icon: const Icon(Icons.arrow_back),
                       onPressed: () => Navigator.of(context).maybePop(),
                     ),
-                    IconButton(
-                      tooltip: _landscape ? '竖屏' : '横屏',
-                      color: Colors.white,
-                      icon: Icon(
-                        _landscape
-                            ? Icons.stay_current_portrait
-                            : Icons.stay_current_landscape,
-                      ),
-                      onPressed: _toggleOrientation,
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: '旋转 ${(_rotationQuarterTurns + 1) * 90}°',
+                          color: Colors.white,
+                          icon: const Icon(Icons.screen_rotation_alt),
+                          onPressed: _rotateVideo,
+                        ),
+                        PopupMenuButton<_VideoFitMode>(
+                          tooltip: '画面缩放',
+                          icon: const Icon(
+                            Icons.fit_screen,
+                            color: Colors.white,
+                          ),
+                          initialValue: _fitMode,
+                          onSelected: (value) {
+                            setState(() => _fitMode = value);
+                            _scheduleHide();
+                          },
+                          itemBuilder: (_) => const [
+                            PopupMenuItem(
+                              value: _VideoFitMode.contain,
+                              child: Text('自适应比例'),
+                            ),
+                            PopupMenuItem(
+                              value: _VideoFitMode.cover,
+                              child: Text('填充画面'),
+                            ),
+                            PopupMenuItem(
+                              value: _VideoFitMode.fill,
+                              child: Text('拉伸填满'),
+                            ),
+                          ],
+                        ),
+                        PopupMenuButton<double>(
+                          tooltip: '播放速度 ${_speedLabel(_session.speed)}',
+                          icon: const Icon(Icons.speed, color: Colors.white),
+                          initialValue: _playbackSpeeds.contains(_session.speed)
+                              ? _session.speed
+                              : null,
+                          onSelected: _setSpeed,
+                          itemBuilder: (_) => [
+                            for (final speed in _playbackSpeeds)
+                              PopupMenuItem(
+                                value: speed,
+                                child: Text(_speedLabel(speed)),
+                              ),
+                          ],
+                        ),
+                        IconButton(
+                          tooltip: _landscape ? '竖屏' : '横屏',
+                          color: Colors.white,
+                          icon: Icon(
+                            _landscape
+                                ? Icons.stay_current_portrait
+                                : Icons.stay_current_landscape,
+                          ),
+                          onPressed: _toggleOrientation,
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -241,6 +403,8 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
                               textureId: _session.textureId,
                               positionMs: value.round(),
                               durationMs: _session.durationMs,
+                              videoWidth: _session.videoWidth,
+                              videoHeight: _session.videoHeight,
                               speed: _session.speed,
                               errorCode: _session.errorCode,
                             );
@@ -451,6 +615,75 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     if (mounted) setState(() {});
   }
 
+  Future<void> _retry(MediaTask task, MediaCandidate? candidate) async {
+    final resolved =
+        candidate ?? await widget.app.db.mediaCandidate(task.candidateId);
+    if (resolved == null) throw StateError('媒体候选已不存在');
+    if (task.state == MediaTaskState.paused) {
+      await _togglePause(task);
+    } else if (task.state == MediaTaskState.failed &&
+        widget.app.nativeDownloads != null &&
+        !resolved.isHls) {
+      await widget.app.mediaDownloads.resumeNative(task.id, resolved);
+    } else {
+      await widget.app.mediaDownloads.startNative(task, resolved);
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('已开始断点续传，可在列表查看进度')));
+      setState(() {});
+    }
+  }
+
+  Future<void> _showDetails(MediaTask task, MediaCandidate? candidate) async {
+    final resolved =
+        candidate ?? await widget.app.db.mediaCandidate(task.candidateId);
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) => SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('媒体详情', style: Theme.of(sheetContext).textTheme.titleLarge),
+              const SizedBox(height: 12),
+              _MediaDetailRow(label: '标题', value: _taskTitle(task, resolved)),
+              _MediaDetailRow(
+                label: '状态',
+                value: _mediaTaskStateLabel(task.state),
+              ),
+              _MediaDetailRow(
+                label: '文件大小',
+                value: task.totalBytes == null
+                    ? _formatBytes(task.bytesDownloaded)
+                    : '${_formatBytes(task.bytesDownloaded)} / ${_formatBytes(task.totalBytes!)}',
+              ),
+              if (_mediaErrorLabel(task.errorCode).isNotEmpty)
+                _MediaDetailRow(
+                  label: '提示',
+                  value: _mediaErrorLabel(task.errorCode),
+                ),
+              if (resolved != null)
+                _MediaDetailRow(label: '格式', value: resolved.effectiveMime),
+              if (resolved != null)
+                _MediaDetailRow(
+                  label: '媒体地址',
+                  value: resolved.mediaUrl.toString(),
+                ),
+              _MediaDetailRow(label: '来源页面', value: task.sourceUrl.toString()),
+              if (task.localRef != null)
+                _MediaDetailRow(label: '本地缓存', value: task.localRef!),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _cast(MediaTask task) async {
     final file = await widget.app.mediaTasks.cachedFile(task.id);
     if (file == null) throw StateError('该任务没有可投屏的本地文件');
@@ -518,7 +751,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      '原生播放：${widget.app.nativeMedia.active!.state.name}',
+                      '原生播放：${_mediaTaskStateLabel(_nativeStateAsTaskState(widget.app.nativeMedia.active!.state))}',
                     ),
                   ),
                   IconButton(
@@ -588,7 +821,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                         overflow: TextOverflow.ellipsis,
                       ),
                       subtitle: Text(
-                        '${task.state.name} · ${_taskProgressLabel(task)}${task.errorCode == null ? '' : ' · ${task.errorCode}'}',
+                        '${_mediaTaskStateLabel(task.state)} · ${_taskProgressLabel(task)}${_mediaErrorLabel(task.errorCode).isEmpty ? '' : ' · ${_mediaErrorLabel(task.errorCode)}'}',
                       ),
                       onTap: task.state == MediaTaskState.playable
                           ? () => unawaited(_run(() => _play(task)))
@@ -599,6 +832,8 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                           switch (value) {
                             case 'refresh':
                               unawaited(_run(() => _refreshNative(task)));
+                            case 'details':
+                              unawaited(_showDetails(task, snapshot.data));
                             case 'play':
                               unawaited(_run(() => _play(task)));
                             case 'cast':
@@ -627,6 +862,10 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                               );
                             case 'pause':
                               unawaited(_run(() => _togglePause(task)));
+                            case 'retry':
+                              unawaited(
+                                _run(() => _retry(task, snapshot.data)),
+                              );
                             case 'delete':
                               unawaited(
                                 _run(() async {
@@ -644,6 +883,10 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                           const PopupMenuItem(
                             value: 'refresh',
                             child: Text('刷新后台状态'),
+                          ),
+                          const PopupMenuItem(
+                            value: 'details',
+                            child: Text('查看详情'),
                           ),
                           if (task.state == MediaTaskState.playable)
                             const PopupMenuItem(
@@ -669,6 +912,12 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                             const PopupMenuItem(
                               value: 'pause',
                               child: Text('继续下载'),
+                            ),
+                          if (task.state == MediaTaskState.failed ||
+                              task.state == MediaTaskState.cancelled)
+                            const PopupMenuItem(
+                              value: 'retry',
+                              child: Text('重试下载'),
                             ),
                           if (task.state == MediaTaskState.downloading ||
                               task.state == MediaTaskState.paused)
@@ -712,15 +961,56 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
 
   String _taskProgressLabel(MediaTask task) {
     final progress = _taskProgress(task);
-    if (progress == null) return '${task.bytesDownloaded} bytes';
-    return '${(progress * 100).round()}% · ${task.bytesDownloaded}/${task.totalBytes} bytes';
+    if (progress == null) return _formatBytes(task.bytesDownloaded);
+    return '${(progress * 100).round()}% · ${_formatBytes(task.bytesDownloaded)}/${_formatBytes(task.totalBytes!)}';
   }
 
   String _taskTitle(MediaTask task, MediaCandidate? candidate) {
     final title = candidate?.title.trim();
-    if (title != null && title.isNotEmpty) return title;
-    return task.id;
+    if (title != null && title.isNotEmpty) return _shortMediaName(title);
+    final segments = candidate?.mediaUrl.pathSegments
+        .where((segment) => segment.isNotEmpty)
+        .toList();
+    final filename = segments == null || segments.isEmpty
+        ? null
+        : segments.last;
+    return _shortMediaName(
+      filename == null || filename.isEmpty ? task.id : filename,
+    );
   }
+}
+
+MediaTaskState _nativeStateAsTaskState(NativePlaybackState state) =>
+    switch (state) {
+      NativePlaybackState.preparing => MediaTaskState.downloading,
+      NativePlaybackState.playing => MediaTaskState.playable,
+      NativePlaybackState.paused => MediaTaskState.paused,
+      NativePlaybackState.buffering => MediaTaskState.downloading,
+      NativePlaybackState.completed => MediaTaskState.completed,
+      NativePlaybackState.stopped => MediaTaskState.cancelled,
+      NativePlaybackState.failed => MediaTaskState.failed,
+    };
+
+class _MediaDetailRow extends StatelessWidget {
+  const _MediaDetailRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 7),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 72,
+          child: Text(label, style: Theme.of(context).textTheme.bodySmall),
+        ),
+        Expanded(child: SelectableText(value)),
+      ],
+    ),
+  );
 }
 
 class _TaskThumbnail extends StatelessWidget {
