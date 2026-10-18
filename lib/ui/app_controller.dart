@@ -36,6 +36,7 @@ import '../media/native_download_runtime.dart';
 import '../media/native_export_runtime.dart';
 import '../media/native_media_runtime.dart';
 import 'glass_quality_cache.dart';
+import 'ui_util.dart';
 
 /// The user preferences travel as one versioned record (`AppPolicy.settingsKey`).
 /// This key is retained for compatibility with older database fixtures only;
@@ -180,7 +181,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           await hosts.destroy(h);
         }
       } catch (e) {
-        if (!h.disposed && !_disposed) error = '播放策略应用失败：$e';
+        if (!h.disposed && !_disposed) {
+          error = '播放策略应用失败：${friendlyError(e)}';
+        }
       }
     }
   }
@@ -619,7 +622,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       } catch (_) {}
       if (!_disposed) error = null;
     } catch (e) {
-      if (!_disposed) error = '上次标签记录无法读取：$e';
+      if (!_disposed) error = '上次标签记录无法读取：${friendlyError(e)}';
     } finally {
       _restoring = false;
     }
@@ -648,7 +651,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(
         _persistSessions().catchError((Object e) {
           if (!_disposed) {
-            error = '标签记录保存失败：$e';
+            error = '标签记录保存失败：${friendlyError(e)}';
             notifyListeners();
           }
         }),
@@ -1008,7 +1011,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     } on Cancelled {
       /* superseded */
     } catch (e) {
-      error = e.toString();
+      error = friendlyError(e);
     } finally {
       refreshing = false;
       notifyListeners();
@@ -1129,7 +1132,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       return DetectionOutcome.cancelled;
     } catch (e) {
       if (!cancelToken.cancelled) {
-        error = e.toString();
+        error = friendlyError(e);
         refreshing = false;
         notifyListeners();
       }
@@ -1631,7 +1634,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         profileId: owner?.site.profileId,
       );
     } catch (e) {
-      error = '打开新标签页失败：$e';
+      error = '打开新标签页失败：${friendlyError(e)}';
       notifyListeners();
     }
   }
@@ -1668,7 +1671,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       tab.loading = false;
       notifyListeners();
     } catch (e) {
-      tab.failure = e.toString();
+      tab.failure = friendlyError(e);
       tab.loading = false;
       notifyListeners();
       if (host != null) await hosts.destroy(host);
@@ -1708,7 +1711,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       try {
         await ensureTabLoaded(activeBrowser!);
       } catch (e) {
-        if (!_disposed) error = '接替标签加载失败：$e';
+        if (!_disposed) error = '接替标签加载失败：${friendlyError(e)}';
       }
     }
     notifyListeners();

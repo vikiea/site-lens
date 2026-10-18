@@ -648,10 +648,7 @@ class FilterSourceManager {
           status: FilterSourceStatus.failed,
           fileRef: source.fileRef,
           refreshedAt: source.refreshedAt,
-          error: error.toString().replaceAll(
-            RegExp(r'https?://[^ ]+'),
-            '<url>',
-          ),
+          error: readableError(error),
         ),
       );
       rethrow;

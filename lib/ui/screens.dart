@@ -1622,7 +1622,7 @@ class _FilterSourceRow extends StatelessWidget {
     subtitle: Text(
       source.error == null
           ? '${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)} · ${source.url}'
-          : '${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)}\n${source.error}',
+          : '${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)}\n${friendlyError(source.error!)}',
       maxLines: 3,
       overflow: TextOverflow.ellipsis,
     ),

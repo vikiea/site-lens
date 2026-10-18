@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -5,6 +6,21 @@ import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/network/transport.dart';
 
 void main() {
+  test('readable errors hide implementation identifiers', () {
+    expect(readableError(Exception('request failed')), 'request failed');
+    expect(readableError(StateError('state is stale')), 'state is stale');
+    expect(readableError(TimeoutException('socket timed out')), '操作超时，请稍后重试');
+    expect(
+      readableError(SocketException('connection reset by peer')),
+      '网络连接失败，请检查网络后重试',
+    );
+    expect(readableError('net::ERR_INTERNET_DISCONNECTED'), '页面请求失败，请刷新后重试');
+    expect(
+      readableError(Exception('request failed')),
+      isNot(contains('Exception')),
+    );
+  });
+
   test('deny local, private, reserved, transition and mapped addresses', () {
     for (final ip in [
       '0.0.0.0',

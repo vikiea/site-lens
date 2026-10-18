@@ -886,7 +886,7 @@ class _AdvancedArea extends StatelessWidget {
             contentPadding: EdgeInsets.zero,
             title: SiteLensCopyableText(text: page.url.toString()),
             subtitle: Text(
-              '区域选择器：${page.regionSelector}\n${clock(page.refreshedAt)}${page.error == null ? '' : '\n${page.error}'}',
+              '区域选择器：${page.regionSelector}\n${clock(page.refreshedAt)}${page.error == null ? '' : '\n${friendlyError(page.error!)}'}',
             ),
             trailing: IconButton(
               tooltip: '移除发布页',

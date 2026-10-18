@@ -28,6 +28,62 @@ class Cancelled implements Exception {
   const Cancelled();
 }
 
+/// Converts implementation exceptions into short, user-facing guidance.
+///
+/// This lives at the transport boundary so controllers, persisted probe
+/// results and Flutter surfaces all use the same wording and never leak an
+/// exception class name or a platform error code.
+String readableError(Object error) {
+  if (error is Cancelled) return '操作已取消';
+  if (error is TimeoutException) return '操作超时，请稍后重试';
+  final raw = error is FormatException
+      ? error.message.toString()
+      : error is StateError
+      ? error.message
+      : error.toString();
+  final lower = raw.toLowerCase();
+  if (error is SocketException ||
+      error is HandshakeException ||
+      lower.contains('socketexception') ||
+      lower.contains('connection reset') ||
+      lower.contains('connection refused') ||
+      lower.contains('network is unreachable') ||
+      lower.contains('failed host lookup')) {
+    return '网络连接失败，请检查网络后重试';
+  }
+  if (lower.contains('timeoutexception') || lower.contains('timed out')) {
+    return '操作超时，请稍后重试';
+  }
+  if (lower.contains('platformexception') ||
+      lower.contains('channel-error') ||
+      lower.contains('missingpluginexception')) {
+    return '系统组件暂时不可用，请稍后重试';
+  }
+  if (lower.contains('renderer') || lower.contains('render process')) {
+    return '网页组件已重启，请重新进入页面';
+  }
+  if (lower.contains('net::err_') ||
+      RegExp(r'\berr_[a-z0-9_]+\b').hasMatch(lower)) {
+    return '页面请求失败，请刷新后重试';
+  }
+  if (lower.contains('error_code_') || lower.contains('source error')) {
+    return '媒体源暂时不可用，请返回页面重试';
+  }
+  final cleaned = raw
+      .replaceFirst(
+        RegExp(
+          r'^\s*(?:bad state:|exception:|formatexception:|stateerror:|fluttererror:|[a-z_][a-z0-9_.]*(?:exception|error|failure):)\s*',
+          caseSensitive: false,
+        ),
+        '',
+      )
+      .split('\n')
+      .first
+      .trim();
+  if (cleaned.isEmpty || cleaned.length > 240) return '操作失败，请稍后重试';
+  return cleaned;
+}
+
 /// A DNS/IP policy rejection. Extends [StateError] so existing callers keep
 /// their error contract, while probe code can map it to a clearer
 /// environment/network failure instead of a site certificate failure.
@@ -478,7 +534,7 @@ class HttpProbe {
         cancel.cancelled
             ? ProbeStatus.cancelled
             : (policy ? ProbeStatus.offline : ProbeStatus.unavailable),
-        policy ? text.replaceFirst('Bad state: ', '') : text,
+        policy ? readableError(e) : '网络请求失败，请稍后重试',
       );
     } finally {
       client.close(force: true);

@@ -122,7 +122,7 @@ class NativeHosts extends WebHostEvents {
       // of allowing an unawaited platform exception to fail a later test/UI
       // operation.
       session.errorKind = 'filterUnavailable';
-      session.error = error.toString();
+      session.error = readableError(error);
     }
   }
 
@@ -350,7 +350,7 @@ class NativeHosts extends WebHostEvents {
     }
     if (event.kind == 'hostInvalidated') {
       session.errorKind = event.kind;
-      session.error = event.detail;
+      session.error = readableError(event.detail);
       session.disposed = true;
       session.cancellation.cancel();
       session.menus.clear();
@@ -368,7 +368,7 @@ class NativeHosts extends WebHostEvents {
       'scriptsSuspended',
     ].contains(event.kind)) {
       session.errorKind = event.kind;
-      session.error = event.detail;
+      session.error = readableError(event.detail);
     }
     changed.value++;
   }
@@ -689,7 +689,9 @@ class NativeHosts extends WebHostEvents {
       return jsonEncode({
         'id': payload?['id'],
         'ok': false,
-        'error': e is Cancelled ? 'Document or host invalidated' : e.toString(),
+        'error': e is Cancelled
+            ? 'Document or host invalidated'
+            : readableError(e),
       });
     }
   }

@@ -148,7 +148,7 @@ class NativeHomepageVerifier implements HomepageVerifier {
     } catch (e) {
       return result(
         cancel.cancelled ? ProbeStatus.cancelled : ProbeStatus.unsupported,
-        e.toString(),
+        readableError(e),
       );
     } finally {
       if (host != null) await hosts.destroy(host);
@@ -214,7 +214,7 @@ class ProbeCoordinator extends ChangeNotifier {
       results[result.candidateId] = result;
       pendingSaves.add(
         save(result).catchError((Object e) {
-          persistenceError = e.toString();
+          persistenceError = readableError(e);
         }),
       );
       notifyListeners();
@@ -283,7 +283,7 @@ class ProbeCoordinator extends ChangeNotifier {
     } on Cancelled {
       /* Cancellation owns the replacement state. */
     } catch (e) {
-      if (!token.cancelled) notice = e.toString();
+      if (!token.cancelled) notice = readableError(e);
     } finally {
       if (round == id && !token.cancelled) {
         running = false;
@@ -392,7 +392,7 @@ class PublishingDiscovery {
       } on Cancelled {
         rethrow;
       } catch (e) {
-        await db.profilePageRefreshed(page.id, error: e.toString());
+        await db.profilePageRefreshed(page.id, error: readableError(e));
       } finally {
         if (host != null) await hosts.destroy(host);
       }

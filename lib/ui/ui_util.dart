@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -123,36 +121,7 @@ class SiteLensErrorBanner extends StatelessWidget {
 }
 
 String friendlyError(Object error) {
-  if (error is Cancelled) return '操作已取消';
-  if (error is TimeoutException) return '操作超时，请稍后重试';
-  final raw = error is FormatException
-      ? error.message
-      : error is StateError
-      ? error.message
-      : error.toString();
-  final lower = raw.toLowerCase();
-  if (lower.contains('socketexception') ||
-      lower.contains('connection reset') ||
-      lower.contains('network is unreachable')) {
-    return '网络连接失败，请检查网络后重试';
-  }
-  if (lower.contains('timeoutexception') || lower.contains('timed out')) {
-    return '操作超时，请稍后重试';
-  }
-  if (lower.contains('platformexception') || lower.contains('channel-error')) {
-    return '系统组件暂时不可用，请稍后重试';
-  }
-  if (lower.contains('renderer') || lower.contains('render process')) {
-    return '网页组件已重启，请重新进入页面';
-  }
-  final cleaned = raw
-      .replaceFirst(
-        RegExp(r'^(Bad state: |Exception: |FormatException: |StateError: )'),
-        '',
-      )
-      .trim();
-  if (cleaned.isEmpty || cleaned.length > 240) return '操作失败，请稍后重试';
-  return cleaned;
+  return readableError(error);
 }
 
 void showError(BuildContext context, Object error) {
