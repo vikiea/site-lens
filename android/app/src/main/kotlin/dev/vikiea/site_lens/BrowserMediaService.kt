@@ -21,6 +21,10 @@ class BrowserMediaService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL, "浏览器媒体", NotificationManager.IMPORTANCE_LOW))
         session = MediaSession(this, "site-lens-browser:$packageName").apply {
+            setFlags(
+                MediaSession.FLAG_HANDLES_MEDIA_BUTTONS or
+                    MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS,
+            )
             setCallback(object : MediaSession.Callback() {
                 override fun onPlay() { dispatch("resume") }
                 override fun onPause() { dispatch("pause") }
@@ -33,6 +37,10 @@ class BrowserMediaService : Service() {
             })
             isActive = true
         }
+        // The owner is installed before the foreground service is started.
+        // Seed the token so a media-button callback arriving between service
+        // creation and the first onStartCommand is still routed safely.
+        token = owner?.token
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -55,6 +63,7 @@ class BrowserMediaService : Service() {
         session?.setPlaybackState(PlaybackState.Builder()
             .setActions(
                 PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or
+                    PlaybackState.ACTION_PLAY_PAUSE or
                     PlaybackState.ACTION_STOP or PlaybackState.ACTION_SKIP_TO_NEXT or
                     PlaybackState.ACTION_SKIP_TO_PREVIOUS,
             )
@@ -68,9 +77,11 @@ class BrowserMediaService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         fun action(name: String, icon: Int, label: String): Notification.Action {
             val command = Intent(this, BrowserMediaService::class.java).setAction(name)
+                .setPackage(packageName)
                 .setData(Uri.parse("site-lens-media://${active.token}/$name"))
                 .putExtra("owner", active.token)
-            val pending = PendingIntent.getService(this, 0, command,
+            val requestCode = (active.token + name).hashCode()
+            val pending = PendingIntent.getService(this, requestCode, command,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             return Notification.Action.Builder(icon, label, pending).build()
         }
@@ -115,7 +126,15 @@ class BrowserMediaService : Service() {
             val previous = owner
             owner = Owner(token, title.take(512), playing, command)
             try {
-                context.startForegroundService(Intent(context, BrowserMediaService::class.java).putExtra("owner", token))
+                val serviceIntent = Intent(context, BrowserMediaService::class.java).putExtra("owner", token)
+                if (previous?.token == token) {
+                    // Updating an existing foreground service from the
+                    // background must use startService; Android 12+ rejects a
+                    // second background foreground-service start.
+                    context.startService(serviceIntent)
+                } else {
+                    context.startForegroundService(serviceIntent)
+                }
                 return true
             } catch (_: IllegalStateException) { owner = previous; return false }
               catch (_: SecurityException) { owner = previous; return false }
