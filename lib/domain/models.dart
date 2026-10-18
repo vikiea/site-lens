@@ -808,6 +808,8 @@ class MediaTask {
     required this.cacheKey,
     required this.state,
     required this.updatedAt,
+    this.displayTitle = '',
+    this.episodeLabel,
     this.bytesDownloaded = 0,
     this.totalBytes,
     this.errorCode,
@@ -822,13 +824,25 @@ class MediaTask {
   final String cacheKey;
   final MediaTaskState state;
   final DateTime updatedAt;
+  final String displayTitle;
+  final String? episodeLabel;
   final int bytesDownloaded;
   final int? totalBytes;
   final String? errorCode;
   final String? localRef;
 
+  String get displayName {
+    final title = displayTitle.trim();
+    final episode = episodeLabel?.trim() ?? '';
+    if (title.isEmpty) return episode;
+    if (episode.isEmpty || title.contains(episode)) return title;
+    return '$title - $episode';
+  }
+
   MediaTask copyWith({
     MediaTaskState? state,
+    String? displayTitle,
+    Object? episodeLabel = _unset,
     int? bytesDownloaded,
     Object? totalBytes = _unset,
     Object? errorCode = _unset,
@@ -842,6 +856,10 @@ class MediaTask {
     cacheKey: cacheKey,
     state: state ?? this.state,
     updatedAt: DateTime.now().toUtc(),
+    displayTitle: displayTitle ?? this.displayTitle,
+    episodeLabel: identical(episodeLabel, _unset)
+        ? this.episodeLabel
+        : episodeLabel as String?,
     bytesDownloaded: bytesDownloaded ?? this.bytesDownloaded,
     totalBytes: identical(totalBytes, _unset)
         ? this.totalBytes
@@ -863,6 +881,8 @@ class MediaTask {
     'cacheKey': cacheKey,
     'state': state.name,
     'updatedAt': updatedAt.toIso8601String(),
+    'displayTitle': displayTitle,
+    'episodeLabel': episodeLabel,
     'bytesDownloaded': bytesDownloaded,
     'totalBytes': totalBytes,
     'errorCode': errorCode,
@@ -878,6 +898,8 @@ class MediaTask {
     cacheKey: json['cacheKey'] as String,
     state: MediaTaskState.values.byName(json['state'] as String),
     updatedAt: DateTime.parse(json['updatedAt'] as String),
+    displayTitle: json['displayTitle'] as String? ?? '',
+    episodeLabel: json['episodeLabel'] as String?,
     bytesDownloaded: (json['bytesDownloaded'] as num?)?.toInt() ?? 0,
     totalBytes: (json['totalBytes'] as num?)?.toInt(),
     errorCode: json['errorCode'] as String?,

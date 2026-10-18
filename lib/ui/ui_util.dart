@@ -9,6 +9,23 @@ import 'ui_primitives.dart';
 String clock(DateTime? value) =>
     value == null ? '尚未刷新' : value.toLocal().toString().split('.').first;
 
+String formatBytes(int bytes) {
+  if (bytes < 0) return '未知大小';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  var value = bytes.toDouble();
+  var unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  final digits = unit == 0 || value == value.roundToDouble() || value >= 100
+      ? 0
+      : value >= 10
+      ? 1
+      : 2;
+  return '${value.toStringAsFixed(digits)} ${units[unit]}';
+}
+
 /// Long press any URL-like value to copy it without making the whole row
 /// editable. The row can still keep its normal tap action around this child.
 class SiteLensCopyableText extends StatelessWidget {

@@ -45,23 +45,6 @@ String _mediaErrorLabel(String? code) => switch (code) {
   _ => '下载失败，可重试',
 };
 
-String _formatBytes(int bytes) {
-  if (bytes < 1024) return '$bytes B';
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  var value = bytes.toDouble();
-  var unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit++;
-  }
-  final digits = value >= 100
-      ? 0
-      : value >= 10
-      ? 1
-      : 2;
-  return '${value.toStringAsFixed(digits)} ${units[unit]}';
-}
-
 String _shortMediaName(String value) {
   final runes = value.runes.toList();
   if (runes.length <= 13) return value;
@@ -659,8 +642,8 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
               _MediaDetailRow(
                 label: '文件大小',
                 value: task.totalBytes == null
-                    ? _formatBytes(task.bytesDownloaded)
-                    : '${_formatBytes(task.bytesDownloaded)} / ${_formatBytes(task.totalBytes!)}',
+                    ? formatBytes(task.bytesDownloaded)
+                    : '${formatBytes(task.bytesDownloaded)} / ${formatBytes(task.totalBytes!)}',
               ),
               if (_mediaErrorLabel(task.errorCode).isNotEmpty)
                 _MediaDetailRow(
@@ -947,7 +930,6 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
             ),
             const SizedBox(height: SiteLensMetrics.itemGap),
           ],
-          if (busy) const LinearProgressIndicator(),
         ],
       ),
     );
@@ -961,11 +943,13 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
 
   String _taskProgressLabel(MediaTask task) {
     final progress = _taskProgress(task);
-    if (progress == null) return _formatBytes(task.bytesDownloaded);
-    return '${(progress * 100).round()}% · ${_formatBytes(task.bytesDownloaded)}/${_formatBytes(task.totalBytes!)}';
+    if (progress == null) return formatBytes(task.bytesDownloaded);
+    return '${(progress * 100).round()}% · ${formatBytes(task.bytesDownloaded)}/${formatBytes(task.totalBytes!)}';
   }
 
   String _taskTitle(MediaTask task, MediaCandidate? candidate) {
+    final frozen = task.displayName.trim();
+    if (frozen.isNotEmpty) return _shortMediaName(frozen);
     final title = candidate?.title.trim();
     if (title != null && title.isNotEmpty) return _shortMediaName(title);
     final segments = candidate?.mediaUrl.pathSegments

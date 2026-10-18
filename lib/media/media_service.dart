@@ -23,6 +23,15 @@ class MediaErrorCode {
   static const relayDenied = 'relay_denied';
 }
 
+String? mediaEpisodeLabel(String value) {
+  final match = RegExp(
+    r'(?:第\s*(\d+)\s*[集话期]|\b(?:ep|e)\s*[-_ ]?(\d+)\b)',
+    caseSensitive: false,
+  ).firstMatch(value);
+  final number = match?.group(1) ?? match?.group(2);
+  return number == null ? null : '第${int.parse(number)}集';
+}
+
 enum NativePlaybackState {
   preparing,
   playing,
@@ -313,6 +322,10 @@ class MediaTaskStore {
       cacheKey: key,
       state: MediaTaskState.queued,
       updatedAt: DateTime.now().toUtc(),
+      displayTitle: candidate.title.trim(),
+      episodeLabel: mediaEpisodeLabel(
+        '${candidate.title} ${candidate.sourceUrl.path} ${candidate.mediaUrl.path}',
+      ),
     );
     _tasks[id] = task;
     _byCacheKey[key] = id;

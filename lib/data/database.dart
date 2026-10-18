@@ -92,6 +92,7 @@ const _v5Tables = <String>[
       'id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL REFERENCES media_candidates(id) ON DELETE CASCADE, '
       'host_id INTEGER NOT NULL, generation INTEGER NOT NULL, source_url TEXT NOT NULL, '
       'cache_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL, updated_at TEXT NOT NULL, '
+      'display_title TEXT NOT NULL DEFAULT \'\', episode_label TEXT, '
       'bytes_downloaded INTEGER NOT NULL DEFAULT 0, total_bytes INTEGER, error_code TEXT, local_ref TEXT)',
   'CREATE TABLE IF NOT EXISTS script_approvals ('
       'script_id TEXT PRIMARY KEY REFERENCES scripts(id) ON DELETE CASCADE, '
@@ -101,6 +102,11 @@ const _v5Tables = <String>[
 
 const _v6CandidateColumn =
     'ALTER TABLE media_candidates ADD COLUMN thumbnail_url TEXT';
+
+const _v7TaskTitleColumn =
+    'ALTER TABLE media_tasks ADD COLUMN display_title TEXT NOT NULL DEFAULT \'\'';
+const _v7TaskEpisodeColumn =
+    'ALTER TABLE media_tasks ADD COLUMN episode_label TEXT';
 
 // Drift's SQL API keeps the small schema explicit and permits in-memory tests.
 // No browser cookie or password is copied into this database.
@@ -121,7 +127,7 @@ class AppDatabase extends GeneratedDatabase {
   static void Function(String step)? migrationDebugHook;
 
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 7;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -152,6 +158,7 @@ class AppDatabase extends GeneratedDatabase {
       if (from < 4) await _migrateV3toV4();
       if (from < 5) await _migrateV4toV5();
       if (from < 6) await _migrateV5toV6();
+      if (from < 7) await _migrateV6toV7();
     },
     beforeOpen: (_) async {
       await customStatement('PRAGMA foreign_keys = ON');
@@ -228,6 +235,17 @@ class AppDatabase extends GeneratedDatabase {
       await customStatement(_v6CandidateColumn);
     }
     migrationDebugHook?.call('v6-done');
+  });
+
+  Future<void> _migrateV6toV7() => transaction(() async {
+    migrationDebugHook?.call('v6-to-v7');
+    if (!await _columnExists('media_tasks', 'display_title')) {
+      await customStatement(_v7TaskTitleColumn);
+    }
+    if (!await _columnExists('media_tasks', 'episode_label')) {
+      await customStatement(_v7TaskEpisodeColumn);
+    }
+    migrationDebugHook?.call('v7-done');
   });
 
   /// v1 -> v2 migration. Runs inside a single transaction so a failure at any
@@ -1225,8 +1243,8 @@ class AppDatabase extends GeneratedDatabase {
   }
 
   Future<void> saveMediaTask(MediaTask task) => customStatement(
-    'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,state,updated_at,bytes_downloaded,total_bytes,error_code,local_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) '
-    'ON CONFLICT(id) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at,bytes_downloaded=excluded.bytes_downloaded,total_bytes=excluded.total_bytes,error_code=excluded.error_code,local_ref=excluded.local_ref',
+    'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,state,updated_at,display_title,episode_label,bytes_downloaded,total_bytes,error_code,local_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
+    'ON CONFLICT(id) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at,display_title=excluded.display_title,episode_label=excluded.episode_label,bytes_downloaded=excluded.bytes_downloaded,total_bytes=excluded.total_bytes,error_code=excluded.error_code,local_ref=excluded.local_ref',
     [
       task.id,
       task.candidateId,
@@ -1236,6 +1254,8 @@ class AppDatabase extends GeneratedDatabase {
       task.cacheKey,
       task.state.name,
       task.updatedAt.toUtc().toIso8601String(),
+      task.displayTitle,
+      task.episodeLabel,
       task.bytesDownloaded,
       task.totalBytes,
       task.errorCode,
@@ -1256,6 +1276,8 @@ class AppDatabase extends GeneratedDatabase {
               cacheKey: row.read<String>('cache_key'),
               state: MediaTaskState.values.byName(row.read<String>('state')),
               updatedAt: DateTime.parse(row.read<String>('updated_at')),
+              displayTitle: row.read<String>('display_title'),
+              episodeLabel: row.readNullable<String>('episode_label'),
               bytesDownloaded: row.read<int>('bytes_downloaded'),
               totalBytes: row.readNullable<int>('total_bytes'),
               errorCode: row.readNullable<String>('error_code'),

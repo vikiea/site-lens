@@ -42,18 +42,27 @@ class FakeNativeDownloads extends NativeDownloadRuntime {
 MediaCandidate candidate({
   String url = 'https://cdn.example/video.mp4',
   String mime = 'video/mp4',
+  String title = 'video',
 }) => MediaCandidate(
   id: 'candidate-1',
   hostId: 7,
   generation: 3,
   sourceUrl: Uri.parse('https://example.com/watch'),
   mediaUrl: Uri.parse(url),
-  title: 'video',
+  title: title,
   mime: mime,
   source: MediaCandidateSource.dom,
 );
 
 void main() {
+  test('media task freezes the title and episode at creation', () {
+    final store = MediaTaskStore();
+    final task = store.create(candidate(title: '母衣半暖默许春朝 - 第3集'));
+    expect(task.displayTitle, '母衣半暖默许春朝 - 第3集');
+    expect(task.episodeLabel, '第3集');
+    expect(task.displayName, '母衣半暖默许春朝 - 第3集');
+  });
+
   test('native playback controller enforces one session and safe controls', () {
     final controller = NativePlaybackController();
     final opening = controller.open(
