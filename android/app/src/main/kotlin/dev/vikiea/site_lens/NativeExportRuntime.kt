@@ -267,7 +267,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         val value = raw.trim().removeSurrounding("\"")
         val file = File(base, value).canonicalFile
         require(nativeValidatePath(file.path, filesRoot.path) && file.isFile) {
-            "$label缺失或越界"
+            "${label}缺失或越界"
         }
         return file
     }
