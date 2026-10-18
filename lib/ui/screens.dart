@@ -1400,6 +1400,31 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
     });
   }
 
+  Future<void> _refreshAllSources() async {
+    final sources = List<FilterSource>.of(app.filterSourceList);
+    if (sources.isEmpty) return;
+    await _run(() async {
+      final failures = <String>[];
+      for (final source in sources) {
+        try {
+          await app.refreshFilterSource(source);
+        } catch (_) {
+          failures.add(source.label);
+        }
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            failures.isEmpty
+                ? '已刷新 ${sources.length} 个规则源'
+                : '已完成刷新，失败 ${failures.length} 个：${failures.join('、')}',
+          ),
+        ),
+      );
+    });
+  }
+
   Future<void> _deleteSource(FilterSource source) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1437,7 +1462,7 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
         children: [
           const SiteLensNotice(
             tone: SiteLensNoticeTone.info,
-            text: '规则只处理网页请求和页面元素，不读取 Cookie、账号密码或站点存储。远程列表会先下载、校验并编译；不支持的语法会显示为降级状态。',
+            text: '规则只处理网页请求和页面元素，不读取 Cookie、账号密码或站点存储。内置推荐源只保存来源地址，点击刷新后才下载、校验并编译规则；不支持的语法会显示为降级状态。',
           ),
           const SizedBox(height: SiteLensMetrics.sectionGap),
           SiteLensPanel(
@@ -1492,11 +1517,21 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
           ),
           SiteLensSectionHeader(
             title: '规则源',
-            subtitle: '支持常见 Adblock/uBlock 文本规则；添加后会立即尝试刷新。',
-            action: IconButton(
-              tooltip: '添加规则源',
-              onPressed: _busy ? null : _addSource,
-              icon: const Icon(Icons.add),
+            subtitle: '支持常见 Adblock/uBlock 文本规则；内置源和自定义源都可刷新。',
+            action: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: '刷新全部规则',
+                  onPressed: _busy ? null : _refreshAllSources,
+                  icon: const Icon(Icons.refresh),
+                ),
+                IconButton(
+                  tooltip: '添加规则源',
+                  onPressed: _busy ? null : _addSource,
+                  icon: const Icon(Icons.add),
+                ),
+              ],
             ),
           ),
           SiteLensPanel(
@@ -1574,7 +1609,7 @@ class _FilterSourceRow extends StatelessWidget {
     ),
     title: Text(source.label),
     subtitle: Text(
-      '${_filterSourceStatusLabel(source.status)} · ${source.url}',
+      '${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)} · ${source.url}',
       maxLines: 2,
       overflow: TextOverflow.ellipsis,
     ),

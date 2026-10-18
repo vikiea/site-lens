@@ -15,6 +15,7 @@ import 'package:site_lens/ui/glass_quality_cache.dart';
 import 'package:site_lens/ui/app_theme.dart';
 import 'package:site_lens/ui/screens.dart';
 import 'package:site_lens/web_host/web_host.g.dart';
+import 'package:site_lens/filter/filter_service.dart';
 
 import 'fake_update_platform.dart';
 import 'fake_web_host_api.dart';
@@ -323,6 +324,11 @@ void main() {
     expect(find.text('拦截域名'), findsOneWidget);
     expect(find.text('例外域名'), findsOneWidget);
     expect(find.text('规则源'), findsOneWidget);
+    expect(app.filterSourceList, hasLength(builtInFilterSources.length));
+    expect(
+      app.filterSourceList.every((source) => source.kind == 'builtin'),
+      isTrue,
+    );
 
     await tester.tap(find.text('启用广告过滤'));
     await tester.pumpAndSettle();

@@ -9,6 +9,51 @@ import '../data/database.dart';
 import '../domain/models.dart';
 import '../network/transport.dart';
 
+class BuiltInFilterSourceSpec {
+  const BuiltInFilterSourceSpec({
+    required this.key,
+    required this.label,
+    required this.url,
+    required this.license,
+  });
+
+  final String key;
+  final String label;
+  final String url;
+  final String license;
+}
+
+/// Recommended public lists are seeded as source metadata only. Their rule
+/// text is downloaded after the user opens the filter settings and refreshes a
+/// source, so APKs do not bundle third-party list contents or stale snapshots.
+const builtInFilterSourceSeedVersion = 'v1';
+const builtInFilterSources = <BuiltInFilterSourceSpec>[
+  BuiltInFilterSourceSpec(
+    key: 'easylist',
+    label: 'EasyList（广告）',
+    url: 'https://easylist.to/easylist/easylist.txt',
+    license: 'GPL-3.0',
+  ),
+  BuiltInFilterSourceSpec(
+    key: 'easyprivacy',
+    label: 'EasyPrivacy（跟踪）',
+    url: 'https://easylist.to/easylist/easyprivacy.txt',
+    license: 'GPL-3.0',
+  ),
+  BuiltInFilterSourceSpec(
+    key: 'easylistchina',
+    label: 'EasyList China（中文广告）',
+    url: 'https://easylist-downloads.adblockplus.org/easylistchina.txt',
+    license: 'GPL-3.0',
+  ),
+  BuiltInFilterSourceSpec(
+    key: 'ublock-filters',
+    label: 'uBlock filters（基础）',
+    url: 'https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt',
+    license: 'GPL-3.0',
+  ),
+];
+
 /// A deliberately small, deterministic rule representation.  The native
 /// request callback can evaluate this object without touching disk, Dart, or
 /// the network.  Unknown syntax is retained as diagnostics and follows the

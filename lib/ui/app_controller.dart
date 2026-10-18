@@ -50,6 +50,8 @@ final appControllerProvider = Provider<AppController>((ref) {
   return controller;
 });
 
+const _filterSourceSeedSetting = 'filterSourceSeedVersion';
+
 class AppController extends ChangeNotifier with WidgetsBindingObserver {
   /// [api] is the platform seam: production leaves it null (the generated Pigeon
   /// channel), tests pass a fake so tab lifecycle can be exercised without a
@@ -403,6 +405,34 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _seedBuiltInFilterSources() async {
+    if (await db.setting(_filterSourceSeedSetting) ==
+        builtInFilterSourceSeedVersion) {
+      return;
+    }
+    final existing = await db.filterSources();
+    final existingUrls = existing
+        .map((source) => source.url.toString())
+        .toSet();
+    var nextId = await db.nextFilterSourceId();
+    for (final spec in builtInFilterSources) {
+      if (!existingUrls.add(spec.url)) continue;
+      await db.saveFilterSource(
+        FilterSource(
+          id: nextId++,
+          label: spec.label,
+          url: webUri(spec.url),
+          kind: 'builtin',
+          license: spec.license,
+        ),
+      );
+    }
+    await db.setSetting(
+      _filterSourceSeedSetting,
+      builtInFilterSourceSeedVersion,
+    );
+  }
+
   Future<FilterSource> addFilterSource({
     required String label,
     required String url,
@@ -637,6 +667,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     profileScriptLinks = await read(db.profileScripts, profileScriptLinks);
     installed = await read(db.scripts, installed);
     filterPolicy = await read(db.filterPolicy, filterPolicy);
+    try {
+      await _seedBuiltInFilterSources();
+    } catch (_) {
+      if (!suppressCorruption) rethrow;
+    }
     filterSourceList = await read(db.filterSources, filterSourceList);
     final latestFilter = await read(db.latestFilterSnapshot, null);
     if (latestFilter != null) {
