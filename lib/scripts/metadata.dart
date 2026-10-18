@@ -245,7 +245,9 @@ class ScriptMetadata {
       'downloadURL',
       'updateURL',
       'match',
+      'include',
       'exclude',
+      'exclude-match',
       'run-at',
       'grant',
       'connect',
@@ -273,8 +275,8 @@ class ScriptMetadata {
       return result;
     }
 
-    final matches = rules('match');
-    final excludes = rules('exclude');
+    final matches = [...rules('match'), ...rules('include')];
+    final excludes = [...rules('exclude'), ...rules('exclude-match')];
     if (matches.isEmpty) errors.add('至少需要一个有效 @match');
     final grants = (fields['grant'] ?? ['none']).toSet();
     final privileged = grants

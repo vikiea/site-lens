@@ -16,7 +16,7 @@
 ## 脚本
 
 - 元数据：`@match`、`@exclude`（HTTP(S) 匹配模式）、`@run-at`、`@grant`、`@connect`、`@require`。允许 `@name:zh-CN`、`@description:en` 等本地化展示字段。限定主框架。URL host 不支持端口声明，URL 本身可带端口。只粘贴元数据头、缺少 `// ==/UserScript==` 或脚本主体时明确标为不可启用。
-- 范围模式：`https://example.com/*`、`*://*.example.com/path*`；不支持正则 exclude、`@include`、`<all_urls>` 等扩展语义，导入后禁止启用并显示原因。
+- 范围模式：`https://example.com/*`、`*://*.example.com/path*`；支持可转换为 HTTP(S) 匹配规则的 `@include` 和 `@exclude-match` 别名；不支持正则 exclude、`<all_urls>` 等扩展语义，导入后禁止启用并显示原因。
 - 时机：`document-start`、`document-end`（DOMContentLoaded）、`document-idle`（DOM 就绪后的下一任务）。不宣称资源加载完成。
 - 存储：`GM_getValue/GM_setValue/GM_deleteValue/GM_listValues` 与 `GM.getValue/setValue/deleteValue/listValues`。声明对应接口；值仅 JSON，每值 64 KiB、键 256 字符。传统读取是本次文档的独立快照；传统写入无同步成功返回，异步确认和失败日志可见。失败从已提交基线重放待写日志，不恢复未提交值。每次新文档重新预载。
 - 样式：`GM_addStyle` / `GM.addStyle`，本 world 直接共享 DOM。

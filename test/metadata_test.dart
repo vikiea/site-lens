@@ -53,6 +53,21 @@ void main() {
     expect(m.requires.single.host, 'cdn.example.com');
     expect(m.matchesUrl(Uri.parse('https://example.com/private/x')), isFalse);
   });
+
+  test('supports URL-compatible include and exclude-match aliases', () {
+    final m = ScriptMetadata.parse(
+      source(
+        '// @include https://player.example.com/*\n'
+        '// @exclude-match https://player.example.com/private/*',
+      ),
+    );
+    expect(m.errors, isEmpty);
+    expect(m.matchesUrl(Uri.parse('https://player.example.com/watch')), isTrue);
+    expect(
+      m.matchesUrl(Uri.parse('https://player.example.com/private/x')),
+      isFalse,
+    );
+  });
   test('localized name and description metadata are accepted', () {
     final m = ScriptMetadata.parse(
       '// ==UserScript==\n'
@@ -96,7 +111,6 @@ void main() {
   test('unsupported critical semantics prevent enabling', () {
     for (final line in [
       '// @grant GM_download',
-      '// @include *',
       '// @run-at context-menu',
       '// @match <all_urls>',
       '// @require http://example.com/insecure.js',
