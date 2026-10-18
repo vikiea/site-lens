@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.view.Surface
 import android.webkit.WebSettings
+import android.webkit.CookieManager
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -88,6 +89,13 @@ class NativeMediaRuntime(
                 else -> result.notImplemented()
             }
         } catch (error: Exception) {
+            NativeCrashStore.append(
+                context,
+                module = "android.media",
+                message = error.message ?: "原生播放操作失败",
+                details = error.stackTraceToString(),
+                contextValue = "method=${call.method}",
+            )
             result.error("native_media", error.message ?: "原生播放失败", null)
         }
     }
@@ -161,6 +169,10 @@ class NativeMediaRuntime(
                         put("Referer", referer)
                         if (origin != null) put("Origin", origin)
                         put("Accept", "*/*")
+                        put("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+                        val cookie = CookieManager.getInstance().getCookie(uri.toString())
+                            ?: referer?.let { CookieManager.getInstance().getCookie(it) }
+                        if (!cookie.isNullOrBlank()) put("Cookie", cookie)
                     },
                 )
             playerBuilder.setMediaSourceFactory(DefaultMediaSourceFactory(http))
@@ -201,7 +213,21 @@ class NativeMediaRuntime(
 
             override fun onPlayerError(error: PlaybackException) {
                 state = "failed"
-                emit("failed", "${error.errorCodeName}:${error.message ?: "播放失败"}")
+                val detail = buildString {
+                    append(error.errorCodeName).append(':')
+                    append(error.message ?: "播放失败")
+                    error.cause?.let {
+                        append('\n').append(it.stackTraceToString())
+                    }
+                }
+                NativeCrashStore.append(
+                    context,
+                    module = "media.playback",
+                    message = "原生媒体播放失败",
+                    details = detail,
+                    contextValue = "session=${sessionId ?: "unknown"}",
+                )
+                emit("failed", detail)
             }
         })
 

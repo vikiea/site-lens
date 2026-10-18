@@ -25,6 +25,9 @@
   let lastPlaying = null;
   let lastCandidates = '';
   let lastCandidateList = [];
+  let reportScheduled = false;
+  let reportAgain = false;
+  let lastReportAt = 0;
   const originalPlay = HTMLMediaElement.prototype.play;
 
   function track(node) {
@@ -41,7 +44,7 @@
   function mediaEvent(type,node) {
     track(node);
     if (['ended','emptied'].includes(type) || (['play','playing'].includes(type) && !node.paused && !node.ended)) resumeNodes.delete(node);
-    if (blocked && type!=='pause' && type!=='ended') pause(); else report();
+    if (blocked && type!=='pause' && type!=='ended') pause(); else scheduleReport();
   }
   function collect() {
     const children = Array.from({length:Math.min(window.frames.length,64)}, (_,i) => window.frames[i]);
@@ -207,6 +210,28 @@
       }
     } catch (_) { /* Detached or unsupported frames have no native authority. */ }
   }
+  // Video pages often mutate their player DOM hundreds of times per second.
+  // Coalesce those callbacks so discovery cannot starve the renderer or the
+  // page's own playback thread.
+  function scheduleReport() {
+    if (reportScheduled) { reportAgain = true; return; }
+    reportScheduled = true;
+    if (typeof setTimeout !== 'function') {
+      reportScheduled = false;
+      try { report(); } catch (_) {}
+      return;
+    }
+    const delay = Math.max(0, 120 - (Date.now() - lastReportAt));
+    setTimeout(() => {
+      reportScheduled = false;
+      lastReportAt = Date.now();
+      try { report(); } catch (_) {}
+      if (reportAgain) {
+        reportAgain = false;
+        scheduleReport();
+      }
+    }, delay);
+  }
   // Best-effort episode switching for pages that expose their playlist through
   // data-play-src/data-video-src attributes. The page remains authoritative;
   // this only changes the already-discovered media element and never invents
@@ -235,7 +260,7 @@
       node.src = target.url;
       if (typeof node.load === 'function') node.load();
       Promise.resolve(originalPlay.call(node)).catch(() => {});
-      report();
+      scheduleReport();
     } catch (_) {}
   }
   function pause() {
@@ -251,7 +276,7 @@
         try { Promise.resolve(ctx.suspend()).catch(() => {}); } catch (_) { }
       }
     }
-    report();
+    scheduleReport();
   }
   function relay(data) {
     for (let i = 0; i < window.frames.length; i++) {
@@ -273,7 +298,7 @@
         try { Promise.resolve(ctx.resume()).catch(() => {}); } catch (_) {}
       }
       resumeContexts.clear();
-      report();
+      scheduleReport();
     }
     else if (action === 'next' || action === 'previous') {
       blocked = false;
@@ -311,7 +336,7 @@
         ctx.addEventListener('statechange', () => {
           if (ctx.state === 'closed') { contexts.delete(ctx); resumeContexts.delete(ctx); }
           if (ctx.state === 'running' && !blocked) resumeContexts.delete(ctx);
-          if (blocked && ctx.state === 'running') pause(); else report();
+          if (blocked && ctx.state === 'running') pause(); else scheduleReport();
         });
         if (blocked) Promise.resolve(ctx.suspend()).catch(() => {});
         const resume = ctx.resume.bind(ctx);
@@ -329,9 +354,9 @@
       const children = Array.from({length:Math.min(window.frames.length,64)}, (_,i) => window.frames[i]);
       if (children.includes(event.source)) {
         for (const frame of childPlaying.keys()) if (!children.includes(frame)) childPlaying.delete(frame);
-        childPlaying.set(event.source,data.playing); report();
+        childPlaying.set(event.source,data.playing); scheduleReport();
         childCandidates.set(event.source, Array.isArray(data.candidates) ? data.candidates : []);
-        report();
+        scheduleReport();
       }
     }
     if (event.source === window.parent && data && data.kind === 'site-lens-media' &&
@@ -340,8 +365,8 @@
     }
   });
   if (typeof MutationObserver === 'function') {
-    new MutationObserver(() => report()).observe(document, {childList:true,subtree:true});
+    new MutationObserver(() => scheduleReport()).observe(document, {childList:true,subtree:true});
   }
-  document.addEventListener('DOMContentLoaded', () => { collect(); if (blocked) pause(); else report(); });
-  if (typeof setInterval === 'function') setInterval(() => report(), 1500);
+  document.addEventListener('DOMContentLoaded', () => { collect(); if (blocked) pause(); else scheduleReport(); });
+  if (typeof setInterval === 'function') setInterval(() => scheduleReport(), 1500);
 })();

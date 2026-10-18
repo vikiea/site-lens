@@ -84,7 +84,6 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   bool _controlsVisible = true;
   bool _seeking = false;
   bool _landscape = false;
-  bool _fullScreen = false;
   int _rotationQuarterTurns = 0;
   _VideoFitMode _fitMode = _VideoFitMode.contain;
   bool _closing = false;
@@ -133,9 +132,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   }
 
   Future<void> _applySystemUi() => SystemChrome.setEnabledSystemUIMode(
-    _fullScreen || !_controlsVisible
-        ? SystemUiMode.immersiveSticky
-        : SystemUiMode.edgeToEdge,
+    !_controlsVisible ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
   );
 
   Future<void> _command(Future<NativePlaybackSession> Function() action) async {
@@ -202,13 +199,6 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   void _rotateVideo() {
     if (!mounted) return;
     setState(() => _rotationQuarterTurns = (_rotationQuarterTurns + 1) % 4);
-    _scheduleHide();
-  }
-
-  Future<void> _toggleFullScreen() async {
-    if (!mounted) return;
-    setState(() => _fullScreen = !_fullScreen);
-    await _applySystemUi();
     _scheduleHide();
   }
 
@@ -502,24 +492,6 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
                           color: Colors.white,
                           icon: const Icon(Icons.stop_circle_outlined),
                           onPressed: _canControl ? _stopAndExit : null,
-                        ),
-                        PopupMenuButton<String>(
-                          tooltip: '更多',
-                          icon: const Icon(
-                            Icons.more_vert,
-                            color: Colors.white,
-                          ),
-                          onSelected: (value) {
-                            if (value == 'fullscreen') {
-                              unawaited(_toggleFullScreen());
-                            }
-                          },
-                          itemBuilder: (_) => [
-                            PopupMenuItem(
-                              value: 'fullscreen',
-                              child: Text(_fullScreen ? '退出全屏' : '全屏'),
-                            ),
-                          ],
                         ),
                       ],
                     ),
@@ -859,21 +831,42 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
       showShortToast(context, '没有可导出的任务');
       return;
     }
-    final directoryPath = await FilePicker.getDirectoryPath(
-      dialogTitle: '选择导出目录',
-    );
+    final directoryPath = Platform.isAndroid && widget.app.nativeExports != null
+        ? await widget.app.nativeExports!.pickDirectory()
+        : await FilePicker.getDirectoryPath(dialogTitle: '选择导出目录');
     if (directoryPath == null || directoryPath.isEmpty) return;
-    final directory = Directory(directoryPath);
-    await directory.create(recursive: true);
+    final directoryUri = Uri.tryParse(directoryPath);
+    final isSafDirectory =
+        Platform.isAndroid && directoryUri?.scheme == 'content';
+    final directory = isSafDirectory ? null : Directory(directoryPath);
+    if (directory != null) await directory.create(recursive: true);
     var exported = 0;
     var failed = 0;
     for (final task in selected) {
       try {
         final file = await widget.app.mediaTasks.cachedFile(task.id);
         if (file == null) throw StateError('缓存文件不存在');
-        final destination = File(
-          '${directory.path}${Platform.pathSeparator}${_exportFileName(task)}',
-        );
+        final fileName = _exportFileName(task);
+        Future<void> deliver(String source) async {
+          if (isSafDirectory) {
+            final native = widget.app.nativeExports;
+            if (native == null || directoryUri == null) {
+              throw StateError('系统目录不可写，请重新选择目录');
+            }
+            await native.deliverToDirectory(
+              source: source,
+              directory: directoryUri,
+              fileName: fileName,
+            );
+          } else {
+            final destination = File(
+              '${directory!.path}${Platform.pathSeparator}$fileName',
+            );
+            await destination.parent.create(recursive: true);
+            await File(source).copy(destination.path);
+          }
+        }
+
         if (file.path.toLowerCase().endsWith('.m3u8')) {
           final input = await const HlsPlaylistParser().parseFile(file.uri);
           final result = await widget.app.mediaExports.export(task.id, input);
@@ -881,10 +874,9 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
               result.outputPath == null) {
             throw StateError(result.errorCode ?? '导出失败');
           }
-          await destination.parent.create(recursive: true);
-          await File(result.outputPath!).copy(destination.path);
+          await deliver(result.outputPath!);
         } else {
-          await file.copy(destination.path);
+          await deliver(file.path);
         }
         exported++;
       } catch (_) {

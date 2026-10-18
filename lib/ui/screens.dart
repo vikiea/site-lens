@@ -2746,6 +2746,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   Timer? _hideTimer;
   bool _navigationVisible = false;
   bool _moreNavigationVisible = false;
+  bool _webViewFullScreen = false;
   bool _backInFlight = false;
   late bool _autoHideEnabled;
   int _toolbarHolds = 0;
@@ -2852,6 +2853,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     widget.app.browserVisible = false;
     widget.app.browserSurfaceActive = false;
     _hideTimer?.cancel();
+    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     // Tabs are owned by AppController so the home floating entry can restore
     // the same native WebView without recreating it.
     super.dispose();
@@ -2932,6 +2934,17 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     if (_moreNavigationVisible && mounted) {
       setState(() => _moreNavigationVisible = false);
     }
+  }
+
+  Future<void> _toggleWebViewFullScreen() async {
+    if (!mounted) return;
+    setState(() => _webViewFullScreen = !_webViewFullScreen);
+    await SystemChrome.setEnabledSystemUIMode(
+      _webViewFullScreen
+          ? SystemUiMode.immersiveSticky
+          : SystemUiMode.edgeToEdge,
+    );
+    _keepNavigationVisible();
   }
 
   /// Transient surfaces hold the toolbar open: its countdown resumes when the
@@ -3243,6 +3256,9 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                               _closeMoreNavigation();
                               unawaited(_showFilterDiagnostics());
                             },
+                            onFullScreen: () =>
+                                unawaited(_toggleWebViewFullScreen()),
+                            fullScreen: _webViewFullScreen,
                           ),
                           const SizedBox(height: 4),
                         ],
@@ -3650,6 +3666,8 @@ class _BrowserMoreNavigation extends StatelessWidget {
     required this.onMenus,
     required this.onCloseTab,
     required this.onFilterDiagnostics,
+    required this.onFullScreen,
+    required this.fullScreen,
   });
 
   final VoidCallback onNewTab;
@@ -3657,6 +3675,8 @@ class _BrowserMoreNavigation extends StatelessWidget {
   final VoidCallback onMenus;
   final VoidCallback onCloseTab;
   final VoidCallback onFilterDiagnostics;
+  final VoidCallback onFullScreen;
+  final bool fullScreen;
 
   @override
   Widget build(BuildContext context) => SiteLensGlassSurface(
@@ -3693,6 +3713,13 @@ class _BrowserMoreNavigation extends StatelessWidget {
               tooltip: '过滤诊断',
               icon: Icons.filter_alt_outlined,
               onPressed: onFilterDiagnostics,
+            ),
+          ),
+          Expanded(
+            child: _BrowserNavButton(
+              tooltip: fullScreen ? '退出全屏' : '全屏',
+              icon: fullScreen ? Icons.fullscreen_exit : Icons.fullscreen,
+              onPressed: onFullScreen,
             ),
           ),
           Expanded(

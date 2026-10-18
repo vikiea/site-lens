@@ -40,6 +40,21 @@ private fun webUri(value: String): Uri {
 }
 private fun origin(uri: Uri): String = "${uri.scheme}://${uri.host?.lowercase()}:${if (uri.port >= 0) uri.port else if (uri.scheme == "https") 443 else 80}"
 
+/** A filter snapshot must never turn a real video/audio transport into 204. */
+private fun isMediaRequest(request: WebResourceRequest): Boolean {
+    val path = request.url.path?.lowercase() ?: ""
+    if (Regex("\\.(?:m3u8?|mpd|mp4|m4v|webm|mov|mkv|ts|m4s|aac|mp3|m4a|ogg|wav)(?:$|/)").containsMatchIn(path)) {
+        return true
+    }
+    return request.requestHeaders.any { (name, value) ->
+        name.equals("Accept", ignoreCase = true) && value.split(',').any { item ->
+            val type = item.trim().substringBefore(';').lowercase()
+            type.startsWith("video/") || type.startsWith("audio/") ||
+                type.contains("mpegurl") || type.contains("dash+xml")
+        }
+    }
+}
+
 /**
  * Canonical form of an HTTP(S) URL, used to compare the URL we leased scripts
  * for with the URL the WebView reports for the actual navigation.
@@ -626,6 +641,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 // snapshot cannot strand the user on a blank page. Subresources
                 // are synchronously rejected from the in-memory snapshot.
                 if (!request.isForMainFrame && !filterAllows(request.url)) {
+                    if (isMediaRequest(request)) return super.shouldInterceptRequest(view, request)
                     event("filtered", "请求已阻止", request.url.toString())
                     return WebResourceResponse(
                         "text/plain",
@@ -697,6 +713,17 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 if (rendererGone) return true
                 rendererGone = true
                 refreshLayout?.isRefreshing = false
+                NativeCrashStore.append(
+                    activity,
+                    module = "android.webview.renderer",
+                    message = "网页渲染进程已退出",
+                    details = buildString {
+                        append("didCrash=").append(detail.didCrash()).append('\n')
+                        append("rendererPriorityAtExit=").append(detail.rendererPriorityAtExit()).append('\n')
+                        append("url=").append(webView.url ?: "")
+                    },
+                    contextValue = "host=$id generation=$generation",
+                )
                 // The renderer may reject WebViewCompat cleanup calls after it
                 // has gone away. Never let recovery from a renderer death turn
                 // into an application crash on the UI thread.
@@ -769,6 +796,14 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             if (!destroyed) {
                 events.onEvent(HostEvent(id, generation, kind, url ?: webView.url ?: "", detail)) { _ -> }
             }
+        }.onFailure { error ->
+            NativeCrashStore.append(
+                activity,
+                module = "android.webview.event",
+                message = "网页事件上报失败",
+                details = error.stackTraceToString(),
+                contextValue = "kind=$kind host=$id generation=$generation",
+            )
         }
     }
     fun valid(binding: ScriptBinding): Boolean = !destroyed && accepting && binding.generation == generation && bindings.contains(binding)

@@ -481,6 +481,43 @@ void main() {
     },
   );
 
+  test('MP4 export preserves a native human-readable failure reason', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'site-lens-export-error-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final playlist = File('${root.path}/index.m3u8')
+      ..writeAsStringSync('#EXTM3U\n#EXTINF:1,\nseg.ts\n');
+    final segment = File('${root.path}/seg.ts')..writeAsBytesSync([1]);
+    final store = MediaTaskStore(directoryProvider: () async => root);
+    final task = store.create(candidate());
+    store.transition(task.id, MediaTaskState.downloading);
+    store.transition(task.id, MediaTaskState.completed);
+    store.transition(task.id, MediaTaskState.playable);
+    final service = Mp4ExportService(
+      tasks: store,
+      directoryProvider: () async => root,
+      muxer:
+          ({
+            required HlsCacheInput input,
+            required String outputPath,
+            required void Function(int) onProgress,
+            required Cancellation cancellation,
+          }) async {
+            throw PlatformException(
+              code: 'media_export',
+              message: 'HLS 分片不含音视频轨道',
+            );
+          },
+    );
+    final result = await service.export(
+      task.id,
+      HlsCacheInput(playlist: playlist.uri, segments: [segment.uri]),
+    );
+    expect(result.state, ExportState.failed);
+    expect(result.errorCode, 'HLS 分片不含音视频轨道');
+  });
+
   test('relay authorization binds token to session, task and device', () {
     final auth = const RelayAuthorizer().issue(
       sessionId: 'session',

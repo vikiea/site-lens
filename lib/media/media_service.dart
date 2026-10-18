@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../data/database.dart';
@@ -1481,14 +1482,25 @@ class Mp4ExportService {
         errorCode: MediaErrorCode.cancelled,
         progress: 0,
       );
-    } catch (error) {
+    } catch (error, stack) {
       if (await temporary.exists()) await temporary.delete();
+      AppErrorLogger.capture(
+        error,
+        module: 'media.export',
+        context: 'task=$taskId',
+        stack: stack,
+      );
       return Mp4ExportTask(
         id: id,
         mediaTaskId: taskId,
         state: ExportState.failed,
         outputPath: output.path,
-        errorCode: error is StateError ? error.message : 'export_failed',
+        errorCode:
+            error is PlatformException &&
+                error.message != null &&
+                error.message!.trim().isNotEmpty
+            ? readableError(StateError(error.message!))
+            : readableError(error),
         progress: 0,
       );
     } finally {
