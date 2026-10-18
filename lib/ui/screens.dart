@@ -1328,6 +1328,426 @@ class _EditorMetadataRow extends StatelessWidget {
   );
 }
 
+class FilterSettingsScreen extends StatefulWidget {
+  const FilterSettingsScreen({super.key, required this.app});
+
+  final AppController app;
+
+  @override
+  State<FilterSettingsScreen> createState() => _FilterSettingsScreenState();
+}
+
+class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
+  AppController get app => widget.app;
+  bool _busy = false;
+
+  Future<void> _run(Future<void> Function() action) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await action();
+    } catch (error) {
+      if (mounted) showError(context, error);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _editDomains({required bool blocked}) async {
+    final current = blocked
+        ? app.filterPolicy.blockedDomains
+        : app.filterPolicy.domainExceptions;
+    final value = await showDialog<String>(
+      context: context,
+      builder: (_) => _DomainListDialog(
+        title: blocked ? '编辑拦截域名' : '编辑例外域名',
+        initial: current.join('\n'),
+        helperText: '每行一个域名，也支持 *.example.com；保存后重新加载页面生效。',
+      ),
+    );
+    if (value == null || !mounted) return;
+    final parsed = _parseDomainList(value);
+    if (parsed.$2.isNotEmpty) {
+      showError(context, FormatException('无效域名：${parsed.$2.join(', ')}'));
+      return;
+    }
+    await _run(() async {
+      final policy = blocked
+          ? app.filterPolicy.copyWith(blockedDomains: parsed.$1)
+          : app.filterPolicy.copyWith(domainExceptions: parsed.$1);
+      await app.updateFilterPolicy(policy);
+    });
+  }
+
+  Future<void> _addSource() async {
+    final draft = await showDialog<_FilterSourceDraft>(
+      context: context,
+      builder: (_) => const _FilterSourceDialog(),
+    );
+    if (draft == null || !mounted) return;
+    await _run(() async {
+      final source = await app.addFilterSource(
+        label: draft.label,
+        url: draft.url,
+        version: draft.version,
+        license: draft.license,
+      );
+      await app.refreshFilterSource(source);
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('已添加并刷新「${source.label}」')));
+      }
+    });
+  }
+
+  Future<void> _deleteSource(FilterSource source) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => SiteLensAlertDialog(
+        title: const Text('删除规则源？'),
+        content: Text('将删除「${source.label}」的配置；已下载的快照不会再用于更新。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _run(() => app.deleteFilterSource(source.id));
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: app,
+    builder: (context, _) => SiteLensPageScaffold(
+      title: '广告与反跟踪',
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(
+          SiteLensMetrics.pagePadding,
+          12,
+          SiteLensMetrics.pagePadding,
+          32,
+        ),
+        children: [
+          const SiteLensNotice(
+            tone: SiteLensNoticeTone.info,
+            text: '规则只处理网页请求和页面元素，不读取 Cookie、账号密码或站点存储。远程列表会先下载、校验并编译；不支持的语法会显示为降级状态。',
+          ),
+          const SizedBox(height: SiteLensMetrics.sectionGap),
+          SiteLensPanel(
+            padding: EdgeInsets.zero,
+            child: Column(
+              children: [
+                SwitchListTile(
+                  title: const Text('启用广告过滤'),
+                  subtitle: const Text('按规则源和下方域名列表拦截请求'),
+                  value: app.filterPolicy.enabled,
+                  onChanged: _busy
+                      ? null
+                      : (value) => _run(
+                          () => app.updateFilterPolicy(
+                            app.filterPolicy.copyWith(enabled: value),
+                          ),
+                        ),
+                ),
+                Divider(height: 1, indent: 18, endIndent: 18),
+                SwitchListTile(
+                  title: const Text('隐藏页面广告元素'),
+                  subtitle: const Text('应用规则源中的 CSS 隐藏规则'),
+                  value: app.filterPolicy.pageFiltering,
+                  onChanged: _busy
+                      ? null
+                      : (value) => _run(
+                          () => app.updateFilterPolicy(
+                            app.filterPolicy.copyWith(pageFiltering: value),
+                          ),
+                        ),
+                ),
+                Divider(height: 1, indent: 18, endIndent: 18),
+                SiteLensActionRow(
+                  icon: Icons.block_outlined,
+                  title: '拦截域名',
+                  subtitle: app.filterPolicy.blockedDomains.isEmpty
+                      ? '未添加自定义拦截域名'
+                      : '${app.filterPolicy.blockedDomains.length} 个域名',
+                  onTap: _busy ? null : () => _editDomains(blocked: true),
+                ),
+                Divider(height: 1, indent: 18, endIndent: 18),
+                SiteLensActionRow(
+                  icon: Icons.check_circle_outline,
+                  title: '例外域名',
+                  subtitle: app.filterPolicy.domainExceptions.isEmpty
+                      ? '未添加例外域名'
+                      : '${app.filterPolicy.domainExceptions.length} 个域名，优先放行',
+                  onTap: _busy ? null : () => _editDomains(blocked: false),
+                ),
+              ],
+            ),
+          ),
+          SiteLensSectionHeader(
+            title: '规则源',
+            subtitle: '支持常见 Adblock/uBlock 文本规则；添加后会立即尝试刷新。',
+            action: IconButton(
+              tooltip: '添加规则源',
+              onPressed: _busy ? null : _addSource,
+              icon: const Icon(Icons.add),
+            ),
+          ),
+          SiteLensPanel(
+            padding: EdgeInsets.zero,
+            child: app.filterSourceList.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.all(18),
+                    child: Text('还没有规则源。点击右上角添加公开的规则列表 URL。'),
+                  )
+                : Column(
+                    children: [
+                      for (
+                        var index = 0;
+                        index < app.filterSourceList.length;
+                        index++
+                      ) ...[
+                        if (index > 0)
+                          const Divider(height: 1, indent: 18, endIndent: 18),
+                        _FilterSourceRow(
+                          source: app.filterSourceList[index],
+                          busy: _busy,
+                          onRefresh: () => _run(
+                            () => app.refreshFilterSource(
+                              app.filterSourceList[index],
+                            ),
+                          ),
+                          onDelete: () =>
+                              _deleteSource(app.filterSourceList[index]),
+                        ),
+                      ],
+                    ],
+                  ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+(Set<String>, List<String>) _parseDomainList(String input) {
+  final values = <String>{};
+  final invalid = <String>[];
+  for (final raw in input.split(RegExp(r'[\s,]+'))) {
+    final value = raw.trim().toLowerCase().replaceFirst(RegExp(r'^\*\.'), '');
+    if (value.isEmpty) continue;
+    if (!RegExp(r'^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$').hasMatch(value) ||
+        value.contains('..')) {
+      invalid.add(raw.trim());
+    } else {
+      values.add(value);
+    }
+  }
+  return (values, invalid);
+}
+
+class _FilterSourceRow extends StatelessWidget {
+  const _FilterSourceRow({
+    required this.source,
+    required this.busy,
+    required this.onRefresh,
+    required this.onDelete,
+  });
+
+  final FilterSource source;
+  final bool busy;
+  final VoidCallback onRefresh;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) => ListTile(
+    leading: Icon(
+      source.status == FilterSourceStatus.failed
+          ? Icons.error_outline
+          : Icons.rule_folder_outlined,
+    ),
+    title: Text(source.label),
+    subtitle: Text(
+      '${_filterSourceStatusLabel(source.status)} · ${source.url}',
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+    ),
+    trailing: PopupMenuButton<String>(
+      enabled: !busy,
+      tooltip: '规则源操作',
+      onSelected: (value) {
+        if (value == 'refresh') onRefresh();
+        if (value == 'delete') onDelete();
+      },
+      itemBuilder: (_) => const [
+        PopupMenuItem(value: 'refresh', child: Text('刷新规则')),
+        PopupMenuItem(value: 'delete', child: Text('删除规则源')),
+      ],
+    ),
+  );
+}
+
+String _filterSourceStatusLabel(FilterSourceStatus status) => switch (status) {
+  FilterSourceStatus.missing => '未刷新',
+  FilterSourceStatus.downloading => '下载中',
+  FilterSourceStatus.compiling => '编译中',
+  FilterSourceStatus.valid => '已生效',
+  FilterSourceStatus.failed => '刷新失败',
+};
+
+class _DomainListDialog extends StatefulWidget {
+  const _DomainListDialog({
+    required this.title,
+    required this.initial,
+    required this.helperText,
+  });
+
+  final String title;
+  final String initial;
+  final String helperText;
+
+  @override
+  State<_DomainListDialog> createState() => _DomainListDialogState();
+}
+
+class _DomainListDialogState extends State<_DomainListDialog> {
+  late final TextEditingController controller = TextEditingController(
+    text: widget.initial,
+  );
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => SiteLensAlertDialog(
+    title: Text(widget.title),
+    content: TextField(
+      controller: controller,
+      autofocus: true,
+      minLines: 4,
+      maxLines: 8,
+      keyboardType: TextInputType.multiline,
+      decoration: InputDecoration(helperText: widget.helperText),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      FilledButton(
+        onPressed: () => Navigator.pop(context, controller.text),
+        child: const Text('保存'),
+      ),
+    ],
+  );
+}
+
+class _FilterSourceDraft {
+  const _FilterSourceDraft({
+    required this.label,
+    required this.url,
+    required this.version,
+    required this.license,
+  });
+
+  final String label;
+  final String url;
+  final String version;
+  final String license;
+}
+
+class _FilterSourceDialog extends StatefulWidget {
+  const _FilterSourceDialog();
+
+  @override
+  State<_FilterSourceDialog> createState() => _FilterSourceDialogState();
+}
+
+class _FilterSourceDialogState extends State<_FilterSourceDialog> {
+  final label = TextEditingController();
+  final url = TextEditingController();
+  final version = TextEditingController();
+  final license = TextEditingController();
+
+  @override
+  void dispose() {
+    label.dispose();
+    url.dispose();
+    version.dispose();
+    license.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (url.text.trim().isEmpty) {
+      showError(context, const FormatException('请输入规则列表 URL'));
+      return;
+    }
+    Navigator.pop(
+      context,
+      _FilterSourceDraft(
+        label: label.text,
+        url: url.text,
+        version: version.text,
+        license: license.text,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => SiteLensAlertDialog(
+    title: const Text('添加规则源'),
+    content: SingleChildScrollView(
+      child: Column(
+        children: [
+          TextField(
+            controller: label,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: '名称',
+              hintText: '例如：EasyList',
+            ),
+          ),
+          TextField(
+            controller: url,
+            keyboardType: TextInputType.url,
+            autocorrect: false,
+            decoration: const InputDecoration(
+              labelText: '规则列表 URL',
+              hintText: 'https://…',
+              helperText: '只支持 HTTP(S)，不会执行规则中的 JavaScript。',
+            ),
+          ),
+          TextField(
+            controller: version,
+            decoration: const InputDecoration(labelText: '版本（可选）'),
+          ),
+          TextField(
+            controller: license,
+            decoration: const InputDecoration(labelText: '许可证（可选）'),
+          ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      FilledButton(onPressed: _submit, child: const Text('添加并刷新')),
+    ],
+  );
+}
+
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key, required this.app});
   final AppController app;
@@ -1476,6 +1896,19 @@ class _SettingsPageState extends State<SettingsPage> {
                   onChanged: (value) => safely(
                     context,
                     () => app.setRestoreBrowserSessions(value),
+                  ),
+                ),
+                Divider(height: 1, indent: 18, endIndent: 18),
+                SiteLensActionRow(
+                  icon: Icons.shield_outlined,
+                  title: '广告与反跟踪',
+                  subtitle: app.filterPolicy.enabled
+                      ? '${app.filterSourceList.length} 个规则源 · 已启用'
+                      : '配置规则源、拦截域名和例外域名',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => FilterSettingsScreen(app: app),
+                    ),
                   ),
                 ),
                 Divider(height: 1, indent: 18, endIndent: 18),

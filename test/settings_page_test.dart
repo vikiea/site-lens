@@ -306,6 +306,30 @@ void main() {
     },
   );
 
+  testWidgets('广告与反跟踪 opens filter policy and persists its switch', (
+    tester,
+  ) async {
+    await pumpSettings(tester, app);
+    await tester.scrollUntilVisible(
+      find.text('广告与反跟踪'),
+      300,
+      scrollable: find.byType(Scrollable),
+    );
+    await tester.ensureVisible(find.text('广告与反跟踪'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('广告与反跟踪'));
+    await tester.pumpAndSettle();
+    expect(find.text('启用广告过滤'), findsOneWidget);
+    expect(find.text('拦截域名'), findsOneWidget);
+    expect(find.text('例外域名'), findsOneWidget);
+    expect(find.text('规则源'), findsOneWidget);
+
+    await tester.tap(find.text('启用广告过滤'));
+    await tester.pumpAndSettle();
+    expect(app.filterPolicy.enabled, isTrue);
+    expect((await db.filterPolicy()).enabled, isTrue);
+  });
+
   testWidgets('settings exposes about and software update entries', (
     tester,
   ) async {

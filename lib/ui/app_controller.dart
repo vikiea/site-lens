@@ -210,6 +210,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   List<ProfileScript> profileScriptLinks = [];
   List<InstalledScript> installed = [];
   List<ProbeResult> history = [];
+  List<FilterSource> filterSourceList = [];
   HostCapabilities? capabilities;
   bool checkingHostCapabilities = false;
   String? hostCapabilityError;
@@ -402,15 +403,58 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<FilterSnapshot> refreshFilterSource(FilterSource source) async {
-    final snapshot = await filterSources.refresh(source);
-    hosts.setFilterEngine(
-      filterSnapshots.activeEngine,
-      policy: filterPolicy,
-      snapshot: filterSnapshots.activeSnapshot,
+  Future<FilterSource> addFilterSource({
+    required String label,
+    required String url,
+    String version = '',
+    String license = '',
+  }) async {
+    final source = FilterSource(
+      id: await db.nextFilterSourceId(),
+      label: label.trim().isEmpty ? '自定义规则源' : label.trim(),
+      url: userUri(url),
+      version: version.trim(),
+      license: license.trim(),
     );
+    await db.saveFilterSource(source);
+    filterSourceList = await db.filterSources();
     notifyListeners();
-    return snapshot;
+    return source;
+  }
+
+  Future<void> deleteFilterSource(int id) async {
+    await db.deleteFilterSource(id);
+    if (filterSnapshots.activeSnapshot?.sourceId == id) {
+      filterSnapshots.clear();
+      hosts.setFilterEngine(null, policy: filterPolicy);
+    }
+    filterSourceList = await db.filterSources();
+    notifyListeners();
+  }
+
+  Future<FilterSnapshot> refreshFilterSource(FilterSource source) async {
+    try {
+      final snapshot = await filterSources.refresh(source);
+      hosts.setFilterEngine(
+        filterSnapshots.activeEngine,
+        policy: filterPolicy,
+        snapshot: filterSnapshots.activeSnapshot,
+      );
+      return snapshot;
+    } finally {
+      // Refresh records downloading/failed states in Drift even when the
+      // network or compiler rejects the source; keep the settings page honest.
+      filterSourceList = await db.filterSources();
+      notifyListeners();
+    }
+  }
+
+  Future<FilterSnapshot> refreshFilterSourceById(int id) async {
+    final source = filterSourceList.firstWhere(
+      (item) => item.id == id,
+      orElse: () => throw StateError('规则源不存在'),
+    );
+    return refreshFilterSource(source);
   }
 
   void _applySettings() {
@@ -593,6 +637,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     profileScriptLinks = await read(db.profileScripts, profileScriptLinks);
     installed = await read(db.scripts, installed);
     filterPolicy = await read(db.filterPolicy, filterPolicy);
+    filterSourceList = await read(db.filterSources, filterSourceList);
     final latestFilter = await read(db.latestFilterSnapshot, null);
     if (latestFilter != null) {
       try {

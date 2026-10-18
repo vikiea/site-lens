@@ -1108,8 +1108,21 @@ class AppDatabase extends GeneratedDatabase {
           )
           .toList();
 
-  Future<void> deleteFilterSource(int id) =>
-      customStatement('DELETE FROM filter_sources WHERE id=?', [id]);
+  Future<void> deleteFilterSource(int id) async {
+    await transaction(() async {
+      await customStatement('DELETE FROM filter_snapshots WHERE source_id=?', [
+        id,
+      ]);
+      await customStatement('DELETE FROM filter_sources WHERE id=?', [id]);
+    });
+  }
+
+  Future<int> nextFilterSourceId() async {
+    final row = await customSelect(
+      'SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM filter_sources',
+    ).getSingle();
+    return row.read<int>('next_id');
+  }
 
   Future<void> saveFilterSnapshot(FilterSnapshot snapshot) => customStatement(
     'INSERT INTO filter_snapshots(id,source_id,version,source_url,sha256,state,created_at,file_ref,unsupported_rule_count,error) VALUES(?,?,?,?,?,?,?,?,?,?) '

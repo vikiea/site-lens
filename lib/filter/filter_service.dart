@@ -365,6 +365,11 @@ class FilterSnapshotStore {
   FilterEngine? get activeEngine => _active;
   FilterSnapshot? get activeSnapshot => _activeSnapshot;
 
+  void clear() {
+    _active = null;
+    _activeSnapshot = null;
+  }
+
   Future<FilterSnapshot> publish({
     required String id,
     required int? sourceId,

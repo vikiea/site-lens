@@ -84,15 +84,26 @@ class BrowserMediaController(
         return supported && browsing
     }
     fun foregroundState(value: Boolean) { platformForeground = value; enforce() }
-    fun pageStarted() { playing = false; manualPause = false; BrowserMediaService.stop(activity, token); refreshInjection() }
+    fun pageStarted() {
+        playing = false
+        manualPause = false
+        stopService()
+        refreshInjection()
+    }
     fun pageFinished() { enforce() }
     fun userGesture() { if (foreground && visible && current) { manualPause = false; enforce() } }
     private fun action(name: String) {
         if (disposed) return
-        if (name == "resume" && allowed) { manualPause = false; mute(false); view.onResume(); evaluate("resume") }
+        if (name == "resume" && allowed) {
+            manualPause = false
+            mute(false)
+            runCatching { view.onResume() }
+            evaluate("resume")
+        }
         else {
-            manualPause = true; playing = false; mute(true); evaluate("pause"); view.onPause()
-            if (name == "stop") BrowserMediaService.stop(activity, token)
+            manualPause = true; playing = false; mute(true); evaluate("pause")
+            runCatching { view.onPause() }
+            if (name == "stop") stopService()
         }
         refreshInjection()
         updateNotification()
@@ -113,21 +124,35 @@ class BrowserMediaController(
         mute(!run)
         evaluate(if (run) "unblock" else "pause")
         runCatching { if (run) view.onResume() else view.onPause() }
-        if (!allowed) { playing = false; BrowserMediaService.stop(activity, token) }
+        if (!allowed) { playing = false; stopService() }
         updateNotification()
     }
     private fun updateNotification() {
         if (disposed) return
-        if (!allowed || !background) { BrowserMediaService.stop(activity, token); return }
-        if (!BrowserMediaService.update(activity, token, title, playing && !manualPause, foreground, ::action)) {
+        if (!allowed || !background) { stopService(); return }
+        val updated = runCatching {
+            BrowserMediaService.update(
+                activity,
+                token,
+                title,
+                playing && !manualPause,
+                foreground,
+                ::action,
+            )
+        }.getOrDefault(false)
+        if (!updated) {
             // Android refused a background service start: stop media, never leave hidden audio running.
-            manualPause = true; playing = false; mute(true); evaluate("pause"); view.onPause()
+            manualPause = true; playing = false; mute(true); evaluate("pause")
+            runCatching { view.onPause() }
         }
+    }
+    private fun stopService() {
+        runCatching { BrowserMediaService.stop(activity, token) }
     }
     fun dispose() {
         if (disposed) return
         mute(true); evaluate("pause"); disposed = true
-        BrowserMediaService.stop(activity, token)
+        stopService()
         runCatching { injection?.remove() }; injection = null
         if (supported && browsing) runCatching { WebViewCompat.removeWebMessageListener(view, bridge) }
     }

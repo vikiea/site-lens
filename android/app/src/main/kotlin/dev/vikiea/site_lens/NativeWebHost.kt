@@ -123,13 +123,24 @@ class SiteLensWebView(context: Context) : WebView(context) {
                 val dx = event.x - downX
                 val dy = event.y - downY
                 if (event.eventTime - downAt <= 500 && dx * dx + dy * dy <= touchSlop * touchSlop) {
-                    val handled = super.dispatchTouchEvent(event)
-                    onTap?.invoke()
+                    val handled = try {
+                        super.dispatchTouchEvent(event)
+                    } catch (_: Exception) {
+                        false
+                    }
+                    // A tap can coincide with a WebView navigation or renderer
+                    // teardown. Media telemetry is best effort and must never
+                    // turn a page click into an app crash.
+                    runCatching { onTap?.invoke() }
                     return handled
                 }
             }
         }
-        return super.dispatchTouchEvent(event)
+        return try {
+            super.dispatchTouchEvent(event)
+        } catch (_: Exception) {
+            false
+        }
     }
 }
 
@@ -492,7 +503,10 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             mediaPlaybackRequiresUserGesture = true
         }
         if (purpose == HostPurpose.BROWSING) {
-            webView.onTap = { media.userGesture(); event("interaction", "tap") }
+            webView.onTap = {
+                runCatching { media.userGesture() }
+                runCatching { event("interaction", "tap") }
+            }
         }
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false)
         webView.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY))
@@ -605,25 +619,35 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             }
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 if (!request.isForMainFrame) return false
-                try { webUri(request.url.toString()) } catch (_: Exception) { return true }
-                // Redirects are the same in-flight navigation, not a new lease.
-                if (purpose != HostPurpose.BROWSING || !request.isRedirect) {
-                    // A page-started navigation may itself return a cross-origin
-                    // 301/302. Do not install document-start scripts before that
-                    // chain resolves: WebView 154 can deliver the redirect
-                    // callback after the landing document has already run its
-                    // injection. App-started entry navigations still install and
-                    // follow their own redirect chain through navigate()/reload().
-                    prepareNavigation(
-                        request.url.toString(),
-                        installScripts = purpose != HostPurpose.BROWSING,
-                    ) { webView.loadUrl(request.url.toString()) }
-                    return true
+                return try {
+                    if (runCatching { webUri(request.url.toString()) }.isFailure) return true
+                    // Redirects are the same in-flight navigation, not a new lease.
+                    if (purpose != HostPurpose.BROWSING || !request.isRedirect) {
+                        // A page-started navigation may itself return a cross-origin
+                        // 301/302. Do not install document-start scripts before that
+                        // chain resolves: WebView 154 can deliver the redirect
+                        // callback after the landing document has already run its
+                        // injection. App-started entry navigations still install and
+                        // follow their own redirect chain through navigate()/reload().
+                        prepareNavigation(
+                            request.url.toString(),
+                            installScripts = purpose != HostPurpose.BROWSING,
+                        ) { webView.loadUrl(request.url.toString()) }
+                        true
+                    } else {
+                        false
+                    }
+                } catch (_: Exception) {
+                    // WebView callbacks can arrive after the renderer or its
+                    // navigation lease has been invalidated. Fail closed and
+                    // keep the host recoverable instead of propagating into
+                    // Flutter's UI thread.
+                    runCatching { revoke() }
+                    true
                 }
-                return false
             }
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
-                media.pageStarted()
+                runCatching { media.pageStarted() }
                 pageLoadGeneration = generation
                 pageStartedUrl = url
                 if (!hasNavigation) {
@@ -640,7 +664,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 // an older load must not stop a newer refresh indicator/media
                 // lifecycle or mark the newer document as loaded.
                 if (pageLoadGeneration == generation && sameWebUrl(pageStartedUrl, url)) {
-                    media.pageFinished()
+                    runCatching { media.pageFinished() }
                     refreshLayout?.isRefreshing = false
                     event("loaded", url = view.url ?: url)
                 }
@@ -674,7 +698,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                     private fun report(url: String?) {
                         if (!url.isNullOrEmpty() && runCatching { webUri(url) }.isSuccess) event("newWindow", url)
                         // Never destroy a WebView from inside its own callback.
-                        probe.stopLoading()
+                        runCatching { probe.stopLoading() }
                         probe.post { runCatching { probe.destroy() } }
                     }
                     override fun shouldOverrideUrlLoading(v: WebView, request: WebResourceRequest): Boolean {
@@ -684,7 +708,12 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                     override fun onPageStarted(v: WebView, url: String?, favicon: Bitmap?) { report(url) }
                 }
                 transport.webView = probe
-                resultMsg.sendToTarget()
+                try {
+                    resultMsg.sendToTarget()
+                } catch (_: Exception) {
+                    runCatching { probe.destroy() }
+                    return false
+                }
                 return true
             }
             override fun onShowCustomView(view: View, callback: CustomViewCallback) {
@@ -705,7 +734,17 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             override fun onGeolocationPermissionsShowPrompt(origin: String, callback: GeolocationPermissions.Callback) { callback.invoke(origin, false, false) }
         }
     }
-    private fun event(kind: String, detail: String = "", url: String? = null) { if (kind in setOf("networkError", "certificateError", "httpError")) pageError = detail; if (!destroyed) events.onEvent(HostEvent(id, generation, kind, url ?: webView.url ?: "", detail)) { _ -> } }
+    private fun event(kind: String, detail: String = "", url: String? = null) {
+        // Pigeon can throw while Flutter is detaching the engine, and WebView
+        // may call us during renderer teardown. Host events are diagnostic;
+        // losing one is safer than crashing the process.
+        runCatching {
+            if (kind in setOf("networkError", "certificateError", "httpError")) pageError = detail
+            if (!destroyed) {
+                events.onEvent(HostEvent(id, generation, kind, url ?: webView.url ?: "", detail)) { _ -> }
+            }
+        }
+    }
     fun valid(binding: ScriptBinding): Boolean = !destroyed && accepting && binding.generation == generation && bindings.contains(binding)
     fun revoke() {
         accepting = false; generation++; expectedUrl = null; leasedOrigin = null; pageError = null
@@ -738,8 +777,15 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         events.getScriptsForNavigation(id, ticket, url) { result ->
             if (destroyed || generation != ticket) return@getScriptsForNavigation
             if (result.isFailure) { refreshLayout?.isRefreshing = false; event("networkError", result.exceptionOrNull()?.message ?: "Navigation policy rejected"); return@getScriptsForNavigation }
-            scripts = result.getOrThrow()
-            install(url); load()
+            try {
+                scripts = result.getOrThrow()
+                install(url)
+                load()
+            } catch (error: Exception) {
+                refreshLayout?.isRefreshing = false
+                runCatching { revoke() }
+                event("networkError", error.message ?: "Navigation setup failed", url)
+            }
         }
     }
     /**
@@ -770,10 +816,16 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 event("networkError", result.exceptionOrNull()?.message ?: "Navigation policy rejected")
                 return@getScriptsForNavigation
             }
-            scripts = result.getOrThrow()
-            historyArmed = true
-            install(targetUrl)
-            load()
+            try {
+                scripts = result.getOrThrow()
+                historyArmed = true
+                install(targetUrl)
+                load()
+            } catch (error: Exception) {
+                refreshLayout?.isRefreshing = false
+                runCatching { revoke() }
+                event("networkError", error.message ?: "History navigation setup failed", targetUrl)
+            }
         }
     }
 
