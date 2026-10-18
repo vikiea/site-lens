@@ -515,6 +515,7 @@ class MediaDownloadService {
       }
       return current;
     }
+    await _preserveNativePartial(current, runtime);
     await runtime.pause(taskId);
     if (tasks.task(taskId)?.state == MediaTaskState.downloading) {
       return tasks.transition(taskId, MediaTaskState.paused);
@@ -529,9 +530,20 @@ class MediaDownloadService {
     final runtime = native;
     final current = tasks.task(taskId) ?? (throw StateError('媒体任务不存在'));
     if (runtime == null || candidate.isHls) return start(current, candidate);
+    var hasPartial = false;
+    if (current.state == MediaTaskState.paused ||
+        current.state == MediaTaskState.failed) {
+      hasPartial = await _preserveNativePartial(current, runtime);
+      if (hasPartial) {
+        await runtime.delete(taskId);
+      }
+    }
     if (current.state == MediaTaskState.paused ||
         current.state == MediaTaskState.failed) {
       tasks.transition(taskId, MediaTaskState.downloading);
+    }
+    if (hasPartial) {
+      return start(tasks.task(taskId)!, candidate);
     }
     Map<String, Object?> status;
     try {
@@ -1029,6 +1041,23 @@ class MediaDownloadService {
       status == 408 || status == 425 || status == 429 || status >= 500;
 
   void pause(String taskId) => _active[taskId]?.cancel();
+
+  Future<bool> _preserveNativePartial(
+    MediaTask task,
+    NativeDownloadRuntime runtime,
+  ) async {
+    final status = await runtime.status(task.id);
+    final raw = status['localUri'] as String?;
+    if (raw == null || !raw.startsWith('file://')) return false;
+    final source = File.fromUri(Uri.parse(raw));
+    if (!await source.exists()) return false;
+    final size = await source.length();
+    if (size <= 0) return false;
+    final directory = await tasks.cacheDirectory();
+    final partial = File('${directory.path}/${task.cacheKey}.part');
+    await source.copy(partial.path);
+    return true;
+  }
 
   static String _errorCode(String? raw) {
     final value = (raw ?? '').toLowerCase();
