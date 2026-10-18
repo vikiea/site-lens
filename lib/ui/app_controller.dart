@@ -407,12 +407,19 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _seedBuiltInFilterSources() async {
     final existing = await db.filterSources();
+    final seedVersion = await db.setting(_filterSourceSeedSetting);
+    final migratingBuiltIns = seedVersion != builtInFilterSourceSeedVersion;
     final specsByLabel = {
       for (final spec in builtInFilterSources) spec.label: spec,
     };
     for (final source in existing.where((item) => item.kind == 'builtin')) {
       final spec = specsByLabel[source.label];
-      if (spec == null || source.url.toString() == spec.url) continue;
+      if (spec == null ||
+          (source.url.toString() == spec.url &&
+              !(migratingBuiltIns &&
+                  source.status == FilterSourceStatus.failed))) {
+        continue;
+      }
       await db.saveFilterSource(
         FilterSource(
           id: source.id,
@@ -430,8 +437,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         ),
       );
     }
-    if (await db.setting(_filterSourceSeedSetting) ==
-        builtInFilterSourceSeedVersion) {
+    if (!migratingBuiltIns) {
       return;
     }
     final existingUrls = (await db.filterSources())

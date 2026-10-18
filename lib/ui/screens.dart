@@ -1605,11 +1605,15 @@ class _FilterSourceRow extends StatelessWidget {
     leading: Icon(
       source.status == FilterSourceStatus.failed
           ? Icons.error_outline
+          : source.status == FilterSourceStatus.degraded
+          ? Icons.warning_amber_outlined
           : Icons.rule_folder_outlined,
     ),
     title: Text(source.label),
     subtitle: Text(
-      '${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)} · ${source.url}${source.error == null ? '' : '\n${source.error}'}',
+      source.error == null
+          ? '${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)} · ${source.url}'
+          : '${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)}\n${source.error}',
       maxLines: 3,
       overflow: TextOverflow.ellipsis,
     ),
@@ -1633,6 +1637,7 @@ String _filterSourceStatusLabel(FilterSourceStatus status) => switch (status) {
   FilterSourceStatus.downloading => '下载中',
   FilterSourceStatus.compiling => '编译中',
   FilterSourceStatus.valid => '已生效',
+  FilterSourceStatus.degraded => '已生效（部分语法未支持）',
   FilterSourceStatus.failed => '刷新失败',
 };
 

@@ -401,7 +401,14 @@ enum FilterSnapshotState {
 
 enum FilterDecision { allow, block, unsupported }
 
-enum FilterSourceStatus { missing, downloading, compiling, valid, failed }
+enum FilterSourceStatus {
+  missing,
+  downloading,
+  compiling,
+  valid,
+  degraded,
+  failed,
+}
 
 /// Metadata for a rule source. Rule text and compiled output stay in the
 /// application-private directory; this object is safe to persist or export.
@@ -647,6 +654,19 @@ String mediaCandidateKey(Uri url) {
     }
   }
   return clean.replace(queryParameters: retained).toString();
+}
+
+/// UI/session identity for a media resource. HLS providers frequently put a
+/// fresh signature on every observation; all signed variants of one playlist
+/// still represent the same selectable stream, while the full URL remains on
+/// the chosen candidate for authorization.
+String mediaCandidateGroupKey(Uri url) {
+  final clean = url.removeFragment();
+  final path = clean.path.toLowerCase();
+  if (path.endsWith('.m3u8') || path.endsWith('.m3u')) {
+    return clean.replace(query: '').toString();
+  }
+  return mediaCandidateKey(clean);
 }
 
 class MediaCandidate {

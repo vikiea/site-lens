@@ -28,27 +28,36 @@ class BuiltInFilterSourceSpec {
 /// Recommended public lists are seeded as source metadata only. Their rule
 /// text is downloaded after the user opens the filter settings and refreshes a
 /// source, so APKs do not bundle third-party list contents or stale snapshots.
-const builtInFilterSourceSeedVersion = 'v2';
+const builtInFilterSourceSeedVersion = 'v3';
 const builtInFilterSources = <BuiltInFilterSourceSpec>[
   BuiltInFilterSourceSpec(
     key: 'easylist',
     label: 'EasyList（广告）',
     url: 'https://easylist-downloads.adblockplus.org/easylist.txt',
     license: 'GPL-3.0',
-    fallbackUrls: ['https://easylist.to/easylist/easylist.txt'],
+    fallbackUrls: [
+      'https://easylist.to/easylist/easylist.txt',
+      'https://filters.adtidy.org/extension/chromium/filters/2.txt',
+    ],
   ),
   BuiltInFilterSourceSpec(
     key: 'easyprivacy',
     label: 'EasyPrivacy（跟踪）',
     url: 'https://easylist-downloads.adblockplus.org/easyprivacy.txt',
     license: 'GPL-3.0',
-    fallbackUrls: ['https://easylist.to/easylist/easyprivacy.txt'],
+    fallbackUrls: [
+      'https://easylist.to/easylist/easyprivacy.txt',
+      'https://filters.adtidy.org/extension/chromium/filters/3.txt',
+    ],
   ),
   BuiltInFilterSourceSpec(
     key: 'easylistchina',
     label: 'EasyList China（中文广告）',
     url: 'https://easylist-downloads.adblockplus.org/easylistchina.txt',
     license: 'GPL-3.0',
+    fallbackUrls: [
+      'https://filters.adtidy.org/extension/chromium/filters/224.txt',
+    ],
   ),
   BuiltInFilterSourceSpec(
     key: 'ublock-filters',
@@ -58,6 +67,8 @@ const builtInFilterSources = <BuiltInFilterSourceSpec>[
     fallbackUrls: [
       'https://ublockorigin.github.io/uAssets/filters/filters.txt',
       'https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt',
+      'https://ghproxy.net/https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt',
+      'https://filters.adtidy.org/extension/chromium/filters/2.txt',
     ],
   ),
 ];
@@ -611,12 +622,12 @@ class FilterSourceManager {
           sha256: snapshot.sha256,
           status: snapshot.state == FilterSnapshotState.valid
               ? FilterSourceStatus.valid
-              : FilterSourceStatus.failed,
+              : FilterSourceStatus.degraded,
           fileRef: snapshot.fileRef,
           refreshedAt: snapshot.createdAt,
           error: snapshot.state == FilterSnapshotState.valid
               ? null
-              : '规则存在未支持语法',
+              : '已生效；${snapshot.unsupportedRuleCount} 条规则语法未支持',
         ),
       );
       return snapshot;

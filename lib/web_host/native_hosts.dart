@@ -318,6 +318,12 @@ class NativeHosts extends WebHostEvents {
               policy: session.filterPolicy,
             ) !=
             FilterDecision.block) {
+          final groupKey = mediaCandidateGroupKey(candidate.mediaUrl);
+          session.mediaCandidates.removeWhere(
+            (_, value) =>
+                value.id != candidate.id &&
+                mediaCandidateGroupKey(value.mediaUrl) == groupKey,
+          );
           session.mediaCandidates[candidate.id] = candidate;
           unawaited(db.saveMediaCandidate(candidate));
           changed.value++;
@@ -595,6 +601,12 @@ class NativeHosts extends WebHostEvents {
             FilterDecision.block) {
           throw StateError('媒体地址被当前过滤快照阻止');
         }
+        final groupKey = mediaCandidateGroupKey(candidate.mediaUrl);
+        session.mediaCandidates.removeWhere(
+          (_, value) =>
+              value.id != candidate.id &&
+              mediaCandidateGroupKey(value.mediaUrl) == groupKey,
+        );
         session.mediaCandidates[candidate.id] = candidate;
         await db.saveMediaCandidate(candidate);
         changed.value++;

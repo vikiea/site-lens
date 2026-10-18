@@ -105,6 +105,17 @@ void main() {
     );
   });
 
+  test('signed HLS observations share one session group', () {
+    expect(
+      mediaCandidateGroupKey(
+        Uri.parse('https://cdn.example/live/index.m3u8?token=one'),
+      ),
+      mediaCandidateGroupKey(
+        Uri.parse('https://cdn.example/live/index.m3u8?token=two'),
+      ),
+    );
+  });
+
   test('HLS downloads a local playlist, segments and encryption key', () async {
     final root = await Directory.systemTemp.createTemp(
       'site-lens-hls-download-',
