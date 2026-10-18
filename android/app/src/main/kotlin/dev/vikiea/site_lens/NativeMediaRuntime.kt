@@ -13,6 +13,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.TextureRegistry
@@ -152,6 +153,8 @@ class NativeMediaRuntime(
         if (referer != null) {
             val http = DefaultHttpDataSource.Factory()
                 .setAllowCrossProtocolRedirects(true)
+                .setConnectTimeoutMs(30_000)
+                .setReadTimeoutMs(30_000)
                 .setUserAgent(WebSettings.getDefaultUserAgent(context))
                 .setDefaultRequestProperties(
                     buildMap {
@@ -207,7 +210,14 @@ class NativeMediaRuntime(
         if (hls) {
             // Select the HLS parser explicitly. Relying on URL inference can
             // misclassify signed playlists whose path has no extension.
-            next.setMediaSource(HlsMediaSource.Factory(dataSourceFactory).createMediaSource(item))
+            next.setMediaSource(
+                HlsMediaSource.Factory(dataSourceFactory)
+                    // A segment edge may reset one connection while the
+                    // signed playlist remains valid. Keep the native player
+                    // alive long enough to retry that segment.
+                    .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(6))
+                    .createMediaSource(item),
+            )
         } else {
             next.setMediaItem(item)
         }
