@@ -91,8 +91,9 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
       _scheduleHide();
     } catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('播放器操作失败：$error')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('播放器操作失败：${friendlyError(error)}')),
+        );
       }
     }
   }

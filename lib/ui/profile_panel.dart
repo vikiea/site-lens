@@ -1148,7 +1148,7 @@ class _AddProfileDialogState extends State<_AddProfileDialog> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        error = e.toString();
+        error = friendlyError(e);
         manual = true; // Fall back to the manual selector form.
       });
     } finally {
@@ -1156,7 +1156,16 @@ class _AddProfileDialogState extends State<_AddProfileDialog> {
     }
   }
 
-  void _submit() {
+  Future<void> _submit() async {
+    if (url.text.trim().isNotEmpty && recon == null && !manual) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('请先完成自动侦察，或点击“手动填写”后再创建')));
+      }
+      await _recon();
+      return;
+    }
     try {
       final label = name.text.trim();
       if (label.isEmpty) throw const FormatException('档案名称不能为空');
@@ -1203,11 +1212,10 @@ class _AddProfileDialogState extends State<_AddProfileDialog> {
                   icon: const Icon(Icons.travel_explore),
                   label: Text(reconning ? '侦察中…' : '开始侦察'),
                 ),
-                if (!manual)
-                  TextButton(
-                    onPressed: () => setState(() => manual = true),
-                    child: const Text('手动填写'),
-                  ),
+                TextButton(
+                  onPressed: () => setState(() => manual = !manual),
+                  child: Text(manual ? '收起手动填写' : '手动填写'),
+                ),
               ],
             ),
             if (reconning) const LinearProgressIndicator(),

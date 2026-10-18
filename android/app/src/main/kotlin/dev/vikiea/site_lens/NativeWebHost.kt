@@ -396,6 +396,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     private var historyInFlight = false
     private var customView: View? = null
     private var customCallback: WebChromeClient.CustomViewCallback? = null
+    @Volatile private var rendererGone = false
     private var originalOrientation: Int? = null
     private var navigationListener: NavigationListener? = null
     // WebView may update view.url through history.pushState before the matching
@@ -693,13 +694,18 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) { if (request.isForMainFrame) { refreshLayout?.isRefreshing = false; revoke(); event("networkError", error.description.toString(), request.url.toString()) } }
             override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) { if (request.isForMainFrame) { refreshLayout?.isRefreshing = false; event("httpError", "HTTP ${errorResponse.statusCode}", request.url.toString()) } }
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                if (rendererGone) return true
+                rendererGone = true
                 refreshLayout?.isRefreshing = false
                 // The renderer may reject WebViewCompat cleanup calls after it
                 // has gone away. Never let recovery from a renderer death turn
                 // into an application crash on the UI thread.
                 runCatching { revoke() }
                 event("hostInvalidated", "Web content process terminated; reopen browsing to recover")
-                runCatching { dispose() }
+                // WebView forbids synchronously destroying the view from this
+                // callback on some provider versions. Defer disposal until the
+                // renderer callback has returned and make it idempotent.
+                webView.post { if (!destroyed) runCatching { dispose() } }
                 return true
             }
         }

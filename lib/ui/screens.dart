@@ -426,16 +426,25 @@ class ScriptManagementScreen extends StatelessWidget {
         allowedExtensions: ['js'],
       );
       if (result.isEmpty) return;
-      final file = result.single;
-      if (!file.name.endsWith('.user.js')) {
-        throw const FormatException('请选择 .user.js 文件');
+      final sources = <String>[];
+      for (final file in result) {
+        if (!file.name.toLowerCase().endsWith('.user.js')) {
+          throw const FormatException('请选择 .user.js 文件');
+        }
+        final bytes = await file.readAsBytes();
+        if (bytes.length > maxScriptBytes) {
+          throw const FormatException('脚本超过 16 MiB 运行上限');
+        }
+        sources.add(utf8.decode(bytes));
       }
-      if ((await file.length() ?? 0) > maxScriptBytes) {
-        throw const FormatException('脚本超过 16 MiB 运行上限');
+      for (final source in sources) {
+        await app.scripts.save(source);
       }
-      final bytes = await file.readAsBytes();
-      await app.scripts.save(utf8.decode(bytes));
       await app.load();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('已导入 ${sources.length} 个脚本')));
+      }
     });
   }
 
@@ -2312,8 +2321,9 @@ class _GitHubTokenEntryState extends State<_GitHubTokenEntry> {
     } on Object catch (error) {
       if (mounted) {
         setState(() => _busy = false);
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Token 未保存：$error')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Token 未保存：${friendlyError(error)}')),
+        );
       }
     }
   }
@@ -2825,7 +2835,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
       setState(() => error = null);
     } catch (e) {
       if (mounted && identical(widget.app.activeBrowser, selected)) {
-        setState(() => error = e.toString());
+        setState(() => error = friendlyError(e));
       }
     }
   }
@@ -3074,7 +3084,9 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  _tab?.failure ?? error ?? current?.error ?? '网页进程已退出，请重新加载',
+                  friendlyError(
+                    _tab?.failure ?? error ?? current?.error ?? '网页进程已退出，请重新加载',
+                  ),
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.onSurface,
@@ -3164,7 +3176,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                   left: 12,
                   right: 12,
                   child: _BrowserNotice(
-                    text: current.error!,
+                    text: friendlyError(current.error!),
                     action: TextButton(
                       onPressed: () => safely(
                         context,
@@ -3431,7 +3443,9 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                     } catch (error) {
                       if (mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('媒体任务未完成：$error')),
+                          SnackBar(
+                            content: Text('媒体任务未完成：${friendlyError(error)}'),
+                          ),
                         );
                       }
                     }
@@ -3465,9 +3479,11 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                     }
                   } catch (error) {
                     if (mounted) {
-                      ScaffoldMessenger.of(
-                        context,
-                      ).showSnackBar(SnackBar(content: Text('媒体任务未完成：$error')));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('媒体任务未完成：${friendlyError(error)}'),
+                        ),
+                      );
                     }
                   }
                 },
