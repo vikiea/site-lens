@@ -74,6 +74,20 @@
     if (/\.ogg?$/.test(path)) return 'audio/ogg';
     return '';
   }
+  function thumbnailUrl(raw) {
+    if (typeof raw !== 'string' || !raw.trim()) return '';
+    try {
+      const url = new URL(raw, document.baseURI);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+      if (url.username || url.password) return '';
+      url.hash = '';
+      return url.href;
+    } catch (_) { return ''; }
+  }
+  function episodeNumber(raw) {
+    const value = Number.parseInt(String(raw ?? '').trim(), 10);
+    return Number.isFinite(value) && value > 0 && value < 100000 ? value : null;
+  }
   function candidateKey(url) {
     const volatile = /^(?:auth|auth_key|expires?|exp|hmac|sig(?:nature)?|sign|t|time|timestamp|token|v|via|via_bm)$/i;
     for (const key of Array.from(url.searchParams.keys())) {
@@ -93,7 +107,7 @@
         /(?:^|\/)(?:segment|chunk|fragment|part)[-_]?\d+/i.test(path);
     } catch (_) { return false; }
   }
-  function addCandidate(output, seen, raw, mime = '', durationMs, force = false, title) {
+  function addCandidate(output, seen, raw, mime = '', durationMs, force = false, title, poster = '', episode = null) {
     if (typeof raw !== 'string' || !raw.trim()) return;
     try {
       const url = new URL(raw, document.baseURI);
@@ -109,6 +123,10 @@
         title: String(title ?? document.title ?? '').slice(0, 512),
         mime: resolvedMime.slice(0, 128),
       };
+      const thumbnail = thumbnailUrl(poster);
+      if (thumbnail) candidate.thumbnail = thumbnail;
+      const number = episodeNumber(episode);
+      if (number != null) candidate.episodeNumber = number;
       if (Number.isFinite(durationMs)) candidate.durationMs = Math.round(durationMs);
       const key = candidateKey(url);
       const previous = seen.get(key);
@@ -117,7 +135,7 @@
         output.push(candidate);
       } else {
         const existing = output[previous];
-        const score = (value) => (value.mime ? 4 : 0) + (value.url.includes('?') ? 2 : 0) + value.url.length / 100000;
+        const score = (value) => (value.mime ? 4 : 0) + (value.thumbnail ? 2 : 0) + (value.url.includes('?') ? 2 : 0) + value.url.length / 100000;
         if (score(candidate) > score(existing)) output[previous] = candidate;
       }
     } catch (_) {}
@@ -132,16 +150,19 @@
     const episodeSeen = new Map();
     for (const node of nodes) {
       const raw = node.currentSrc || node.src || '';
-      addCandidate(candidates, seen, raw, node.type, Number.isFinite(node.duration) ? node.duration * 1000 : undefined, true);
+      addCandidate(candidates, seen, raw, node.type, Number.isFinite(node.duration) ? node.duration * 1000 : undefined, true, undefined, node.poster || '');
     }
     const selector = mediaAttributes.map(name => `[${name}]`).join(',');
     document.querySelectorAll(selector).forEach(element => {
       if (!element || typeof element.getAttribute !== 'function') return;
       const mime = element.getAttribute('type') || '';
+      const poster = element.getAttribute('poster') || element.getAttribute('data-poster') || '';
+      const episode = element.getAttribute('data-episode') ||
+        element.getAttribute('data-episode-index') || element.getAttribute('data-num') || '';
       for (const name of mediaAttributes) {
         const raw = element.getAttribute(name);
-        addCandidate(candidates, seen, raw, mime);
-        addCandidate(episodes, episodeSeen, raw, mime);
+        addCandidate(candidates, seen, raw, mime, undefined, false, undefined, poster, episode);
+        addCandidate(episodes, episodeSeen, raw, mime, undefined, false, undefined, poster, episode);
       }
     });
     if (typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
@@ -153,7 +174,24 @@
     for (const child of childCandidates.values()) {
       if (!Array.isArray(child)) continue;
       for (const candidate of child) {
-        addCandidate(candidates, seen, candidate?.url, candidate?.mime, candidate?.durationMs, true, candidate?.title);
+        addCandidate(candidates, seen, candidate?.url, candidate?.mime, candidate?.durationMs, true, candidate?.title, candidate?.thumbnail, candidate?.episodeNumber);
+      }
+    }
+    if (episodes.length > 1) {
+      const episodeByUrl = new Map();
+      episodes.forEach((item, index) => {
+        const number = item.episodeNumber ?? index + 1;
+        if (!/第\s*\d+\s*[集话]/.test(item.title)) item.title = `${item.title} - 第${number}集`;
+        item.episodeNumber = number;
+        episodeByUrl.set(item.url, item);
+      });
+      for (const item of candidates) {
+        const episode = episodeByUrl.get(item.url);
+        if (episode) {
+          item.title = episode.title;
+          item.episodeNumber = episode.episodeNumber;
+          if (!item.thumbnail && episode.thumbnail) item.thumbnail = episode.thumbnail;
+        }
       }
     }
     lastCandidateList = episodes.length > 1 ? episodes : candidates;

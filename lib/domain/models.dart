@@ -679,6 +679,7 @@ class MediaCandidate {
     required this.title,
     required this.mime,
     required this.source,
+    this.thumbnailUrl,
     this.durationMs,
     this.createdAt,
   });
@@ -691,6 +692,7 @@ class MediaCandidate {
   final String title;
   final String mime;
   final MediaCandidateSource source;
+  final Uri? thumbnailUrl;
   final int? durationMs;
   final DateTime? createdAt;
 
@@ -727,6 +729,7 @@ class MediaCandidate {
     'title': title,
     'mime': mime,
     'source': source.name,
+    'thumbnailUrl': thumbnailUrl?.toString(),
     'durationMs': durationMs,
     'createdAt': createdAt?.toIso8601String(),
   };
@@ -749,12 +752,25 @@ class MediaCandidate {
         (json['mime'] as String? ?? '').length.clamp(0, 128),
       ),
       source: MediaCandidateSource.values.byName(json['source'] as String),
+      thumbnailUrl: optionalMediaUri(json['thumbnailUrl'] as String?),
       durationMs: (json['durationMs'] as num?)?.toInt(),
       createdAt: json['createdAt'] == null
           ? null
           : DateTime.parse(json['createdAt'] as String),
     );
   }
+}
+
+Uri? optionalMediaUri(String? raw) {
+  if (raw == null || raw.trim().isEmpty) return null;
+  final uri = Uri.tryParse(raw.trim());
+  if (uri == null ||
+      !['http', 'https'].contains(uri.scheme) ||
+      uri.host.isEmpty ||
+      uri.userInfo.isNotEmpty) {
+    return null;
+  }
+  return uri.removeFragment();
 }
 
 /// A display/session identity for one media stream. Pages commonly report the

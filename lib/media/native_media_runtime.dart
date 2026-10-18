@@ -83,6 +83,9 @@ class NativeMediaRuntime {
         'speed': speed,
       });
 
+  Future<NativePlaybackSession> state({String? sessionId}) =>
+      _command('state', _sessionArgument(sessionId));
+
   Future<NativePlaybackSession> _command(
     String method, [
     Map<String, Object?> arguments = const <String, Object?>{},
@@ -109,6 +112,7 @@ class NativeMediaRuntime {
         orElse: () => NativePlaybackState.stopped,
       ),
       positionMs: (raw['positionMs'] as num?)?.toInt() ?? 0,
+      durationMs: (raw['durationMs'] as num?)?.toInt() ?? 0,
       speed: (raw['speed'] as num?)?.toDouble() ?? 1,
       errorCode: raw['errorCode'] as String?,
     );

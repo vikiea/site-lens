@@ -75,6 +75,7 @@ class AppSettings {
     this.highQualityAllSurfaces = false,
     this.autoHideBrowserControls = true,
     this.allowBackgroundPlayback = false,
+    this.autoConvertToMp4 = false,
     this.restoreBrowserSessions = true,
     this.backgroundHealthCheck = true,
     this.pullToRefresh = false,
@@ -93,6 +94,7 @@ class AppSettings {
   final bool highQualityAllSurfaces;
   final bool autoHideBrowserControls;
   final bool allowBackgroundPlayback;
+  final bool autoConvertToMp4;
   final bool restoreBrowserSessions;
   final bool backgroundHealthCheck;
   final bool pullToRefresh;
@@ -111,6 +113,7 @@ class AppSettings {
     'highQualityAllSurfaces': highQualityAllSurfaces,
     'autoHideBrowserControls': autoHideBrowserControls,
     'allowBackgroundPlayback': allowBackgroundPlayback,
+    'autoConvertToMp4': autoConvertToMp4,
     'restoreBrowserSessions': restoreBrowserSessions,
     'backgroundHealthCheck': backgroundHealthCheck,
     'pullToRefresh': pullToRefresh,
@@ -178,6 +181,7 @@ class AppSettings {
       highQualityAllSurfaces: flag('highQualityAllSurfaces', false),
       autoHideBrowserControls: flag('autoHideBrowserControls', true),
       allowBackgroundPlayback: flag('allowBackgroundPlayback', false),
+      autoConvertToMp4: flag('autoConvertToMp4', false),
       restoreBrowserSessions: flag('restoreBrowserSessions', true),
       backgroundHealthCheck: flag('backgroundHealthCheck', true),
       pullToRefresh: flag('pullToRefresh', false),
@@ -201,6 +205,7 @@ class AppSettings {
       'highQualityAllSurfaces',
       'autoHideBrowserControls',
       'allowBackgroundPlayback',
+      'autoConvertToMp4',
       'restoreBrowserSessions',
       'backgroundHealthCheck',
       'pullToRefresh',

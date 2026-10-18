@@ -1,8 +1,9 @@
 import 'dart:async';
-import 'dart:typed_data';
+import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../domain/models.dart';
 import '../media/dlna_service.dart';
@@ -33,17 +34,61 @@ class NativeMediaPlayerScreen extends StatefulWidget {
 
 class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   late NativePlaybackSession _session = widget.session;
-  bool _closing = false;
   StreamSubscription<NativePlaybackSession>? _states;
+  Timer? _hideTimer;
+  Timer? _statePoller;
+  bool _controlsVisible = true;
+  bool _seeking = false;
+  bool _landscape = false;
+  bool _closing = false;
+
+  bool get _canControl =>
+      !_closing &&
+      _session.state != NativePlaybackState.stopped &&
+      _session.state != NativePlaybackState.failed;
+
+  @override
+  void initState() {
+    super.initState();
+    _states = widget.app.nativeMedia.states.listen((next) {
+      if (!mounted || next.id != _session.id) return;
+      setState(() => _session = next);
+      _scheduleHide();
+    });
+    _statePoller = Timer.periodic(
+      const Duration(milliseconds: 500),
+      (_) => unawaited(_refreshState()),
+    );
+    _scheduleHide();
+  }
+
+  void _scheduleHide() {
+    _hideTimer?.cancel();
+    if (!_controlsVisible || _session.state != NativePlaybackState.playing) {
+      return;
+    }
+    _hideTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted &&
+          !_seeking &&
+          _session.state == NativePlaybackState.playing) {
+        setState(() => _controlsVisible = false);
+      }
+    });
+  }
+
+  void _toggleControls() {
+    if (!mounted) return;
+    setState(() => _controlsVisible = !_controlsVisible);
+    _scheduleHide();
+  }
 
   Future<void> _command(Future<NativePlaybackSession> Function() action) async {
-    if (_closing) return;
+    if (!_canControl) return;
     try {
       final next = await action();
-      if (next.id != _session.id) {
-        throw StateError('播放会话已切换');
-      }
-      if (mounted) setState(() => _session = next);
+      if (!mounted || next.id != _session.id) return;
+      setState(() => _session = next);
+      _scheduleHide();
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -52,32 +97,66 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     }
   }
 
+  Future<void> _refreshState() async {
+    if (!_canControl || _seeking) return;
+    try {
+      final next = await widget.app.nativeMedia.state(sessionId: _session.id);
+      if (mounted && next.id == _session.id) setState(() => _session = next);
+    } catch (_) {}
+  }
+
+  Future<void> _seekBy(int seconds) async {
+    final duration = _session.durationMs;
+    final target = _session.positionMs + seconds * 1000;
+    final clamped = duration > 0
+        ? target.clamp(0, duration)
+        : target.clamp(0, 1 << 62);
+    await _command(
+      () => widget.app.nativeMedia.seek(
+        Duration(milliseconds: clamped),
+        sessionId: _session.id,
+      ),
+    );
+  }
+
+  Future<void> _seekTo(double value) async {
+    final target = value.round().clamp(0, _session.durationMs);
+    await _command(
+      () => widget.app.nativeMedia.seek(
+        Duration(milliseconds: target),
+        sessionId: _session.id,
+      ),
+    );
+  }
+
+  Future<void> _toggleOrientation() async {
+    _landscape = !_landscape;
+    await SystemChrome.setPreferredOrientations(
+      _landscape
+          ? const [
+              DeviceOrientation.landscapeLeft,
+              DeviceOrientation.landscapeRight,
+            ]
+          : const [DeviceOrientation.portraitUp],
+    );
+    if (mounted) setState(() {});
+  }
+
   Future<void> _close() async {
     if (_closing) return;
     _closing = true;
+    _hideTimer?.cancel();
     try {
       await widget.app.nativeMedia.close(sessionId: _session.id);
-    } catch (_) {
-      // The native session may already have completed or failed.
-    }
+    } catch (_) {}
   }
-
-  @override
-  void initState() {
-    super.initState();
-    _states = widget.app.nativeMedia.states.listen((next) {
-      if (mounted && next.id == _session.id) setState(() => _session = next);
-    });
-  }
-
-  bool get _canControl =>
-      !_closing &&
-      _session.state != NativePlaybackState.stopped &&
-      _session.state != NativePlaybackState.failed;
 
   @override
   void dispose() {
     _states?.cancel();
+    _hideTimer?.cancel();
+    _statePoller?.cancel();
+    unawaited(SystemChrome.setPreferredOrientations([]));
     unawaited(_close());
     super.dispose();
   }
@@ -88,74 +167,147 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
       if (!didPop) unawaited(_close());
     },
     child: Scaffold(
-      appBar: AppBar(title: const Text('媒体播放')),
+      backgroundColor: Colors.black,
       body: SafeArea(
-        child: Column(
+        child: Stack(
+          fit: StackFit.expand,
           children: [
-            Expanded(
-              child: ColoredBox(
-                color: Colors.black,
-                child: Center(
-                  child: _session.textureId == null
-                      ? const CircularProgressIndicator(color: Colors.white)
-                      : Texture(textureId: _session.textureId!),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _toggleControls,
+              child: Center(
+                child: _session.textureId == null
+                    ? const CircularProgressIndicator(color: Colors.white)
+                    : Texture(textureId: _session.textureId!),
+              ),
+            ),
+            if (_session.state == NativePlaybackState.buffering ||
+                _session.state == NativePlaybackState.preparing)
+              const Center(
+                child: CircularProgressIndicator(color: Colors.white),
+              ),
+            if (_controlsVisible) ...[
+              Positioned(
+                top: 4,
+                left: 4,
+                right: 4,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    IconButton(
+                      tooltip: '返回',
+                      color: Colors.white,
+                      icon: const Icon(Icons.arrow_back),
+                      onPressed: () => Navigator.of(context).maybePop(),
+                    ),
+                    IconButton(
+                      tooltip: _landscape ? '竖屏' : '横屏',
+                      color: Colors.white,
+                      icon: Icon(
+                        _landscape
+                            ? Icons.stay_current_portrait
+                            : Icons.stay_current_landscape,
+                      ),
+                      onPressed: _toggleOrientation,
+                    ),
+                  ],
                 ),
               ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-              child: Column(
-                children: [
-                  Text('状态：${_session.state.name}'),
-                  if (_session.errorCode != null)
-                    Text(
-                      '错误：${_session.errorCode}',
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
+              Positioned(
+                left: 12,
+                right: 12,
+                bottom: 8,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Slider(
+                      min: 0,
+                      max: math.max(1, _session.durationMs).toDouble(),
+                      value: _session.positionMs
+                          .clamp(0, math.max(1, _session.durationMs))
+                          .toDouble(),
+                      onChangeStart: (_) {
+                        _seeking = true;
+                        _hideTimer?.cancel();
+                      },
+                      onChanged: (value) {
+                        if (mounted) {
+                          setState(() {
+                            _session = NativePlaybackSession(
+                              id: _session.id,
+                              candidateId: _session.candidateId,
+                              state: _session.state,
+                              textureId: _session.textureId,
+                              positionMs: value.round(),
+                              durationMs: _session.durationMs,
+                              speed: _session.speed,
+                              errorCode: _session.errorCode,
+                            );
+                          });
+                        }
+                      },
+                      onChangeEnd: (value) {
+                        _seeking = false;
+                        unawaited(_seekTo(value));
+                        _scheduleHide();
+                      },
                     ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      IconButton(
-                        tooltip: '播放',
-                        icon: const Icon(Icons.play_arrow),
-                        onPressed: _canControl
-                            ? () => _command(
-                                () => widget.app.nativeMedia.play(
-                                  sessionId: _session.id,
-                                ),
-                              )
-                            : null,
-                      ),
-                      IconButton(
-                        tooltip: '暂停',
-                        icon: const Icon(Icons.pause),
-                        onPressed: _canControl
-                            ? () => _command(
-                                () => widget.app.nativeMedia.pause(
-                                  sessionId: _session.id,
-                                ),
-                              )
-                            : null,
-                      ),
-                      IconButton(
-                        tooltip: '停止',
-                        icon: const Icon(Icons.stop),
-                        onPressed: _canControl
-                            ? () => _command(
-                                () => widget.app.nativeMedia.stop(
-                                  sessionId: _session.id,
-                                ),
-                              )
-                            : null,
-                      ),
-                    ],
-                  ),
-                ],
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        IconButton(
+                          tooltip: '快退 10 秒',
+                          color: Colors.white,
+                          icon: const Icon(Icons.replay_10),
+                          onPressed: _canControl ? () => _seekBy(-10) : null,
+                        ),
+                        IconButton(
+                          tooltip: _session.state == NativePlaybackState.playing
+                              ? '暂停'
+                              : '播放',
+                          color: Colors.white,
+                          icon: Icon(
+                            _session.state == NativePlaybackState.playing
+                                ? Icons.pause_circle_filled
+                                : Icons.play_circle_filled,
+                            size: 40,
+                          ),
+                          onPressed: _canControl
+                              ? () => _command(
+                                  _session.state == NativePlaybackState.playing
+                                      ? () => widget.app.nativeMedia.pause(
+                                          sessionId: _session.id,
+                                        )
+                                      : () => widget.app.nativeMedia.play(
+                                          sessionId: _session.id,
+                                        ),
+                                )
+                              : null,
+                        ),
+                        IconButton(
+                          tooltip: '快进 10 秒',
+                          color: Colors.white,
+                          icon: const Icon(Icons.forward_10),
+                          onPressed: _canControl ? () => _seekBy(10) : null,
+                        ),
+                        IconButton(
+                          tooltip: '停止',
+                          color: Colors.white,
+                          icon: const Icon(Icons.stop_circle_outlined),
+                          onPressed: _canControl
+                              ? () => _command(
+                                  () => widget.app.nativeMedia.stop(
+                                    sessionId: _session.id,
+                                  ),
+                                )
+                              : null,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-            ),
+            ],
           ],
         ),
       ),
@@ -401,6 +553,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                 ],
               ),
             ),
+          const SizedBox(height: 14),
           SiteLensPanel(
             child: Text(
               '下载、播放和导出任务独立于标签页保存。凭据不会写入任务或缓存；需要登录态时会回到重新授权。',
@@ -419,96 +572,179 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           for (final task in tasks) ...[
             SiteLensPanel(
               padding: EdgeInsets.zero,
-              child: ListTile(
-                leading: Icon(
-                  task.state == MediaTaskState.playable
-                      ? Icons.play_circle
-                      : Icons.downloading,
-                ),
-                title: Text(
-                  task.id,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                subtitle: Text(
-                  '${task.state.name} · ${task.bytesDownloaded} bytes${task.errorCode == null ? '' : ' · ${task.errorCode}'}',
-                ),
-                trailing: PopupMenuButton<String>(
-                  enabled: !busy,
-                  onSelected: (value) {
-                    switch (value) {
-                      case 'refresh':
-                        unawaited(_run(() => _refreshNative(task)));
-                      case 'play':
-                        unawaited(_run(() => _play(task)));
-                      case 'cast':
-                        unawaited(_run(() => _cast(task)));
-                      case 'export':
-                        unawaited(_run(() => _export(task)));
-                      case 'cancel':
-                        unawaited(
-                          _run(() async {
-                            final native = widget.app.nativeDownloads;
-                            if (native == null) {
-                              throw StateError('iOS 不支持原生后台下载');
-                            }
-                            await native.cancel(task.id);
-                            if (widget.app.mediaTasks.task(task.id)?.state ==
-                                MediaTaskState.downloading) {
-                              widget.app.mediaTasks.transition(
-                                task.id,
-                                MediaTaskState.cancelled,
+              child: Column(
+                children: [
+                  FutureBuilder<MediaCandidate?>(
+                    future: widget.app.db.mediaCandidate(task.candidateId),
+                    builder: (context, snapshot) => ListTile(
+                      leading: _TaskThumbnail(
+                        task: task,
+                        candidate: snapshot.data,
+                      ),
+                      title: Text(
+                        _taskTitle(task, snapshot.data),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        '${task.state.name} · ${_taskProgressLabel(task)}${task.errorCode == null ? '' : ' · ${task.errorCode}'}',
+                      ),
+                      onTap: task.state == MediaTaskState.playable
+                          ? () => unawaited(_run(() => _play(task)))
+                          : null,
+                      trailing: PopupMenuButton<String>(
+                        enabled: !busy,
+                        onSelected: (value) {
+                          switch (value) {
+                            case 'refresh':
+                              unawaited(_run(() => _refreshNative(task)));
+                            case 'play':
+                              unawaited(_run(() => _play(task)));
+                            case 'cast':
+                              unawaited(_run(() => _cast(task)));
+                            case 'export':
+                              unawaited(_run(() => _export(task)));
+                            case 'cancel':
+                              unawaited(
+                                _run(() async {
+                                  final native = widget.app.nativeDownloads;
+                                  if (native == null) {
+                                    throw StateError('iOS 不支持原生后台下载');
+                                  }
+                                  await native.cancel(task.id);
+                                  if (widget.app.mediaTasks
+                                          .task(task.id)
+                                          ?.state ==
+                                      MediaTaskState.downloading) {
+                                    widget.app.mediaTasks.transition(
+                                      task.id,
+                                      MediaTaskState.cancelled,
+                                    );
+                                  }
+                                  if (mounted) setState(() {});
+                                }),
                               );
-                            }
-                            if (mounted) setState(() {});
-                          }),
-                        );
-                      case 'pause':
-                        unawaited(_run(() => _togglePause(task)));
-                      case 'delete':
-                        unawaited(
-                          _run(() async {
-                            final native = widget.app.nativeDownloads;
-                            if (native != null) await native.delete(task.id);
-                            await widget.app.mediaTasks.delete(task.id);
-                            if (mounted) setState(() {});
-                          }),
-                        );
-                    }
-                  },
-                  itemBuilder: (_) => [
-                    const PopupMenuItem(
-                      value: 'refresh',
-                      child: Text('刷新后台状态'),
+                            case 'pause':
+                              unawaited(_run(() => _togglePause(task)));
+                            case 'delete':
+                              unawaited(
+                                _run(() async {
+                                  final native = widget.app.nativeDownloads;
+                                  if (native != null) {
+                                    await native.delete(task.id);
+                                  }
+                                  await widget.app.mediaTasks.delete(task.id);
+                                  if (mounted) setState(() {});
+                                }),
+                              );
+                          }
+                        },
+                        itemBuilder: (_) => [
+                          const PopupMenuItem(
+                            value: 'refresh',
+                            child: Text('刷新后台状态'),
+                          ),
+                          if (task.state == MediaTaskState.playable)
+                            const PopupMenuItem(
+                              value: 'play',
+                              child: Text('原生播放'),
+                            ),
+                          if (task.state == MediaTaskState.playable)
+                            const PopupMenuItem(
+                              value: 'cast',
+                              child: Text('DLNA 投屏'),
+                            ),
+                          if (task.state == MediaTaskState.playable)
+                            const PopupMenuItem(
+                              value: 'export',
+                              child: Text('导出 MP4'),
+                            ),
+                          if (task.state == MediaTaskState.downloading)
+                            const PopupMenuItem(
+                              value: 'pause',
+                              child: Text('暂停下载'),
+                            ),
+                          if (task.state == MediaTaskState.paused)
+                            const PopupMenuItem(
+                              value: 'pause',
+                              child: Text('继续下载'),
+                            ),
+                          if (task.state == MediaTaskState.downloading ||
+                              task.state == MediaTaskState.paused)
+                            const PopupMenuItem(
+                              value: 'cancel',
+                              child: Text('取消下载'),
+                            ),
+                          const PopupMenuItem(
+                            value: 'delete',
+                            child: Text('删除任务'),
+                          ),
+                        ],
+                      ),
                     ),
-                    if (task.state == MediaTaskState.playable)
-                      const PopupMenuItem(value: 'play', child: Text('原生播放')),
-                    if (task.state == MediaTaskState.playable)
-                      const PopupMenuItem(
-                        value: 'cast',
-                        child: Text('DLNA 投屏'),
+                  ),
+                  if (task.state == MediaTaskState.downloading ||
+                      task.state == MediaTaskState.paused)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 0, 18, 12),
+                      child: LinearProgressIndicator(
+                        value: _taskProgress(task),
+                        minHeight: 4,
                       ),
-                    if (task.state == MediaTaskState.playable)
-                      const PopupMenuItem(
-                        value: 'export',
-                        child: Text('导出 MP4'),
-                      ),
-                    if (task.state == MediaTaskState.downloading)
-                      const PopupMenuItem(value: 'pause', child: Text('暂停下载')),
-                    if (task.state == MediaTaskState.paused)
-                      const PopupMenuItem(value: 'pause', child: Text('继续下载')),
-                    if (task.state == MediaTaskState.downloading ||
-                        task.state == MediaTaskState.paused)
-                      const PopupMenuItem(value: 'cancel', child: Text('取消下载')),
-                    const PopupMenuItem(value: 'delete', child: Text('删除任务')),
-                  ],
-                ),
+                    ),
+                ],
               ),
             ),
             const SizedBox(height: SiteLensMetrics.itemGap),
           ],
           if (busy) const LinearProgressIndicator(),
         ],
+      ),
+    );
+  }
+
+  double? _taskProgress(MediaTask task) {
+    final total = task.totalBytes;
+    if (total == null || total <= 0) return null;
+    return (task.bytesDownloaded / total).clamp(0, 1).toDouble();
+  }
+
+  String _taskProgressLabel(MediaTask task) {
+    final progress = _taskProgress(task);
+    if (progress == null) return '${task.bytesDownloaded} bytes';
+    return '${(progress * 100).round()}% · ${task.bytesDownloaded}/${task.totalBytes} bytes';
+  }
+
+  String _taskTitle(MediaTask task, MediaCandidate? candidate) {
+    final title = candidate?.title.trim();
+    if (title != null && title.isNotEmpty) return title;
+    return task.id;
+  }
+}
+
+class _TaskThumbnail extends StatelessWidget {
+  const _TaskThumbnail({required this.task, this.candidate});
+  final MediaTask task;
+  final MediaCandidate? candidate;
+
+  @override
+  Widget build(BuildContext context) {
+    final thumbnail = candidate?.thumbnailUrl;
+    if (thumbnail == null) {
+      return Icon(
+        task.state == MediaTaskState.playable
+            ? Icons.play_circle
+            : Icons.downloading,
+      );
+    }
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: Image.network(
+        thumbnail.toString(),
+        width: 64,
+        height: 42,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined),
       ),
     );
   }

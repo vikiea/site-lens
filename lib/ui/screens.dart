@@ -1990,6 +1990,14 @@ class _SettingsPageState extends State<SettingsPage> {
                     ),
                   ),
                 ),
+                Divider(height: 1, indent: 18, endIndent: 18),
+                SwitchListTile(
+                  title: const Text('下载完成自动转 MP4'),
+                  subtitle: const Text('仅适用于已缓存的 HLS 视频，失败时保留原始清单'),
+                  value: app.autoConvertToMp4,
+                  onChanged: (value) =>
+                      safely(context, () => app.setAutoConvertToMp4(value)),
+                ),
               ],
             ),
           ),
@@ -2724,6 +2732,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   Timer? _hideTimer;
   bool _navigationVisible = false;
   bool _moreNavigationVisible = false;
+  bool _backInFlight = false;
   late bool _autoHideEnabled;
   int _toolbarHolds = 0;
   int _lastInteraction = 0;
@@ -3043,8 +3052,14 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   }
 
   Future<void> _systemBack() async {
-    if (await _goBack()) return;
-    _exitToHome();
+    if (_backInFlight || !mounted) return;
+    _backInFlight = true;
+    try {
+      if (await _goBack()) return;
+      await _exitToHomeAsync();
+    } finally {
+      _backInFlight = false;
+    }
   }
 
   Widget _webContent() {

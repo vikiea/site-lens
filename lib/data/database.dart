@@ -87,7 +87,7 @@ const _v5Tables = <String>[
   'CREATE TABLE IF NOT EXISTS media_candidates ('
       'id TEXT PRIMARY KEY, host_id INTEGER NOT NULL, generation INTEGER NOT NULL, '
       'source_url TEXT NOT NULL, media_url TEXT NOT NULL, title TEXT NOT NULL, '
-      'mime TEXT NOT NULL, source TEXT NOT NULL, duration_ms INTEGER, created_at TEXT NOT NULL)',
+      'mime TEXT NOT NULL, source TEXT NOT NULL, thumbnail_url TEXT, duration_ms INTEGER, created_at TEXT NOT NULL)',
   'CREATE TABLE IF NOT EXISTS media_tasks ('
       'id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL REFERENCES media_candidates(id) ON DELETE CASCADE, '
       'host_id INTEGER NOT NULL, generation INTEGER NOT NULL, source_url TEXT NOT NULL, '
@@ -98,6 +98,9 @@ const _v5Tables = <String>[
       "network_mode TEXT NOT NULL DEFAULT 'declared', approval_reason TEXT, "
       'approved_at TEXT, public_confirmed INTEGER NOT NULL DEFAULT 0)',
 ];
+
+const _v6CandidateColumn =
+    'ALTER TABLE media_candidates ADD COLUMN thumbnail_url TEXT';
 
 // Drift's SQL API keeps the small schema explicit and permits in-memory tests.
 // No browser cookie or password is copied into this database.
@@ -118,7 +121,7 @@ class AppDatabase extends GeneratedDatabase {
   static void Function(String step)? migrationDebugHook;
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -148,6 +151,7 @@ class AppDatabase extends GeneratedDatabase {
       if (from < 3) await _migrateV2toV3();
       if (from < 4) await _migrateV3toV4();
       if (from < 5) await _migrateV4toV5();
+      if (from < 6) await _migrateV5toV6();
     },
     beforeOpen: (_) async {
       await customStatement('PRAGMA foreign_keys = ON');
@@ -216,6 +220,14 @@ class AppDatabase extends GeneratedDatabase {
       'UPDATE profile_scripts SET enabled=COALESCE((SELECT enabled FROM scripts WHERE scripts.id=profile_scripts.script_id),0), approved_digest=(SELECT approved_digest FROM scripts WHERE scripts.id=profile_scripts.script_id)',
     );
     migrationDebugHook?.call('v5-done');
+  });
+
+  Future<void> _migrateV5toV6() => transaction(() async {
+    migrationDebugHook?.call('v5-to-v6');
+    if (!await _columnExists('media_candidates', 'thumbnail_url')) {
+      await customStatement(_v6CandidateColumn);
+    }
+    migrationDebugHook?.call('v6-done');
   });
 
   /// v1 -> v2 migration. Runs inside a single transaction so a failure at any
@@ -1174,8 +1186,8 @@ class AppDatabase extends GeneratedDatabase {
   }
 
   Future<void> saveMediaCandidate(MediaCandidate candidate) => customStatement(
-    'INSERT INTO media_candidates(id,host_id,generation,source_url,media_url,title,mime,source,duration_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?,?) '
-    'ON CONFLICT(id) DO UPDATE SET title=excluded.title,mime=excluded.mime,duration_ms=excluded.duration_ms',
+    'INSERT INTO media_candidates(id,host_id,generation,source_url,media_url,title,mime,source,thumbnail_url,duration_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) '
+    'ON CONFLICT(id) DO UPDATE SET title=excluded.title,mime=excluded.mime,thumbnail_url=excluded.thumbnail_url,duration_ms=excluded.duration_ms',
     [
       candidate.id,
       candidate.hostId,
@@ -1185,6 +1197,7 @@ class AppDatabase extends GeneratedDatabase {
       candidate.title,
       candidate.mime,
       candidate.source.name,
+      candidate.thumbnailUrl?.toString(),
       candidate.durationMs,
       (candidate.createdAt ?? DateTime.now()).toUtc().toIso8601String(),
     ],
@@ -1205,6 +1218,7 @@ class AppDatabase extends GeneratedDatabase {
       title: row.read<String>('title'),
       mime: row.read<String>('mime'),
       source: MediaCandidateSource.values.byName(row.read<String>('source')),
+      thumbnailUrl: optionalMediaUri(row.readNullable<String>('thumbnail_url')),
       durationMs: row.readNullable<int>('duration_ms'),
       createdAt: DateTime.parse(row.read<String>('created_at')),
     );

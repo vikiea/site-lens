@@ -134,7 +134,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 5);
+      expect(raw.userVersion, 6);
       expect(raw.select('SELECT COUNT(*) AS c FROM probes').single['c'], 281);
 
       final scripts = await db.scripts();
@@ -361,7 +361,7 @@ void main() {
   );
 
   test(
-    'v4 -> v5 preserves the legacy approval shape and creates contract tables',
+    'v4 -> v6 preserves the legacy approval shape and creates contract tables',
     () async {
       final file = await _v4ContractFixture(dir);
       final db = AppDatabase(NativeDatabase(file));
@@ -370,7 +370,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 5);
+      expect(raw.userVersion, 6);
       expect(
         raw.select(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='filter_snapshots'",

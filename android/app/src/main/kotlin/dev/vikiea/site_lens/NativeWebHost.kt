@@ -390,6 +390,10 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     // Page-started history remains fail-closed, while the toolbar can restore
     // a known history entry without producing a false warning.
     private var historyArmed = false
+    // A predictive-back gesture can dispatch more than one callback before
+    // WebView commits the history entry. Serialize the preparation so a second
+    // callback cannot start a reload or consume the same entry twice.
+    private var historyInFlight = false
     private var customView: View? = null
     private var customCallback: WebChromeClient.CustomViewCallback? = null
     private var originalOrientation: Int? = null
@@ -606,6 +610,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                         // entryFollowing, which this clears (as revoke() does).
                         entryFollowing = false; entryHops = 0; entryNavigation = null
                         historyArmed = false
+                        historyInFlight = false
                         activePage = navigation.page; event("committed", url = navigation.url)
                     }
                     if (navigation.didCommitErrorPage()) { revoke(); event("networkError", "WebView committed an error page") }
@@ -765,6 +770,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         accepting = false; generation++; expectedUrl = null; leasedOrigin = null; pageError = null
         entryFollowing = false; entryHops = 0; entryNavigation = null; entryArmed = false
         historyArmed = false
+        historyInFlight = false
         injections.forEach { runCatching { it.remove() } }; injections.clear()
         runCatching { filterInjection?.remove() }; filterInjection = null
         bindings.forEach { runCatching { WebViewCompat.removeWebMessageListener(webView, it.world, "lensBridge") } }; bindings.clear()
@@ -810,7 +816,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
      * would turn every toolbar back gesture into a false scriptsSuspended error.
      */
     private fun prepareHistoryNavigation(url: String?, load: () -> Unit) {
-        revoke(); val ticket = generation
+        revoke(); historyInFlight = true; val ticket = generation
         entryFollowing = false; entryHops = 0; entryNavigation = null
         val targetUrl = url?.takeIf { runCatching { webUri(it) }.isSuccess }
         expectedUrl = targetUrl
@@ -820,6 +826,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             // entry. There is no script lease to fetch for those documents,
             // but the app-owned traversal is still a valid back/forward action.
             historyArmed = true
+            historyInFlight = false
             load()
             return
         }
@@ -828,17 +835,20 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             if (result.isFailure) {
                 refreshLayout?.isRefreshing = false
                 expectedUrl = null; leasedOrigin = null
+                historyInFlight = false
                 event("networkError", result.exceptionOrNull()?.message ?: "Navigation policy rejected")
                 return@getScriptsForNavigation
             }
             try {
                 scripts = result.getOrThrow()
                 historyArmed = true
+                historyInFlight = false
                 install(targetUrl)
                 load()
             } catch (error: Exception) {
                 refreshLayout?.isRefreshing = false
                 runCatching { revoke() }
+                historyInFlight = false
                 event("networkError", error.message ?: "History navigation setup failed", targetUrl)
             }
         }
@@ -847,6 +857,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     /** App-owned back/forward with a pre-authorized history target. */
     fun goHistory(delta: Int): Boolean {
         if (exitFullscreen()) return true
+        if (historyInFlight) return true
         val list = webView.copyBackForwardList()
         val targetIndex = list.currentIndex + delta
         if (targetIndex !in 0 until list.size) return false

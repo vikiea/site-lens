@@ -295,16 +295,21 @@ class NativeHosts extends WebHostEvents {
         final media = webUri(raw['url'] as String? ?? '');
         final key = mediaCandidateKey(media);
         final rawMime = (raw['mime'] as String? ?? '').trim();
+        final thumbnailUrl = optionalMediaUri(raw['thumbnail'] as String?);
+        final episodeNumber = (raw['episodeNumber'] as num?)?.toInt();
+        final rawTitle = (raw['title'] as String? ?? '').trim();
+        final title =
+            episodeNumber != null &&
+                !RegExp(r'第\s*\d+\s*[集话]').hasMatch(rawTitle)
+            ? '$rawTitle - 第$episodeNumber集'
+            : rawTitle;
         final candidate = MediaCandidate(
           id: 'dom:${session.id}:${session.generation}:$key',
           hostId: session.id,
           generation: session.generation,
           sourceUrl: source,
           mediaUrl: media.removeFragment(),
-          title: (raw['title'] as String? ?? '').trim().substring(
-            0,
-            (raw['title'] as String? ?? '').length.clamp(0, 512),
-          ),
+          title: title.substring(0, title.length.clamp(0, 512)),
           mime: (rawMime.isEmpty ? inferMediaMime(media) : rawMime).substring(
             0,
             (rawMime.isEmpty ? inferMediaMime(media) : rawMime).length.clamp(
@@ -313,6 +318,7 @@ class NativeHosts extends WebHostEvents {
             ),
           ),
           source: MediaCandidateSource.dom,
+          thumbnailUrl: thumbnailUrl,
           durationMs: (raw['durationMs'] as num?)?.toInt(),
           createdAt: DateTime.now().toUtc(),
         );
@@ -580,6 +586,7 @@ class NativeHosts extends WebHostEvents {
         final sourceUrl = webUri(request.documentUrl);
         final mediaUrl = webUri(args['url'] as String? ?? '');
         final title = args['title'] as String? ?? '';
+        final thumbnailUrl = optionalMediaUri(args['thumbnail'] as String?);
         final rawMime = (args['mime'] as String? ?? '').trim();
         final mime = rawMime.isEmpty ? inferMediaMime(mediaUrl) : rawMime;
         final candidate = MediaCandidate(
@@ -593,6 +600,7 @@ class NativeHosts extends WebHostEvents {
           title: title.substring(0, title.length.clamp(0, 512)),
           mime: mime.substring(0, mime.length.clamp(0, 128)),
           source: MediaCandidateSource.registered,
+          thumbnailUrl: thumbnailUrl,
           durationMs: (args['durationMs'] as num?)?.toInt(),
           createdAt: DateTime.now().toUtc(),
         );

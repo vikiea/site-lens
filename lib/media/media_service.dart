@@ -40,6 +40,7 @@ class NativePlaybackSession {
     required this.state,
     this.textureId,
     this.positionMs = 0,
+    this.durationMs = 0,
     this.speed = 1,
     this.errorCode,
   });
@@ -49,6 +50,7 @@ class NativePlaybackSession {
   final NativePlaybackState state;
   final int? textureId;
   final int positionMs;
+  final int durationMs;
   final double speed;
   final String? errorCode;
 }
@@ -220,6 +222,7 @@ class MediaCandidateCollector {
       final key = mediaCandidateKey(uri);
       if (!seen.add(key)) continue;
       final title = (element['title'] as String? ?? '').trim();
+      final thumbnail = optionalMediaUri(element['thumbnail'] as String?);
       final rawMime = (element['mime'] as String? ?? '').trim();
       final mime = rawMime.isEmpty ? inferMediaMime(uri) : rawMime;
       final candidate = MediaCandidate(
@@ -231,6 +234,7 @@ class MediaCandidateCollector {
         title: title.length > 512 ? title.substring(0, 512) : title,
         mime: mime.length > 128 ? mime.substring(0, 128) : mime,
         source: MediaCandidateSource.dom,
+        thumbnailUrl: thumbnail,
         durationMs: (element['durationMs'] as num?)?.toInt(),
         createdAt: DateTime.now().toUtc(),
       );
@@ -423,8 +427,11 @@ class MediaTaskStore {
     final ref = task?.localRef;
     if (ref == null) return null;
     final root = (await cacheDirectory()).absolute.path;
+    final appRoot = (await _directoryProvider()).absolute.path;
+    final exportRoot = Directory('$appRoot/media_exports').absolute.path;
     final file = File(ref).absolute;
-    if (!file.path.startsWith('$root${Platform.pathSeparator}')) {
+    if (!file.path.startsWith('$root${Platform.pathSeparator}') &&
+        !file.path.startsWith('$exportRoot${Platform.pathSeparator}')) {
       throw StateError('缓存引用越界');
     }
     return await file.exists() ? file : null;
@@ -444,6 +451,7 @@ class MediaDownloadService {
   /// Optional Android OS-managed backend. The deterministic Dart backend stays
   /// available for tests and platforms without DownloadManager.
   final NativeDownloadRuntime? native;
+  Future<void> Function(MediaTask task)? onCompleted;
   final _active = <String, Cancellation>{};
 
   Future<void> reconcileNative() async {
@@ -679,7 +687,6 @@ class MediaDownloadService {
       current = tasks.transition(task.id, MediaTaskState.downloading);
       final directory = await tasks.cacheDirectory();
       staging = Directory('${directory.path}/${task.cacheKey}.hls.part');
-      if (await staging.exists()) await staging.delete(recursive: true);
       await staging.create(recursive: true);
       final finalDirectory = Directory(
         '${directory.path}/${task.cacheKey}.hls',
@@ -713,8 +720,14 @@ class MediaDownloadService {
         throw const FormatException('媒体地址不是有效 HLS 清单');
       }
 
-      final resources = <String, String>{};
-      var totalBytes = utf8.encode(playlistText).length;
+      final resources = await _readHlsResources(staging);
+      var downloadedBytes = 0;
+      for (final name in resources.values) {
+        final file = File('${staging.path}/$name');
+        if (await file.exists()) downloadedBytes += await file.length();
+      }
+      var totalBytes = utf8.encode(playlistText).length + downloadedBytes;
+      current = tasks.updateProgress(task.id, downloadedBytes);
       var segmentCount = 0;
       var hasSegment = false;
       final output = <String>[];
@@ -772,12 +785,17 @@ class MediaDownloadService {
       if (!hasSegment) throw const FormatException('HLS 清单没有媒体分片');
       final temporaryPlaylist = File('${staging.path}/index.m3u8');
       await temporaryPlaylist.writeAsString(output.join('\n'), flush: true);
+      final resourceState = File('${staging.path}/resources.json');
+      if (await resourceState.exists()) await resourceState.delete();
       await staging.rename(finalDirectory.path);
       final finalFile = File('${finalDirectory.path}/index.m3u8');
       current = tasks.updateProgress(task.id, totalBytes);
       current = tasks.transition(task.id, MediaTaskState.completed);
       current = tasks.transition(task.id, MediaTaskState.playable);
-      return tasks.setLocalRef(task.id, finalFile.path);
+      final completed = tasks.setLocalRef(task.id, finalFile.path);
+      final callback = onCompleted;
+      if (callback != null) unawaited(callback(completed));
+      return completed;
     } on Cancelled {
       if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
         current = tasks.transition(task.id, MediaTaskState.paused);
@@ -802,9 +820,8 @@ class MediaDownloadService {
       }
       rethrow;
     } finally {
-      if (staging != null && await staging.exists()) {
-        await staging.delete(recursive: true);
-      }
+      // Keep the partial HLS directory after pause/failure. The resource map
+      // lets a later start skip segments already written to disk.
       _active.remove(task.id);
     }
   }
@@ -874,7 +891,13 @@ class MediaDownloadService {
     }
     final key = remote.removeFragment().toString();
     final existing = resources[key];
-    if (existing != null) return (name: existing, bytes: 0);
+    if (existing != null) {
+      final cached = File('${staging.path}/$existing');
+      if (await cached.exists() && await cached.length() > 0) {
+        return (name: existing, bytes: 0);
+      }
+      resources.remove(key);
+    }
     final response = await _fetchMediaWithRetry(
       remote,
       connect: const {'*'},
@@ -893,7 +916,38 @@ class MediaDownloadService {
     await File('${staging.path}/$name')
         .writeAsBytes(response.bytes, flush: true);
     resources[key] = name;
+    await _writeHlsResources(staging, resources);
     return (name: name, bytes: response.bytes.length);
+  }
+
+  Future<Map<String, String>> _readHlsResources(Directory staging) async {
+    final file = File('${staging.path}/resources.json');
+    if (!await file.exists()) return <String, String>{};
+    try {
+      final raw = jsonDecode(await file.readAsString());
+      if (raw is! Map) return <String, String>{};
+      final result = <String, String>{};
+      for (final entry in raw.entries) {
+        final key = entry.key.toString();
+        final name = entry.value.toString();
+        if (key.isNotEmpty &&
+            RegExp(r'^resource_\d{5}\.bin$').hasMatch(name) &&
+            await File('${staging.path}/$name').exists()) {
+          result[key] = name;
+        }
+      }
+      return result;
+    } catch (_) {
+      return <String, String>{};
+    }
+  }
+
+  Future<void> _writeHlsResources(
+    Directory staging,
+    Map<String, String> resources,
+  ) async {
+    final file = File('${staging.path}/resources.json');
+    await file.writeAsString(jsonEncode(resources), flush: true);
   }
 
   /// CDN edges can reset an otherwise valid request while rotating a signed

@@ -79,6 +79,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       native: nativeDownloads,
     );
     mediaExports = Mp4ExportService(tasks: mediaTasks, native: nativeExports);
+    mediaDownloads.onCompleted = _autoConvertCompletedMedia;
     castSessions = CastSessionController(tasks: mediaTasks);
     mediaPlayback = NativePlaybackController();
     hosts.onNewWindow = (hostId, url) {
@@ -224,6 +225,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   ThemePresetId themePreset = ThemePresetId.sunsetCoral;
   bool restoreBrowserSessions = true;
   bool allowBackgroundPlayback = false;
+  bool autoConvertToMp4 = false;
   FilterPolicy filterPolicy = const FilterPolicy();
 
   /// Entry redirects are always retained by product policy.
@@ -521,6 +523,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     themePreset = settings.themePreset;
     restoreBrowserSessions = settings.restoreBrowserSessions;
     allowBackgroundPlayback = settings.allowBackgroundPlayback;
+    autoConvertToMp4 = settings.autoConvertToMp4;
     scriptsDisabled = settings.scriptsDisabled;
     pullToRefresh = settings.pullToRefresh;
     backgroundHealthCheck = settings.backgroundHealthCheck;
@@ -542,6 +545,27 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> setAllowBackgroundPlayback(bool value) =>
       updateSettings({'allowBackgroundPlayback': value});
+
+  Future<void> setAutoConvertToMp4(bool value) =>
+      updateSettings({'autoConvertToMp4': value});
+
+  Future<void> _autoConvertCompletedMedia(MediaTask task) async {
+    if (!autoConvertToMp4) return;
+    final file = await mediaTasks.cachedFile(task.id);
+    if (file == null || !file.path.toLowerCase().endsWith('.m3u8')) return;
+    try {
+      final input = await const HlsPlaylistParser().parseFile(file.uri);
+      final result = await mediaExports.export(task.id, input);
+      if (result.state == ExportState.deliverable &&
+          result.outputPath != null) {
+        mediaTasks.setLocalRef(task.id, result.outputPath);
+        notifyListeners();
+      }
+    } catch (_) {
+      // Download completion remains usable as HLS when optional auto-convert
+      // fails; the task UI still exposes manual MP4 export.
+    }
+  }
 
   Future<void> restoreSavedSessions({bool force = false}) async {
     if (_restoredSessions && !force) return;
