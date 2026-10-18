@@ -26,6 +26,13 @@ String formatBytes(int bytes) {
   return '${value.toStringAsFixed(digits)} ${units[unit]}';
 }
 
+void showShortToast(BuildContext context, String message) {
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text(message), duration: const Duration(seconds: 1)),
+  );
+}
+
 /// Long press any URL-like value to copy it without making the whole row
 /// editable. The row can still keep its normal tap action around this child.
 class SiteLensCopyableText extends StatelessWidget {

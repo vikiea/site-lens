@@ -1905,30 +1905,32 @@ class _SettingsPageState extends State<SettingsPage> {
                 Divider(height: 1, indent: 18, endIndent: 18),
                 // The presets stay out of the way until asked for: one collapsed
                 // block instead of a bottom sheet over the page.
-                ExpansionTile(
-                  key: const PageStorageKey<String>('theme-presets'),
-                  leading: const Icon(Icons.palette_outlined, size: 20),
-                  title: const Text('主题色'),
-                  subtitle: Text(app.themePreset.label),
-                  initiallyExpanded: false,
-                  childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-                  children: [
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        for (final preset in ThemePresetId.values)
-                          _ThemePresetChip(
-                            preset: preset,
-                            selected: preset == app.themePreset,
-                            onTap: () => safely(
-                              context,
-                              () => app.setThemePreset(preset),
+                SiteLensFoldable(
+                  child: ExpansionTile(
+                    key: const PageStorageKey<String>('theme-presets'),
+                    leading: const Icon(Icons.palette_outlined, size: 20),
+                    title: const Text('主题色'),
+                    subtitle: Text(app.themePreset.label),
+                    initiallyExpanded: false,
+                    childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                    children: [
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final preset in ThemePresetId.values)
+                            _ThemePresetChip(
+                              preset: preset,
+                              selected: preset == app.themePreset,
+                              onTap: () => safely(
+                                context,
+                                () => app.setThemePreset(preset),
+                              ),
                             ),
-                          ),
-                      ],
-                    ),
-                  ],
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -1985,27 +1987,15 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
                 Divider(height: 1, indent: 18, endIndent: 18),
-                ListTile(
-                  leading: const Icon(
-                    Icons.download_for_offline_outlined,
-                    size: 20,
-                  ),
-                  title: const Text('媒体任务'),
-                  subtitle: const Text('查看后台下载、播放和导出状态'),
-                  trailing: const Icon(Icons.chevron_right),
+                SiteLensActionRow(
+                  icon: Icons.video_library_outlined,
+                  title: '媒体管理',
+                  subtitle: '下载、播放、导出和媒体相关设置',
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
-                      builder: (_) => MediaTasksScreen(app: app),
+                      builder: (_) => MediaManagementScreen(app: app),
                     ),
                   ),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                SwitchListTile(
-                  title: const Text('下载完成自动转 MP4'),
-                  subtitle: const Text('仅适用于已缓存的 HLS 视频，失败时保留原始清单'),
-                  value: app.autoConvertToMp4,
-                  onChanged: (value) =>
-                      safely(context, () => app.setAutoConvertToMp4(value)),
                 ),
               ],
             ),
@@ -2680,17 +2670,19 @@ class _Details extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Theme(
     data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-    child: ExpansionTile(
-      initiallyExpanded: startsOpen,
-      tilePadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 2),
-      childrenPadding: const EdgeInsets.fromLTRB(18, 0, 18, 14),
-      title: Text(title, style: Theme.of(context).textTheme.labelMedium),
-      children: [
-        Align(
-          alignment: Alignment.centerLeft,
-          child: Text(text, style: Theme.of(context).textTheme.bodySmall),
-        ),
-      ],
+    child: SiteLensFoldable(
+      child: ExpansionTile(
+        initiallyExpanded: startsOpen,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 2),
+        childrenPadding: const EdgeInsets.fromLTRB(18, 0, 18, 14),
+        title: Text(title, style: Theme.of(context).textTheme.labelMedium),
+        children: [
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(text, style: Theme.of(context).textTheme.bodySmall),
+          ),
+        ],
+      ),
     ),
   );
 }
@@ -3428,9 +3420,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                   onPressed: () async {
                     Navigator.pop(c);
                     if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('已加入媒体任务，正在下载…')),
-                      );
+                      showShortToast(context, '已加入下载');
                     }
                     try {
                       final authorized = widget.app.hosts
@@ -3441,9 +3431,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                         authorized,
                       );
                       if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('媒体已缓存，可在任务中继续播放或导出')),
-                        );
+                        showShortToast(context, '已缓存');
                       }
                     } catch (error) {
                       if (mounted) {

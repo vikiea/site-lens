@@ -463,6 +463,52 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   );
 }
 
+class MediaManagementScreen extends StatelessWidget {
+  const MediaManagementScreen({super.key, required this.app});
+
+  final AppController app;
+
+  @override
+  Widget build(BuildContext context) => SiteLensPageScaffold(
+    title: '媒体管理',
+    body: ListView(
+      padding: const EdgeInsets.fromLTRB(
+        SiteLensMetrics.pagePadding,
+        12,
+        SiteLensMetrics.pagePadding,
+        32,
+      ),
+      children: [
+        SiteLensPanel(
+          padding: EdgeInsets.zero,
+          child: Column(
+            children: [
+              SiteLensActionRow(
+                icon: Icons.download_for_offline_outlined,
+                title: '媒体任务',
+                subtitle: '查看后台下载、播放和导出状态',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => MediaTasksScreen(app: app),
+                  ),
+                ),
+              ),
+              const Divider(height: 1, indent: 18, endIndent: 18),
+              SwitchListTile(
+                title: const Text('下载完成自动转 MP4'),
+                subtitle: const Text('仅适用于已缓存的 HLS 视频，失败时保留原始清单'),
+                value: app.autoConvertToMp4,
+                onChanged: (value) =>
+                    safely(context, () => app.setAutoConvertToMp4(value)),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 /// Durable media task surface. The screen is deliberately independent from a
 /// browser tab: a task can be resumed after its source tab is gone.
 class MediaTasksScreen extends StatefulWidget {
@@ -612,8 +658,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
       await widget.app.mediaDownloads.startNative(task, resolved);
     }
     if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('已开始断点续传，可在列表查看进度')));
+      showShortToast(context, '已开始续传');
       setState(() {});
     }
   }

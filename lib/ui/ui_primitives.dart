@@ -5,6 +5,34 @@ import 'glass_surface.dart';
 
 enum SiteLensNoticeTone { info, warning, error }
 
+class SiteLensFoldable extends StatelessWidget {
+  const SiteLensFoldable({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final foldTheme = theme.expansionTileTheme.copyWith(
+      backgroundColor: Colors.transparent,
+      collapsedBackgroundColor: Colors.transparent,
+      shape: const RoundedRectangleBorder(side: BorderSide.none),
+      collapsedShape: const RoundedRectangleBorder(side: BorderSide.none),
+      clipBehavior: Clip.none,
+    );
+    return Theme(
+      data: theme.copyWith(expansionTileTheme: foldTheme),
+      child: Material(
+        type: MaterialType.transparency,
+        elevation: 0,
+        shadowColor: Colors.transparent,
+        surfaceTintColor: Colors.transparent,
+        child: child,
+      ),
+    );
+  }
+}
+
 /// Shared page shell for secondary screens that use the standard app bar.
 /// The home shell owns its navigation bar separately.
 class SiteLensPageScaffold extends StatelessWidget {

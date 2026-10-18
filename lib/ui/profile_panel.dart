@@ -601,30 +601,35 @@ class _HistoryPanel extends StatelessWidget {
   final List<ProbeResult> history;
 
   @override
-  Widget build(BuildContext context) => ExpansionTile(
-    key: const ValueKey('profile-history'),
-    initiallyExpanded: true,
-    tilePadding: const EdgeInsets.fromLTRB(16, 0, 12, 0),
-    childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-    title: const Text('历史'),
-    subtitle: Text(history.isEmpty ? '暂无历史记录' : '最近 ${history.length} 条检测记录'),
-    children: [
-      if (history.isEmpty)
-        const ListTile(contentPadding: EdgeInsets.zero, title: Text('暂无历史记录')),
-      for (final result in history)
-        ListTile(
-          key: ValueKey<String>(
-            'profile-history-entry-${result.candidateId}-${result.checkedAt.toIso8601String()}',
+  Widget build(BuildContext context) => SiteLensFoldable(
+    child: ExpansionTile(
+      key: const ValueKey('profile-history'),
+      initiallyExpanded: true,
+      tilePadding: const EdgeInsets.fromLTRB(16, 0, 12, 0),
+      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      title: const Text('历史'),
+      subtitle: Text(history.isEmpty ? '暂无历史记录' : '最近 ${history.length} 条检测记录'),
+      children: [
+        if (history.isEmpty)
+          const ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text('暂无历史记录'),
           ),
-          contentPadding: EdgeInsets.zero,
-          dense: true,
-          title: Text('${statusLabel(result)} · ${clock(result.checkedAt)}'),
-          subtitle: SiteLensCopyableText(
-            text:
-                '${result.finalUrl ?? result.entryUrl}${result.elapsed == null ? '' : ' · ${result.elapsed!.inMilliseconds} ms'}',
+        for (final result in history)
+          ListTile(
+            key: ValueKey<String>(
+              'profile-history-entry-${result.candidateId}-${result.checkedAt.toIso8601String()}',
+            ),
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            title: Text('${statusLabel(result)} · ${clock(result.checkedAt)}'),
+            subtitle: SiteLensCopyableText(
+              text:
+                  '${result.finalUrl ?? result.entryUrl}${result.elapsed == null ? '' : ' · ${result.elapsed!.inMilliseconds} ms'}',
+            ),
           ),
-        ),
-    ],
+      ],
+    ),
   );
 }
 
@@ -754,25 +759,27 @@ class _BackupAddressesPanel extends StatelessWidget {
     final resultByCandidate = {
       for (final result in current) result.candidateId: result,
     };
-    return ExpansionTile(
-      key: const ValueKey('profile-backup-addresses'),
-      initiallyExpanded: true,
-      tilePadding: const EdgeInsets.fromLTRB(16, 0, 12, 0),
-      childrenPadding: EdgeInsets.zero,
-      title: Text(
-        '备用地址 · ${candidates.length}',
-        style: Theme.of(context).textTheme.titleSmall,
+    return SiteLensFoldable(
+      child: ExpansionTile(
+        key: const ValueKey('profile-backup-addresses'),
+        initiallyExpanded: true,
+        tilePadding: const EdgeInsets.fromLTRB(16, 0, 12, 0),
+        childrenPadding: EdgeInsets.zero,
+        title: Text(
+          '备用地址 · ${candidates.length}',
+          style: Theme.of(context).textTheme.titleSmall,
+        ),
+        subtitle: const Text('当前推荐之外的候选地址'),
+        children: [
+          for (final candidate in candidates)
+            _CompactCandidateRow(
+              app: app,
+              candidate: candidate,
+              result: resultByCandidate[candidate.id],
+              onEnter: onEnter,
+            ),
+        ],
       ),
-      subtitle: const Text('当前推荐之外的候选地址'),
-      children: [
-        for (final candidate in candidates)
-          _CompactCandidateRow(
-            app: app,
-            candidate: candidate,
-            result: resultByCandidate[candidate.id],
-            onEnter: onEnter,
-          ),
-      ],
     );
   }
 }
@@ -874,74 +881,76 @@ class _AdvancedArea extends StatelessWidget {
   @override
   Widget build(BuildContext context) => SiteLensPanel(
     padding: EdgeInsets.zero,
-    child: ExpansionTile(
-      title: const Text('高级：发布页与选择器'),
-      subtitle: const Text('默认折叠；改错也会保留缓存'),
-      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      children: [
-        for (final page in app.profilePages.where(
-          (p) => p.profileId == profile.id,
-        ))
+    child: SiteLensFoldable(
+      child: ExpansionTile(
+        title: const Text('高级：发布页与选择器'),
+        subtitle: const Text('默认折叠；改错也会保留缓存'),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        children: [
+          for (final page in app.profilePages.where(
+            (p) => p.profileId == profile.id,
+          ))
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: SiteLensCopyableText(text: page.url.toString()),
+              subtitle: Text(
+                '区域选择器：${page.regionSelector}\n${clock(page.refreshedAt)}${page.error == null ? '' : '\n${friendlyError(page.error!)}'}',
+              ),
+              trailing: IconButton(
+                tooltip: '移除发布页',
+                icon: const Icon(Icons.delete_outline),
+                onPressed: () => safely(context, () async {
+                  await app.db.deleteProfilePage(page.id);
+                  await app.load();
+                }),
+              ),
+            ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => showAddProfilePageDialog(context, app, profile),
+              icon: const Icon(Icons.add),
+              label: const Text('添加发布页 / 备用发布页'),
+            ),
+          ),
           ListTile(
             contentPadding: EdgeInsets.zero,
-            title: SiteLensCopyableText(text: page.url.toString()),
-            subtitle: Text(
-              '区域选择器：${page.regionSelector}\n${clock(page.refreshedAt)}${page.error == null ? '' : '\n${friendlyError(page.error!)}'}',
-            ),
-            trailing: IconButton(
-              tooltip: '移除发布页',
-              icon: const Icon(Icons.delete_outline),
-              onPressed: () => safely(context, () async {
-                await app.db.deleteProfilePage(page.id);
-                await app.load();
-              }),
+            title: const Text('核心 DOM 选择器'),
+            subtitle: Text(profile.readySelector),
+            trailing: TextButton(
+              onPressed: () => _editReadySelector(context),
+              child: const Text('修改'),
             ),
           ),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton.icon(
-            onPressed: () => showAddProfilePageDialog(context, app, profile),
-            icon: const Icon(Icons.add),
-            label: const Text('添加发布页 / 备用发布页'),
+          const Divider(),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: (app.probes.running || app.refreshing)
+                    ? null
+                    : () => safely(context, () => app.rescoutProfile(profile)),
+                icon: const Icon(Icons.travel_explore),
+                label: const Text('重新侦察'),
+              ),
+              TextButton.icon(
+                onPressed: () => safely(context, () async {
+                  final restored = await app.restoreProfileConfig(profile.id);
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(restored ? '已回退到上次成功配置' : '还没有可回退的成功配置'),
+                    ),
+                  );
+                }),
+                icon: const Icon(Icons.settings_backup_restore),
+                label: const Text('回退到上次成功配置'),
+              ),
+            ],
           ),
-        ),
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text('核心 DOM 选择器'),
-          subtitle: Text(profile.readySelector),
-          trailing: TextButton(
-            onPressed: () => _editReadySelector(context),
-            child: const Text('修改'),
-          ),
-        ),
-        const Divider(),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            OutlinedButton.icon(
-              onPressed: (app.probes.running || app.refreshing)
-                  ? null
-                  : () => safely(context, () => app.rescoutProfile(profile)),
-              icon: const Icon(Icons.travel_explore),
-              label: const Text('重新侦察'),
-            ),
-            TextButton.icon(
-              onPressed: () => safely(context, () async {
-                final restored = await app.restoreProfileConfig(profile.id);
-                if (!context.mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(restored ? '已回退到上次成功配置' : '还没有可回退的成功配置'),
-                  ),
-                );
-              }),
-              icon: const Icon(Icons.settings_backup_restore),
-              label: const Text('回退到上次成功配置'),
-            ),
-          ],
-        ),
-      ],
+        ],
+      ),
     ),
   );
 
