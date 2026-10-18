@@ -179,6 +179,7 @@ class NativeHosts extends WebHostEvents {
   List<MediaCandidate> mediaCandidates(HostSession session) {
     final grouped = <String, MediaCandidate>{};
     for (final candidate in session.mediaCandidates.values) {
+      if (candidate.isLikelyTransportSegment) continue;
       // Keep the newest observation for signed HLS URLs. This collapses
       // repeated DOM/player callbacks before they reach the bottom sheet,
       // while preserving the full URL that the user can authorize.

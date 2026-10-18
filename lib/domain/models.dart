@@ -703,6 +703,15 @@ class MediaCandidate {
       mediaUrl.path.toLowerCase().endsWith('.m3u8') ||
       mediaUrl.path.toLowerCase().endsWith('.m3u');
 
+  /// A transport segment reported by resource timing is not a selectable
+  /// media item. It usually carries a short-lived signature and cannot be
+  /// decoded without the HLS manifest that references it.
+  bool get isLikelyTransportSegment {
+    if (isHls) return false;
+    final path = mediaUrl.path.toLowerCase();
+    return path.endsWith('.ts') || effectiveMime == 'video/mp2t';
+  }
+
   bool get playable =>
       ['http', 'https'].contains(mediaUrl.scheme) &&
       mediaUrl.host.isNotEmpty &&

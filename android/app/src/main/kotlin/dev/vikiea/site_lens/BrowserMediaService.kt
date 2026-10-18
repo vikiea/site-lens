@@ -25,8 +25,10 @@ class BrowserMediaService : Service() {
                 override fun onPlay() { dispatch("resume") }
                 override fun onPause() { dispatch("pause") }
                 override fun onStop() { dispatch("stop") }
+                override fun onSkipToNext() { dispatch("next") }
+                override fun onSkipToPrevious() { dispatch("previous") }
                 override fun onCustomAction(action: String, extras: android.os.Bundle?) {
-                    if (action == "stop") dispatch("stop")
+                    if (action in listOf("stop", "next", "previous")) dispatch(action)
                 }
             })
             isActive = true
@@ -39,7 +41,7 @@ class BrowserMediaService : Service() {
         if (next == null) { stopSelf(); return START_NOT_STICKY }
         if (intent?.getStringExtra("owner") != next.token) return START_NOT_STICKY
         token = next.token
-        if (intent.action in listOf("resume", "pause", "stop")) {
+        if (intent.action in listOf("resume", "pause", "stop", "next", "previous")) {
             dispatch(intent.action!!)
             if (intent.action == "stop") return START_NOT_STICKY
         }
@@ -51,7 +53,13 @@ class BrowserMediaService : Service() {
         val active = owner?.takeIf { it.token == token } ?: return
         session?.setMetadata(MediaMetadata.Builder().putString(MediaMetadata.METADATA_KEY_TITLE, active.title).build())
         session?.setPlaybackState(PlaybackState.Builder()
-            .setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_STOP)
+            .setActions(
+                PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or
+                    PlaybackState.ACTION_STOP or PlaybackState.ACTION_SKIP_TO_NEXT or
+                    PlaybackState.ACTION_SKIP_TO_PREVIOUS,
+            )
+            .addCustomAction(PlaybackState.CustomAction.Builder("previous", "上一集", android.R.drawable.ic_media_previous).build())
+            .addCustomAction(PlaybackState.CustomAction.Builder("next", "下一集", android.R.drawable.ic_media_next).build())
             .addCustomAction(PlaybackState.CustomAction.Builder("stop", "停止", android.R.drawable.ic_menu_close_clear_cancel).build())
             .setState(if (active.playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED,
                 PlaybackState.PLAYBACK_POSITION_UNKNOWN, if (active.playing) 1f else 0f).build())
@@ -70,9 +78,11 @@ class BrowserMediaService : Service() {
             .setSmallIcon(android.R.drawable.ic_media_play).setContentTitle(active.title)
             .setContentText("择站 · 当前标签").setContentIntent(open).setOnlyAlertOnce(true)
             .setOngoing(active.playing)
-            .setStyle(Notification.MediaStyle().setMediaSession(session?.sessionToken).setShowActionsInCompactView(0, 1))
+            .setStyle(Notification.MediaStyle().setMediaSession(session?.sessionToken).setShowActionsInCompactView(0, 1, 2))
+            .addAction(action("previous", android.R.drawable.ic_media_previous, "上一集"))
             .addAction(if (active.playing) action("pause", android.R.drawable.ic_media_pause, "暂停")
                 else action("resume", android.R.drawable.ic_media_play, "继续"))
+            .addAction(action("next", android.R.drawable.ic_media_next, "下一集"))
             .addAction(action("stop", android.R.drawable.ic_menu_close_clear_cancel, "停止")).build()
         if (Build.VERSION.SDK_INT >= 29) startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         else startForeground(ID, notification)

@@ -7,8 +7,11 @@ import android.webkit.WebSettings
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -145,6 +148,7 @@ class NativeMediaRuntime(
         speed = 1f
 
         val playerBuilder = ExoPlayer.Builder(context)
+        val dataSourceFactory: DataSource.Factory
         if (referer != null) {
             val http = DefaultHttpDataSource.Factory()
                 .setAllowCrossProtocolRedirects(true)
@@ -157,6 +161,9 @@ class NativeMediaRuntime(
                     },
                 )
             playerBuilder.setMediaSourceFactory(DefaultMediaSourceFactory(http))
+            dataSourceFactory = http
+        } else {
+            dataSourceFactory = DefaultDataSource.Factory(context)
         }
         val next = playerBuilder.build()
         player = next
@@ -195,7 +202,15 @@ class NativeMediaRuntime(
             .setUri(uri)
             .apply { if (mime.isNotEmpty()) setMimeType(mime) }
             .build()
-        next.setMediaItem(item)
+        val hls = mime.contains("mpegurl", ignoreCase = true) ||
+            uri.path?.lowercase()?.let { it.endsWith(".m3u8") || it.endsWith(".m3u") } == true
+        if (hls) {
+            // Select the HLS parser explicitly. Relying on URL inference can
+            // misclassify signed playlists whose path has no extension.
+            next.setMediaSource(HlsMediaSource.Factory(dataSourceFactory).createMediaSource(item))
+        } else {
+            next.setMediaItem(item)
+        }
         next.playWhenReady = true
         next.prepare()
         state = "preparing"

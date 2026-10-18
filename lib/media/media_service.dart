@@ -182,7 +182,9 @@ class MediaCandidateValidator {
         generation != null && candidate.generation != generation) {
       throw StateError(MediaErrorCode.staleGeneration);
     }
-    if (!candidate.playable || candidate.mediaUrl.scheme == 'blob') {
+    if (!candidate.playable ||
+        candidate.mediaUrl.scheme == 'blob' ||
+        candidate.isLikelyTransportSegment) {
       throw const FormatException(MediaErrorCode.invalidUrl);
     }
     if (candidate.sourceUrl.userInfo.isNotEmpty ||
@@ -520,6 +522,10 @@ class MediaDownloadService {
     MediaTask task,
     MediaCandidate candidate,
   ) async {
+    // Android DownloadManager downloads one URL and cannot materialize an HLS
+    // manifest. Use the app-private HLS rewriter below so the task contains a
+    // playable local playlist instead of a zero-byte `.m3u8` file.
+    if (candidate.isHls) return start(task, candidate);
     final runtime = native;
     if (runtime == null) return start(task, candidate);
     const validator = MediaCandidateValidator();

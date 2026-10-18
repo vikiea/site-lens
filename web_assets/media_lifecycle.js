@@ -24,6 +24,7 @@
   let needsGesture = false;
   let lastPlaying = null;
   let lastCandidates = '';
+  let lastCandidateList = [];
   const originalPlay = HTMLMediaElement.prototype.play;
 
   function track(node) {
@@ -83,7 +84,8 @@
   // Resource timing exposes every HLS segment as a media resource. Those
   // short-lived transport files are not playable candidates and must never be
   // offered beside the manifest that references them. A real standalone TS
-  // source attached to a media element still passes through with force=true.
+  // source attached to a media element may still be observed, but the Dart
+  // validator keeps transport segments out of playback and download actions.
   function isTransportResource(raw) {
     try {
       const path = new URL(raw, document.baseURI).pathname.toLowerCase();
@@ -126,6 +128,8 @@
       Array.from(contexts).some(ctx => ctx.state === 'running') || Array.from(childPlaying.values()).some(Boolean);
     const candidates = [];
     const seen = new Map();
+    const episodes = [];
+    const episodeSeen = new Map();
     for (const node of nodes) {
       const raw = node.currentSrc || node.src || '';
       addCandidate(candidates, seen, raw, node.type, Number.isFinite(node.duration) ? node.duration * 1000 : undefined, true);
@@ -135,7 +139,9 @@
       if (!element || typeof element.getAttribute !== 'function') return;
       const mime = element.getAttribute('type') || '';
       for (const name of mediaAttributes) {
-        addCandidate(candidates, seen, element.getAttribute(name), mime);
+        const raw = element.getAttribute(name);
+        addCandidate(candidates, seen, raw, mime);
+        addCandidate(episodes, episodeSeen, raw, mime);
       }
     });
     if (typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
@@ -150,6 +156,7 @@
         addCandidate(candidates, seen, candidate?.url, candidate?.mime, candidate?.durationMs, true, candidate?.title);
       }
     }
+    lastCandidateList = episodes.length > 1 ? episodes : candidates;
     const candidateKey = JSON.stringify(candidates);
     if (playing === lastPlaying && candidateKey === lastCandidates) return;
     lastPlaying = playing;
@@ -161,6 +168,37 @@
         window[config.bridge].postMessage(JSON.stringify({playing, title: (document.title || '').slice(0,512), candidates}));
       }
     } catch (_) { /* Detached or unsupported frames have no native authority. */ }
+  }
+  // Best-effort episode switching for pages that expose their playlist through
+  // data-play-src/data-video-src attributes. The page remains authoritative;
+  // this only changes the already-discovered media element and never invents
+  // a URL or performs a network request itself.
+  function switchCandidate(direction) {
+    collect();
+    if (lastCandidateList.length < 2) return;
+    const node = Array.from(nodes).find(value => value && value.isConnected);
+    if (!node) return;
+    const current = node.currentSrc || node.src || '';
+    let currentKey = '';
+    try { currentKey = candidateKey(new URL(current, document.baseURI)); } catch (_) {}
+    const index = lastCandidateList.findIndex(candidate => {
+      try { return candidateKey(new URL(candidate.url, document.baseURI)) === currentKey; }
+      catch (_) { return false; }
+    });
+    const targetIndex = index < 0
+      ? (direction > 0 ? 0 : lastCandidateList.length - 1)
+      : (index + direction + lastCandidateList.length) % lastCandidateList.length;
+    const target = lastCandidateList[targetIndex];
+    if (!target || target.url === current) return;
+    try {
+      blocked = false;
+      needsGesture = false;
+      node.pause();
+      node.src = target.url;
+      if (typeof node.load === 'function') node.load();
+      Promise.resolve(originalPlay.call(node)).catch(() => {});
+      report();
+    } catch (_) {}
   }
   function pause() {
     collect();
@@ -198,6 +236,11 @@
       }
       resumeContexts.clear();
       report();
+    }
+    else if (action === 'next' || action === 'previous') {
+      blocked = false;
+      needsGesture = false;
+      switchCandidate(action === 'next' ? 1 : -1);
     }
     relay({kind: 'site-lens-media', token: config.token, action});
   }
@@ -254,7 +297,7 @@
       }
     }
     if (event.source === window.parent && data && data.kind === 'site-lens-media' &&
-        data.token === config.token && ['pause', 'unblock', 'resume'].includes(data.action)) {
+        data.token === config.token && ['pause', 'unblock', 'resume', 'next', 'previous'].includes(data.action)) {
       apply(data.action);
     }
   });

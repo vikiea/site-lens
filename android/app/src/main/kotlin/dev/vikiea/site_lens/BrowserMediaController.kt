@@ -94,11 +94,11 @@ class BrowserMediaController(
     fun userGesture() { if (foreground && visible && current) { manualPause = false; enforce() } }
     private fun action(name: String) {
         if (disposed) return
-        if (name == "resume" && allowed) {
+        if ((name == "resume" || name == "next" || name == "previous") && allowed) {
             manualPause = false
             mute(false)
             runCatching { view.onResume() }
-            evaluate("resume")
+            evaluate(name)
         }
         else {
             manualPause = true; playing = false; mute(true); evaluate("pause")

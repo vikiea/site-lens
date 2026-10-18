@@ -116,6 +116,18 @@ void main() {
     );
   });
 
+  test('HLS transport segments are never selectable media', () {
+    final segment = candidate(
+      url: 'https://cdn.example/live/segment0.ts?auth=short-lived',
+      mime: 'video/mp2t',
+    );
+    expect(segment.isLikelyTransportSegment, isTrue);
+    expect(
+      () => const MediaCandidateValidator().validate(segment),
+      throwsFormatException,
+    );
+  });
+
   test('titled HLS observations collapse to one display candidate', () {
     final first = candidate(
       url: 'https://cdn.example/live/index.m3u8?token=one',
