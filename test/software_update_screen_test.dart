@@ -35,9 +35,15 @@ void main() {
     FakeAssetServer server,
     FakeUpdatePlatform platform,
   })
-  build({int chunkSize = 1024, Duration chunkDelay = Duration.zero}) {
+  build({
+    int chunkSize = 1024,
+    Duration chunkDelay = Duration.zero,
+    String tag = 'v0.2.0',
+    String version = '0.1.0',
+  }) {
     final server = FakeAssetServer(
       bytes: fixtureBytes(),
+      tag: tag,
       chunkSize: chunkSize,
       chunkDelay: chunkDelay,
     );
@@ -48,6 +54,7 @@ void main() {
         work: work,
         handoff: handoff,
         platform: platform,
+        version: version,
       ),
     );
     addTearDown(controller.dispose);
@@ -58,6 +65,24 @@ void main() {
     overrides: [updateControllerProvider.overrideWithValue(controller)],
     child: const MaterialApp(home: SoftwareUpdateScreen()),
   );
+
+  testWidgets('shows no update without offering a download', (tester) async {
+    final harness = build(tag: 'v0.1.0', version: '0.1.0');
+    final controller = harness.controller;
+    final app = screenApp(controller);
+    await tester.pumpWidget(app);
+    await tester.pump();
+
+    await runReal(tester, () => controller.check());
+    await renderScreen(
+      tester,
+      app,
+      () => find.text('暂无更新').evaluate().isNotEmpty,
+    );
+    expect(find.text('暂无更新'), findsOneWidget);
+    expect(find.text('下载更新'), findsNothing);
+    expect(harness.server.assetRequests, 0);
+  });
 
   testWidgets('renders the download lifecycle and installs from the page', (
     tester,

@@ -184,6 +184,10 @@ class UpdateController extends ChangeNotifier with WidgetsBindingObserver {
     _checking = true;
     _error = null;
     _checkMessage = null;
+    // A failed or non-updating check must not leave an older result offering
+    // a download. Only a release proven newer than the installed version is
+    // allowed back into the downloadable state.
+    _release = null;
     _notify();
     try {
       final result = await service.checkForUpdate();
@@ -193,7 +197,7 @@ class UpdateController extends ChangeNotifier with WidgetsBindingObserver {
       // Cache freshness is an implementation detail. Keep the visible
       // message about the result itself so a cached latest check reads the
       // same as a network check.
-      _checkMessage = result.release == null ? '当前已是最新版本' : null;
+      _checkMessage = result.release == null ? '暂无更新' : null;
       await _refreshLocalState();
     } catch (error) {
       _error = readableUpdateError(error);

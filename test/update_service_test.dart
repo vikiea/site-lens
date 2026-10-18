@@ -182,6 +182,23 @@ void main() {
     await service.close();
   });
 
+  test('refuses a download when the release is not newer', () async {
+    final server = FakeAssetServer(bytes: fixtureBytes(32), tag: 'v0.1.0');
+    final service = fakeUpdateService(
+      server: server,
+      work: work,
+      handoff: handoff,
+      version: '0.1.0',
+    );
+
+    expect(
+      service.startDownload(server.release()),
+      throwsA(isA<FormatException>()),
+    );
+    expect(server.assetRequests, 0);
+    await service.close();
+  });
+
   test('uses the cached result within the one-minute interval', () async {
     final server = FakeAssetServer(bytes: fixtureBytes(32));
     var now = DateTime(2026, 10, 15, 10);

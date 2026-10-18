@@ -840,6 +840,10 @@ class UpdateService {
     void Function()? onVerifying,
     bool restart = false,
   }) async {
+    final current = AppVersion.parse((await packageInfo).version);
+    if (release.version.compareTo(current) <= 0) {
+      throw const FormatException('暂无更新');
+    }
     final directory = await _workDirectory();
     await directory.create(recursive: true);
     final file = _partialFile(directory, release.tagName);

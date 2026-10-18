@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:site_lens/settings/app_settings.dart';
 import 'package:site_lens/update/update_controller.dart';
 import 'package:site_lens/update/update_service.dart';
 
@@ -84,18 +86,50 @@ void main() {
     expect(controller.error, isNull);
   });
 
+  test('reports no update for equal and lower remote versions', () async {
+    for (final version in ['0.1.0', '0.2.1']) {
+      final harness = build(tag: 'v0.1.0', version: version);
+      final controller = harness.controller;
+
+      await controller.check();
+      expect(controller.release, isNull);
+      expect(controller.checkMessage, '暂无更新');
+      expect(controller.error, isNull);
+      await controller.startDownload();
+      expect(controller.downloadState, UpdateDownloadState.idle);
+      expect(harness.server.assetRequests, 0);
+    }
+  });
+
   test(
-    'keeps the latest wording when the check result comes from cache',
+    'keeps the no-update wording when the result comes from cache',
     () async {
       final harness = build(tag: 'v0.1.0');
       final controller = harness.controller;
 
       await controller.check();
-      expect(controller.checkMessage, '当前已是最新版本');
+      expect(controller.checkMessage, '暂无更新');
       await controller.check();
-      expect(controller.checkMessage, '当前已是最新版本');
+      expect(controller.checkMessage, '暂无更新');
     },
   );
+
+  test('keeps API errors separate from the no-update state', () async {
+    final service = UpdateService(
+      client: GitHubReleaseClient(client: _ForbiddenClient()),
+      channel: UpdateChannel.beta,
+      packageInfoLoader: () async => fakePackageInfo('0.1.0'),
+      workDirectoryLoader: () async => work,
+    );
+    final controller = UpdateController(service: service);
+    addTearDown(controller.dispose);
+
+    await controller.check();
+
+    expect(controller.release, isNull);
+    expect(controller.checkMessage, isNull);
+    expect(controller.error, 'GitHub API 请求受限，请配置 Token 后重试');
+  });
 
   test('pause keeps the fragment and resume finishes it', () async {
     final harness = build(
@@ -415,4 +449,14 @@ class _FailingInstallPlatform extends FakeUpdatePlatform {
       message: 'APK SHA-256 校验失败',
     );
   }
+}
+
+class _ForbiddenClient extends http.BaseClient {
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async =>
+      http.StreamedResponse(
+        Stream<List<int>>.value(const <int>[]),
+        403,
+        request: request,
+      );
 }
