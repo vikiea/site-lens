@@ -159,40 +159,63 @@ class NetworkPolicy {
       throw AddressPolicyException(blockedAddressReason(addresses));
     }
     cancel?.check();
-    final tcp = await Socket.startConnect(addresses.first, uri.port);
+    // CDN providers commonly publish several A/AAAA records and rotate the
+    // active edge.  The first answer is not guaranteed to be usable from the
+    // current carrier, so retain every public answer and fail over at the TCP
+    // (and TLS) connection boundary instead of pinning one address forever.
+    final candidates = addresses
+        .where((address) => allowLocal || publicAddress(address))
+        .toList(growable: false);
+    if (candidates.isEmpty) {
+      throw AddressPolicyException(blockedAddressReason(addresses));
+    }
+    ConnectionTask<Socket>? tcp;
     Socket? socket;
     var cancelled = false;
     void abort() {
       cancelled = true;
-      tcp.cancel();
+      tcp?.cancel();
       socket?.destroy();
     }
 
     cancel?.onCancel(abort);
     final future = (() async {
-      try {
-        socket = await tcp.socket;
-        if (cancelled) {
-          socket!.destroy();
-          throw const Cancelled();
+      Object? lastError;
+      for (final address in candidates) {
+        cancel?.check();
+        if (cancelled) throw const Cancelled();
+        socket = null;
+        try {
+          tcp = await Socket.startConnect(address, uri.port);
+          socket = await tcp!.socket;
+          if (cancelled) {
+            socket!.destroy();
+            throw const Cancelled();
+          }
+          if (uri.scheme == 'https') {
+            // A custom HttpClient factory must establish TLS itself. Preserve
+            // SNI and certificate verification for the original DNS name on
+            // every pinned IP candidate.
+            socket = await SecureSocket.secure(
+              socket!,
+              host: uri.host,
+            ).timeout(const Duration(seconds: 10));
+          }
+          if (cancelled) {
+            socket!.destroy();
+            throw const Cancelled();
+          }
+          return socket!;
+        } catch (error) {
+          lastError = error;
+          socket?.destroy();
+          socket = null;
+          tcp = null;
+          if (error is Cancelled) rethrow;
         }
-        if (uri.scheme == 'https') {
-          // A custom HttpClient factory must establish TLS itself. Preserve SNI
-          // and certificate verification for the original DNS name on pinned IP.
-          socket = await SecureSocket.secure(
-            socket!,
-            host: uri.host,
-          ).timeout(const Duration(seconds: 10));
-        }
-        if (cancelled) {
-          socket!.destroy();
-          throw const Cancelled();
-        }
-        return socket!;
-      } catch (_) {
-        socket?.destroy();
-        rethrow;
       }
+      if (lastError != null) throw lastError;
+      throw SocketException('无法连接 ${uri.host}:${uri.port}');
     })();
     return ConnectionTask.fromSocket(future, abort);
   }
@@ -221,6 +244,7 @@ class ControlledHttp {
     required Cancellation cancel,
     String method = 'GET',
     Map<String, String> headers = const {},
+    bool mediaRequest = false,
     String? body,
     Duration timeout = const Duration(seconds: 15),
     int maxBytes = 1024 * 1024,
@@ -244,6 +268,7 @@ class ControlledHttp {
       cancel,
       method.toUpperCase(),
       headers,
+      mediaRequest,
       body,
       maxBytes,
     );
@@ -262,6 +287,7 @@ class ControlledHttp {
     Cancellation cancel,
     String method,
     Map<String, String> headers,
+    bool mediaRequest,
     String? body,
     int maxBytes,
   ) async {
@@ -301,6 +327,21 @@ class ControlledHttp {
       final request = await client.openUrl(method, uri);
       request.followRedirects = false;
       headers.forEach(request.headers.set);
+      if (mediaRequest) {
+        // Media CDN edges often apply the same hotlink checks as the page's
+        // <video> element.  These values are derived from the authorized
+        // document; callers cannot inject arbitrary Referer/Origin headers.
+        request.headers.set(
+          HttpHeaders.userAgentHeader,
+          'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
+          '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+        );
+        request.headers.set(HttpHeaders.acceptHeader, '*/*');
+        request.headers.set(HttpHeaders.refererHeader, document.toString());
+        if (document.scheme == 'http' || document.scheme == 'https') {
+          request.headers.set('origin', document.origin);
+        }
+      }
       if (body != null) request.write(body);
       final response = await request.close();
       final location = response.headers.value(HttpHeaders.locationHeader);

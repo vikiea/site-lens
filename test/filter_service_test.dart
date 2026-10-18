@@ -153,6 +153,7 @@ class _FilterHttp extends ControlledHttp {
     required Cancellation cancel,
     String method = 'GET',
     Map<String, String> headers = const {},
+    bool mediaRequest = false,
     String? body,
     Duration timeout = const Duration(seconds: 15),
     int maxBytes = 1024 * 1024,

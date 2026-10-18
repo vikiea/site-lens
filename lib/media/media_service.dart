@@ -606,7 +606,7 @@ class MediaDownloadService {
       final base = File('${directory.path}/${task.cacheKey}.part');
       final finalFile = File('${directory.path}/${task.cacheKey}.media');
       final offset = await base.exists() ? await base.length() : 0;
-      final response = await http.fetch(
+      final response = await _fetchMediaWithRetry(
         candidate.mediaUrl,
         connect: const {'*'},
         document: candidate.sourceUrl,
@@ -688,13 +688,21 @@ class MediaDownloadService {
         await finalDirectory.delete(recursive: true);
       }
       var playlistUri = candidate.mediaUrl;
-      var fetched = await _fetchHlsText(playlistUri, cancel);
+      var fetched = await _fetchHlsText(
+        playlistUri,
+        cancel,
+        document: candidate.sourceUrl,
+      );
       playlistUri = fetched.url;
       var playlistText = fetched.text;
       for (var depth = 0; depth < 3; depth++) {
         final variant = _selectHlsVariant(playlistUri, playlistText);
         if (variant == null) break;
-        fetched = await _fetchHlsText(variant, cancel);
+        fetched = await _fetchHlsText(
+          variant,
+          cancel,
+          document: candidate.sourceUrl,
+        );
         playlistUri = fetched.url;
         playlistText = fetched.text;
       }
@@ -729,6 +737,7 @@ class MediaDownloadService {
               cancel,
               totalBytes,
               maxBytes,
+              document: candidate.sourceUrl,
             );
             totalBytes += local.bytes;
             output.add(line.replaceFirst('URI="$raw"', 'URI="${local.name}"'));
@@ -753,6 +762,7 @@ class MediaDownloadService {
           cancel,
           totalBytes,
           maxBytes,
+          document: candidate.sourceUrl,
         );
         totalBytes += local.bytes;
         hasSegment = true;
@@ -801,12 +811,13 @@ class MediaDownloadService {
 
   Future<({Uri url, String text})> _fetchHlsText(
     Uri url,
-    Cancellation cancel,
-  ) async {
-    final response = await http.fetch(
+    Cancellation cancel, {
+    required Uri document,
+  }) async {
+    final response = await _fetchMediaWithRetry(
       url,
       connect: const {'*'},
-      document: url,
+      document: document,
       cancel: cancel,
       maxBytes: 16 * 1024 * 1024,
     );
@@ -853,8 +864,9 @@ class MediaDownloadService {
     Map<String, String> resources,
     Cancellation cancel,
     int downloaded,
-    int maxBytes,
-  ) async {
+    int maxBytes, {
+    required Uri document,
+  }) async {
     final remote = playlist.resolve(raw);
     if (!['http', 'https'].contains(remote.scheme) ||
         remote.userInfo.isNotEmpty) {
@@ -863,12 +875,12 @@ class MediaDownloadService {
     final key = remote.removeFragment().toString();
     final existing = resources[key];
     if (existing != null) return (name: existing, bytes: 0);
-    final response = await http.fetch(
+    final response = await _fetchMediaWithRetry(
       remote,
       connect: const {'*'},
-      document: playlist,
+      document: document,
       cancel: cancel,
-      maxBytes: min(64 * 1024 * 1024, maxBytes - downloaded),
+      maxBytes: min(64 * 1024 * 1024, max(1, maxBytes - downloaded)),
     );
     if (response.status < 200 || response.status >= 300) {
       throw StateError('HLS 分片 HTTP ${response.status}');
@@ -883,6 +895,56 @@ class MediaDownloadService {
     resources[key] = name;
     return (name: name, bytes: response.bytes.length);
   }
+
+  /// CDN edges can reset an otherwise valid request while rotating a signed
+  /// segment host. Each attempt creates a fresh HttpClient/connection, which
+  /// lets DNS failover and TCP/TLS setup choose another edge. HTTP errors are
+  /// retried only for statuses that are normally transient.
+  Future<FetchResponse> _fetchMediaWithRetry(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    Map<String, String> headers = const {},
+    int maxBytes = 1024 * 1024,
+  }) async {
+    Object? lastError;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      cancel.check();
+      try {
+        final response = await http.fetch(
+          url,
+          connect: connect,
+          document: document,
+          cancel: cancel,
+          headers: headers,
+          mediaRequest: true,
+          maxBytes: maxBytes,
+        );
+        if (!_retryableMediaStatus(response.status) || attempt == 2) {
+          return response;
+        }
+        lastError = StateError('媒体服务器暂时不可用 HTTP ${response.status}');
+      } on Cancelled {
+        rethrow;
+      } on SocketException catch (error) {
+        lastError = error;
+      } on HandshakeException catch (error) {
+        lastError = error;
+      } on TimeoutException catch (error) {
+        lastError = error;
+      }
+      if (attempt < 2) {
+        await Future<void>.delayed(
+          Duration(milliseconds: 250 * (1 << attempt)),
+        );
+      }
+    }
+    throw lastError ?? const SocketException('媒体连接失败');
+  }
+
+  static bool _retryableMediaStatus(int status) =>
+      status == 408 || status == 425 || status == 429 || status >= 500;
 
   void pause(String taskId) => _active[taskId]?.cancel();
 
