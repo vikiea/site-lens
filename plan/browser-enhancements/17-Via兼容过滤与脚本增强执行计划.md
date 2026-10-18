@@ -20,14 +20,14 @@
 4. 用户脚本批准摘要、依赖/资源固定、declared/public 联网模式、generation/origin 校验和 `SiteLens.registerMedia`。
 5. Stable/Beta 更新通道、versionCode reservation 和发布说明生成。
 
-主要缺口：
+计划基线缺口（F1-F5 已处理，仍需 F6/F7 设备与发布证据）：
 
-1. 多个规则源刷新后，active store 只保留最后一个源，尚未形成可回滚的合并 bundle。
-2. profile 过滤策略表和 resolver 存在，但浏览宿主仍主要使用全局策略。
-3. 规则例外优先级、资源类型、`$domain`、`$third-party` 等 ABP 语义不完整。
-4. Native 请求计数没有完整回传到 Dart；规则 JSON 通过 Pigeon 传输存在 Binder 大小风险。
-5. 页面规则的 document-start 时序、CSS 例外和动态 DOM 仍需真实 WebView 验证。
-6. 脚本仍不支持 `@include`、`@exclude-match`、自动更新和完整 Tampermonkey 兼容。
+1. 多源刷新已经发布为可回滚的合并 bundle，并保留各源快照用于诊断和回退。
+2. profile 过滤策略已经贯通数据库、`HostSession`、Native host 和档案级设置页；未配置档案继承全局策略。
+3. 例外优先级、资源类型、`$domain`、`$third-party` 和受限 scriptlet 已实现，未知语法保留降级诊断。
+4. Native 请求计数会按批次和页面完成时回传到 Dart；Pigeon 规则 JSON 设有 512 KiB 预算，超限进入可见降级。
+5. document-start 重试、CSS 例外、动态 DOM 和站点例外已实现，仍需真实 WebView 验证时序与拦截证据。
+6. 已支持 URL-compatible `@include`、`@exclude-match`；自动更新、脚本市场、特权 `unsafeWindow` 和完整 Tampermonkey 兼容仍是明确非目标。
 
 历史计划中的旧基线（`main@ca904c3`、`0.1.9+7`）只作为设计记录，执行以本分支实际代码为准。
 
@@ -191,7 +191,7 @@ F1 的契约完成后才能修改 F2-F5；F2 的规则语义决定 F3 的 Native
 - [x] F1 数据/宿主契约（`db63013`）
 - [x] F2 规则编译器与合并 bundle（`805f60b`）
 - [x] F3 Native 请求拦截与页面过滤（`0643f85`）
-- [x] F4 profile/站点策略与诊断 UI（`69d079d`）
+- [x] F4 profile/站点策略与诊断 UI（`69d079d`、`8dc9b80`）
 - [x] F5 用户脚本兼容扩展（`7c88da3`）
 - [ ] F6 Beta 灰度与 Stable 发布（构建/签名/设备门禁待执行）
 - [ ] F7 集成验收与交付
@@ -199,8 +199,8 @@ F1 的契约完成后才能修改 F2-F5；F2 的规则语义决定 F3 的 Native
 ## 执行记录
 
 - 计划提交：`db09b09`。
-- F1-F5 每次提交前均完成 `git diff --check`、目标分析/测试和独立 diff 审查。
-- 当前干净工作区的统一本地门禁已通过：`python3 tool/verify_level.py --auto` → `./tool/check.sh`。
-- Android Gradle 编译曾因 Gradle wrapper 从 `mirrors.cloud.tencent.com` 下载时连接被拒绝而未完成；这不等同于 Kotlin 编译通过，必须在可用网络或缓存 Gradle 的环境重试。
+- F1-F5 每次提交前均完成 `git diff --check`、目标分析/测试和独立 diff 审查；`8dc9b80` 补充了档案级策略页面、Native 顶层文档放行和页面完成时的过滤统计回传。
+- `8dc9b80` 提交前的 `python3 tool/verify_level.py --auto` 已通过 `./tool/check.sh`；L2 的真实 Android 集成因当前没有 `DEVICE` 被工具标记为阻断。
+- Android Gradle 已在临时完整 JDK、代理和缓存 Gradle 下进入工程配置，但当前环境没有 Android SDK（`platforms;android-35`），因此 Kotlin/Java compile task 未完成；`make build-release` 同样因 “No Android SDK found” 停止。两者均不能当作编译或正式 APK 通过。
 - 真实 Android WebView、后台生命周期、正式签名 APK、Beta/Stable 发布和设备验收仍属于 F6/F7 未完成门禁。
 
