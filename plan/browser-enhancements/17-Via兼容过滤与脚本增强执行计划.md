@@ -188,11 +188,19 @@ F1 的契约完成后才能修改 F2-F5；F2 的规则语义决定 F3 的 Native
 ## 执行状态
 
 - [x] F0 基线确认和计划落盘
-- [ ] F1 数据/宿主契约
-- [ ] F2 规则编译器与合并 bundle
-- [ ] F3 Native 请求拦截与页面过滤
-- [ ] F4 profile/站点策略与诊断 UI
-- [ ] F5 用户脚本兼容扩展
-- [ ] F6 Beta 灰度与 Stable 发布
+- [x] F1 数据/宿主契约（`db63013`）
+- [x] F2 规则编译器与合并 bundle（`805f60b`）
+- [x] F3 Native 请求拦截与页面过滤（`0643f85`）
+- [x] F4 profile/站点策略与诊断 UI（`69d079d`）
+- [x] F5 用户脚本兼容扩展（`7c88da3`）
+- [ ] F6 Beta 灰度与 Stable 发布（构建/签名/设备门禁待执行）
 - [ ] F7 集成验收与交付
+
+## 执行记录
+
+- 计划提交：`db09b09`。
+- F1-F5 每次提交前均完成 `git diff --check`、目标分析/测试和独立 diff 审查。
+- 当前干净工作区的统一本地门禁已通过：`python3 tool/verify_level.py --auto` → `./tool/check.sh`。
+- Android Gradle 编译曾因 Gradle wrapper 从 `mirrors.cloud.tencent.com` 下载时连接被拒绝而未完成；这不等同于 Kotlin 编译通过，必须在可用网络或缓存 Gradle 的环境重试。
+- 真实 Android WebView、后台生命周期、正式签名 APK、Beta/Stable 发布和设备验收仍属于 F6/F7 未完成门禁。
 
