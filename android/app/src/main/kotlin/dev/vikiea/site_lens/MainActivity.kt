@@ -311,7 +311,7 @@ class MainActivity : FlutterActivity() {
         hosts?.dispose(); hosts = null
         nativeMedia?.dispose(); nativeMedia = null
         nativeDownloads?.let { nativeDownloads = null }
-        nativeExport?.let { nativeExport = null }
+        nativeExport?.dispose(); nativeExport = null
         dlnaMulticastLock?.takeIf { it.isHeld }?.release()
         dlnaMulticastLock = null
         super.cleanUpFlutterEngine(flutterEngine)

@@ -88,6 +88,7 @@ class NativeMediaRuntime {
       'url': candidate.mediaUrl.toString(),
       'mime': candidate.effectiveMime,
       'sourceUrl': sourceUrl.toString(),
+      'title': candidate.title,
     });
     return _decode(raw ?? const <String, Object?>{});
   }
@@ -101,6 +102,7 @@ class NativeMediaRuntime {
       'candidateId': task.candidateId,
       'path': file.path,
       'mime': inferMediaMime(file.uri),
+      'title': task.displayName,
     });
     return _decode(raw ?? const <String, Object?>{});
   }

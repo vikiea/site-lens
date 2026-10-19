@@ -33,6 +33,8 @@ import '../settings/settings_repository.dart';
 import '../settings/app_settings.dart';
 import '../filter/filter_service.dart';
 import '../media/media_service.dart';
+import '../media/media_library.dart';
+import '../media/dlna_service.dart';
 import '../media/native_download_runtime.dart';
 import '../media/native_export_runtime.dart';
 import '../media/native_media_runtime.dart';
@@ -82,8 +84,15 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       native: nativeDownloads,
     );
     mediaExports = Mp4ExportService(tasks: mediaTasks, native: nativeExports);
+    mediaLibrary = MediaLibrary(
+      db: db,
+      tasks: mediaTasks,
+      native: nativeExports,
+    );
+    mediaLibrary.addListener(notifyMediaChanged);
     mediaDownloads.onCompleted = _autoConvertCompletedMedia;
     castSessions = CastSessionController(tasks: mediaTasks);
+    mediaCast = DlnaCastController(castSessions);
     mediaPlayback = NativePlaybackController();
     hosts.onNewWindow = (hostId, url) {
       unawaited(_openLinkInNewTab(hostId, url));
@@ -202,7 +211,6 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   int _selectionEpoch = 0;
   Timer? _sessionSaveTimer;
   Future<void> _sessionWrites = Future.value();
-  Future<void> _mp4DeliveryWrites = Future.value();
   AppSettings settings = const AppSettings();
   SiteLensGlassQualityCache? glassQualityCache;
   GlassQuality effectiveGlassQuality = GlassQuality.standard;
@@ -214,7 +222,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   late final MediaTaskStore mediaTasks;
   late final MediaDownloadService mediaDownloads;
   late final Mp4ExportService mediaExports;
+  late final MediaLibrary mediaLibrary;
+  final _exportingMedia = <String, Future<MediaArtifact>>{};
   late final CastSessionController castSessions;
+  late final DlnaCastController mediaCast;
   late final NativePlaybackController mediaPlayback;
   late final NativeMediaRuntime nativeMedia;
   late final NativeDownloadRuntime? nativeDownloads;
@@ -294,6 +305,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> initialize() async {
     WidgetsBinding.instance.addObserver(this);
     await mediaTasks.restore();
+    await mediaLibrary.restore();
     try {
       await mediaDownloads.reconcileNative();
     } catch (error) {
@@ -614,6 +626,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> setMp4ExportDirectory(String? value) =>
       updateSettings({'mp4ExportDirectory': value});
 
+  Future<void> setMediaLibraryNoticeDismissed(bool value) =>
+      updateSettings({'mediaLibraryNoticeDismissed': value});
+
   Future<void> setPlayerVerticalGesture(PlayerVerticalGestureMode value) =>
       updateSettings({'playerVerticalGesture': value.name});
 
@@ -628,72 +643,87 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final file = await mediaTasks.cachedFile(task.id);
     if (file == null || !file.path.toLowerCase().endsWith('.m3u8')) return;
     try {
-      final input = await const HlsPlaylistParser().parseFile(file.uri);
-      final result = await mediaExports.export(task.id, input);
-      if (result.state == ExportState.deliverable &&
-          result.outputPath != null) {
-        await _deliverMp4ToConfiguredDirectory(result, task);
-        notifyListeners();
+      await exportMediaTask(task);
+    } catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.export',
+        context: 'auto:${task.id}',
+        stack: stack,
+      );
+    }
+  }
+
+  Future<MediaArtifact> exportMediaTask(
+    MediaTask task,
+  ) => _exportingMedia.putIfAbsent(task.id, () async {
+    mediaTasks.retain(task.id);
+    try {
+      await mediaLibrary.restore();
+      var artifact = mediaLibrary.item(task.id);
+      if (artifact == null) {
+        final file = await mediaTasks.cachedFile(task.id);
+        if (file == null) throw StateError('媒体缓存文件不存在');
+        String output;
+        var artifactMime = 'video/mp4';
+        var artifactName = mediaExportFileName(task);
+        if (file.path.toLowerCase().endsWith('.m3u8')) {
+          final input = await const HlsPlaylistParser().parseFile(file.uri);
+          final result = await mediaExports.export(task.id, input);
+          if (result.state != ExportState.deliverable ||
+              result.outputPath == null) {
+            throw StateError(result.errorCode ?? '导出失败');
+          }
+          output = result.outputPath!;
+        } else {
+          final metadata = nativeExports == null
+              ? <String, Object?>{'mime': inferMediaMime(file.uri)}
+              : await nativeExports!.inspect(file.path);
+          final mime = metadata['mime'] as String? ?? '';
+          if (mime.toLowerCase() != 'video/mp4') {
+            throw StateError('当前格式暂不支持转 MP4');
+          }
+          artifactMime = mime;
+          final baseName = mediaExportFileName(task)
+              .replaceFirst(RegExp(r'\.mp4$', caseSensitive: false), '');
+          final directory = Directory(
+            '${(await mediaTasks.cacheRootDirectory()).parent.path}/media_exports/direct_${DateTime.now().microsecondsSinceEpoch}',
+          );
+          await directory.create(recursive: true);
+          final name = '$baseName.mp4';
+          artifactName = name;
+          final destination = File('${directory.path}/$name');
+          final temporary = File('${destination.path}.part');
+          try {
+            await file.copy(temporary.path);
+            if (await temporary.length() != await file.length()) {
+              throw StateError('MP4 副本校验失败');
+            }
+            await temporary.rename(destination.path);
+            output = destination.path;
+          } finally {
+            if (await temporary.exists()) await temporary.delete();
+          }
+        }
+        artifact = await mediaLibrary.register(
+          mediaTasks.task(task.id) ?? task,
+          output,
+          name: artifactName,
+          mime: artifactMime,
+        );
       }
-    } catch (_) {
-      // Download completion remains usable as HLS when optional auto-convert
-      // fails; the task UI still exposes manual MP4 export.
+      await mediaLibrary.deliver(task.id, mp4ExportDirectory);
+      return mediaLibrary.item(task.id) ?? artifact;
+    } finally {
+      mediaTasks.release(task.id);
+      _exportingMedia.remove(task.id);
+      notifyMediaChanged();
     }
-  }
+  });
 
-  Future<void> _deliverMp4ToConfiguredDirectory(
-    Mp4ExportTask result,
-    MediaTask task,
-  ) {
-    final previous = _mp4DeliveryWrites;
-    late final Future<void> current;
-    current = previous
-        .catchError((_) {})
-        .then((_) => _deliverMp4ToConfiguredDirectoryNow(result, task));
-    _mp4DeliveryWrites = current.catchError((_) {});
-    return current;
-  }
-
-  Future<void> _deliverMp4ToConfiguredDirectoryNow(
-    Mp4ExportTask result,
-    MediaTask task,
-  ) async {
-    final directoryValue = mp4ExportDirectory?.trim();
-    final sourcePath = result.outputPath;
-    if (directoryValue == null ||
-        directoryValue.isEmpty ||
-        sourcePath == null) {
-      return;
-    }
-    final directoryUri = Uri.tryParse(directoryValue);
-    if (Platform.isAndroid &&
-        nativeExports != null &&
-        directoryUri?.scheme == 'content') {
-      await nativeExports!.deliverToDirectory(
-        source: sourcePath,
-        directory: directoryUri!,
-        fileName: mediaExportFileName(task),
-      );
-      return;
-    }
-    final directory = Directory(directoryValue);
-    await directory.create(recursive: true);
-    var destination = File(
-      '${directory.path}${Platform.pathSeparator}${mediaExportFileName(task)}',
-    );
-    var suffix = 2;
-    while (await destination.exists()) {
-      final name = mediaExportFileName(task);
-      final dot = name.lastIndexOf('.');
-      final stem = dot < 0 ? name : name.substring(0, dot);
-      final extension = dot < 0 ? '' : name.substring(dot);
-      destination = File(
-        '${directory.path}${Platform.pathSeparator}$stem ($suffix)$extension',
-      );
-      suffix++;
-    }
-    await File(sourcePath).copy(destination.path);
-  }
+  Future<File?> mediaPlaybackFile(MediaTask task) async =>
+      await mediaLibrary.localFile(task.id) ??
+      await mediaTasks.cachedFile(task.id);
 
   Future<void> restoreSavedSessions({bool force = false}) async {
     if (_restoredSessions && !force) return;
@@ -1963,9 +1993,18 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     // Clear native ownership immediately, but do not overwrite the captured
     // snapshot during asynchronous destruction.
     final close = closeAllTabs(persist: false);
-    _shutdownFuture = Future.wait<void>([flush, close, nativeMedia.dispose()])
-        .whenComplete(settingsRepository.dispose);
+    final stopCast = castSessions.active == null
+        ? Future<void>.value()
+        : mediaCast.stop().then<void>((_) {}).catchError((Object _) {});
+    _shutdownFuture = Future.wait<void>([
+      flush,
+      close,
+      nativeMedia.dispose(),
+      stopCast,
+    ]).whenComplete(settingsRepository.dispose);
     unawaited(_shutdownFuture!.catchError((Object _) {}));
+    mediaLibrary.removeListener(notifyMediaChanged);
+    mediaLibrary.dispose();
     AppErrorLogger.detach(errorLogger);
     super.dispose();
   }

@@ -92,6 +92,7 @@ class AppSettings {
     this.allowBackgroundPlayback = false,
     this.autoConvertToMp4 = false,
     this.mp4ExportDirectory,
+    this.mediaLibraryNoticeDismissed = false,
     this.playerVerticalGesture = PlayerVerticalGestureMode.brightnessVolume,
     this.restoreBrowserSessions = true,
     this.backgroundHealthCheck = true,
@@ -113,6 +114,7 @@ class AppSettings {
   final bool allowBackgroundPlayback;
   final bool autoConvertToMp4;
   final String? mp4ExportDirectory;
+  final bool mediaLibraryNoticeDismissed;
   final PlayerVerticalGestureMode playerVerticalGesture;
   final bool restoreBrowserSessions;
   final bool backgroundHealthCheck;
@@ -134,6 +136,7 @@ class AppSettings {
     'allowBackgroundPlayback': allowBackgroundPlayback,
     'autoConvertToMp4': autoConvertToMp4,
     'mp4ExportDirectory': mp4ExportDirectory,
+    'mediaLibraryNoticeDismissed': mediaLibraryNoticeDismissed,
     'playerVerticalGesture': playerVerticalGesture.name,
     'restoreBrowserSessions': restoreBrowserSessions,
     'backgroundHealthCheck': backgroundHealthCheck,
@@ -211,6 +214,7 @@ class AppSettings {
       allowBackgroundPlayback: flag('allowBackgroundPlayback', false),
       autoConvertToMp4: flag('autoConvertToMp4', false),
       mp4ExportDirectory: directory('mp4ExportDirectory'),
+      mediaLibraryNoticeDismissed: flag('mediaLibraryNoticeDismissed', false),
       playerVerticalGesture: choice(
         'playerVerticalGesture',
         PlayerVerticalGestureMode.values,
@@ -241,6 +245,7 @@ class AppSettings {
       'allowBackgroundPlayback',
       'autoConvertToMp4',
       'mp4ExportDirectory',
+      'mediaLibraryNoticeDismissed',
       'playerVerticalGesture',
       'restoreBrowserSessions',
       'backgroundHealthCheck',

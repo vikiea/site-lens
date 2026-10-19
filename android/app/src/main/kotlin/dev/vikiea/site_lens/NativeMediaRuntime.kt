@@ -8,6 +8,7 @@ import android.view.Surface
 import android.webkit.WebSettings
 import android.webkit.CookieManager
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DataSource
@@ -274,6 +275,7 @@ class NativeMediaRuntime(
 
         val item = MediaItem.Builder()
             .setUri(uri)
+            .setMediaMetadata(MediaMetadata.Builder().setTitle(call.argument<String>("title")?.takeIf { it.isNotBlank() } ?: "Site Lens").build())
             .apply { if (mime.isNotEmpty()) setMimeType(mime) }
             .build()
         val hls = mime.contains("mpegurl", ignoreCase = true) ||

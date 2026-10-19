@@ -56,6 +56,8 @@ class BrowserMediaController(
                                     "url" to candidate.optString("url"),
                                     "title" to candidate.optString("title"),
                                     "mime" to candidate.optString("mime"),
+                                    "thumbnail" to candidate.optString("thumbnail"),
+                                    "episodeNumber" to if (candidate.has("episodeNumber")) candidate.optInt("episodeNumber") else null,
                                     "durationMs" to if (candidate.has("durationMs")) candidate.optLong("durationMs") else null,
                                 ))
                             }

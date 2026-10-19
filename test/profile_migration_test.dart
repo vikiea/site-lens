@@ -134,7 +134,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 8);
+      expect(raw.userVersion, 9);
       expect(raw.select('SELECT COUNT(*) AS c FROM probes').single['c'], 281);
 
       final scripts = await db.scripts();
@@ -370,7 +370,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 8);
+      expect(raw.userVersion, 9);
       expect(
         raw.select(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='filter_snapshots'",

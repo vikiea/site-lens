@@ -161,6 +161,8 @@
       candidateId: details.candidateId == null ? undefined : String(details.candidateId),
       url: details.url,
       title: details.title == null ? '' : String(details.title),
+      thumbnail: details.thumbnail == null ? undefined : String(details.thumbnail),
+      episodeNumber: Number.isInteger(Number(details.episodeNumber)) && Number(details.episodeNumber) > 0 ? Number(details.episodeNumber) : undefined,
       mime: details.mime == null ? '' : String(details.mime),
       durationMs: Number.isFinite(Number(details.durationMs)) ? Number(details.durationMs) : undefined,
     });

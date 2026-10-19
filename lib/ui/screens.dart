@@ -26,11 +26,17 @@ import 'about_screen.dart';
 import 'software_update_screen.dart';
 import 'app_theme.dart';
 import '../settings/app_settings.dart'
-    show AppPolicy, SiteLensGlassQualityMode, UpdateChannel, UpdateChannelLabel;
+    show
+        AppPolicy,
+        SiteLensGlassQualityMode,
+        UpdateChannel,
+        UpdateChannelLabel,
+        PlayerVerticalGestureModeLabel;
 import 'glass_surface.dart';
 import 'browser_entry.dart';
 import 'profile_panel.dart';
 import 'media_tasks_screen.dart';
+import 'player_gestures_screen.dart';
 import 'error_logs_screen.dart';
 import 'filter_diagnostics_panel.dart';
 import 'ui_util.dart';
@@ -207,80 +213,81 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           // One backdrop read for the whole screen: the top bar, the panels and
           // the bottom bar share it instead of taking a full-screen capture each.
           child: Scaffold(
-            appBar: AppBar(
-              title: Text(switch (destination) {
-                AppDestination.sites => '站点',
-                AppDestination.browser => '浏览',
-                AppDestination.media => '媒体',
-                AppDestination.settings => '设置',
-              }),
-              // The top bar is the same glass layer as the bottom one: both sit
-              // above the content on the app backdrop.
-              flexibleSpace: const SiteLensGlassSurface(
-                role: SiteLensSurfaceRole.chrome,
-                radius: 0,
-                child: SizedBox.shrink(),
-              ),
-              actions: switch (destination) {
-                AppDestination.sites => [
-                  IconButton(
-                    tooltip: '添加站点',
-                    icon: const Icon(Icons.add_link),
-                    onPressed: () => showAddProfileDialog(context, app),
-                  ),
-                  IconButton(
-                    tooltip: '导入档案包',
-                    icon: const Icon(Icons.file_download_outlined),
-                    onPressed: () =>
-                        safely(context, () => importProfilePack(context, app)),
-                  ),
-                  IconButton(
-                    tooltip: app.probes.running || app.refreshing
-                        ? '取消检测'
-                        : '全部检测',
-                    icon: Icon(
-                      app.probes.running || app.refreshing
-                          ? Icons.stop_circle_outlined
-                          : Icons.radar,
-                    ),
-                    onPressed: app.probes.running || app.refreshing
-                        ? app.cancel
-                        : app.profiles.any((profile) => profile.enabled)
-                        ? () => safely(context, () async {
-                            await app.detect();
-                          })
+            appBar: destination == AppDestination.media
+                ? null
+                : AppBar(
+                    title: destination == AppDestination.sites
+                        ? const Text('Site Lens')
                         : null,
-                  ),
-                ],
-                AppDestination.browser => [
-                  IconButton(
-                    tooltip: '新建标签页',
-                    icon: const Icon(Icons.add),
-                    onPressed: () =>
-                        safely(context, () => promptNewTab(context, app)),
-                  ),
-                  PopupMenuButton<String>(
-                    tooltip: '标签页操作',
-                    onSelected: (choice) => safely(context, () async {
-                      if (choice == 'closeAll') await app.closeAllTabs();
-                    }),
-                    itemBuilder: (_) => [
-                      PopupMenuItem(
-                        value: 'closeAll',
-                        enabled: app.browserTabs.isNotEmpty,
-                        child: const ListTile(
-                          leading: Icon(Icons.close),
-                          title: Text('全部关闭'),
-                          contentPadding: EdgeInsets.zero,
+                    // The top bar is the same glass layer as the bottom one: both sit
+                    // above the content on the app backdrop.
+                    flexibleSpace: const SiteLensGlassSurface(
+                      role: SiteLensSurfaceRole.chrome,
+                      radius: 0,
+                      child: SizedBox.shrink(),
+                    ),
+                    actions: switch (destination) {
+                      AppDestination.sites => [
+                        IconButton(
+                          tooltip: '添加站点',
+                          icon: const Icon(Icons.add_link),
+                          onPressed: () => showAddProfileDialog(context, app),
                         ),
-                      ),
-                    ],
+                        IconButton(
+                          tooltip: '导入档案包',
+                          icon: const Icon(Icons.file_download_outlined),
+                          onPressed: () => safely(
+                            context,
+                            () => importProfilePack(context, app),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: app.probes.running || app.refreshing
+                              ? '取消检测'
+                              : '全部检测',
+                          icon: Icon(
+                            app.probes.running || app.refreshing
+                                ? Icons.stop_circle_outlined
+                                : Icons.radar,
+                          ),
+                          onPressed: app.probes.running || app.refreshing
+                              ? app.cancel
+                              : app.profiles.any((profile) => profile.enabled)
+                              ? () => safely(context, () async {
+                                  await app.detect();
+                                })
+                              : null,
+                        ),
+                      ],
+                      AppDestination.browser => [
+                        IconButton(
+                          tooltip: '新建标签页',
+                          icon: const Icon(Icons.add),
+                          onPressed: () =>
+                              safely(context, () => promptNewTab(context, app)),
+                        ),
+                        PopupMenuButton<String>(
+                          tooltip: '标签页操作',
+                          onSelected: (choice) => safely(context, () async {
+                            if (choice == 'closeAll') await app.closeAllTabs();
+                          }),
+                          itemBuilder: (_) => [
+                            PopupMenuItem(
+                              value: 'closeAll',
+                              enabled: app.browserTabs.isNotEmpty,
+                              child: const ListTile(
+                                leading: Icon(Icons.close),
+                                title: Text('全部关闭'),
+                                contentPadding: EdgeInsets.zero,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                      AppDestination.media => const <Widget>[],
+                      AppDestination.settings => const <Widget>[],
+                    },
                   ),
-                ],
-                AppDestination.media => const <Widget>[],
-                AppDestination.settings => const <Widget>[],
-              },
-            ),
             body: SafeArea(
               child: switch (destination) {
                 AppDestination.sites => ProfilesPanel(
@@ -463,7 +470,11 @@ class ScriptManagementScreen extends StatelessWidget {
     listenable: app,
     builder: (context, _) => Scaffold(
       appBar: AppBar(
-        title: const Text('脚本管理'),
+        title: Semantics(
+          namesRoute: true,
+          label: '脚本管理',
+          child: SizedBox.shrink(),
+        ),
         actions: [
           IconButton(
             tooltip: '导入 .user.js',
@@ -1172,7 +1183,11 @@ class _ScriptEditorState extends State<ScriptEditor> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.script == null ? '新建脚本' : '脚本编辑'),
+        title: Semantics(
+          namesRoute: true,
+          label: widget.script == null ? '新建脚本' : '脚本编辑',
+          child: const SizedBox.shrink(),
+        ),
         actions: [
           IconButton(
             tooltip: saving ? '保存中' : '保存并关闭',
@@ -2004,6 +2019,18 @@ class _SettingsPageState extends State<SettingsPage> {
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
                       builder: (_) => MediaManagementScreen(app: app),
+                    ),
+                  ),
+                ),
+                Divider(height: 1, indent: 18, endIndent: 18),
+                SiteLensActionRow(
+                  icon: Icons.swipe_vertical_outlined,
+                  title: '播放器手势',
+                  subtitle: app.playerVerticalGesture.label,
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => PlayerGesturesScreen(app: app),
                     ),
                   ),
                 ),

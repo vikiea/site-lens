@@ -10,8 +10,17 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.media.MediaMetadataRetriever
+import android.graphics.Bitmap
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import java.io.File
 import java.nio.ByteBuffer
+import java.security.MessageDigest
+import java.util.concurrent.Executors
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -22,7 +31,12 @@ import javax.crypto.spec.SecretKeySpec
  * line or remote URI can reach this code. */
 class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCallHandler {
     private val filesRoot = context.filesDir.canonicalFile
-    @Volatile private var cancelled = false
+    private val worker = Executors.newSingleThreadExecutor()
+    private val main = Handler(Looper.getMainLooper())
+    @Volatile private var disposed = false
+    @Volatile private var activeCancellation: AtomicBoolean? = null
+    private val cancellations = ConcurrentHashMap<String, AtomicBoolean>()
+    private val cancelledJobs = ConcurrentHashMap.newKeySet<String>()
     private var pendingDirectoryResult: MethodChannel.Result? = null
 
     companion object {
@@ -34,49 +48,78 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
     private external fun nativeValidatePath(path: String, root: String): Boolean
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
-        try {
-            when (call.method) {
-                "pickDirectory" -> pickDirectory(result)
-                "validateLocalInput" -> {
-                    val path = call.argument<String>("path") ?: error("缺少输入路径")
-                    result.success(validateLocal(path))
-                }
-                "muxHls" -> {
-                    val playlist = call.argument<String>("playlist") ?: error("缺少 HLS 清单")
-                    val output = call.argument<String>("output") ?: error("缺少输出文件")
-                    muxHls(playlist, output)
-                    result.success(mapOf("output" to output))
-                }
-                "validateOutput" -> {
-                    val path = call.argument<String>("path") ?: error("缺少输出文件")
-                    result.success(validateOutput(path))
-                }
-                "cancel" -> { cancelled = true; result.success(null) }
-                "deliver" -> {
-                    val source = call.argument<String>("source") ?: error("缺少输出文件")
-                    val destination = call.argument<String>("destination") ?: error("缺少 SAF 目标")
-                    deliver(source, Uri.parse(destination))
-                    result.success(null)
-                }
-                "deliverToDirectory" -> {
-                    val source = call.argument<String>("source") ?: error("缺少输出文件")
-                    val directory = call.argument<String>("directory") ?: error("缺少导出目录")
-                    val fileName = call.argument<String>("fileName") ?: error("缺少导出文件名")
-                    deliverToDirectory(source, Uri.parse(directory), fileName)
-                    result.success(null)
-                }
-                else -> result.notImplemented()
-            }
-        } catch (error: Exception) {
-            NativeCrashStore.append(
-                context,
-                module = "media.export",
-                message = error.message ?: "媒体导出失败",
-                details = error.stackTraceToString(),
-                contextValue = "method=${call.method}",
-            )
-            result.error("media_export", error.message ?: "导出失败", null)
+        if (disposed) { result.error("media_export", "媒体服务已关闭", null); return }
+        if (call.method == "cancel") {
+            val jobId = call.argument<String>("jobId")
+            if (jobId == null) activeCancellation?.set(true)
+            else if (cancellations[jobId]?.let { it.set(true); true } != true) cancelledJobs.add(jobId)
+            result.success(null)
+            return
         }
+        if (call.method == "pickDirectory") {
+            try { pickDirectory(result) } catch (error: Exception) { fail(call, result, error) }
+            return
+        }
+        val supported = setOf("validateLocalInput", "muxHls", "validateOutput", "deliver", "deliverToDirectory", "inspect", "materialize", "rename", "move", "delete")
+        if (call.method !in supported) { result.notImplemented(); return }
+        val jobId = call.argument<String>("jobId") ?: "job-${System.nanoTime()}"
+        val cancellation = AtomicBoolean(false)
+        cancellations[jobId] = cancellation
+        if (cancelledJobs.remove(jobId)) cancellation.set(true)
+        worker.execute {
+            if (disposed) { main.post { result.error("media_export", "媒体服务已关闭", null) }; return@execute }
+            activeCancellation = cancellation
+            try {
+                check(!cancellation.get()) { "导出已取消" }
+                val value = execute(call, cancellation)
+                main.post { result.success(value) }
+            } catch (error: Exception) {
+                main.post { fail(call, result, error) }
+            } finally {
+                activeCancellation = null
+                cancellations.remove(jobId)
+            }
+        }
+    }
+
+    private fun execute(call: MethodCall, cancellation: AtomicBoolean): Any? {
+        fun argument(name: String) = call.argument<String>(name) ?: error("缺少 $name")
+        return when (call.method) {
+            "validateLocalInput" -> validateLocal(argument("path"))
+            "muxHls" -> {
+                val output = argument("output")
+                muxHls(argument("playlist"), output, cancellation)
+                mapOf("output" to output)
+            }
+            "validateOutput" -> validateOutput(argument("path"))
+            "deliver" -> { deliver(argument("source"), Uri.parse(argument("destination"))); null }
+            "deliverToDirectory" -> deliverToDirectory(argument("source"), Uri.parse(argument("directory")), argument("fileName"))
+            "inspect" -> inspect(argument("source"))
+            "materialize" -> materialize(argument("source"))
+            "rename" -> rename(argument("source"), argument("fileName"))
+            "move" -> {
+                val source = argument("source")
+                val target = deliverToDirectory(source, Uri.parse(argument("directory")), argument("fileName"))
+                runCatching { delete(source) }
+                target
+            }
+            "delete" -> { delete(argument("source")); null }
+            else -> error("未知媒体操作")
+        }
+    }
+
+    private fun fail(call: MethodCall, result: MethodChannel.Result, error: Exception) {
+        NativeCrashStore.append(context, module = "media.export", message = error.message ?: "媒体操作失败", details = error.stackTraceToString(), contextValue = "method=${call.method}")
+        result.error("media_export", error.message ?: "媒体操作失败", null)
+    }
+
+    fun dispose() {
+        disposed = true
+        cancellations.values.forEach { it.set(true) }
+        activeCancellation?.set(true)
+        pendingDirectoryResult?.error("media_export", "媒体服务已关闭", null)
+        pendingDirectoryResult = null
+        worker.shutdown()
     }
 
     private fun pickDirectory(result: MethodChannel.Result) {
@@ -121,13 +164,13 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
 
     private fun validateLocal(path: String): Boolean {
         val file = File(path).canonicalFile
-        require(nativeValidatePath(file.path, filesRoot.path)) { "输入路径越界" }
+        val roots = listOfNotNull(filesRoot, context.getExternalFilesDir(null)?.canonicalFile)
+        require(roots.any { nativeValidatePath(file.path, it.path) }) { "输入路径越界" }
         require(file.isFile && file.length() > 0) { "本地输入不存在或为空" }
         return true
     }
 
-    private fun muxHls(playlistPath: String, outputPath: String) {
-        cancelled = false
+    private fun muxHls(playlistPath: String, outputPath: String, cancelled: AtomicBoolean) {
         validateLocal(playlistPath)
         val output = File(outputPath).canonicalFile
         require(nativeValidatePath(output.path, filesRoot.path)) { "输出路径越界" }
@@ -141,10 +184,10 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         workDir.mkdirs()
         var muxer: MediaMuxer? = null
         val trackIds = mutableMapOf<String, Int>()
-        val timestampOffsets = mutableMapOf<String, Long>()
+        var segmentStartUs = 0L
         try {
             for ((index, segment) in segments.withIndex()) {
-                check(!cancelled) { "导出已取消" }
+                check(!cancelled.get() && !disposed) { "导出已取消" }
                 val input = prepareSegment(segment, workDir, index)
                 val extractor = MediaExtractor()
                 extractor.setDataSource(input.path)
@@ -156,7 +199,6 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                             val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
                             if (mime.startsWith("video/") || mime.startsWith("audio/")) {
                                 trackIds[mime] = muxer!!.addTrack(format)
-                                timestampOffsets[mime] = 0L
                             }
                         }
                         require(trackIds.isNotEmpty()) { "HLS 分片不含音视频轨道" }
@@ -167,24 +209,26 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                         mime.startsWith("video/") || mime.startsWith("audio/")
                     }
                     selected.forEach(extractor::selectTrack)
+                    val firstSampleUs = extractor.sampleTime.coerceAtLeast(0L)
+                    var segmentEndUs = segmentStartUs
                     val buffer = ByteBuffer.allocate(1024 * 1024)
                     val info = MediaCodec.BufferInfo()
                     while (true) {
-                        check(!cancelled) { "导出已取消" }
+                        check(!cancelled.get() && !disposed) { "导出已取消" }
                         buffer.clear()
                         val size = extractor.readSampleData(buffer, 0)
                         if (size < 0) break
                         val mime = extractor.getTrackFormat(extractor.sampleTrackIndex).getString(MediaFormat.KEY_MIME) ?: break
                         val track = trackIds[mime] ?: break
-                        val offset = timestampOffsets[mime] ?: 0L
                         info.offset = 0
                         info.size = size
-                        info.presentationTimeUs = extractor.sampleTime + offset
+                        info.presentationTimeUs = segmentStartUs + (extractor.sampleTime - firstSampleUs).coerceAtLeast(0L)
                         info.flags = extractor.sampleFlags
                         muxer!!.writeSampleData(track, buffer, info)
-                        timestampOffsets[mime] = info.presentationTimeUs + 1
+                        segmentEndUs = maxOf(segmentEndUs, info.presentationTimeUs)
                         extractor.advance()
                     }
+                    segmentStartUs = maxOf(segmentEndUs + 1, segmentStartUs + segment.durationUs)
                 } finally {
                     extractor.release()
                 }
@@ -211,6 +255,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         val explicitIv: ByteArray?,
         val sequence: Long,
         val init: File?,
+        val durationUs: Long,
     )
 
     private fun parseHlsSegments(playlistPath: String): List<HlsSegment> {
@@ -220,9 +265,14 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         var keyFile: File? = null
         var explicitIv: ByteArray? = null
         var initFile: File? = null
+        var durationUs = 0L
         val result = mutableListOf<HlsSegment>()
         for (raw in playlist.readLines(Charsets.UTF_8)) {
             val line = raw.trim()
+            if (line.startsWith("#EXTINF:")) {
+                durationUs = ((line.substringAfter(':').substringBefore(',').toDoubleOrNull() ?: 0.0) * 1_000_000).toLong().coerceAtLeast(0L)
+                continue
+            }
             if (line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
                 sequence = line.substringAfter(':').trim().toLongOrNull()
                     ?: error("HLS 序列号无效")
@@ -275,6 +325,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 explicitIv = explicitIv,
                 sequence = sequence++,
                 init = initFile,
+                durationUs = durationUs,
             )
         }
         return result
@@ -376,10 +427,13 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         source.inputStream().use { input -> output.use { input.copyTo(it) } }
     }
 
-    private fun deliverToDirectory(sourcePath: String, directory: Uri, fileName: String) {
-        validateLocal(sourcePath)
+    private fun deliverToDirectory(sourcePath: String, directory: Uri, fileName: String): String {
+        sourceStream(sourcePath).close()
         require(directory.scheme == "content") { "系统目录无效" }
-        require(fileName.isNotBlank() && !fileName.contains('/') && !fileName.contains('\\')) { "导出文件名无效" }
+        validateName(fileName)
+        require(context.contentResolver.persistedUriPermissions.any { it.uri == directory && it.isWritePermission && it.isReadPermission }) {
+            "保存目录权限已失效，请在媒体管理中重新选择 MP4 保存目录"
+        }
         val treeDocument = DocumentsContract.buildDocumentUriUsingTree(
             directory,
             DocumentsContract.getTreeDocumentId(directory),
@@ -390,8 +444,141 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             "video/mp4",
             fileName,
         ) ?: error("系统目录不可写，请重新选择目录")
-        val output = context.contentResolver.openOutputStream(target, "w")
-            ?: error("无法打开系统目录")
-        File(sourcePath).inputStream().use { input -> output.use { input.copyTo(it) } }
+        try {
+            val digest = MessageDigest.getInstance("SHA-256")
+            var count = 0L
+            sourceStream(sourcePath).use { input ->
+                val output = context.contentResolver.openOutputStream(target, "wt") ?: error("无法打开系统目录")
+                output.use {
+                    val buffer = ByteArray(128 * 1024)
+                    while (true) {
+                        check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        it.write(buffer, 0, read)
+                        digest.update(buffer, 0, read)
+                        count += read
+                    }
+                    it.flush()
+                }
+            }
+            require(count > 0L) { "导出文件为空" }
+            val written = MessageDigest.getInstance("SHA-256")
+            var actualSize = 0L
+            context.contentResolver.openInputStream(target)!!.use { input ->
+                val buffer = ByteArray(128 * 1024)
+                while (true) {
+                    check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    written.update(buffer, 0, read)
+                    actualSize += read
+                }
+            }
+            require(actualSize == count && written.digest().contentEquals(digest.digest())) { "导出文件校验失败" }
+            return target.toString()
+        } catch (error: Exception) {
+            runCatching { DocumentsContract.deleteDocument(context.contentResolver, target) }
+            throw error
+        }
+    }
+
+    private fun sourceStream(source: String): java.io.InputStream {
+        val uri = Uri.parse(source)
+        if (uri.scheme == "content") return context.contentResolver.openInputStream(uri) ?: error("媒体文件不可读")
+        val path = if (uri.scheme == "file") uri.path ?: error("媒体路径无效") else source
+        require(uri.scheme == null || uri.scheme == "file") { "仅允许本地媒体文件" }
+        validateLocal(path)
+        return File(path).inputStream()
+    }
+
+    private fun validateName(name: String) {
+        require(name.isNotBlank() && name != "." && name != ".." && !name.contains("..") && name.length <= 220 && !name.any { it == '/' || it == '\\' || it.code < 32 }) { "媒体文件名无效" }
+    }
+
+    private fun delete(source: String) {
+        val uri = Uri.parse(source)
+        if (uri.scheme == "content") {
+            check(DocumentsContract.deleteDocument(context.contentResolver, uri)) { "无法删除媒体文件" }
+        } else {
+            val path = if (uri.scheme == "file") uri.path!! else source
+            validateLocal(path)
+            check(File(path).delete()) { "无法删除媒体文件" }
+        }
+    }
+
+    private fun rename(source: String, name: String): String {
+        validateName(name)
+        val uri = Uri.parse(source)
+        if (uri.scheme == "content") return DocumentsContract.renameDocument(context.contentResolver, uri, name)?.toString() ?: error("当前目录不支持重命名")
+        val path = if (uri.scheme == "file") uri.path!! else source
+        validateLocal(path)
+        val file = File(path).canonicalFile
+        val destination = File(file.parentFile, name)
+        require(!destination.exists()) { "已存在同名文件" }
+        check(file.renameTo(destination)) { "重命名失败" }
+        return destination.path
+    }
+
+    private fun materialize(source: String): String {
+        val uri = Uri.parse(source)
+        if (uri.scheme != "content") {
+            val path = if (uri.scheme == "file") uri.path!! else source
+            validateLocal(path)
+            return path
+        }
+        val key = MessageDigest.getInstance("SHA-256").digest(source.toByteArray()).joinToString("") { "%02x".format(it) }
+        val directory = File(filesRoot, "media_exports/materialized").apply { mkdirs() }
+        val file = File(directory, "$key.mp4")
+        val temporary = File(directory, "$key.part")
+        try {
+            sourceStream(source).use { input -> temporary.outputStream().use { input.copyTo(it) } }
+            require(temporary.length() > 0L && validateOutput(temporary.path)) { "本地媒体副本无效" }
+            if (file.exists()) check(file.delete())
+            check(temporary.renameTo(file)) { "无法保存播放副本" }
+            return file.path
+        } finally { if (temporary.exists()) temporary.delete() }
+    }
+
+    private fun inspect(source: String): Map<String, Any?> {
+        val uri = Uri.parse(source)
+        var size: Long
+        var modified: Long
+        val retriever = MediaMetadataRetriever()
+        try {
+            if (uri.scheme == "content") {
+                sourceStream(source).close()
+                size = -1L
+                modified = 0L
+                context.contentResolver.query(uri, arrayOf(DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_LAST_MODIFIED), null, null, null)?.use {
+                    if (it.moveToFirst()) {
+                        if (!it.isNull(0)) size = it.getLong(0)
+                        if (!it.isNull(1)) modified = it.getLong(1)
+                    }
+                }
+                retriever.setDataSource(context, uri)
+            } else {
+                val path = if (uri.scheme == "file") uri.path!! else source
+                validateLocal(path)
+                val file = File(path)
+                size = file.length()
+                modified = file.lastModified()
+                retriever.setDataSource(path)
+            }
+            val duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+            val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
+            val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+            val key = MessageDigest.getInstance("SHA-256").digest("$source:$size:$modified".toByteArray()).joinToString("") { "%02x".format(it) }
+            val thumbnail = File(File(filesRoot, "media_thumbnails").apply { mkdirs() }, "$key.jpg")
+            if (!thumbnail.isFile) runCatching {
+                val frame = if (Build.VERSION.SDK_INT >= 27) retriever.getScaledFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 320, 180) else retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                frame?.let { bitmap ->
+                    val scaled = Bitmap.createScaledBitmap(bitmap, 320, 180, true)
+                    try { thumbnail.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, 80, it) } }
+                    finally { if (scaled !== bitmap) scaled.recycle(); bitmap.recycle() }
+                }
+            }
+            return mapOf("size" to size, "modifiedMs" to modified, "mime" to (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE) ?: "video/mp4"), "durationMs" to duration, "width" to width, "height" to height, "thumbnailPath" to thumbnail.takeIf { it.isFile && it.length() > 0L }?.path)
+        } finally { retriever.release() }
     }
 }

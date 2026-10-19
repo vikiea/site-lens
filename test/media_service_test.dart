@@ -466,7 +466,7 @@ void main() {
       );
       expect(successful.state, ExportState.deliverable);
       expect(await File(successful.outputPath!).exists(), isTrue);
-      expect(store.task(task.id)?.localRef, successful.outputPath);
+      expect(store.task(task.id)?.localRef, isNull);
       expect(progress, containsAllInOrder([0, 50, 100]));
     },
   );

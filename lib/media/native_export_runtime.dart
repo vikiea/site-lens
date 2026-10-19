@@ -18,10 +18,12 @@ class NativeExportRuntime {
   Future<String> muxHls({
     required String playlist,
     required String output,
+    String? jobId,
   }) async {
     final result = await _channel.invokeMapMethod<String, Object?>('muxHls', {
       'playlist': playlist,
       'output': output,
+      'jobId': jobId ?? 'export-${DateTime.now().microsecondsSinceEpoch}',
     });
     return result?['output'] as String? ?? output;
   }
@@ -30,7 +32,11 @@ class NativeExportRuntime {
       await _channel.invokeMethod<bool>('validateOutput', {'path': path}) ??
       false;
 
-  Future<void> cancel() => _channel.invokeMethod<void>('cancel');
+  Future<void> cancel({String? jobId}) {
+    final arguments = <String, Object?>{};
+    if (jobId != null) arguments['jobId'] = jobId;
+    return _channel.invokeMethod<void>('cancel', arguments);
+  }
 
   Future<void> deliver({required String source, required Uri destination}) =>
       _channel.invokeMethod<void>('deliver', {
@@ -38,13 +44,38 @@ class NativeExportRuntime {
         'destination': destination.toString(),
       });
 
-  Future<void> deliverToDirectory({
+  Future<String> deliverToDirectory({
     required String source,
     required Uri directory,
     required String fileName,
-  }) => _channel.invokeMethod<void>('deliverToDirectory', {
+  }) async => (await _channel.invokeMethod<String>('deliverToDirectory', {
     'source': source,
     'directory': directory.toString(),
     'fileName': fileName,
-  });
+  }))!;
+
+  Future<Map<String, Object?>> inspect(String source) async => (await _channel
+      .invokeMapMethod<String, Object?>('inspect', {'source': source}))!;
+
+  Future<String> materialize(String source) async =>
+      (await _channel.invokeMethod<String>('materialize', {'source': source}))!;
+
+  Future<String> rename(String source, String fileName) async =>
+      (await _channel.invokeMethod<String>('rename', {
+        'source': source,
+        'fileName': fileName,
+      }))!;
+
+  Future<String> move({
+    required String source,
+    required Uri directory,
+    required String fileName,
+  }) async => (await _channel.invokeMethod<String>('move', {
+    'source': source,
+    'directory': directory.toString(),
+    'fileName': fileName,
+  }))!;
+
+  Future<void> delete(String source) =>
+      _channel.invokeMethod<void>('delete', {'source': source});
 }

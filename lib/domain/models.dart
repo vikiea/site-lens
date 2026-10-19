@@ -855,10 +855,25 @@ class MediaTask {
   final String? localRef;
 
   String get displayName {
-    final title = displayTitle.trim();
+    var title = displayTitle.trim();
     final episode = episodeLabel?.trim() ?? '';
+    if (title.isEmpty ||
+        {'媒体', 'video', 'media'}.contains(title.toLowerCase())) {
+      title =
+          sourceUrl.pathSegments.where((v) => v.isNotEmpty).lastOrNull ??
+          sourceUrl.host;
+    }
+    if (episode.isEmpty) return title;
+    title = title
+        .replaceAll(
+          RegExp(
+            r'\s*[-–—|]?\s*(?:第\s*\d+\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*\d+\b)',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .trim();
     if (title.isEmpty) return episode;
-    if (episode.isEmpty || title.contains(episode)) return title;
     return '$title - $episode';
   }
 

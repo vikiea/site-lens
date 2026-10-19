@@ -5,10 +5,71 @@ import 'glass_surface.dart';
 
 enum SiteLensNoticeTone { info, warning, error }
 
-class SiteLensFoldable extends StatelessWidget {
+/// Keeps an episode suffix visible by trimming the left side when space is tight.
+class SiteLensLeadingEllipsisText extends StatelessWidget {
+  const SiteLensLeadingEllipsisText(this.text, {super.key, this.style});
+  final String text;
+  final TextStyle? style;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final effective = DefaultTextStyle.of(context).style.merge(style);
+      final direction = Directionality.of(context);
+      final scaler = MediaQuery.textScalerOf(context);
+      bool fits(String value) {
+        final painter = TextPainter(
+          text: TextSpan(text: value, style: effective),
+          textDirection: direction,
+          textScaler: scaler,
+          maxLines: 1,
+        )..layout();
+        final result = painter.width <= constraints.maxWidth;
+        painter.dispose();
+        return result;
+      }
+
+      var display = text;
+      if (constraints.hasBoundedWidth && !fits(text)) {
+        final codeUnits = text.runes.toList();
+        var low = 0;
+        var high = codeUnits.length;
+        while (low < high) {
+          final middle = (low + high + 1) ~/ 2;
+          final candidate =
+              '…${String.fromCharCodes(codeUnits.skip(codeUnits.length - middle))}';
+          if (fits(candidate)) {
+            low = middle;
+          } else {
+            high = middle - 1;
+          }
+        }
+        display =
+            '…${String.fromCharCodes(codeUnits.skip(codeUnits.length - low))}';
+      }
+      return Text(
+        display,
+        style: style,
+        maxLines: 1,
+        softWrap: false,
+        overflow: TextOverflow.clip,
+        semanticsLabel: text,
+      );
+    },
+  );
+}
+
+class SiteLensFoldable extends StatefulWidget {
   const SiteLensFoldable({super.key, required this.child});
 
   final Widget child;
+
+  @override
+  State<SiteLensFoldable> createState() => _SiteLensFoldableState();
+}
+
+class _SiteLensFoldableState extends State<SiteLensFoldable> {
+  bool _focused = false;
 
   @override
   Widget build(BuildContext context) {
@@ -20,14 +81,41 @@ class SiteLensFoldable extends StatelessWidget {
       collapsedShape: const RoundedRectangleBorder(side: BorderSide.none),
       clipBehavior: Clip.none,
     );
-    return Theme(
-      data: theme.copyWith(expansionTileTheme: foldTheme),
-      child: Material(
-        type: MaterialType.transparency,
-        elevation: 0,
-        shadowColor: Colors.transparent,
-        surfaceTintColor: Colors.transparent,
-        child: child,
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onFocusChange: (value) => setState(() => _focused = value),
+      child: DecoratedBox(
+        decoration: ShapeDecoration(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(SiteLensMetrics.inputRadius),
+            side: BorderSide(
+              color:
+                  _focused &&
+                      FocusManager.instance.highlightMode ==
+                          FocusHighlightMode.traditional
+                  ? theme.colorScheme.primary
+                  : Colors.transparent,
+            ),
+          ),
+        ),
+        child: Theme(
+          data: theme.copyWith(
+            expansionTileTheme: foldTheme,
+            focusColor: Colors.transparent,
+            hoverColor: Colors.transparent,
+            highlightColor: Colors.transparent,
+            splashColor: Colors.transparent,
+            splashFactory: NoSplash.splashFactory,
+          ),
+          child: Material(
+            type: MaterialType.transparency,
+            elevation: 0,
+            shadowColor: Colors.transparent,
+            surfaceTintColor: Colors.transparent,
+            child: widget.child,
+          ),
+        ),
       ),
     );
   }
@@ -49,8 +137,12 @@ class SiteLensPageScaffold extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text(title), actions: actions),
-    body: SafeArea(child: body),
+    appBar: AppBar(actions: actions),
+    body: Semantics(
+      namesRoute: true,
+      label: title,
+      child: SafeArea(child: body),
+    ),
   );
 }
 

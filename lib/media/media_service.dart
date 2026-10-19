@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:isolate';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
@@ -38,9 +39,11 @@ String mediaExportFileName(MediaTask task) {
   final raw = task.displayName.trim().isEmpty ? task.id : task.displayName;
   final safe = raw
       .replaceAll(RegExp(r'[\\/:*?"<>|\u0000-\u001f]'), '_')
+      .replaceAll('..', '_')
       .trim()
       .replaceAll(RegExp(r'[. ]+$'), '');
-  return '${safe.isEmpty ? task.id : safe}.mp4';
+  final runes = (safe.isEmpty ? task.id : safe).runes.toList();
+  return '${String.fromCharCodes(runes.length <= 70 ? runes : runes.skip(runes.length - 70))}.mp4';
 }
 
 List<MediaTask> mediaPlaylistForTasks(
@@ -405,12 +408,38 @@ class MediaTaskStore {
   Future<void> restore() async {
     final persisted = await db?.mediaTasks();
     if (persisted == null) return;
+    final repaired = <MediaTask>[];
+    for (final task in persisted) {
+      final candidate = await db!.mediaCandidate(task.candidateId);
+      final missingTitle =
+          task.displayTitle.trim().isEmpty ||
+          {
+            '媒体',
+            'video',
+            'media',
+          }.contains(task.displayTitle.trim().toLowerCase());
+      final next =
+          candidate == null || (!missingTitle && task.episodeLabel != null)
+          ? task
+          : task.copyWith(
+              displayTitle: missingTitle && candidate.title.trim().isNotEmpty
+                  ? candidate.title.trim()
+                  : task.displayTitle,
+              episodeLabel:
+                  task.episodeLabel ?? _candidateEpisodeLabel(candidate),
+            );
+      repaired.add(next);
+      if (next.displayTitle != task.displayTitle ||
+          next.episodeLabel != task.episodeLabel) {
+        await db!.saveMediaTask(next);
+      }
+    }
     _tasks
       ..clear()
-      ..addEntries(persisted.map((task) => MapEntry(task.id, task)));
+      ..addEntries(repaired.map((task) => MapEntry(task.id, task)));
     _byCacheKey
       ..clear()
-      ..addEntries(persisted.map((task) => MapEntry(task.cacheKey, task.id)));
+      ..addEntries(repaired.map((task) => MapEntry(task.cacheKey, task.id)));
   }
 
   MediaTask transition(
@@ -562,11 +591,30 @@ class MediaTaskStore {
     final appRoot = (await _directoryProvider()).absolute.path;
     final exportRoot = Directory('$appRoot/media_exports').absolute.path;
     final file = File(ref).absolute;
-    if (!file.path.startsWith('$root${Platform.pathSeparator}') &&
-        !file.path.startsWith('$exportRoot${Platform.pathSeparator}')) {
+    if (!await file.exists()) return null;
+    final canonical = await file.resolveSymbolicLinks();
+    final roots = [root, exportRoot];
+    if (Platform.isAndroid) {
+      final external = await getExternalStorageDirectory();
+      if (external != null) {
+        roots.add('${external.absolute.path}/Download/site-lens');
+      }
+    }
+    final canonicalRoots = <String>[];
+    for (final allowed in roots) {
+      final directory = Directory(allowed);
+      canonicalRoots.add(
+        await directory.exists()
+            ? await directory.resolveSymbolicLinks()
+            : allowed,
+      );
+    }
+    if (!canonicalRoots.any(
+      (allowed) => canonical.startsWith('$allowed${Platform.pathSeparator}'),
+    )) {
       throw StateError('缓存引用越界');
     }
-    return await file.exists() ? file : null;
+    return file;
   }
 }
 
@@ -1486,19 +1534,21 @@ class Mp4ExportService {
       throw StateError('媒体缓存尚未完成');
     }
     const validator = HlsInputValidator();
-    validator.validate(
-      playlist: input.playlist,
-      segments: input.segments,
-      initSegment: input.initSegment,
-      keys: input.keys,
+    await Isolate.run(
+      () => validator.validate(
+        playlist: input.playlist,
+        segments: input.segments,
+        initSegment: input.initSegment,
+        keys: input.keys,
+      ),
     );
     final cancel = cancellation ?? Cancellation();
     final report = onProgress ?? (_) {};
     final root = await _directoryProvider();
-    final outputDirectory = Directory('${root.path}/media_exports');
-    await outputDirectory.create(recursive: true);
     final id = 'export_${DateTime.now().microsecondsSinceEpoch}';
-    final output = File('${outputDirectory.path}/$id.mp4');
+    final outputDirectory = Directory('${root.path}/media_exports/$id');
+    await outputDirectory.create(recursive: true);
+    final output = File('${outputDirectory.path}/${mediaExportFileName(task)}');
     final temporary = File('${output.path}.part');
     tasks.retain(taskId);
     try {
@@ -1516,11 +1566,14 @@ class Mp4ExportService {
         if (!await native!.validateLocalInput(input.playlist.toFilePath())) {
           throw StateError('HLS 本地输入校验失败');
         }
+        cancel.check();
         report(10);
-        cancel.onCancel(native!.cancel);
+        final jobId = 'export-${DateTime.now().microsecondsSinceEpoch}';
+        cancel.onCancel(() => native!.cancel(jobId: jobId));
         await native!.muxHls(
           playlist: input.playlist.toFilePath(),
           output: temporary.path,
+          jobId: jobId,
         );
         report(90);
       } else {
@@ -1535,10 +1588,8 @@ class Mp4ExportService {
       }
       report(100);
       await temporary.rename(output.path);
-      // Keep the converted MP4 as the task's durable local media. This lets
-      // the media library reuse the same task metadata and playlist ordering
-      // instead of maintaining a second export-only index.
-      tasks.setLocalRef(taskId, output.path);
+      // MediaLibrary registers the MP4 separately so the original HLS cache
+      // remains available after delivery failure or an explicit file deletion.
       return Mp4ExportTask(
         id: id,
         mediaTaskId: taskId,
@@ -1548,6 +1599,10 @@ class Mp4ExportService {
       );
     } on Cancelled {
       if (await temporary.exists()) await temporary.delete();
+      if (await outputDirectory.exists() &&
+          (await outputDirectory.list().isEmpty)) {
+        await outputDirectory.delete(recursive: true);
+      }
       return Mp4ExportTask(
         id: id,
         mediaTaskId: taskId,
@@ -1558,6 +1613,10 @@ class Mp4ExportService {
       );
     } catch (error, stack) {
       if (await temporary.exists()) await temporary.delete();
+      if (await outputDirectory.exists() &&
+          (await outputDirectory.list().isEmpty)) {
+        await outputDirectory.delete(recursive: true);
+      }
       AppErrorLogger.capture(
         error,
         module: 'media.export',

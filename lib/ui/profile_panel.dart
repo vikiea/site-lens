@@ -420,7 +420,11 @@ class ProfileDetailScreen extends StatelessWidget {
           .toList();
       return Scaffold(
         appBar: AppBar(
-          title: Text(live.name),
+          title: Semantics(
+            namesRoute: true,
+            label: live.name,
+            child: const SizedBox.shrink(),
+          ),
           actions: [
             PopupMenuButton<String>(
               tooltip: '档案操作',

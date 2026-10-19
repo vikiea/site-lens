@@ -67,6 +67,7 @@ void main() {
       final updated = await settings.update({
         'playerVerticalGesture': 'episodeSwitch',
         'mp4ExportDirectory': 'content://com.android.externalstorage.documents/tree/primary%3AMovies',
+        'mediaLibraryNoticeDismissed': true,
       });
       expect(
         updated.playerVerticalGesture,
@@ -76,6 +77,7 @@ void main() {
         updated.mp4ExportDirectory,
         'content://com.android.externalstorage.documents/tree/primary%3AMovies',
       );
+      expect(updated.mediaLibraryNoticeDismissed, isTrue);
       await expectLater(
         settings.update({'playerVerticalGesture': 'invalid'}),
         throwsA(isA<FormatException>()),

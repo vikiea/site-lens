@@ -65,6 +65,34 @@ void main() {
   });
   tearDown(() => db.close());
 
+  test(
+    'schema 8 business backup stays compatible with schema 9 media indexing',
+    () async {
+      final source = ZipDecoder().decodeBytes(await backup.export());
+      final manifest = jsonDecode(
+        utf8.decode(source.findFile('manifest.json')!.readBytes()!),
+      ) as Map<String, dynamic>;
+      manifest['schema'] = 8;
+      final header = utf8.encode(jsonEncode(manifest));
+      final body = source.findFile('business.json')!.readBytes()!;
+      final bytes = ZipEncoder().encodeBytes(
+        Archive()
+          ..add(
+            ArchiveFile('manifest.json', header.length, header)
+              ..compression = CompressionType.none,
+          )
+          ..add(
+            ArchiveFile('business.json', body.length, body)
+              ..compression = CompressionType.none,
+          ),
+      );
+      final snapshot = await backup.validate(bytes);
+      expect(snapshot.profiles, 1);
+      await backup.restore(snapshot);
+      expect((await db.profiles()).single.name, '保留档案');
+    },
+  );
+
   test('business backup roundtrips resources, values, preferences and disables approvals', () async {
     final bytes = await backup.export();
     final snapshot = await backup.validate(bytes);

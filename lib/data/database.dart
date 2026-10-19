@@ -117,6 +117,11 @@ const _v8ErrorLogsTable =
     'happened_at TEXT NOT NULL, level TEXT NOT NULL, module TEXT NOT NULL, '
     'message TEXT NOT NULL, details TEXT NOT NULL, context TEXT)';
 
+const _v9MediaArtifactsTable =
+    'CREATE TABLE IF NOT EXISTS media_artifacts('
+    'task_id TEXT PRIMARY KEY REFERENCES media_tasks(id) ON DELETE CASCADE, '
+    'metadata TEXT NOT NULL)';
+
 // Drift's SQL API keeps the small schema explicit and permits in-memory tests.
 // No browser cookie or password is copied into this database.
 class AppDatabase extends GeneratedDatabase {
@@ -136,7 +141,7 @@ class AppDatabase extends GeneratedDatabase {
   static void Function(String step)? migrationDebugHook;
 
   @override
-  int get schemaVersion => 8;
+  int get schemaVersion => 9;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -158,6 +163,7 @@ class AppDatabase extends GeneratedDatabase {
         'CREATE TABLE health_run_leases(name TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at INTEGER NOT NULL)',
         ..._v5Tables,
         _v8ErrorLogsTable,
+        _v9MediaArtifactsTable,
       ]) {
         await customStatement(sql);
       }
@@ -170,6 +176,7 @@ class AppDatabase extends GeneratedDatabase {
       if (from < 6) await _migrateV5toV6();
       if (from < 7) await _migrateV6toV7();
       if (from < 8) await _migrateV7toV8();
+      if (from < 9) await customStatement(_v9MediaArtifactsTable);
     },
     beforeOpen: (_) async {
       await customStatement('PRAGMA foreign_keys = ON');
@@ -1368,6 +1375,26 @@ class AppDatabase extends GeneratedDatabase {
 
   Future<void> deleteMediaTask(String id) =>
       customStatement('DELETE FROM media_tasks WHERE id=?', [id]);
+
+  Future<List<Map<String, dynamic>>> mediaArtifacts() async =>
+      (await customSelect('SELECT metadata FROM media_artifacts').get())
+          .map(
+            (row) =>
+                jsonDecode(row.read<String>('metadata'))
+                    as Map<String, dynamic>,
+          )
+          .toList();
+
+  Future<void> saveMediaArtifact(
+    String taskId,
+    Map<String, Object?> metadata,
+  ) => customStatement(
+    'INSERT INTO media_artifacts(task_id,metadata) VALUES(?,?) ON CONFLICT(task_id) DO UPDATE SET metadata=excluded.metadata',
+    [taskId, jsonEncode(metadata)],
+  );
+
+  Future<void> deleteMediaArtifact(String taskId) =>
+      customStatement('DELETE FROM media_artifacts WHERE task_id=?', [taskId]);
 
   Future<void> appendAppError({
     required String level,

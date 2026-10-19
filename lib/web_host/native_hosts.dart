@@ -326,7 +326,10 @@ class NativeHosts extends WebHostEvents {
         final rawMime = (raw['mime'] as String? ?? '').trim();
         final thumbnailUrl = optionalMediaUri(raw['thumbnail'] as String?);
         final episodeNumber = (raw['episodeNumber'] as num?)?.toInt();
-        final rawTitle = (raw['title'] as String? ?? '').trim();
+        final observedTitle = (raw['title'] as String? ?? '').trim();
+        final rawTitle = observedTitle.isEmpty
+            ? session.title.trim()
+            : observedTitle;
         final title =
             episodeNumber != null &&
                 !RegExp(r'第\s*\d+\s*[集话]').hasMatch(rawTitle)
@@ -614,7 +617,15 @@ class NativeHosts extends WebHostEvents {
         }
         final sourceUrl = webUri(request.documentUrl);
         final mediaUrl = webUri(args['url'] as String? ?? '');
-        final title = args['title'] as String? ?? '';
+        final rawTitle = args['title'] as String? ?? '';
+        final episodeNumber = (args['episodeNumber'] as num?)?.toInt();
+        final title =
+            episodeNumber != null &&
+                episodeNumber > 0 &&
+                episodeNumber < 100000 &&
+                !RegExp(r'第\s*\d+\s*[集话期]').hasMatch(rawTitle)
+            ? '$rawTitle - 第$episodeNumber集'
+            : rawTitle;
         final thumbnailUrl = optionalMediaUri(args['thumbnail'] as String?);
         final rawMime = (args['mime'] as String? ?? '').trim();
         final mime = rawMime.isEmpty ? inferMediaMime(mediaUrl) : rawMime;
