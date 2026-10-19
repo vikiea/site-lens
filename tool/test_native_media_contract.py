@@ -10,6 +10,7 @@ CONTROLLER = (ANDROID / "BrowserMediaController.kt").read_text()
 SERVICE = (ANDROID / "BrowserMediaService.kt").read_text()
 LIFECYCLE = (ROOT / "web_assets/media_lifecycle.js").read_text()
 TRANSFER = (ANDROID / "ResumableMediaTransfer.kt").read_text()
+DOWNLOAD_RUNTIME = (ANDROID / "NativeDownloadRuntime.kt").read_text()
 
 
 class NativeMediaContractTests(unittest.TestCase):
@@ -43,7 +44,13 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn("data.frame !== frameId", LIFECYCLE)
         self.assertIn("data.command <= commandSequence", LIFECYCLE)
         self.assertIn("post('ack'", LIFECYCLE)
-        self.assertIn("post('gone')", LIFECYCLE)
+        self.assertIn("pagehide", LIFECYCLE)
+        self.assertNotIn("post('gone')", LIFECYCLE.split("window.addEventListener('pagehide'", 1)[1].split("});", 1)[0])
+        self.assertIn("site-lens-media-frame-gone", LIFECYCLE)
+        self.assertIn('childFrame', CONTROLLER)
+        self.assertIn('childParentFrame', LIFECYCLE)
+        self.assertIn('parentFrame', CONTROLLER)
+        self.assertIn('isDescendant', CONTROLLER)
 
     def test_javascript_splits_candidate_telemetry(self):
         self.assertIn("post('state', state)", LIFECYCLE)
@@ -56,6 +63,16 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn('Content-Range', TRANSFER)
         self.assertIn('RandomAccessFile(partial, "rw")', TRANSFER)
         self.assertIn('partial.length()', TRANSFER)
+        self.assertIn('媒体分段响应缺少验证标识', TRANSFER)
+        self.assertIn('publishIfActive', TRANSFER)
+
+    def test_legacy_migration_can_recover_a_staged_copy(self):
+        self.assertIn('stagedFinal = File(finalTarget.path + ".legacy.tmp")', DOWNLOAD_RUNTIME)
+        self.assertIn('stagedPartial = File(partialTarget.path + ".legacy.tmp")', DOWNLOAD_RUNTIME)
+        self.assertIn('commitLegacyCopy(stagedFinal, finalTarget)', DOWNLOAD_RUNTIME)
+        self.assertIn('commitLegacyCopy(stagedPartial, partialTarget)', DOWNLOAD_RUNTIME)
+        self.assertIn('private fun commitLegacyCopy', DOWNLOAD_RUNTIME)
+        self.assertIn('if (staged.exists()) runCatching { staged.delete() }', DOWNLOAD_RUNTIME)
 
 
 if __name__ == "__main__":

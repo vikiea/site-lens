@@ -672,11 +672,6 @@ class ControlledHttp {
               written != range!.end! - range.start + 1)) {
         throw const HttpException('媒体响应未完整接收');
       }
-      if (response.statusCode == 206 &&
-          range!.total != null &&
-          range.end! + 1 != range.total) {
-        throw const HttpException('媒体响应只包含部分区间');
-      }
       return FetchFileResponse(
         url: uri,
         status: response.statusCode,

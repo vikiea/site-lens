@@ -30,6 +30,7 @@ class BrowserMediaController(
         val document: String,
         val proxy: JavaScriptReplyProxy,
         val main: Boolean,
+        val parent: String? = null,
         var playing: Boolean = false,
         var resumable: Boolean = false,
         var canSkip: Boolean = false,
@@ -82,12 +83,16 @@ class BrowserMediaController(
         if (!id.matches(Regex("[a-zA-Z0-9_-]{1,96}")) || id in retired) return
         if (!document.matches(Regex("[a-zA-Z0-9_-]{1,96}")) || document in retiredDocuments) return
         if (data.optString("kind") == "hello") {
+            val parent = if (main) null else data.optString("parentFrame").takeIf {
+                it.matches(Regex("[a-zA-Z0-9_-]{1,96}"))
+            }
+            if (!main && parent == null) return
             var promoted = emptyList<Frame>()
             if (main && document != id) return
             if (!main && activeDocument != document) {
                 val staged = pendingFrames[id]
-                if (staged != null && (staged.proxy !== proxy || staged.document != document)) return
-                pendingFrames[id] = Frame(id, document, proxy, false)
+                if (staged != null && (staged.proxy !== proxy || staged.document != document || staged.parent != parent)) return
+                pendingFrames[id] = Frame(id, document, proxy, false, parent)
                 while (pendingFrames.size > 128) pendingFrames.remove(pendingFrames.keys.first())
                 return
             }
@@ -98,13 +103,13 @@ class BrowserMediaController(
             }
             val existing = frames[id]
             if (existing != null &&
-                (existing.proxy !== proxy || existing.main != main || existing.document != document)
+                (existing.proxy !== proxy || existing.main != main || existing.document != document || existing.parent != parent)
             ) return
             if (existing == null && frames.size + pendingFrames.size >= 128) {
                 diagnostic("frame_limit")
                 return
             }
-            val frame = existing ?: Frame(id, document, proxy, main).also { frames[id] = it }
+            val frame = existing ?: Frame(id, document, proxy, main, parent).also { frames[id] = it }
             if (main) {
                 mainFrame = id
                 navigationPending = false
@@ -119,6 +124,29 @@ class BrowserMediaController(
             it.proxy === proxy && it.main == main && it.document == document
         } ?: return
         if (data.optLong("epoch", -1) != epoch) return
+        if (data.optString("kind") == "gone" && main) {
+            val child = data.optString("childFrame")
+            val childParent = data.optString("childParentFrame").takeIf {
+                it.matches(Regex("[a-zA-Z0-9_-]{1,96}"))
+            } ?: id
+            val childFrame = frames[child] ?: pendingFrames[child]
+            val parentOwnedBySender = childParent == id || isDescendant(childParent, id)
+            if (id == mainFrame && document == activeDocument &&
+                child.matches(Regex("[a-zA-Z0-9_-]{1,96}")) && childFrame != null &&
+                !childFrame.main && childFrame.document == document && childFrame.parent == childParent &&
+                parentOwnedBySender
+            ) {
+                frames.remove(child)
+                pendingFrames.remove(child)
+                resumeFrames.remove(child)
+                retire(child)
+                updateNotification()
+                return
+            }
+            // A child retirement message must never fall through to the
+            // main-document reset path when its ownership proof is invalid.
+            return
+        }
         when (data.optString("kind")) {
             "gone" -> {
                 if (main) resetFrames()
@@ -163,6 +191,16 @@ class BrowserMediaController(
     private fun retire(id: String) {
         retired.add(id)
         if (retired.size > 512) retired.remove(retired.first())
+    }
+    private fun isDescendant(id: String, ancestor: String): Boolean {
+        val seen = mutableSetOf<String>()
+        var current = frames[id] ?: pendingFrames[id]
+        while (current != null && seen.add(current.id)) {
+            val parent = current.parent ?: return false
+            if (parent == ancestor) return true
+            current = frames[parent] ?: pendingFrames[parent]
+        }
+        return false
     }
     private fun resetFrames() {
         stopService()

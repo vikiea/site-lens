@@ -3,6 +3,7 @@ package dev.vikiea.site_lens
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FilterInputStream
+import java.io.IOException
 import java.io.InputStream
 import java.io.InterruptedIOException
 import java.net.HttpURLConnection
@@ -121,6 +122,67 @@ class ResumableMediaTransferTest {
         assertEquals(4L, size)
         assertArrayEquals(byteArrayOf(5, 6, 7, 8), partial.readBytes())
         assertNull(replacement.properties["Range"])
+    }
+
+    @Test
+    fun bounded206ResponsesContinueUntilTheWholeFileIsPresent() = fixture { root ->
+        val first = FakeConnection(
+            200,
+            mapOf("ETag" to "\"v1\"", "Content-Length" to "2"),
+            FailingInputStream(byteArrayOf(1, 2)),
+        )
+        val second = FakeConnection(
+            206,
+            mapOf(
+                "ETag" to "\"v1\"",
+                "Content-Range" to "bytes 2-3/6",
+                "Content-Length" to "2",
+            ),
+            ByteArrayInputStream(byteArrayOf(3, 4)),
+        )
+        val third = FakeConnection(
+            206,
+            mapOf(
+                "ETag" to "\"v1\"",
+                "Content-Range" to "bytes 4-5/6",
+                "Content-Length" to "2",
+            ),
+            ByteArrayInputStream(byteArrayOf(5, 6)),
+        )
+        val responses = ArrayDeque(listOf(first, second, third))
+        val partial = File(root, "video.part")
+        val url = URL("https://cdn.example/video").toURI()
+        val size = ResumableMediaTransfer(connect = { responses.removeFirst() })
+            .transfer(url, url, partial, "test")
+        assertEquals(6L, size)
+        assertArrayEquals(byteArrayOf(1, 2, 3, 4, 5, 6), partial.readBytes())
+        assertEquals("bytes=4-", third.properties["Range"])
+        assertEquals("\"v1\"", third.properties["If-Range"])
+    }
+
+    @Test
+    fun bounded206WithoutValidatorFailsWithinTheRetryBudget() = fixture { root ->
+        var requests = 0
+        val partial = File(root, "video.part")
+        val url = URL("https://cdn.example/video").toURI()
+        var failed = false
+        try {
+            ResumableMediaTransfer(connect = {
+                requests++
+                FakeConnection(
+                    206,
+                    mapOf(
+                        "Content-Range" to "bytes 0-1/6",
+                        "Content-Length" to "2",
+                    ),
+                    ByteArrayInputStream(byteArrayOf(1, 2)),
+                )
+            }).transfer(url, url, partial, "test")
+        } catch (_: IOException) {
+            failed = true
+        }
+        assertEquals(true, failed)
+        assertEquals(4, requests)
     }
 
     private fun fixture(run: (File) -> Unit) {

@@ -10,8 +10,13 @@
   const resumeNodes = new Set();
   const contexts = new Set();
   const resumeContexts = new Set();
+  // Keep the last known direct-child identity even after the iframe has been
+  // detached from window.frames. A pagehide message can arrive after the DOM
+  // removal, so the live frame list is not a reliable ownership check.
+  const childFrames = new WeakMap();
   let frameId = newFrameId();
   let documentId = window.parent === window ? frameId : null;
+  let parentFrameId = null;
   let epoch = -1;
   let commandSequence = -1;
   let connected = false;
@@ -408,13 +413,45 @@
   window.addEventListener('message', event => {
     const data = event.data;
     if (!data || data.token !== config.token) return;
+    if (alive && documentId && data.kind === 'site-lens-media-frame-gone') {
+      const knownFrame = event.source && childFrames.get(event.source);
+      const targetFrame = data.childFrame || data.frame;
+      const targetParent = data.childParentFrame || frameId;
+      if (knownFrame === data.frame &&
+          typeof targetFrame === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(targetFrame) &&
+          typeof targetParent === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(targetParent)) {
+        setTimeout(() => {
+          if (!alive || !documentId) return;
+          if (window.parent === window) {
+            post('gone', {
+              childFrame: targetFrame,
+              childParentFrame: targetParent,
+            });
+            return;
+          }
+          try {
+            window.parent.postMessage({
+              kind: 'site-lens-media-frame-gone',
+              token: config.token,
+              frame: frameId,
+              childFrame: targetFrame,
+              childParentFrame: targetParent,
+            }, '*');
+          } catch (_) {}
+        }, 0);
+      }
+      return;
+    }
     if (alive && documentId && data.kind === 'site-lens-media-frame-hello') {
-      if (directChildren().includes(event.source)) {
+      if (directChildren().includes(event.source) &&
+          typeof data.frame === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(data.frame)) {
+        childFrames.set(event.source, data.frame);
         try {
           event.source.postMessage({
             kind: 'site-lens-media-frame-id',
             token: config.token,
             document: documentId,
+            parentFrame: frameId,
           }, '*');
         } catch (_) {}
       }
@@ -423,22 +460,25 @@
     if (window.parent !== window &&
         event.source === window.parent &&
         data.kind === 'site-lens-media-frame-id' &&
-        typeof data.document === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(data.document)) {
+        typeof data.document === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(data.document) &&
+        typeof data.parentFrame === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(data.parentFrame)) {
+      parentFrameId = data.parentFrame;
       if (documentId && documentId !== data.document) {
         blocked = true;
         pause();
         frameId = newFrameId();
+        parentFrameId = data.parentFrame;
         epoch = -1; commandSequence = -1; connected = false;
         lastState = ''; lastCandidates = '';
       }
       if (documentId === data.document) {
         broadcastDocumentId();
-        post('hello');
+        post('hello', {parentFrame: parentFrameId});
         return;
       }
       documentId = data.document;
       broadcastDocumentId();
-      post('hello');
+      post('hello', {parentFrame: parentFrameId});
     }
   });
   Object.defineProperty(window, '__siteLensMediaControl', {value: {apply, connect}, configurable: false});
@@ -484,7 +524,15 @@
     });
   }
   window.addEventListener('pagehide', () => {
-    post('gone');
+    if (window.parent !== window) {
+      try {
+        window.parent.postMessage({
+          kind: 'site-lens-media-frame-gone',
+          token: config.token,
+          frame: frameId,
+        }, '*');
+      } catch (_) {}
+    }
     alive = false;
     blocked = true;
     pause();
@@ -493,6 +541,7 @@
     if (event.persisted) {
       frameId = newFrameId();
       documentId = window.parent === window ? frameId : null;
+      parentFrameId = null;
       epoch = -1; commandSequence = -1;
       connected = false; alive = true; lastState = ''; lastCandidates = '';
     }

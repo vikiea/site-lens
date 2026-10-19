@@ -155,8 +155,8 @@ assert.equal(outbound.filter(value => value.kind === 'state').at(-1).playing, tr
 console.log('Large candidate set keeps state telemetry and chunks candidates under the native limit PASS.');
 
 handlers.get('pagehide')?.({});
-assert.equal(outbound.at(-1).kind, 'gone');
-console.log('Frame lifecycle retirement PASS.');
+assert.notEqual(outbound.at(-1)?.kind, 'gone');
+console.log('Frame lifecycle retirement avoids a pagehide bridge post PASS.');
 
 function timingFrame({main, parent, bridge, frameName}) {
   const localHandlers = new Map();
@@ -297,8 +297,24 @@ timingChildMessage?.({
     kind: 'site-lens-media-frame-id',
     token: 'document-token',
     document: timingMainHello.document,
+    parentFrame: 'timing-main',
   },
 });
 assert.equal(nestedMessages.at(-1).kind, 'site-lens-media-frame-id');
 assert.equal(nestedMessages.at(-1).document, timingMainHello.document);
 console.log('Nested iframe parent response and child reconnect broadcast PASS.');
+
+timingMainOutbound.length = 0;
+timingMain.frames = [];
+timingChildMessage?.({
+  source: nestedChild,
+  data: {
+    kind: 'site-lens-media-frame-gone',
+    token: 'document-token',
+    frame: 'timing-grandchild',
+  },
+});
+await new Promise(resolve => setTimeout(resolve, 10));
+assert.equal(timingMainOutbound.at(-1)?.kind, 'gone');
+assert.equal(timingMainOutbound.at(-1)?.childFrame, 'timing-grandchild');
+console.log('Detached nested iframe retirement reaches native after DOM removal PASS.');

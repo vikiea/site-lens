@@ -56,9 +56,11 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
                         }
                     },
                 )
-                if (isObsolete()) return@withFileLock Result.failure()
-                check(partial.length() > 0L) { "媒体响应为空" }
-                check(partial.renameTo(finalFile)) { "无法提交媒体文件" }
+                val published = transfer.publishIfActive(::isObsolete) {
+                    check(partial.length() > 0L) { "媒体响应为空" }
+                    check(partial.renameTo(finalFile)) { "无法提交媒体文件" }
+                }
+                if (published == null) return@withFileLock Result.failure()
                 File(partial.path + ".resume").delete()
                 File(partial.path + ".resume.tmp").delete()
                 success(finalFile)

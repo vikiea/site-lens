@@ -1157,6 +1157,7 @@ class MediaDownloadService {
       if (size == 0) throw StateError('媒体响应为空');
       final destination = File('${directory.path}/${task.cacheKey}.media');
       if (await destination.exists()) await destination.delete();
+      if (_stopping.contains(task.id)) throw const Cancelled();
       final finalFile = await base.rename(destination.path);
       await _deleteResumeState(base);
       current = tasks.updateProgress(task.id, size, totalBytes: size);
@@ -1296,6 +1297,7 @@ class MediaDownloadService {
       await temporaryPlaylist.writeAsString(output.join('\n'), flush: true);
       final resourceState = File('${staging.path}/resources.json');
       if (await resourceState.exists()) await resourceState.delete();
+      if (_stopping.contains(task.id)) throw const Cancelled();
       await staging.rename(finalDirectory.path);
       final finalFile = File('${finalDirectory.path}/index.m3u8');
       current = tasks.updateProgress(task.id, totalBytes);
@@ -1479,6 +1481,8 @@ class MediaDownloadService {
   Future<void> _deleteResumeState(File partial) async {
     final metadata = File('${partial.path}.resume.json');
     if (await metadata.exists()) await metadata.delete();
+    final temporary = File('${metadata.path}.tmp');
+    if (await temporary.exists()) await temporary.delete();
   }
 
   Future<Map<String, dynamic>> _resumeState(File partial) async {
@@ -1505,6 +1509,17 @@ class MediaDownloadService {
     }
   }
 
+  ({int start, int end, int? total})? _parseMediaContentRange(String? raw) {
+    if (raw == null) return null;
+    final match = RegExp(r'^bytes (\d+)-(\d+)/(\d+|\*)$').firstMatch(raw);
+    if (match == null) return null;
+    return (
+      start: int.parse(match.group(1)!),
+      end: int.parse(match.group(2)!),
+      total: match.group(3) == '*' ? null : int.parse(match.group(3)!),
+    );
+  }
+
   /// Retry from flushed bytes, never from bytes buffered only in memory.
   /// Sidecars contain a hashed resource identity and validators, no credentials.
   Future<void> _downloadFile(
@@ -1515,8 +1530,9 @@ class MediaDownloadService {
     required int maxBytes,
   }) async {
     final identity = sha256.convert(utf8.encode(url.toString())).toString();
-    Object? lastError;
-    for (var attempt = 0; attempt < 4; attempt++) {
+    Object lastError = const SocketException('媒体连接失败');
+    var attempt = 0;
+    while (true) {
       cancel.check();
       final metadata = await _resumeState(partial);
       final validator = metadata['validator'] as String?;
@@ -1576,6 +1592,11 @@ class MediaDownloadService {
           await partial.writeAsBytes(const [], flush: true);
           await _deleteResumeState(partial);
           lastError = StateError('媒体 Range 已失效，重新下载');
+          if (attempt >= 3) throw lastError;
+          await Future<void>.delayed(
+            Duration(milliseconds: 100 * (1 << attempt)),
+          );
+          attempt++;
           continue;
         }
         if (response.status == 401 || response.status == 403) {
@@ -1586,6 +1607,22 @@ class MediaDownloadService {
         }
         if (response.status != 200 && response.status != 206) {
           throw StateError('媒体下载 HTTP ${response.status}');
+        }
+        if (response.status == 206) {
+          final range = _parseMediaContentRange(
+            response.headers[HttpHeaders.contentRangeHeader],
+          );
+          final received = await partial.length();
+          if (range?.total != null && received < range!.total!) {
+            if (_responseValidator(response.headers) == null &&
+                validator == null) {
+              throw const HttpException('媒体分段响应缺少验证标识');
+            }
+            // Some CDNs cap an open-ended Range response. Keep the flushed
+            // bytes and request the next interval from the new offset.
+            attempt = 0;
+            continue;
+          }
         }
         return;
       } on Cancelled {
@@ -1604,9 +1641,11 @@ class MediaDownloadService {
         await Future<void>.delayed(
           Duration(milliseconds: 100 * (1 << attempt)),
         );
+        attempt++;
+      } else {
+        throw lastError;
       }
     }
-    throw lastError ?? const SocketException('媒体连接失败');
   }
 
   /// CDN edges can reset an otherwise valid request while rotating a signed

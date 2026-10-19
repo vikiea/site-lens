@@ -150,10 +150,33 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
     private fun migrateLegacy(record: NativeMediaTaskRepository.Record): Map<String, Any?>? {
         val legacyId = record.downloadId
         if (legacyId < 0L) return null
+        val finalTarget = NativeMediaDownloadWorker.finalFile(context, record)
+        val partialTarget = NativeMediaDownloadWorker.partialFile(context, record)
+
+        fun completedResult(target: File): Map<String, Any?> = mapOf(
+            "taskId" to record.taskId,
+            "state" to "completed",
+            "bytesDownloaded" to target.length(),
+            "totalBytes" to target.length(),
+            "localUri" to Uri.fromFile(target).toString(),
+        )
+
         var localUri: Uri? = null
         var completed = false
         legacyManager.query(DownloadManager.Query().setFilterById(legacyId)).use { row ->
             if (!row.moveToFirst()) {
+                val stagedFinal = File(finalTarget.path + ".legacy.tmp")
+                if (stagedFinal.isFile && stagedFinal.length() > 0L) {
+                    commitLegacyCopy(stagedFinal, finalTarget)
+                    repository.save(record.copy(downloadId = -1L, workId = null, paused = false, cancelled = false))
+                    return completedResult(finalTarget)
+                }
+                val stagedPartial = File(partialTarget.path + ".legacy.tmp")
+                if (stagedPartial.isFile && stagedPartial.length() > 0L) {
+                    commitLegacyCopy(stagedPartial, partialTarget)
+                    repository.save(record.copy(downloadId = -1L, workId = null, paused = true, cancelled = false))
+                    return null
+                }
                 repository.save(record.copy(downloadId = -1L))
                 return null
             }
@@ -161,8 +184,7 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
                 DownloadManager.STATUS_SUCCESSFUL
             localUri = row.getString(row.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI))?.let(Uri::parse)
         }
-        val target = if (completed) NativeMediaDownloadWorker.finalFile(context, record)
-        else NativeMediaDownloadWorker.partialFile(context, record)
+        val target = if (completed) finalTarget else partialTarget
         val temporary = File(target.path + ".legacy.tmp")
         val source = localUri ?: throw IllegalStateException("旧下载文件地址不存在")
         val input = if (source.scheme == "file") {
@@ -179,8 +201,7 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
         // DownloadManager.remove also removes its destination. Keep the copy
         // outside that destination until ownership has been detached.
         check(legacyManager.remove(legacyId) > 0) { "无法解除旧下载任务" }
-        if (target.exists()) check(target.delete()) { "无法替换旧下载文件" }
-        check(temporary.renameTo(target)) { "无法迁移旧下载文件" }
+        commitLegacyCopy(temporary, target)
         repository.save(record.copy(
             downloadId = -1L,
             workId = null,
@@ -188,15 +209,21 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
             cancelled = false,
         ))
         if (completed && target.isFile && target.length() > 0L) {
-            return mapOf(
-                "taskId" to record.taskId,
-                "state" to "completed",
-                "bytesDownloaded" to target.length(),
-                "totalBytes" to target.length(),
-                "localUri" to Uri.fromFile(target).toString(),
-            )
+            return completedResult(target)
         }
         return null
+    }
+
+    /** Commit a staged legacy copy and retain the stage as a recovery point on failure. */
+    private fun commitLegacyCopy(staged: File, target: File) {
+        target.parentFile?.mkdirs()
+        if (!staged.renameTo(target)) {
+            staged.copyTo(target, overwrite = true)
+        }
+        check(target.isFile && target.length() > 0L) { "无法迁移旧下载文件" }
+        // A successful target commit makes the duplicate stage disposable. Do
+        // not turn a cleanup-only failure into a lost migration.
+        if (staged.exists()) runCatching { staged.delete() }
     }
 
     private fun legacyStatus(record: NativeMediaTaskRepository.Record): Map<String, Any?> {

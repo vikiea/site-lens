@@ -1121,9 +1121,25 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         accepting = false; generation++; expectedUrl = null; leasedOrigin = null; pageError = null
         entryFollowing = false; entryHops = 0; entryNavigation = null; entryArmed = false
         clearHistoryNavigation()
-        injections.forEach { runCatching { it.remove() } }; injections.clear()
-        runCatching { filterInjection?.remove() }; filterInjection = null
-        bindings.forEach { runCatching { WebViewCompat.removeWebMessageListener(webView, it.world, "lensBridge") } }; bindings.clear()
+        // Android WebView 145 can crash in libwebviewchromium when document
+        // start injections or world listeners are synchronously removed from a
+        // navigation callback. Snapshot the old bridge and detach it after the
+        // callback returns; generation/token checks already fail closed while
+        // the old bridge is waiting for removal.
+        val oldInjections = injections.toList()
+        val oldFilterInjection = filterInjection
+        val oldBindings = bindings.toList()
+        injections.clear()
+        filterInjection = null
+        bindings.clear()
+        mainHandler.post {
+            if (destroyed || rendererGone) return@post
+            oldInjections.forEach { runCatching { it.remove() } }
+            runCatching { oldFilterInjection?.remove() }
+            oldBindings.forEach {
+                runCatching { WebViewCompat.removeWebMessageListener(webView, it.world, "lensBridge") }
+            }
+        }
         event("invalidated")
     }
     fun prepareNavigation(
