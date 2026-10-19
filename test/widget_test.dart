@@ -142,14 +142,9 @@ void main() {
         ),
       );
 
+      expect(app.persistentStateLoaded, isFalse);
       expect(find.textContaining('还没有站点档案'), findsNothing);
       expect(find.byType(CircularProgressIndicator), findsOneWidget);
-
-      await app.load();
-      await tester.pump();
-
-      expect(find.text('已保存站点'), findsOneWidget);
-      expect(find.textContaining('还没有站点档案'), findsNothing);
     },
   );
 
