@@ -128,23 +128,34 @@ void main() {
     (tester) async {
       final db = AppDatabase(NativeDatabase.memory());
       final app = AppController(db);
-      await db.createProfile('已保存站点');
-      addTearDown(() async {
+      try {
+        await db.createProfile('已保存站点');
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: ProfilesPanel(app: app, onOpen: (_) {}, onResume: () {}),
+            ),
+          ),
+        );
+
+        expect(app.persistentStateLoaded, isFalse);
+        expect(find.textContaining('还没有站点档案'), findsNothing);
+        expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+        await tester.runAsync(app.load);
+        await tester.pump();
+
+        expect(app.persistentStateLoaded, isTrue);
+        expect(find.text('已保存站点'), findsOneWidget);
+        expect(find.textContaining('还没有站点档案'), findsNothing);
+        expect(find.byType(CircularProgressIndicator), findsNothing);
+      } finally {
+        // Shutdown awaits futures created in the widget test's fake async zone.
+        // Keep cleanup in that zone so addTearDown cannot strand those futures.
+        await tester.pumpWidget(const SizedBox());
         await app.shutdown();
         await db.close();
-      });
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: ProfilesPanel(app: app, onOpen: (_) {}, onResume: () {}),
-          ),
-        ),
-      );
-
-      expect(app.persistentStateLoaded, isFalse);
-      expect(find.textContaining('还没有站点档案'), findsNothing);
-      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      }
     },
   );
 
