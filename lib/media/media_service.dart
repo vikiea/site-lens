@@ -1077,8 +1077,15 @@ class MediaDownloadService {
     return variants.first.url;
   }
 
-  String? _hlsAttribute(String line, String name) =>
-      RegExp('$name="([^"]+)"').firstMatch(line)?.group(1);
+  String? _hlsAttribute(String line, String name) {
+    final separator = line.indexOf(':');
+    final attributes = separator < 0 ? line : line.substring(separator + 1);
+    final match = RegExp(
+      '(?:^|,)\\s*${RegExp.escape(name)}\\s*=\\s*(?:"([^"]*)"|([^,\\s]*))',
+      caseSensitive: false,
+    ).firstMatch(attributes);
+    return match?.group(1) ?? match?.group(2);
+  }
 
   Future<({String name, int bytes})> _downloadHlsResource(
     String raw,
@@ -1403,8 +1410,13 @@ class HlsPlaylistParser {
   }
 
   String? _attribute(String line, String name) {
-    final match = RegExp('$name="([^"]+)"').firstMatch(line);
-    return match?.group(1);
+    final separator = line.indexOf(':');
+    final attributes = separator < 0 ? line : line.substring(separator + 1);
+    final match = RegExp(
+      '(?:^|,)\\s*${RegExp.escape(name)}\\s*=\\s*(?:"([^"]*)"|([^,\\s]*))',
+      caseSensitive: false,
+    ).firstMatch(attributes);
+    return match?.group(1) ?? match?.group(2);
   }
 
   Uri _local(Uri base, String value) {

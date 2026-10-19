@@ -272,8 +272,23 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         return file
     }
 
-    private fun attribute(line: String, name: String): String? =
-        Regex("$name=\\\"([^\\\"]+)\\\"").find(line)?.groupValues?.get(1)
+    /**
+     * Reads an HLS attribute value in either its quoted or token form.
+     *
+     * HLS uses unquoted tokens for values such as METHOD=AES-128 and quoted
+     * strings for most URIs.  Some cached playlists mix both forms, so only
+     * accepting the quoted form turns a valid encrypted playlist into the
+     * misleading "加密方式缺失" error.
+     */
+    private fun attribute(line: String, name: String): String? {
+        val attributes = line.substringAfter(':', "")
+        val pattern = Regex(
+            "(?:^|,)\\s*${Regex.escape(name)}\\s*=\\s*(?:\"([^\"]*)\"|([^,\\s]*))",
+            RegexOption.IGNORE_CASE,
+        )
+        val match = pattern.find(attributes) ?: return null
+        return match.groupValues[1].ifEmpty { match.groupValues[2] }.ifEmpty { null }
+    }
 
     private fun parseIv(raw: String): ByteArray {
         val value = raw.removePrefix("0x").removePrefix("0X")

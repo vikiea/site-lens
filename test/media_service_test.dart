@@ -403,6 +403,30 @@ void main() {
     );
   });
 
+  test('HLS attributes accept unquoted encryption method and URI', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'site-lens-hls-attributes-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final playlist = File('${root.path}/index.m3u8')
+      ..writeAsStringSync(
+        '#EXTM3U\n'
+        '#EXT-X-KEY:METHOD=AES-128,URI=key.bin\n'
+        '#EXTINF:1,\nseg.ts\n',
+      );
+    final key = File('${root.path}/key.bin')
+      ..writeAsBytesSync(List.filled(16, 1));
+    final segment = File('${root.path}/seg.ts')..writeAsBytesSync([0, 1, 2]);
+
+    final input = const HlsPlaylistParser().parse(
+      playlist.uri,
+      await playlist.readAsString(),
+    );
+
+    expect(input.keys.single.path, key.path);
+    expect(input.segments.single.path, segment.path);
+  });
+
   test(
     'MP4 export reports progress and leaves a validated deliverable',
     () async {
