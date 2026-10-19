@@ -24,38 +24,49 @@ Future<void> main() async {
       details.exception,
       module: 'flutter',
       context: details.library,
+      stack: details.stack,
     );
   };
   PlatformDispatcher.instance.onError = (error, stack) {
-    AppErrorLogger.capture(error, module: 'platform');
-    return false;
+    AppErrorLogger.capture(error, module: 'platform', stack: stack);
+    return true;
   };
-  try {
-    final database = await AppDatabase.open();
-    AppErrorLogger(database);
-    // Liquid glass is composed through wrap() below and loads shader programs
-    // on demand. Do not prewarm during Android startup: emulator Impeller
-    // rasterization can crash while a warmup future is active.
-    // WorkManager is started separately and does not block runApp; the
-    // controller applies the stored schedule after its shared Future is ready.
-    unawaited(HealthScheduler.initializeForAppStartup());
-    runApp(
-      ProviderScope(
-        overrides: [databaseProvider.overrideWithValue(database)],
-        child: const SiteLensApp(),
-      ),
-    );
-  } catch (e) {
-    runApp(
-      MaterialApp(
-        home: Scaffold(
-          body: const SafeArea(
-            child: Center(child: Text('本地数据库无法打开，请检查存储空间后重试。')),
+  await runZonedGuarded(
+    () async {
+      try {
+        final database = await AppDatabase.open();
+        final logger = AppErrorLogger(database);
+        await logger.recoverPending();
+        await logger.recoverNativeReports();
+        // Liquid glass is composed through wrap() below and loads shader programs
+        // on demand. Do not prewarm during Android startup: emulator Impeller
+        // rasterization can crash while a warmup future is active.
+        // WorkManager is started separately and does not block runApp; the
+        // controller applies the stored schedule after its shared Future is ready.
+        unawaited(HealthScheduler.initializeForAppStartup());
+        runApp(
+          ProviderScope(
+            overrides: [databaseProvider.overrideWithValue(database)],
+            child: const SiteLensApp(),
           ),
-        ),
-      ),
-    );
-  }
+        );
+      } catch (error, stack) {
+        AppErrorLogger.capture(error, module: 'startup', stack: stack);
+        runApp(
+          MaterialApp(
+            home: Scaffold(
+              body: const SafeArea(
+                child: Center(child: Text('本地数据库无法打开，请检查存储空间后重试。')),
+              ),
+            ),
+          ),
+        );
+      }
+    },
+    (error, stack) {
+      AppErrorLogger.capture(error, module: 'unhandled', stack: stack);
+    },
+  );
 }
 
 bool _isFlutterTestBinding() =>

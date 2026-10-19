@@ -16,6 +16,7 @@ class NativeMediaTaskRepository(context: Context) {
         val url: String = "",
         val sourceUrl: String = "",
         val title: String = "",
+        val seriesDirectory: String = "未命名媒体",
         val paused: Boolean = false,
     )
 
@@ -27,6 +28,7 @@ class NativeMediaTaskRepository(context: Context) {
             .putString("${record.taskId}.url", record.url)
             .putString("${record.taskId}.sourceUrl", record.sourceUrl)
             .putString("${record.taskId}.title", record.title)
+            .putString("${record.taskId}.seriesDirectory", record.seriesDirectory)
             .putBoolean("${record.taskId}.paused", record.paused)
             .putBoolean("${record.taskId}.known", true)
             .apply()
@@ -43,6 +45,7 @@ class NativeMediaTaskRepository(context: Context) {
             prefs.getString("$taskId.url", "") ?: "",
             prefs.getString("$taskId.sourceUrl", "") ?: "",
             prefs.getString("$taskId.title", "") ?: "",
+            prefs.getString("$taskId.seriesDirectory", "未命名媒体") ?: "未命名媒体",
             prefs.getBoolean("$taskId.paused", false),
         )
     }
@@ -55,6 +58,7 @@ class NativeMediaTaskRepository(context: Context) {
             .remove("$taskId.url")
             .remove("$taskId.sourceUrl")
             .remove("$taskId.title")
+            .remove("$taskId.seriesDirectory")
             .remove("$taskId.paused")
             .remove("$taskId.known")
             .apply()

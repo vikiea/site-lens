@@ -34,6 +34,7 @@ class NativeDownloadRuntime(private val context: Context) : MethodChannel.Method
         require(taskId.matches(Regex("[A-Za-z0-9._-]{1,128}"))) { "任务 ID 无效" }
         val uri = Uri.parse(call.argument<String>("url")?.trim() ?: error("缺少媒体地址"))
         require(uri.scheme?.lowercase() in setOf("http", "https") && !uri.host.isNullOrBlank() && uri.userInfo == null) { "媒体地址无效" }
+        val seriesDirectory = safeSeriesDirectory(call.argument<String>("seriesDirectory"))
         val request = DownloadManager.Request(uri)
             .setTitle((call.argument<String>("title") ?: "Site Lens media").take(120))
             .setDescription("Site Lens 媒体下载")
@@ -42,7 +43,7 @@ class NativeDownloadRuntime(private val context: Context) : MethodChannel.Method
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setAllowedOverMetered(true)
             .setAllowedOverRoaming(false)
-            .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "site-lens/$taskId.media")
+            .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "site-lens/$seriesDirectory/$taskId.media")
         val saved = repository.read(taskId)
         val existing = saved?.downloadId ?: -1L
         if (existing != -1L) {
@@ -50,7 +51,7 @@ class NativeDownloadRuntime(private val context: Context) : MethodChannel.Method
             if (current["state"] != "failed" && current["state"] != "cancelled") return current
         }
         val id = manager.enqueue(request)
-        repository.save(NativeMediaTaskRepository.Record(taskId, id, call.argument<String>("candidateId") ?: "", call.argument<Number>("generation")?.toLong() ?: 0L, uri.toString(), call.argument<String>("sourceUrl") ?: "", call.argument<String>("title") ?: "", false))
+        repository.save(NativeMediaTaskRepository.Record(taskId, id, call.argument<String>("candidateId") ?: "", call.argument<Number>("generation")?.toLong() ?: 0L, uri.toString(), call.argument<String>("sourceUrl") ?: "", call.argument<String>("title") ?: "", seriesDirectory, false))
         return query(id)
     }
 
@@ -104,6 +105,7 @@ class NativeDownloadRuntime(private val context: Context) : MethodChannel.Method
     private fun resume(taskId: String): Map<String, Any?> {
         val record = repository.read(taskId) ?: error("媒体任务不存在")
         require(record.url.isNotBlank()) { "媒体任务缺少恢复地址" }
+        val seriesDirectory = safeSeriesDirectory(record.seriesDirectory)
         val request = DownloadManager.Request(Uri.parse(record.url))
             .setTitle(record.title.take(120))
             .setDescription("Site Lens 媒体下载")
@@ -112,10 +114,18 @@ class NativeDownloadRuntime(private val context: Context) : MethodChannel.Method
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setAllowedOverMetered(true)
             .setAllowedOverRoaming(false)
-            .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "site-lens/$taskId.media")
+            .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "site-lens/$seriesDirectory/$taskId.media")
         val id = manager.enqueue(request)
         repository.save(record.copy(downloadId = id, paused = false))
         return query(id) + mapOf("taskId" to taskId)
+    }
+
+    private fun safeSeriesDirectory(raw: String?): String {
+        val value = raw?.trim().orEmpty()
+            .replace(Regex("[^\\p{L}\\p{N}._-]"), "_")
+            .trim('.', ' ', '_')
+            .take(80)
+        return if (value.isBlank()) "未命名媒体" else value
     }
 
     private fun delete(taskId: String) {

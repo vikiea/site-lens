@@ -20,6 +20,7 @@ class FakeNativeDownloads extends NativeDownloadRuntime {
     MediaTask task,
     MediaCandidate candidate, {
     String? title,
+    String? seriesDirectory,
   }) async {
     calls.add('start:${task.id}');
     return statuses[task.id] ?? {'state': 'downloading'};
@@ -40,11 +41,12 @@ class FakeNativeDownloads extends NativeDownloadRuntime {
 }
 
 MediaCandidate candidate({
+  String id = 'candidate-1',
   String url = 'https://cdn.example/video.mp4',
   String mime = 'video/mp4',
   String title = 'video',
 }) => MediaCandidate(
-  id: 'candidate-1',
+  id: id,
   hostId: 7,
   generation: 3,
   sourceUrl: Uri.parse('https://example.com/watch'),
@@ -71,6 +73,56 @@ void main() {
       ),
     );
     expect(task.episodeLabel, '第3集');
+  });
+
+  test('media tasks deduplicate observation IDs for the same stream', () {
+    final store = MediaTaskStore();
+    final first = store.create(candidate(id: 'observation-1'));
+    final second = store.create(candidate(id: 'observation-2'));
+    expect(second.id, first.id);
+    expect(store.tasks, hasLength(1));
+  });
+
+  test('series directory names remove episode markers safely', () {
+    expect(mediaSeriesDirectoryName('母衣半暖默许春朝 - 第3集'), '母衣半暖默许春朝');
+    expect(mediaSeriesDirectoryName('A/B: episode=12'), 'A_B');
+    expect(mediaSeriesDirectoryName(''), '未命名媒体');
+  });
+
+  test('media playlist groups one series and sorts episodes', () {
+    final store = MediaTaskStore();
+    final first = store.create(
+      candidate(
+        title: '系列 - 第1集',
+        id: 'episode-1',
+        url: 'https://cdn.example/episode-1.mp4',
+      ),
+    );
+    final second = store.create(
+      candidate(
+        title: '系列 - 第2集',
+        id: 'episode-2',
+        url: 'https://cdn.example/episode-2.mp4',
+      ),
+    );
+    final other = store.create(
+      candidate(
+        title: '其他系列 - 第1集',
+        id: 'other-1',
+        url: 'https://cdn.example/other-1.mp4',
+      ),
+    );
+    for (final task in [first, second, other]) {
+      store.transition(task.id, MediaTaskState.downloading);
+      store.transition(task.id, MediaTaskState.completed);
+      store.transition(task.id, MediaTaskState.playable);
+    }
+
+    final playlist = mediaPlaylistForTasks(store.tasks, second);
+    expect(
+      playlist.map((task) => task.episodeLabel),
+      ['第1集', '第2集'],
+    );
   });
 
   test('media retry clears the previous human-readable failure reason', () {
@@ -464,6 +516,43 @@ void main() {
       );
     },
   );
+
+  test('MP4 export preserves a native human-readable failure reason', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'site-lens-export-error-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final playlist = File('${root.path}/index.m3u8')
+      ..writeAsStringSync('#EXTM3U\n#EXTINF:1,\nseg.ts\n');
+    final segment = File('${root.path}/seg.ts')..writeAsBytesSync([1]);
+    final store = MediaTaskStore(directoryProvider: () async => root);
+    final task = store.create(candidate());
+    store.transition(task.id, MediaTaskState.downloading);
+    store.transition(task.id, MediaTaskState.completed);
+    store.transition(task.id, MediaTaskState.playable);
+    final service = Mp4ExportService(
+      tasks: store,
+      directoryProvider: () async => root,
+      muxer:
+          ({
+            required HlsCacheInput input,
+            required String outputPath,
+            required void Function(int) onProgress,
+            required Cancellation cancellation,
+          }) async {
+            throw PlatformException(
+              code: 'media_export',
+              message: 'HLS 分片不含音视频轨道',
+            );
+          },
+    );
+    final result = await service.export(
+      task.id,
+      HlsCacheInput(playlist: playlist.uri, segments: [segment.uri]),
+    );
+    expect(result.state, ExportState.failed);
+    expect(result.errorCode, 'HLS 分片不含音视频轨道');
+  });
 
   test('relay authorization binds token to session, task and device', () {
     final auth = const RelayAuthorizer().issue(

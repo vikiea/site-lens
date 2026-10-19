@@ -12,6 +12,9 @@ class NativeExportRuntime {
       await _channel.invokeMethod<bool>('validateLocalInput', {'path': path}) ??
       false;
 
+  Future<String?> pickDirectory() =>
+      _channel.invokeMethod<String>('pickDirectory');
+
   Future<String> muxHls({
     required String playlist,
     required String output,
@@ -34,4 +37,14 @@ class NativeExportRuntime {
         'source': source,
         'destination': destination.toString(),
       });
+
+  Future<void> deliverToDirectory({
+    required String source,
+    required Uri directory,
+    required String fileName,
+  }) => _channel.invokeMethod<void>('deliverToDirectory', {
+    'source': source,
+    'directory': directory.toString(),
+    'fileName': fileName,
+  });
 }

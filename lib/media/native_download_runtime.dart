@@ -15,6 +15,7 @@ class NativeDownloadRuntime {
     MediaTask task,
     MediaCandidate candidate, {
     String? title,
+    String? seriesDirectory,
   }) async {
     if (task.candidateId != candidate.id ||
         task.hostId != candidate.hostId ||
@@ -31,6 +32,7 @@ class NativeDownloadRuntime {
       'title':
           title ??
           (task.displayName.isEmpty ? candidate.title : task.displayName),
+      'seriesDirectory': seriesDirectory ?? task.seriesDirectoryName,
     });
     return value ?? const <String, Object?>{};
   }

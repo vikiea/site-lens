@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 
+import '../diagnostics/error_log.dart';
 import '../domain/models.dart';
 import 'media_service.dart';
 
@@ -21,6 +22,53 @@ class NativeMediaRuntime {
   NativePlaybackSession? _active;
   NativePlaybackSession? get active => _active;
 
+  Future<({double brightness, double volume})> levels() async {
+    try {
+      final raw = await _channel.invokeMapMethod<String, Object?>('levels');
+      return (
+        brightness: (raw?['brightness'] as num?)?.toDouble() ?? 0.5,
+        volume: (raw?['volume'] as num?)?.toDouble() ?? 0.5,
+      );
+    } catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.native',
+        context: 'method=levels',
+        stack: stack,
+      );
+      rethrow;
+    }
+  }
+
+  Future<({double brightness, double volume})> setBrightness(double value) =>
+      _setLevel('brightness', value);
+
+  Future<({double brightness, double volume})> setVolume(double value) =>
+      _setLevel('volume', value);
+
+  Future<({double brightness, double volume})> _setLevel(
+    String method,
+    double value,
+  ) async {
+    try {
+      final raw = await _channel.invokeMapMethod<String, Object?>(method, {
+        'value': value.clamp(0, 1),
+      });
+      return (
+        brightness: (raw?['brightness'] as num?)?.toDouble() ?? value,
+        volume: (raw?['volume'] as num?)?.toDouble() ?? value,
+      );
+    } catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.native',
+        context: 'method=$method',
+        stack: stack,
+      );
+      rethrow;
+    }
+  }
+
   Future<NativePlaybackSession> open(
     MediaCandidate candidate, {
     required int hostId,
@@ -34,7 +82,7 @@ class NativeMediaRuntime {
       generation: generation,
       sourceUrl: sourceUrl,
     );
-    final raw = await _channel.invokeMapMethod<String, Object?>('open', {
+    final raw = await _invokeMap('open', {
       'sessionId': sessionId,
       'candidateId': candidate.id,
       'url': candidate.mediaUrl.toString(),
@@ -48,7 +96,7 @@ class NativeMediaRuntime {
     if (!await file.exists() || await file.length() == 0) {
       throw StateError('本地缓存不存在');
     }
-    final raw = await _channel.invokeMapMethod<String, Object?>('openLocal', {
+    final raw = await _invokeMap('openLocal', {
       'sessionId': 'play_${task.id}',
       'candidateId': task.candidateId,
       'path': file.path,
@@ -90,11 +138,25 @@ class NativeMediaRuntime {
     String method, [
     Map<String, Object?> arguments = const <String, Object?>{},
   ]) async {
-    final raw = await _channel.invokeMapMethod<String, Object?>(
-      method,
-      arguments,
-    );
+    final raw = await _invokeMap(method, arguments);
     return _decode(raw ?? const <String, Object?>{});
+  }
+
+  Future<Map<String, Object?>?> _invokeMap(
+    String method,
+    Map<String, Object?> arguments,
+  ) async {
+    try {
+      return await _channel.invokeMapMethod<String, Object?>(method, arguments);
+    } catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.native',
+        context: 'method=$method',
+        stack: stack,
+      );
+      rethrow;
+    }
   }
 
   Future<void> _onNativeEvent(MethodCall call) async {
@@ -118,6 +180,13 @@ class NativeMediaRuntime {
       speed: (raw['speed'] as num?)?.toDouble() ?? 1,
       errorCode: raw['errorCode'] as String?,
     );
+    if (value.state == NativePlaybackState.failed) {
+      AppErrorLogger.capture(
+        StateError(value.errorCode ?? '原生媒体播放失败'),
+        module: 'media.playback',
+        context: 'session=${value.id}',
+      );
+    }
     _active = value.state == NativePlaybackState.stopped ? null : value;
     _states.add(value);
     return value;

@@ -27,11 +27,31 @@ String formatBytes(int bytes) {
   return '${value.toStringAsFixed(digits)} ${units[unit]}';
 }
 
+String formatMediaDuration(int milliseconds) {
+  if (milliseconds <= 0) return '--:--';
+  final totalSeconds = milliseconds ~/ 1000;
+  final seconds = totalSeconds % 60;
+  final minutes = (totalSeconds ~/ 60) % 60;
+  final hours = totalSeconds ~/ 3600;
+  String two(int value) => value.toString().padLeft(2, '0');
+  return hours > 0
+      ? '$hours:${two(minutes)}:${two(seconds)}'
+      : '${two(minutes)}:${two(seconds)}';
+}
+
 void showShortToast(BuildContext context, String message) {
   if (!context.mounted) return;
+  final screenWidth = MediaQuery.sizeOf(context).width;
+  final estimatedWidth = 32 + message.runes.length * 14.0;
+  final width = estimatedWidth.clamp(120.0, screenWidth - 32).toDouble();
   final messenger = ScaffoldMessenger.of(context)..clearSnackBars();
   messenger.showSnackBar(
-    SnackBar(content: Text(message), duration: const Duration(seconds: 1)),
+    SnackBar(
+      content: Text(message, maxLines: 1, overflow: TextOverflow.ellipsis),
+      behavior: SnackBarBehavior.floating,
+      width: width,
+      duration: const Duration(seconds: 1),
+    ),
   );
 }
 

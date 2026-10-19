@@ -67,6 +67,11 @@ class MainActivity : FlutterActivity() {
         if (granted && pending != null) postNotification(pending.first, pending.second)
     }
 
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (nativeExport?.handleActivityResult(requestCode, resultCode, data) == true) return
+        super.onActivityResult(requestCode, resultCode, data)
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
@@ -76,12 +81,25 @@ class MainActivity : FlutterActivity() {
             }
         }
         hosts = NativeWebHostRegistry(this, flutterEngine)
+        registerDiagnosticsChannel(flutterEngine)
         registerDeviceChannel(flutterEngine)
         registerUpdateChannel(flutterEngine)
         registerNativeMediaChannel(flutterEngine)
         registerNativeDownloadChannel(flutterEngine)
         registerNativeExportChannel(flutterEngine)
         registerDlnaChannel(flutterEngine)
+    }
+
+    private fun registerDiagnosticsChannel(flutterEngine: FlutterEngine) {
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "site_lens/diagnostics",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "drain" -> result.success(NativeCrashStore.drain(this))
+                else -> result.notImplemented()
+            }
+        }
     }
 
     private fun registerDeviceChannel(flutterEngine: FlutterEngine) {

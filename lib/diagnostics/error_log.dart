@@ -1,4 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../data/database.dart';
 import '../network/transport.dart';
@@ -12,6 +18,11 @@ class AppErrorLogger {
 
   final AppDatabase db;
   static AppErrorLogger? _current;
+  static Future<void> _pendingWrites = Future<void>.value();
+  @visibleForTesting
+  static Future<Directory> Function()? pendingDirectoryProvider;
+
+  static const _pendingFileName = 'site_lens_pending_errors.jsonl';
 
   static void detach(AppErrorLogger logger) {
     if (identical(_current, logger)) _current = null;
@@ -22,11 +33,27 @@ class AppErrorLogger {
     required String module,
     String? context,
     String level = 'error',
+    StackTrace? stack,
   }) {
     final logger = _current;
-    if (logger == null) return;
+    if (logger == null) {
+      _queuePending(
+        error: error,
+        module: module,
+        context: context,
+        level: level,
+        stack: stack,
+      );
+      return;
+    }
     unawaited(
-      logger.record(error, module: module, context: context, level: level),
+      logger.record(
+        error,
+        module: module,
+        context: context,
+        level: level,
+        stack: stack,
+      ),
     );
   }
 
@@ -35,12 +62,14 @@ class AppErrorLogger {
     required String module,
     String? context,
     String level = 'error',
+    StackTrace? stack,
   }) => recordMessage(
     message: readableError(error),
     details: _redact(error.toString()),
     module: module,
     context: context,
     level: level,
+    stack: stack,
   );
 
   Future<void> recordMessage({
@@ -49,17 +78,138 @@ class AppErrorLogger {
     required String module,
     String? context,
     String level = 'error',
+    StackTrace? stack,
   }) async {
     try {
       await db.appendAppError(
         level: level,
         module: _clip(module, 80),
         message: _clip(message, 240),
-        details: _clip(_redact(details), 1200),
+        details: _clip(_withStack(details, stack), 8000),
         context: context == null ? null : _clip(_redact(context), 300),
       );
     } catch (_) {
       // Diagnostics must never make a failed operation fail again.
+    }
+  }
+
+  /// Imports errors written before the database became available. The file is
+  /// moved out of the way first so an error captured during import cannot
+  /// overwrite the batch currently being recovered.
+  Future<void> recoverPending() async {
+    final file = await _pendingFile();
+    if (file == null || !await file.exists()) return;
+    final processing = File('${file.path}.processing');
+    try {
+      if (await processing.exists()) await processing.delete();
+      await file.rename(processing.path);
+      final lines = await processing.readAsLines();
+      for (final line in lines) {
+        if (line.trim().isEmpty) continue;
+        try {
+          final value = jsonDecode(line) as Map<String, dynamic>;
+          await recordMessage(
+            message: value['message'] as String? ?? '启动前异常',
+            details: value['details'] as String? ?? '无详细信息',
+            module: value['module'] as String? ?? 'startup',
+            context: value['context'] as String?,
+            level: value['level'] as String? ?? 'error',
+            stack: _stack(value['stack'] as String?),
+          );
+        } catch (_) {
+          // A malformed pending row must not prevent later rows from loading.
+        }
+      }
+      await processing.delete();
+    } catch (_) {
+      // Keep the batch for the next startup if the database or filesystem is
+      // temporarily unavailable. New errors are appended to the live file.
+      try {
+        if (await processing.exists()) {
+          await processing.copy(file.path);
+          await processing.delete();
+        }
+      } catch (_) {}
+    }
+  }
+
+  /// Drains Android process and WebView renderer reports written before Dart
+  /// had a chance to initialize its database logger.
+  Future<void> recoverNativeReports() async {
+    try {
+      final rows = await const MethodChannel('site_lens/diagnostics')
+          .invokeListMethod<String>('drain');
+      for (final row in rows ?? const <String>[]) {
+        try {
+          final value = jsonDecode(row) as Map<String, dynamic>;
+          await recordMessage(
+            message: value['message'] as String? ?? '原生异常',
+            details: value['details'] as String? ?? row,
+            module: value['module'] as String? ?? 'android',
+            context: value['context'] as String?,
+            level: value['level'] as String? ?? 'error',
+          );
+        } catch (_) {
+          await recordMessage(message: '原生异常', details: row, module: 'android');
+        }
+      }
+    } catch (_) {
+      // The channel is Android-only and may be unavailable in tests/iOS.
+    }
+  }
+
+  static StackTrace? _stack(String? value) {
+    final text = value?.trim();
+    return text == null || text.isEmpty ? null : StackTrace.fromString(text);
+  }
+
+  static String _withStack(String details, StackTrace? stack) {
+    final clean = _redact(details);
+    final stackText = stack?.toString().trim();
+    if (stackText == null || stackText.isEmpty) return clean;
+    return '$clean\n堆栈：${_redact(stackText)}';
+  }
+
+  static void _queuePending({
+    required Object error,
+    required String module,
+    required String? context,
+    required String level,
+    required StackTrace? stack,
+  }) {
+    final payload = jsonEncode({
+      'happenedAt': DateTime.now().toUtc().toIso8601String(),
+      'level': level,
+      'module': module,
+      'message': readableError(error),
+      'details': _redact(error.toString()),
+      'stack': stack?.toString(),
+      'context': context == null ? null : _redact(context),
+    });
+    _pendingWrites = _pendingWrites.then((_) async {
+      try {
+        final file = await _pendingFile();
+        if (file == null) return;
+        await file.parent.create(recursive: true);
+        await file.writeAsString(
+          '$payload\n',
+          mode: FileMode.append,
+          flush: true,
+        );
+      } catch (_) {
+        // Never let diagnostics alter the original exception path.
+      }
+    });
+  }
+
+  static Future<File?> _pendingFile() async {
+    try {
+      final directory =
+          await (pendingDirectoryProvider?.call() ??
+              getApplicationSupportDirectory());
+      return File('${directory.path}/$_pendingFileName');
+    } catch (_) {
+      return null;
     }
   }
 

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../data/database.dart';
@@ -31,6 +32,42 @@ String? mediaEpisodeLabel(String value) {
   ).firstMatch(value);
   final number = match?.group(1) ?? match?.group(2);
   return number == null ? null : '第${int.parse(number)}集';
+}
+
+List<MediaTask> mediaPlaylistForTasks(
+  Iterable<MediaTask> tasks,
+  MediaTask current,
+) {
+  final items = tasks
+      .where(
+        (task) =>
+            task.seriesDirectoryName == current.seriesDirectoryName &&
+            (task.state == MediaTaskState.completed ||
+                task.state == MediaTaskState.playable),
+      )
+      .toList();
+  if (!items.any((task) => task.id == current.id) &&
+      (current.state == MediaTaskState.completed ||
+          current.state == MediaTaskState.playable)) {
+    items.add(current);
+  }
+  int? episode(MediaTask task) {
+    final match = RegExp(r'(\d+)').firstMatch(task.episodeLabel ?? '');
+    return match == null ? null : int.tryParse(match.group(1)!);
+  }
+
+  items.sort((left, right) {
+    final a = episode(left);
+    final b = episode(right);
+    if (a != null && b != null && a != b) return a.compareTo(b);
+    if (a != null && b == null) return -1;
+    if (a == null && b != null) return 1;
+    final title = left.displayName.toLowerCase().compareTo(
+      right.displayName.toLowerCase(),
+    );
+    return title == 0 ? left.updatedAt.compareTo(right.updatedAt) : title;
+  });
+  return List.unmodifiable(items);
 }
 
 enum NativePlaybackState {
@@ -285,15 +322,25 @@ class MediaTaskStore {
   final _tasks = <String, MediaTask>{};
   final _byCacheKey = <String, String>{};
   final _references = <String, int>{};
+  final _directoryLocks = <String, Future<void>>{};
   MediaTask? task(String id) => _tasks[id];
   List<MediaTask> get tasks => List.unmodifiable(_tasks.values);
+
+  MediaTask? taskForCandidate(MediaCandidate candidate) {
+    final id = _byCacheKey[cacheKey(candidate)];
+    return id == null ? null : _tasks[id];
+  }
 
   String cacheKey(
     MediaCandidate candidate, {
     String quality = '',
     String audio = '',
   }) {
-    final input = '${candidate.id}|${candidate.mediaUrl}|$quality|$audio';
+    // Candidate IDs are observation IDs and can change when a page re-reports
+    // the same stream. Use the normalized media identity so repeated sniffing
+    // and app restores converge on one task.
+    final input =
+        '${candidate.hostId}|${candidate.generation}|${mediaCandidateGroupKey(candidate.mediaUrl)}|$quality|$audio';
     return sha256.convert(utf8.encode(input)).toString();
   }
 
@@ -473,18 +520,36 @@ class MediaTaskStore {
     await db?.deleteMediaTask(taskId);
   }
 
-  Future<Directory> cacheDirectory() async {
+  Future<Directory> cacheDirectory({String? seriesDirectory}) async {
     final root = await _directoryProvider();
-    final directory = Directory('${root.path}/media_cache');
-    await directory.create(recursive: true);
+    final base = Directory('${root.path}/media_cache');
+    final safeSeries = seriesDirectory == null || seriesDirectory.isEmpty
+        ? null
+        : mediaSeriesDirectoryName(seriesDirectory);
+    final directory = safeSeries == null
+        ? base
+        : Directory('${base.path}/$safeSeries');
+    final path = directory.absolute.path;
+    final previous = _directoryLocks[path] ?? Future<void>.value();
+    final current = previous.then((_) => directory.create(recursive: true));
+    _directoryLocks[path] = current;
+    try {
+      await current;
+    } finally {
+      if (identical(_directoryLocks[path], current)) {
+        _directoryLocks.remove(path);
+      }
+    }
     return directory;
   }
+
+  Future<Directory> cacheRootDirectory() => cacheDirectory();
 
   Future<File?> cachedFile(String taskId) async {
     final task = _tasks[taskId];
     final ref = task?.localRef;
     if (ref == null) return null;
-    final root = (await cacheDirectory()).absolute.path;
+    final root = (await cacheRootDirectory()).absolute.path;
     final appRoot = (await _directoryProvider()).absolute.path;
     final exportRoot = Directory('$appRoot/media_exports').absolute.path;
     final file = File(ref).absolute;
@@ -645,7 +710,12 @@ class MediaDownloadService {
     }
     Map<String, Object?> status;
     try {
-      status = await runtime.start(current, candidate);
+      status = await runtime.start(
+        current,
+        candidate,
+        title: current.displayName,
+        seriesDirectory: current.seriesDirectoryName,
+      );
     } catch (error) {
       AppErrorLogger.capture(
         error,
@@ -709,7 +779,9 @@ class MediaDownloadService {
     var current = tasks.task(task.id) ?? task;
     try {
       current = tasks.transition(task.id, MediaTaskState.downloading);
-      final directory = await tasks.cacheDirectory();
+      final directory = await tasks.cacheDirectory(
+        seriesDirectory: task.seriesDirectoryName,
+      );
       final base = File('${directory.path}/${task.cacheKey}.part');
       final finalFile = File('${directory.path}/${task.cacheKey}.media');
       final offset = await base.exists() ? await base.length() : 0;
@@ -805,7 +877,9 @@ class MediaDownloadService {
     Directory? staging;
     try {
       current = tasks.transition(task.id, MediaTaskState.downloading);
-      final directory = await tasks.cacheDirectory();
+      final directory = await tasks.cacheDirectory(
+        seriesDirectory: task.seriesDirectoryName,
+      );
       staging = Directory('${directory.path}/${task.cacheKey}.hls.part');
       await staging.create(recursive: true);
       final finalDirectory = Directory(
@@ -1145,7 +1219,9 @@ class MediaDownloadService {
     if (!await source.exists()) return false;
     final size = await source.length();
     if (size <= 0) return false;
-    final directory = await tasks.cacheDirectory();
+    final directory = await tasks.cacheDirectory(
+      seriesDirectory: task.seriesDirectoryName,
+    );
     final partial = File('${directory.path}/${task.cacheKey}.part');
     await source.copy(partial.path);
     return true;
@@ -1442,14 +1518,25 @@ class Mp4ExportService {
         errorCode: MediaErrorCode.cancelled,
         progress: 0,
       );
-    } catch (error) {
+    } catch (error, stack) {
       if (await temporary.exists()) await temporary.delete();
+      AppErrorLogger.capture(
+        error,
+        module: 'media.export',
+        context: 'task=$taskId',
+        stack: stack,
+      );
       return Mp4ExportTask(
         id: id,
         mediaTaskId: taskId,
         state: ExportState.failed,
         outputPath: output.path,
-        errorCode: error is StateError ? error.message : 'export_failed',
+        errorCode:
+            error is PlatformException &&
+                error.message != null &&
+                error.message!.trim().isNotEmpty
+            ? readableError(StateError(error.message!))
+            : readableError(error),
         progress: 0,
       );
     } finally {

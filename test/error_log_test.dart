@@ -38,4 +38,28 @@ void main() {
       '网络连接中断，请重试',
     );
   });
+
+  test(
+    'error archive keeps a redacted stack trace for crash diagnosis',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final logger = AppErrorLogger(db);
+      addTearDown(() async {
+        AppErrorLogger.detach(logger);
+        await db.close();
+      });
+      await logger.record(
+        StateError('播放失败，uri=https://cdn.example/video.m3u8?token=secret'),
+        module: 'media.playback',
+        stack: StackTrace.fromString('NativePlaybackException at player.kt:42'),
+      );
+
+      final log = (await db.appErrorLogs()).single;
+      expect(
+        log.details,
+        contains('堆栈：NativePlaybackException at player.kt:42'),
+      );
+      expect(log.details, isNot(contains('secret')));
+    },
+  );
 }
