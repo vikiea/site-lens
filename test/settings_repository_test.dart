@@ -62,6 +62,32 @@ void main() {
   );
 
   test(
+    'player gesture and MP4 directory preferences persist together',
+    () async {
+      final updated = await settings.update({
+        'playerVerticalGesture': 'episodeSwitch',
+        'mp4ExportDirectory': 'content://com.android.externalstorage.documents/tree/primary%3AMovies',
+      });
+      expect(
+        updated.playerVerticalGesture,
+        PlayerVerticalGestureMode.episodeSwitch,
+      );
+      expect(
+        updated.mp4ExportDirectory,
+        'content://com.android.externalstorage.documents/tree/primary%3AMovies',
+      );
+      await expectLater(
+        settings.update({'playerVerticalGesture': 'invalid'}),
+        throwsA(isA<FormatException>()),
+      );
+      await expectLater(
+        settings.update({'mp4ExportDirectory': 42}),
+        throwsA(isA<FormatException>()),
+      );
+    },
+  );
+
+  test(
     'glass opacity accepts 0..100 and rejects values outside the range',
     () async {
       final low = AppSettings.fromJson({'glassOpacity': 0});

@@ -34,6 +34,15 @@ String? mediaEpisodeLabel(String value) {
   return number == null ? null : '第${int.parse(number)}集';
 }
 
+String mediaExportFileName(MediaTask task) {
+  final raw = task.displayName.trim().isEmpty ? task.id : task.displayName;
+  final safe = raw
+      .replaceAll(RegExp(r'[\\/:*?"<>|\u0000-\u001f]'), '_')
+      .trim()
+      .replaceAll(RegExp(r'[. ]+$'), '');
+  return '${safe.isEmpty ? task.id : safe}.mp4';
+}
+
 List<MediaTask> mediaPlaylistForTasks(
   Iterable<MediaTask> tasks,
   MediaTask current,
@@ -1513,6 +1522,10 @@ class Mp4ExportService {
       }
       report(100);
       await temporary.rename(output.path);
+      // Keep the converted MP4 as the task's durable local media. This lets
+      // the media library reuse the same task metadata and playlist ordering
+      // instead of maintaining a second export-only index.
+      tasks.setLocalRef(taskId, output.path);
       return Mp4ExportTask(
         id: id,
         mediaTaskId: taskId,

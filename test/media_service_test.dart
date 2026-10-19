@@ -119,10 +119,7 @@ void main() {
     }
 
     final playlist = mediaPlaylistForTasks(store.tasks, second);
-    expect(
-      playlist.map((task) => task.episodeLabel),
-      ['第1集', '第2集'],
-    );
+    expect(playlist.map((task) => task.episodeLabel), ['第1集', '第2集']);
   });
 
   test('media retry clears the previous human-readable failure reason', () {
@@ -463,6 +460,7 @@ void main() {
       );
       expect(successful.state, ExportState.deliverable);
       expect(await File(successful.outputPath!).exists(), isTrue);
+      expect(store.task(task.id)?.localRef, successful.outputPath);
       expect(progress, containsAllInOrder([0, 50, 100]));
     },
   );

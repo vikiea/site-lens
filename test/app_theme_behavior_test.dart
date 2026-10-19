@@ -200,6 +200,10 @@ void main() {
         findsOneWidget,
       );
       expect(
+        find.descendant(of: navigation, matching: find.text('媒体')),
+        findsOneWidget,
+      );
+      expect(
         find.descendant(of: navigation, matching: find.text('设置')),
         findsOneWidget,
       );

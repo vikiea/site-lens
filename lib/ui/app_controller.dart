@@ -202,6 +202,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   int _selectionEpoch = 0;
   Timer? _sessionSaveTimer;
   Future<void> _sessionWrites = Future.value();
+  Future<void> _mp4DeliveryWrites = Future.value();
   AppSettings settings = const AppSettings();
   SiteLensGlassQualityCache? glassQualityCache;
   GlassQuality effectiveGlassQuality = GlassQuality.standard;
@@ -241,6 +242,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   bool restoreBrowserSessions = true;
   bool allowBackgroundPlayback = false;
   bool autoConvertToMp4 = false;
+  String? mp4ExportDirectory;
+  PlayerVerticalGestureMode playerVerticalGesture =
+      PlayerVerticalGestureMode.brightnessVolume;
   FilterPolicy filterPolicy = const FilterPolicy();
 
   /// Entry redirects are always retained by product policy.
@@ -573,6 +577,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     restoreBrowserSessions = settings.restoreBrowserSessions;
     allowBackgroundPlayback = settings.allowBackgroundPlayback;
     autoConvertToMp4 = settings.autoConvertToMp4;
+    mp4ExportDirectory = settings.mp4ExportDirectory;
+    playerVerticalGesture = settings.playerVerticalGesture;
     scriptsDisabled = settings.scriptsDisabled;
     pullToRefresh = settings.pullToRefresh;
     backgroundHealthCheck = settings.backgroundHealthCheck;
@@ -598,6 +604,18 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> setAutoConvertToMp4(bool value) =>
       updateSettings({'autoConvertToMp4': value});
 
+  Future<void> setMp4ExportDirectory(String? value) =>
+      updateSettings({'mp4ExportDirectory': value});
+
+  Future<void> setPlayerVerticalGesture(PlayerVerticalGestureMode value) =>
+      updateSettings({'playerVerticalGesture': value.name});
+
+  /// Refreshes surfaces that derive their content from the durable media task
+  /// store after a foreground export completes.
+  void notifyMediaChanged() {
+    if (!_disposed) notifyListeners();
+  }
+
   Future<void> _autoConvertCompletedMedia(MediaTask task) async {
     if (!autoConvertToMp4) return;
     final file = await mediaTasks.cachedFile(task.id);
@@ -607,13 +625,67 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       final result = await mediaExports.export(task.id, input);
       if (result.state == ExportState.deliverable &&
           result.outputPath != null) {
-        mediaTasks.setLocalRef(task.id, result.outputPath);
+        await _deliverMp4ToConfiguredDirectory(result, task);
         notifyListeners();
       }
     } catch (_) {
       // Download completion remains usable as HLS when optional auto-convert
       // fails; the task UI still exposes manual MP4 export.
     }
+  }
+
+  Future<void> _deliverMp4ToConfiguredDirectory(
+    Mp4ExportTask result,
+    MediaTask task,
+  ) {
+    final previous = _mp4DeliveryWrites;
+    late final Future<void> current;
+    current = previous
+        .catchError((_) {})
+        .then((_) => _deliverMp4ToConfiguredDirectoryNow(result, task));
+    _mp4DeliveryWrites = current.catchError((_) {});
+    return current;
+  }
+
+  Future<void> _deliverMp4ToConfiguredDirectoryNow(
+    Mp4ExportTask result,
+    MediaTask task,
+  ) async {
+    final directoryValue = mp4ExportDirectory?.trim();
+    final sourcePath = result.outputPath;
+    if (directoryValue == null ||
+        directoryValue.isEmpty ||
+        sourcePath == null) {
+      return;
+    }
+    final directoryUri = Uri.tryParse(directoryValue);
+    if (Platform.isAndroid &&
+        nativeExports != null &&
+        directoryUri?.scheme == 'content') {
+      await nativeExports!.deliverToDirectory(
+        source: sourcePath,
+        directory: directoryUri!,
+        fileName: mediaExportFileName(task),
+      );
+      return;
+    }
+    final directory = Directory(directoryValue);
+    await directory.create(recursive: true);
+    var destination = File(
+      '${directory.path}${Platform.pathSeparator}${mediaExportFileName(task)}',
+    );
+    var suffix = 2;
+    while (await destination.exists()) {
+      final name = mediaExportFileName(task);
+      final dot = name.lastIndexOf('.');
+      final stem = dot < 0 ? name : name.substring(0, dot);
+      final extension = dot < 0 ? '' : name.substring(dot);
+      destination = File(
+        '${directory.path}${Platform.pathSeparator}$stem ($suffix)$extension',
+      );
+      suffix++;
+    }
+    await File(sourcePath).copy(destination.path);
   }
 
   Future<void> restoreSavedSessions({bool force = false}) async {

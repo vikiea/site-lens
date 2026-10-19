@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import '../domain/models.dart';
 import '../media/dlna_service.dart';
 import '../media/media_service.dart';
+import '../settings/app_settings.dart';
 import 'app_controller.dart';
 import 'glass_surface.dart';
 import 'ui_primitives.dart';
@@ -31,6 +32,14 @@ int mediaGestureSeekTarget({
   if (viewportWidth <= 0 || durationMs <= 0) return positionMs;
   final delta = (deltaPx / viewportWidth * durationMs).round();
   return (positionMs + delta).clamp(0, durationMs).toInt();
+}
+
+int mediaGestureEpisodeOffset({
+  required double deltaPx,
+  required double thresholdPx,
+}) {
+  if (thresholdPx <= 0 || deltaPx.abs() < thresholdPx) return 0;
+  return deltaPx < 0 ? 1 : -1;
 }
 
 String _mediaTaskStateLabel(MediaTaskState state) => switch (state) {
@@ -108,6 +117,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   double _volume = 0.5;
   double _horizontalDelta = 0;
   double _verticalStart = 0;
+  double _verticalDelta = 0;
   double _verticalValue = 0.5;
   bool _verticalLeft = true;
   bool _longPressing = false;
@@ -228,13 +238,30 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     _verticalLeft =
         details.localPosition.dx < MediaQuery.sizeOf(context).width / 2;
     _verticalStart = details.localPosition.dy;
-    _verticalValue = _verticalLeft ? _brightness : _volume;
+    _verticalDelta = 0;
     _hideTimer?.cancel();
+    if (widget.app.playerVerticalGesture ==
+        PlayerVerticalGestureMode.episodeSwitch) {
+      return;
+    }
+    _verticalValue = _verticalLeft ? _brightness : _volume;
   }
 
   void _onVerticalDragUpdate(DragUpdateDetails details) {
     if (!_canControl) return;
     final distance = _verticalStart - details.localPosition.dy;
+    _verticalDelta = distance;
+    if (widget.app.playerVerticalGesture ==
+        PlayerVerticalGestureMode.episodeSwitch) {
+      _showGestureHint(
+        distance.abs() < 24
+            ? '上下滑动切换集数'
+            : distance < 0
+            ? '上一集'
+            : '下一集',
+      );
+      return;
+    }
     final value =
         (_verticalValue + distance / MediaQuery.sizeOf(context).height).clamp(
           0.0,
@@ -249,6 +276,29 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
       _showGestureHint('音量 ${(value * 100).round()}%');
       unawaited(_setVolume(value));
     }
+  }
+
+  void _onVerticalDragEnd(DragEndDetails _) {
+    if (!_canControl ||
+        widget.app.playerVerticalGesture !=
+            PlayerVerticalGestureMode.episodeSwitch) {
+      _verticalDelta = 0;
+      _scheduleHide();
+      return;
+    }
+    final offset = mediaGestureEpisodeOffset(
+      deltaPx: _verticalDelta,
+      thresholdPx: MediaQuery.sizeOf(context).height * 0.10,
+    );
+    _verticalDelta = 0;
+    if (offset == 0) {
+      _showGestureHint('滑动距离太短');
+    } else if (widget.playlist.isEmpty) {
+      _showGestureHint('当前没有可切换的集数');
+    } else {
+      unawaited(_switchPlaylist(offset));
+    }
+    _scheduleHide();
   }
 
   Future<void> _setBrightness(double value) async {
@@ -395,6 +445,52 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     }
   }
 
+  Future<void> _showPlaylist() async {
+    if (!mounted || widget.playlist.isEmpty) {
+      _showGestureHint('当前没有播放列表');
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.72,
+          ),
+          child: ListView.builder(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            itemCount: widget.playlist.length,
+            itemBuilder: (_, index) {
+              final task = widget.playlist[index];
+              final selected = index == _playlistIndex;
+              return ListTile(
+                selected: selected,
+                leading: Icon(
+                  selected ? Icons.play_circle_filled : Icons.video_file,
+                ),
+                title: Text(
+                  _shortMediaName(task.displayName),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(task.episodeLabel ?? '媒体'),
+                trailing: selected ? const Icon(Icons.check) : null,
+                onTap: selected
+                    ? () => Navigator.of(sheetContext).pop()
+                    : () {
+                        Navigator.of(sheetContext).pop();
+                        unawaited(_switchPlaylist(index - _playlistIndex));
+                      },
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _videoViewport() => LayoutBuilder(
     builder: (context, constraints) {
       final maxWidth = constraints.maxWidth;
@@ -494,6 +590,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
               onHorizontalDragEnd: _onHorizontalDragEnd,
               onVerticalDragStart: _onVerticalDragStart,
               onVerticalDragUpdate: _onVerticalDragUpdate,
+              onVerticalDragEnd: _onVerticalDragEnd,
               onLongPressStart: _onLongPressStart,
               onLongPressEnd: _onLongPressEnd,
               child: _videoViewport(),
@@ -597,6 +694,12 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
                                 : Icons.stay_current_landscape,
                           ),
                           onPressed: _toggleOrientation,
+                        ),
+                        IconButton(
+                          tooltip: '播放列表',
+                          color: Colors.white,
+                          icon: const Icon(Icons.queue_music),
+                          onPressed: _showPlaylist,
                         ),
                       ],
                     ),
@@ -739,10 +842,170 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   );
 }
 
-class MediaManagementScreen extends StatelessWidget {
+Future<void> openMediaTaskPlayer(
+  BuildContext context,
+  AppController app,
+  MediaTask task,
+) async {
+  final playlist = mediaPlaylistForTasks(app.mediaTasks.tasks, task);
+  final playlistIndex = playlist.indexWhere((item) => item.id == task.id);
+  final cached = await app.mediaTasks.cachedFile(task.id);
+  if (cached != null) {
+    final session = await app.nativeMedia.openLocal(task, cached);
+    if (!context.mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => NativeMediaPlayerScreen(
+          app: app,
+          session: session,
+          playlist: playlist,
+          playlistIndex: playlistIndex < 0 ? 0 : playlistIndex,
+        ),
+      ),
+    );
+    return;
+  }
+  final candidate = await app.db.mediaCandidate(task.candidateId);
+  if (candidate == null) throw StateError('媒体候选已不存在');
+  final session = await app.nativeMedia.open(
+    candidate,
+    hostId: task.hostId,
+    generation: task.generation,
+    sourceUrl: task.sourceUrl,
+    sessionId: 'play_${task.id}',
+  );
+  if (!context.mounted) return;
+  await Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (_) => NativeMediaPlayerScreen(
+        app: app,
+        session: session,
+        playlist: playlist,
+        playlistIndex: playlistIndex < 0 ? 0 : playlistIndex,
+      ),
+    ),
+  );
+}
+
+class MediaLibraryScreen extends StatelessWidget {
+  const MediaLibraryScreen({super.key, required this.app});
+
+  final AppController app;
+
+  List<MediaTask> _exports() =>
+      app.mediaTasks.tasks
+          .where(
+            (task) =>
+                task.state == MediaTaskState.playable &&
+                task.localRef?.toLowerCase().endsWith('.mp4') == true,
+          )
+          .toList()
+        ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+
+  @override
+  Widget build(BuildContext context) {
+    final exports = _exports();
+    return SiteLensPageScaffold(
+      title: '媒体',
+      actions: [
+        IconButton(
+          tooltip: '媒体任务',
+          icon: const Icon(Icons.download_for_offline_outlined),
+          onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => MediaTasksScreen(app: app)),
+          ),
+        ),
+      ],
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(
+          SiteLensMetrics.pagePadding,
+          12,
+          SiteLensMetrics.pagePadding,
+          32,
+        ),
+        children: [
+          SiteLensPanel(
+            child: Text(
+              '这里展示已导出的 MP4，点击媒体卡片即可播放。下载、重试和批量导出请进入媒体任务。',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ),
+          const SizedBox(height: SiteLensMetrics.sectionGap),
+          if (exports.isEmpty)
+            const SiteLensPanel(
+              child: ListTile(
+                leading: Icon(Icons.video_library_outlined),
+                title: Text('暂无导出的 MP4'),
+                subtitle: Text('在媒体任务中完成下载并导出后，媒体会出现在这里。'),
+              ),
+            ),
+          for (final task in exports) ...[
+            FutureBuilder<File?>(
+              future: app.mediaTasks.cachedFile(task.id),
+              builder: (context, snapshot) {
+                final file = snapshot.data;
+                final size = file == null
+                    ? '文件不可用'
+                    : formatBytes(file.lengthSync());
+                return SiteLensPanel(
+                  padding: EdgeInsets.zero,
+                  child: ListTile(
+                    leading: const Icon(Icons.play_circle_filled),
+                    title: Text(
+                      _shortMediaName(task.displayName),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text('MP4 · $size'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: file == null
+                        ? null
+                        : () => safely(
+                            context,
+                            () => openMediaTaskPlayer(context, app, task),
+                          ),
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: SiteLensMetrics.itemGap),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class MediaManagementScreen extends StatefulWidget {
   const MediaManagementScreen({super.key, required this.app});
 
   final AppController app;
+
+  @override
+  State<MediaManagementScreen> createState() => _MediaManagementScreenState();
+}
+
+class _MediaManagementScreenState extends State<MediaManagementScreen> {
+  AppController get app => widget.app;
+
+  Future<void> _pickMp4Directory() async {
+    final selected = Platform.isAndroid && app.nativeExports != null
+        ? await app.nativeExports!.pickDirectory()
+        : await FilePicker.getDirectoryPath(dialogTitle: '选择 MP4 保存目录');
+    if (selected == null || selected.trim().isEmpty) return;
+    await app.setMp4ExportDirectory(selected);
+    if (mounted) showShortToast(context, 'MP4 保存目录已更新');
+  }
+
+  String _directoryLabel() {
+    final value = app.mp4ExportDirectory?.trim();
+    if (value == null || value.isEmpty) return '未配置，保存在应用媒体库';
+    final uri = Uri.tryParse(value);
+    if (uri?.scheme == 'content') return '已配置系统目录';
+    final path = value.replaceAll('\\', '/').replaceAll(RegExp(r'/+$'), '');
+    final name = path.split('/').last;
+    return name.isEmpty ? value : name;
+  }
 
   @override
   Widget build(BuildContext context) => SiteLensPageScaffold(
@@ -777,6 +1040,64 @@ class MediaManagementScreen extends StatelessWidget {
                 onChanged: (value) =>
                     safely(context, () => app.setAutoConvertToMp4(value)),
               ),
+              const Divider(height: 1, indent: 18, endIndent: 18),
+              SiteLensActionRow(
+                icon: Icons.folder_outlined,
+                title: 'MP4 保存目录',
+                subtitle: _directoryLabel(),
+                onTap: () => safely(context, _pickMp4Directory),
+                trailing: const Icon(Icons.chevron_right),
+              ),
+              if (app.mp4ExportDirectory != null) ...[
+                const Divider(height: 1, indent: 18, endIndent: 18),
+                ListTile(
+                  leading: const SizedBox(width: 20),
+                  title: const Text('恢复应用媒体库'),
+                  subtitle: const Text('清除目录配置，后续 MP4 只保存在应用媒体库'),
+                  trailing: TextButton(
+                    onPressed: () =>
+                        safely(context, () => app.setMp4ExportDirectory(null)),
+                    child: const Text('清除'),
+                  ),
+                ),
+              ],
+              const Divider(height: 1, indent: 18, endIndent: 18),
+              _rowTitle(context, Icons.swipe_outlined, '播放器上下滑动'),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+                child: DropdownButtonFormField<PlayerVerticalGestureMode>(
+                  initialValue: app.playerVerticalGesture,
+                  decoration: const InputDecoration(
+                    labelText: '手势用途',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: PlayerVerticalGestureMode.brightnessVolume,
+                      child: Text('亮度 / 音量'),
+                    ),
+                    DropdownMenuItem(
+                      value: PlayerVerticalGestureMode.episodeSwitch,
+                      child: Text('上一集 / 下一集'),
+                    ),
+                  ],
+                  onChanged: (value) {
+                    if (value == null) return;
+                    unawaited(
+                      safely(
+                        context,
+                        () => app.setPlayerVerticalGesture(value),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              ListTile(
+                dense: true,
+                contentPadding: const EdgeInsets.fromLTRB(18, 0, 18, 8),
+                leading: const SizedBox(width: 20),
+                title: Text(app.playerVerticalGesture.description),
+              ),
             ],
           ),
         ),
@@ -784,6 +1105,17 @@ class MediaManagementScreen extends StatelessWidget {
     ),
   );
 }
+
+Widget _rowTitle(BuildContext context, IconData icon, String title) => Padding(
+  padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
+  child: Row(
+    children: [
+      Icon(icon, size: 20),
+      const SizedBox(width: 12),
+      Text(title, style: Theme.of(context).textTheme.titleMedium),
+    ],
+  ),
+);
 
 /// Durable media task surface. The screen is deliberately independent from a
 /// browser tab: a task can be resumed after its source tab is gone.
@@ -889,45 +1221,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   }
 
   Future<void> _play(MediaTask task) async {
-    final playlist = mediaPlaylistForTasks(widget.app.mediaTasks.tasks, task);
-    final playlistIndex = playlist.indexWhere((item) => item.id == task.id);
-    final cached = await widget.app.mediaTasks.cachedFile(task.id);
-    if (cached != null) {
-      final session = await widget.app.nativeMedia.openLocal(task, cached);
-      if (mounted) {
-        await Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => NativeMediaPlayerScreen(
-              app: widget.app,
-              session: session,
-              playlist: playlist,
-              playlistIndex: playlistIndex < 0 ? 0 : playlistIndex,
-            ),
-          ),
-        );
-      }
-      return;
-    }
-    final candidate = await widget.app.db.mediaCandidate(task.candidateId);
-    if (candidate == null) throw StateError('媒体候选已不存在');
-    final session = await widget.app.nativeMedia.open(
-      candidate,
-      hostId: task.hostId,
-      generation: task.generation,
-      sourceUrl: task.sourceUrl,
-      sessionId: 'play_${task.id}',
-    );
-    if (!mounted) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => NativeMediaPlayerScreen(
-          app: widget.app,
-          session: session,
-          playlist: playlist,
-          playlistIndex: playlistIndex < 0 ? 0 : playlistIndex,
-        ),
-      ),
-    );
+    await openMediaTaskPlayer(context, widget.app, task);
   }
 
   Future<void> _togglePause(MediaTask task) async {
@@ -1046,6 +1340,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     );
     if (destination == null) return;
     await widget.app.mediaExports.deliver(result, destination);
+    widget.app.notifyMediaChanged();
     if (mounted) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('MP4 已交付')));
@@ -1057,12 +1352,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
       task.state == MediaTaskState.playable;
 
   String _exportFileName(MediaTask task) {
-    final raw = task.displayName.trim().isEmpty ? task.id : task.displayName;
-    final safe = raw
-        .replaceAll(RegExp(r'[\\/:*?"<>|\u0000-\u001f]'), '_')
-        .trim()
-        .replaceAll(RegExp(r'[. ]+$'), '');
-    return '${safe.isEmpty ? task.id : safe}.mp4';
+    return mediaExportFileName(task);
   }
 
   Future<void> _batchExport() async {
@@ -1127,6 +1417,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
       }
     }
     if (!mounted) return;
+    widget.app.notifyMediaChanged();
     _selectionMode = false;
     _selectedTaskIds.clear();
     showShortToast(
@@ -1395,7 +1686,11 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                                     value: 'cast',
                                     child: Text('DLNA 投屏'),
                                   ),
-                                if (task.state == MediaTaskState.playable)
+                                if (task.state == MediaTaskState.playable &&
+                                    task.localRef?.toLowerCase().endsWith(
+                                          '.m3u8',
+                                        ) ==
+                                        true)
                                   const PopupMenuItem(
                                     value: 'export',
                                     child: Text('导出 MP4'),

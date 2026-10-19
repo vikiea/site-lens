@@ -60,6 +60,21 @@ extension SiteLensGlassQualityModeLabel on SiteLensGlassQualityMode {
   };
 }
 
+/// Chooses what a vertical swipe means inside the native player.
+enum PlayerVerticalGestureMode { brightnessVolume, episodeSwitch }
+
+extension PlayerVerticalGestureModeLabel on PlayerVerticalGestureMode {
+  String get label => switch (this) {
+    PlayerVerticalGestureMode.brightnessVolume => '亮度 / 音量',
+    PlayerVerticalGestureMode.episodeSwitch => '上一集 / 下一集',
+  };
+
+  String get description => switch (this) {
+    PlayerVerticalGestureMode.brightnessVolume => '左侧调亮度，右侧调音量',
+    PlayerVerticalGestureMode.episodeSwitch => '上滑下一集，下滑上一集',
+  };
+}
+
 /// User preferences. Policy limits and runtime state are intentionally separate.
 ///
 /// All user preferences live in one JSON record behind [SettingsRepository].
@@ -76,6 +91,8 @@ class AppSettings {
     this.autoHideBrowserControls = true,
     this.allowBackgroundPlayback = false,
     this.autoConvertToMp4 = false,
+    this.mp4ExportDirectory,
+    this.playerVerticalGesture = PlayerVerticalGestureMode.brightnessVolume,
     this.restoreBrowserSessions = true,
     this.backgroundHealthCheck = true,
     this.pullToRefresh = false,
@@ -95,6 +112,8 @@ class AppSettings {
   final bool autoHideBrowserControls;
   final bool allowBackgroundPlayback;
   final bool autoConvertToMp4;
+  final String? mp4ExportDirectory;
+  final PlayerVerticalGestureMode playerVerticalGesture;
   final bool restoreBrowserSessions;
   final bool backgroundHealthCheck;
   final bool pullToRefresh;
@@ -103,7 +122,7 @@ class AppSettings {
   final double controlsX;
   final double controlsY;
 
-  Map<String, Object> toJson() => {
+  Map<String, Object?> toJson() => {
     'version': 2,
     'themeMode': themeMode.name,
     'themePreset': themePreset.wireId,
@@ -114,6 +133,8 @@ class AppSettings {
     'autoHideBrowserControls': autoHideBrowserControls,
     'allowBackgroundPlayback': allowBackgroundPlayback,
     'autoConvertToMp4': autoConvertToMp4,
+    'mp4ExportDirectory': mp4ExportDirectory,
+    'playerVerticalGesture': playerVerticalGesture.name,
     'restoreBrowserSessions': restoreBrowserSessions,
     'backgroundHealthCheck': backgroundHealthCheck,
     'pullToRefresh': pullToRefresh,
@@ -151,6 +172,13 @@ class AppSettings {
           : fallback;
     }
 
+    String? directory(String key) {
+      final value = json[key];
+      if (value is! String) return null;
+      final trimmed = value.trim();
+      return trimmed.isEmpty ? null : trimmed;
+    }
+
     return AppSettings(
       themeMode: choice(
         'themeMode',
@@ -182,6 +210,12 @@ class AppSettings {
       autoHideBrowserControls: flag('autoHideBrowserControls', true),
       allowBackgroundPlayback: flag('allowBackgroundPlayback', false),
       autoConvertToMp4: flag('autoConvertToMp4', false),
+      mp4ExportDirectory: directory('mp4ExportDirectory'),
+      playerVerticalGesture: choice(
+        'playerVerticalGesture',
+        PlayerVerticalGestureMode.values,
+        PlayerVerticalGestureMode.brightnessVolume,
+      ),
       restoreBrowserSessions: flag('restoreBrowserSessions', true),
       backgroundHealthCheck: flag('backgroundHealthCheck', true),
       pullToRefresh: flag('pullToRefresh', false),
@@ -206,6 +240,8 @@ class AppSettings {
       'autoHideBrowserControls',
       'allowBackgroundPlayback',
       'autoConvertToMp4',
+      'mp4ExportDirectory',
+      'playerVerticalGesture',
       'restoreBrowserSessions',
       'backgroundHealthCheck',
       'pullToRefresh',
@@ -235,6 +271,7 @@ class AppSettings {
         'amber_glow',
         'midnight_indigo',
       },
+      'playerVerticalGesture': {'brightnessVolume', 'episodeSwitch'},
     };
     for (final entry in changes.entries) {
       final choices = enums[entry.key];
@@ -250,6 +287,10 @@ class AppSettings {
         final value = entry.value;
         if (value is! num || !value.isFinite || value < 0 || value > 1) {
           throw const FormatException('位置必须在有效范围内');
+        }
+      } else if (entry.key == 'mp4ExportDirectory') {
+        if (entry.value != null && entry.value is! String) {
+          throw const FormatException('MP4 保存目录必须是文本路径');
         }
       } else if (choices == null && entry.value is! bool) {
         throw const FormatException('开关设置必须是布尔值');

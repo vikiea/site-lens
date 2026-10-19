@@ -36,7 +36,7 @@ import 'filter_diagnostics_panel.dart';
 import 'ui_util.dart';
 import 'ui_primitives.dart';
 
-enum AppDestination { sites, browser, settings }
+enum AppDestination { sites, browser, media, settings }
 
 class SiteLensBottomNavigationItem {
   const SiteLensBottomNavigationItem({
@@ -198,6 +198,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         final destinations = <AppDestination>[
           AppDestination.sites,
           AppDestination.browser,
+          AppDestination.media,
           AppDestination.settings,
         ];
         final destination =
@@ -210,6 +211,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               title: Text(switch (destination) {
                 AppDestination.sites => '站点',
                 AppDestination.browser => '浏览',
+                AppDestination.media => '媒体',
                 AppDestination.settings => '设置',
               }),
               // The top bar is the same glass layer as the bottom one: both sit
@@ -275,6 +277,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     ],
                   ),
                 ],
+                AppDestination.media => const <Widget>[],
                 AppDestination.settings => const <Widget>[],
               },
             ),
@@ -292,6 +295,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   onNewTab: () =>
                       safely(context, () => promptNewTab(context, app)),
                 ),
+                AppDestination.media => MediaLibraryScreen(app: app),
                 AppDestination.settings => SettingsPage(app: app),
               },
             ),
@@ -327,6 +331,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                         semanticLabel: app.browserTabs.isEmpty
                             ? '浏览'
                             : '浏览，${app.browserTabs.length} 个标签',
+                      ),
+                      const SiteLensBottomNavigationItem(
+                        icon: Icons.video_library_outlined,
+                        selectedIcon: Icons.video_library,
+                        label: '媒体',
                       ),
                       const SiteLensBottomNavigationItem(
                         icon: Icons.tune_outlined,
