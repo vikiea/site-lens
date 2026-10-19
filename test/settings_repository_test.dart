@@ -62,6 +62,39 @@ void main() {
   );
 
   test(
+    'notice dismissal merges concurrent pages in one settings record',
+    () async {
+      await Future.wait([
+        settings.dismissNotice('media.tasks'),
+        settings.dismissNotice('scripts.overview'),
+      ]);
+      final restored = await SettingsRepository(db).read();
+      expect(restored.isNoticeDismissed('media.tasks'), isTrue);
+      expect(restored.isNoticeDismissed('scripts.overview'), isTrue);
+      expect(restored.isNoticeDismissed('media.library'), isFalse);
+      expect(await db.setting('media.tasks'), isNull);
+      await settings.resetUserPreferences();
+      expect((await settings.read()).isNoticeDismissed('media.tasks'), isFalse);
+    },
+  );
+
+  test('notice dismissal preserves the old media library preference', () async {
+    await settings.update({'mediaLibraryNoticeDismissed': true});
+    final restored = await settings.read();
+    expect(restored.isNoticeDismissed('media.library'), isTrue);
+    await expectLater(
+      settings.dismissNotice('../invalid'),
+      throwsFormatException,
+    );
+    await expectLater(
+      settings.update({
+        'dismissedNotices': ['bad id'],
+      }),
+      throwsFormatException,
+    );
+  });
+
+  test(
     'player gesture and MP4 directory preferences persist together',
     () async {
       final updated = await settings.update({

@@ -65,6 +65,31 @@ class NativeCrashContractTests(unittest.TestCase):
         self.assertNotIn("webView.url", body)
         self.assertIn("lastKnownUrl", body)
 
+    def test_history_traversal_is_not_rewritten_as_load_url(self):
+        body = block(self.host, "override fun shouldOverrideUrlLoading")
+        self.assertIn("historyLoading", body)
+        self.assertIn("sameHistoryTarget", body)
+        self.assertIn("return false", body)
+        self.assertIn("prepareNavigation", body)
+        self.assertIn("revoke()", body)
+
+    def test_history_marker_is_cleared_only_after_commit_or_revoke(self):
+        completed = block(self.host, "override fun onNavigationCompleted")
+        self.assertIn("clearHistoryNavigation()", completed)
+        revoked = block(self.host, "fun revoke()")
+        self.assertIn("clearHistoryNavigation()", revoked)
+
+    def test_fullscreen_has_one_registry_owner_and_rejects_stale_disable(self):
+        registry = block(self.host, "class NativeWebHostRegistry")
+        self.assertIn("fullscreenOwner", registry)
+        self.assertIn("requestFullscreen", registry)
+        self.assertIn("if (!enabled && fullscreenOwner !== host) return", registry)
+        self.assertIn("releaseFullscreen", registry)
+        self.assertIn("onHostFullscreenChanged", registry)
+        self.assertNotIn("setDecorFitsSystemWindows(window, true)", registry)
+        self.assertIn("onFullscreenChanged", self.host)
+        self.assertIn("forceClearFullscreen", self.host)
+
     def test_exit_history_is_version_guarded_and_deduplicated(self):
         body = block(self.store, "fun drainIncludingHistoricalExits")
         self.assertIn("Build.VERSION_CODES.R", body)

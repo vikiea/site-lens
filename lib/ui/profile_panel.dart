@@ -6,6 +6,7 @@ import 'app_controller.dart';
 import 'app_theme.dart';
 import 'browser_entry.dart';
 import 'glass_surface.dart';
+import 'help_notice.dart';
 import 'ui_util.dart';
 import 'ui_primitives.dart';
 
@@ -1082,13 +1083,13 @@ class _ProfileFilterSettingsScreenState
           32,
         ),
         children: [
-          SiteLensNotice(
-            tone: SiteLensNoticeTone.info,
+          SiteLensHelpNotice(
+            app: widget.app,
+            noticeId: 'filter.profile.policy',
             text: explicit
                 ? '此档案使用单独策略。规则源仍由全局管理，域名例外和开关只影响此档案的浏览标签。'
                 : '此档案当前跟随全局策略。修改下面任一项会创建单独策略，不会影响其他档案。',
           ),
-          const SizedBox(height: SiteLensMetrics.sectionGap),
           SiteLensPanel(
             padding: EdgeInsets.zero,
             child: Column(

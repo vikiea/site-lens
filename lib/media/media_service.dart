@@ -370,6 +370,25 @@ class MediaTaskStore {
   final _references = <String, int>{};
   final _exclusive = <String>{};
   final _directoryLocks = <String, Future<void>>{};
+  final _writes = <String, Future<void>>{};
+
+  void _saveTask(MediaTask task) {
+    if (db == null) return;
+    final previous = _writes[task.id] ?? Future<void>.value();
+    final write = previous.then((_) => db!.saveMediaTask(task));
+    _writes[task.id] = write;
+    // Observe errors even while the caller is updating progress synchronously.
+    unawaited(
+      write.catchError((Object error, StackTrace stack) {
+        AppErrorLogger.capture(error, module: 'media.store', stack: stack);
+      }),
+    );
+  }
+
+  Future<void> flush(String taskId) async {
+    await _writes[taskId];
+  }
+
   MediaTask? task(String id) => _tasks[id];
   List<MediaTask> get tasks => List.unmodifiable(_tasks.values);
 
@@ -395,6 +414,7 @@ class MediaTaskStore {
     MediaCandidate candidate, {
     String quality = '',
     String audio = '',
+    String? batchDirectory,
   }) {
     const validator = MediaCandidateValidator();
     validator.validate(candidate);
@@ -418,12 +438,20 @@ class MediaTaskStore {
       state: MediaTaskState.queued,
       updatedAt: DateTime.now().toUtc(),
       displayTitle: candidate.title.trim(),
+      batchDirectory: _normalizeBatchDirectory(batchDirectory),
       episodeLabel: _candidateEpisodeLabel(candidate),
     );
     _tasks[id] = task;
     _byCacheKey[key] = id;
-    if (db != null) unawaited(db!.saveMediaTask(task));
+    _saveTask(task);
     return task;
+  }
+
+  static String? _normalizeBatchDirectory(String? value) {
+    final trimmed = value?.trim() ?? '';
+    return trimmed.isEmpty
+        ? null
+        : mediaSeriesDirectoryName(trimmed).replaceAll('..', '_');
   }
 
   static String? _candidateEpisodeLabel(MediaCandidate candidate) {
@@ -543,7 +571,7 @@ class MediaTaskStore {
           : errorReason as String?,
     );
     _tasks[id] = next;
-    if (db != null) unawaited(db!.saveMediaTask(next));
+    _saveTask(next);
     return next;
   }
 
@@ -558,10 +586,14 @@ class MediaTaskStore {
     }
     final next = task.copyWith(
       bytesDownloaded: bytesDownloaded,
-      totalBytes: totalBytes ?? task.totalBytes,
+      totalBytes:
+          totalBytes ??
+          (task.totalBytes != null && task.totalBytes! >= bytesDownloaded
+              ? task.totalBytes
+              : null),
     );
     _tasks[id] = next;
-    if (db != null) unawaited(db!.saveMediaTask(next));
+    _saveTask(next);
     return next;
   }
 
@@ -570,7 +602,7 @@ class MediaTaskStore {
     if (task == null) throw StateError('媒体任务不存在');
     final next = task.copyWith(localRef: localRef);
     _tasks[id] = next;
-    if (db != null) unawaited(db!.saveMediaTask(next));
+    _saveTask(next);
     return next;
   }
 
@@ -626,11 +658,11 @@ class MediaTaskStore {
       return;
     }
     if (!isExclusive(taskId)) throw StateError('媒体任务未持有排他操作锁');
-    _tasks.remove(taskId);
-    _byCacheKey.removeWhere((_, id) => id == taskId);
-    // Keep completed task metadata for recovery unless the caller explicitly
-    // asks to delete it from the durable store.
+    await flush(taskId);
     await db?.deleteMediaTask(taskId);
+    _tasks.remove(taskId);
+    _writes.remove(taskId);
+    _byCacheKey.removeWhere((_, id) => id == taskId);
   }
 
   Future<void> reconcileCachedFiles() async {
@@ -671,6 +703,7 @@ class MediaTaskStore {
       );
       return;
     }
+    if (!isExclusive(taskId)) throw StateError('媒体任务未持有排他操作锁');
     final current = task(taskId) ?? (throw StateError('媒体任务不存在'));
     final file = await cachedFile(taskId, validateHls: false);
     if (file != null) {
@@ -683,16 +716,33 @@ class MediaTaskStore {
         await file.delete();
       }
     }
+    final directory = await cacheDirectory(
+      storageDirectory: current.storageDirectoryName,
+    );
+    for (final partial in [
+      File('${directory.path}/${current.cacheKey}.part'),
+      File('${directory.path}/${current.cacheKey}.part.resume.json'),
+      File('${directory.path}/${current.cacheKey}.part.resume.json.tmp'),
+      Directory('${directory.path}/${current.cacheKey}.hls.part'),
+    ]) {
+      if (await partial.exists()) {
+        await partial.delete(recursive: partial is Directory);
+      }
+    }
     markCacheMissing(taskId);
     setLocalRef(taskId, null);
   }
 
-  Future<Directory> cacheDirectory({String? seriesDirectory}) async {
+  Future<Directory> cacheDirectory({
+    String? seriesDirectory,
+    String? storageDirectory,
+  }) async {
     final root = await _directoryProvider();
     final base = Directory('${root.path}/media_cache');
-    final safeSeries = seriesDirectory == null || seriesDirectory.isEmpty
+    final requested = storageDirectory ?? seriesDirectory;
+    final safeSeries = requested == null || requested.isEmpty
         ? null
-        : mediaSeriesDirectoryName(seriesDirectory);
+        : mediaSeriesDirectoryName(requested).replaceAll('..', '_');
     final directory = safeSeries == null
         ? base
         : Directory('${base.path}/$safeSeries');
@@ -772,123 +822,266 @@ class MediaDownloadService {
   final NativeDownloadRuntime? native;
   Future<void> Function(MediaTask task)? onCompleted;
   final _active = <String, Cancellation>{};
+  final _running = <String, Future<MediaTask>>{};
+  final _controls = <String, Future<void>>{};
+  final _stopping = <String>{};
+  final _dartTasks = <String>{};
 
   Future<void> reconcileNative() async {
-    final runtime = native;
-    if (runtime == null) return;
     for (final task in tasks.tasks) {
-      final status = await runtime.status(task.id);
-      final state = status['state'] as String?;
-      final bytes = (status['bytesDownloaded'] as num?)?.toInt();
-      final total = (status['totalBytes'] as num?)?.toInt();
-      if (bytes != null) {
-        tasks.updateProgress(task.id, bytes, totalBytes: total);
-      }
-      final localUri = status['localUri'] as String?;
-      if (localUri != null && localUri.startsWith('file://')) {
-        tasks.setLocalRef(task.id, Uri.parse(localUri).toFilePath());
-      }
-      final current = tasks.task(task.id);
-      if (current == null) continue;
-      if (state == 'completed' && current.state != MediaTaskState.playable) {
-        if (current.state == MediaTaskState.downloading ||
-            current.state == MediaTaskState.paused) {
-          tasks.transition(task.id, MediaTaskState.completed);
-        }
-        if (tasks.task(task.id)?.state == MediaTaskState.completed) {
-          tasks.transition(task.id, MediaTaskState.playable);
-        }
-      } else if (state == 'paused' &&
-          current.state == MediaTaskState.downloading) {
-        tasks.transition(task.id, MediaTaskState.paused);
-      } else if (state == 'failed' &&
-          current.state == MediaTaskState.downloading) {
-        tasks.transition(
-          task.id,
-          MediaTaskState.failed,
-          errorCode: _errorCode(status['errorCode']?.toString()),
-          errorReason: _nativeErrorReason(status['errorCode']?.toString()),
-        );
-      }
+      await refreshTask(task.id);
     }
   }
 
-  Future<MediaTask> pauseNative(String taskId) async {
-    final runtime = native;
-    final current = tasks.task(taskId) ?? (throw StateError('媒体任务不存在'));
-    if (runtime == null) {
+  /// Refresh only the backend owning this task. Missing native rows must never
+  /// overwrite a Dart HLS download or a completed local cache.
+  Future<MediaTask> refreshTask(String taskId) => _control(taskId, () async {
+    var current = tasks.task(taskId) ?? (throw StateError('媒体任务不存在'));
+    if (_active.containsKey(taskId) || _dartTasks.contains(taskId)) {
+      return current;
+    }
+    final candidate = await tasks.db?.mediaCandidate(current.candidateId);
+    if (candidate?.isHls == true) {
       if (current.state == MediaTaskState.downloading) {
         return tasks.transition(taskId, MediaTaskState.paused);
       }
       return current;
     }
-    await _preserveNativePartial(current, runtime);
-    await runtime.pause(taskId);
-    if (tasks.task(taskId)?.state == MediaTaskState.downloading) {
-      return tasks.transition(taskId, MediaTaskState.paused);
-    }
-    return tasks.task(taskId)!;
-  }
+    if (native == null) return current;
+    final status = await native!.status(taskId);
+    current = tasks.task(taskId) ?? (throw StateError('媒体任务不存在'));
+    if (status['state'] == 'missing') return current;
+    return _applyNativeStatus(current, status);
+  });
 
-  Future<MediaTask> resumeNative(
-    String taskId,
-    MediaCandidate candidate,
-  ) async {
-    final runtime = native;
-    final current = tasks.task(taskId) ?? (throw StateError('媒体任务不存在'));
-    if (runtime == null || candidate.isHls) return start(current, candidate);
-    var hasPartial = false;
-    if (current.state == MediaTaskState.paused ||
-        current.state == MediaTaskState.failed) {
-      hasPartial = await _preserveNativePartial(current, runtime);
-      if (hasPartial) {
-        await runtime.delete(taskId);
-      }
-    }
-    if (current.state == MediaTaskState.paused ||
-        current.state == MediaTaskState.failed) {
-      tasks.transition(taskId, MediaTaskState.downloading);
-    }
-    if (hasPartial) {
-      return start(tasks.task(taskId)!, candidate);
-    }
-    Map<String, Object?> status;
-    try {
-      status = await runtime.resume(taskId);
-    } catch (error) {
-      AppErrorLogger.capture(
-        error,
-        module: 'media.download',
-        context: 'resumeNative:$taskId',
-      );
-      if (tasks.task(taskId)?.state == MediaTaskState.downloading) {
-        tasks.transition(
-          taskId,
-          MediaTaskState.failed,
-          errorCode: _errorCode(error.toString()),
-          errorReason: readableError(error),
-        );
-      }
-      rethrow;
-    }
+  MediaTask _applyNativeStatus(MediaTask task, Map<String, Object?> status) {
+    var current = tasks.task(task.id) ?? (throw StateError('媒体任务不存在'));
+    // A late snapshot must not revive a deliberately cancelled task.
+    if (current.state == MediaTaskState.cancelled) return current;
+    final state = status['state'] as String?;
+    final rawErrorCode = status['errorCode']?.toString();
+    final effectiveState = rawErrorCode == MediaErrorCode.authorizationRequired
+        ? 'reauthorize'
+        : state;
     final bytes = (status['bytesDownloaded'] as num?)?.toInt();
     final total = (status['totalBytes'] as num?)?.toInt();
-    if (bytes != null) tasks.updateProgress(taskId, bytes, totalBytes: total);
-    return tasks.task(taskId)!;
+    if (bytes != null && bytes >= 0) {
+      current = tasks.updateProgress(
+        task.id,
+        bytes,
+        totalBytes: total != null && total >= bytes ? total : null,
+      );
+    }
+    final localUri = status['localUri'] as String?;
+    if (localUri != null && localUri.startsWith('file://')) {
+      current = tasks.setLocalRef(task.id, Uri.parse(localUri).toFilePath());
+    }
+    if (rawErrorCode == MediaErrorCode.cacheMissing &&
+        (current.state == MediaTaskState.completed ||
+            current.state == MediaTaskState.playable)) {
+      return tasks.markCacheMissing(task.id);
+    }
+    if (state == 'completed' &&
+        (current.state == MediaTaskState.downloading ||
+            current.state == MediaTaskState.paused)) {
+      if (current.state == MediaTaskState.paused) {
+        current = tasks.transition(task.id, MediaTaskState.downloading);
+      }
+      current = tasks.transition(task.id, MediaTaskState.completed);
+      current = tasks.transition(task.id, MediaTaskState.playable);
+    } else if (state == 'paused' &&
+        current.state == MediaTaskState.downloading) {
+      current = tasks.transition(task.id, MediaTaskState.paused);
+    } else if ((effectiveState == 'failed' ||
+            effectiveState == 'reauthorize') &&
+        (current.state == MediaTaskState.downloading ||
+            current.state == MediaTaskState.paused)) {
+      current = tasks.transition(
+        task.id,
+        effectiveState == 'reauthorize'
+            ? MediaTaskState.reauthorize
+            : MediaTaskState.failed,
+        errorCode: rawErrorCode == MediaErrorCode.cacheMissing
+            ? MediaErrorCode.cacheMissing
+            : _errorCode(rawErrorCode),
+        errorReason:
+            status['errorReason'] as String? ??
+            _nativeErrorReason(rawErrorCode),
+      );
+    }
+    return current;
   }
 
-  Future<MediaTask> startNative(
+  Future<T> _control<T>(String taskId, Future<T> Function() action) {
+    final previous = _controls[taskId] ?? Future<void>.value();
+    final result = previous.then((_) => action());
+    final completed = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    _controls[taskId] = completed;
+    completed.then((_) {
+      if (identical(_controls[taskId], completed)) _controls.remove(taskId);
+    });
+    return result;
+  }
+
+  /// Stop transport and await all writes before publishing the paused state.
+  Future<MediaTask> pause(String taskId) => _stop(taskId, cancelled: false);
+  Future<MediaTask> cancel(String taskId) => _stop(taskId, cancelled: true);
+  Future<MediaTask> pauseNative(String taskId) => pause(taskId);
+
+  Future<MediaTask> _stop(String taskId, {required bool cancelled}) {
+    // Mark synchronously so a start queued during this operation cannot race it.
+    _stopping.add(taskId);
+    return _control(taskId, () async {
+      try {
+        final running = _running[taskId];
+        _active[taskId]?.cancel();
+        if (running != null) {
+          try {
+            await running;
+          } catch (_) {
+            /* keep the resumable partial */
+          }
+        }
+        final current = tasks.task(taskId) ?? (throw StateError('媒体任务不存在'));
+        final candidate = await tasks.db?.mediaCandidate(current.candidateId);
+        if (!_dartTasks.contains(taskId) && candidate?.isHls != true) {
+          if (cancelled) {
+            await native?.cancel(taskId);
+          } else {
+            await native?.pause(taskId);
+          }
+        }
+        final latest = tasks.task(taskId)!;
+        if (latest.state == MediaTaskState.playable ||
+            latest.state == MediaTaskState.completed) {
+          return latest;
+        }
+        if (cancelled && latest.state != MediaTaskState.cancelled) {
+          return tasks.transition(taskId, MediaTaskState.cancelled);
+        }
+        if (!cancelled && latest.state == MediaTaskState.downloading) {
+          return tasks.transition(taskId, MediaTaskState.paused);
+        }
+        return latest;
+      } finally {
+        _stopping.remove(taskId);
+      }
+    });
+  }
+
+  /// Deletes cached bytes only after transport has stopped. [deleteTask]
+  /// controls whether the task row is also deleted. [beforeDelete] runs under
+  /// the same task lock, allowing the owner to delete exported artifacts safely.
+  Future<void> delete(
+    String taskId, {
+    bool deleteTask = true,
+    Future<void> Function()? beforeDelete,
+  }) async {
+    _stopping.add(taskId);
+    try {
+      await _control(taskId, () async {
+        // Acquire the file-operation lock before touching transport. A
+        // retained playback/export/cast reference therefore fails closed and
+        // cannot be interrupted by a rejected delete request.
+        await tasks.withExclusive(taskId, () async {
+          _active[taskId]?.cancel();
+          try {
+            await _running[taskId];
+          } catch (_) {
+            // The partial file remains resumable after a transport failure.
+          }
+          final current = tasks.task(taskId);
+          if (current == null) return;
+          await native?.cancel(taskId);
+          try {
+            if (beforeDelete != null) await beforeDelete();
+          } catch (_) {
+            final latest = tasks.task(taskId);
+            if (latest != null && latest.state == MediaTaskState.downloading) {
+              tasks.transition(taskId, MediaTaskState.cancelled);
+            }
+            rethrow;
+          }
+          await native?.delete(taskId);
+          await tasks.deleteCachedFiles(taskId, exclusiveAlreadyHeld: true);
+          if (deleteTask) {
+            await tasks.delete(taskId, exclusiveAlreadyHeld: true);
+          } else if (tasks.task(taskId)?.state == MediaTaskState.downloading ||
+              tasks.task(taskId)?.state == MediaTaskState.paused) {
+            tasks.transition(taskId, MediaTaskState.cancelled);
+          }
+        });
+        _dartTasks.remove(taskId);
+      });
+    } finally {
+      _stopping.remove(taskId);
+    }
+  }
+
+  Future<MediaTask> resumeNative(String taskId, MediaCandidate candidate) =>
+      startNative(
+        tasks.task(taskId) ?? (throw StateError('媒体任务不存在')),
+        candidate,
+      );
+
+  Future<MediaTask> _launch(
     MediaTask task,
-    MediaCandidate candidate,
-  ) async {
-    // Android DownloadManager downloads one URL and cannot materialize an HLS
-    // manifest. Use the app-private HLS rewriter below so the task contains a
-    // playable local playlist instead of a zero-byte `.m3u8` file.
-    if (candidate.isHls) return start(task, candidate);
-    final runtime = native;
-    if (runtime == null) return start(task, candidate);
-    const validator = MediaCandidateValidator();
-    validator.validate(
+    Future<MediaTask> Function() action,
+  ) {
+    if (_stopping.contains(task.id) || tasks.isExclusive(task.id)) {
+      return Future.error(StateError('媒体任务正在停止或管理文件，请稍后重试'));
+    }
+    final pending = _running[task.id];
+    if (pending != null) return pending;
+    if (_controls.containsKey(task.id)) {
+      return Future.error(StateError('媒体任务正在停止或管理文件，请稍后重试'));
+    }
+    final result = Future<MediaTask>.sync(action);
+    _running[task.id] = result;
+    result.then<void>(
+      (_) {
+        if (identical(_running[task.id], result)) _running.remove(task.id);
+      },
+      onError: (Object _, StackTrace _) {
+        if (identical(_running[task.id], result)) _running.remove(task.id);
+      },
+    );
+    return result;
+  }
+
+  Future<MediaTask> startNative(MediaTask task, MediaCandidate candidate) {
+    if (native == null || candidate.isHls) return start(task, candidate);
+    return _launch(
+      task,
+      () => _control(task.id, () async {
+        _validateTaskCandidate(task, candidate);
+        var current = tasks.task(task.id) ?? (throw StateError('媒体任务不存在'));
+        if (current.state == MediaTaskState.playable ||
+            current.state == MediaTaskState.completed) {
+          return current;
+        }
+        current = tasks.transition(task.id, MediaTaskState.downloading);
+        try {
+          final status = await native!.start(
+            current,
+            candidate,
+            title: current.displayName,
+            storageDirectory: current.storageDirectoryName,
+          );
+          return _applyNativeStatus(current, status);
+        } catch (error, stack) {
+          _fail(task.id, error, stack, 'startNative');
+          rethrow;
+        }
+      }),
+    );
+  }
+
+  void _validateTaskCandidate(MediaTask task, MediaCandidate candidate) {
+    const MediaCandidateValidator().validate(
       candidate,
       hostId: task.hostId,
       generation: task.generation,
@@ -897,165 +1090,92 @@ class MediaDownloadService {
     if (task.candidateId != candidate.id) {
       throw StateError(MediaErrorCode.staleGeneration);
     }
-    var current = tasks.task(task.id) ?? task;
-    if (current.state == MediaTaskState.queued ||
-        current.state == MediaTaskState.paused ||
-        current.state == MediaTaskState.failed ||
-        current.state == MediaTaskState.cancelled) {
-      current = tasks.transition(task.id, MediaTaskState.downloading);
-    }
-    Map<String, Object?> status;
-    try {
-      status = await runtime.start(
-        current,
-        candidate,
-        title: current.displayName,
-        seriesDirectory: current.seriesDirectoryName,
-      );
-    } catch (error) {
-      AppErrorLogger.capture(
-        error,
-        module: 'media.download',
-        context: 'startNative:${task.id}',
-      );
-      if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
-        tasks.transition(
-          task.id,
-          MediaTaskState.failed,
-          errorCode: _errorCode(error.toString()),
-          errorReason: readableError(error),
-        );
-      }
-      rethrow;
-    }
-    final state = status['state'] as String?;
-    final bytes = (status['bytesDownloaded'] as num?)?.toInt();
-    final total = (status['totalBytes'] as num?)?.toInt();
-    if (bytes != null) {
-      current = tasks.updateProgress(task.id, bytes, totalBytes: total);
-    }
-    final localUri = status['localUri'] as String?;
-    if (localUri != null && localUri.startsWith('file://')) {
-      current = tasks.setLocalRef(task.id, Uri.parse(localUri).toFilePath());
-    }
-    if (state == 'completed') {
-      current = tasks.transition(task.id, MediaTaskState.completed);
-      current = tasks.transition(task.id, MediaTaskState.playable);
-    } else if (state == 'failed') {
-      current = tasks.transition(
-        task.id,
-        MediaTaskState.failed,
-        errorCode: _errorCode(status['errorCode']?.toString()),
-        errorReason: _nativeErrorReason(status['errorCode']?.toString()),
+  }
+
+  void _fail(String id, Object error, StackTrace stack, String operation) {
+    AppErrorLogger.capture(
+      error,
+      module: 'media.download',
+      context: '$operation:$id',
+      stack: stack,
+    );
+    if (tasks.task(id)?.state == MediaTaskState.downloading) {
+      final code = _errorCode(error.toString());
+      tasks.transition(
+        id,
+        code == MediaErrorCode.authorizationRequired
+            ? MediaTaskState.reauthorize
+            : MediaTaskState.failed,
+        errorCode: code,
+        errorReason: readableError(error),
       );
     }
-    return current;
   }
 
   Future<MediaTask> start(
     MediaTask task,
     MediaCandidate candidate, {
     int maxBytes = 2 * 1024 * 1024 * 1024,
-  }) async {
-    const validator = MediaCandidateValidator();
-    validator.validate(
-      candidate,
-      hostId: task.hostId,
-      generation: task.generation,
-      sourceUrl: task.sourceUrl,
-    );
-    if (task.candidateId != candidate.id) {
-      throw StateError(MediaErrorCode.staleGeneration);
-    }
-    if (candidate.isHls) {
-      return _startHls(task, candidate, maxBytes: maxBytes);
-    }
+  }) => _launch(task, () async {
+    _validateTaskCandidate(task, candidate);
+    _dartTasks.add(task.id);
     final cancel = Cancellation();
     _active[task.id] = cancel;
-    var current = tasks.task(task.id) ?? task;
     try {
+      final previous = tasks.task(task.id) ?? (throw StateError('媒体任务不存在'));
+      if (previous.state == MediaTaskState.playable ||
+          previous.state == MediaTaskState.completed) {
+        return previous;
+      }
+      if (candidate.isHls) {
+        return await _startHls(
+          task,
+          candidate,
+          cancel: cancel,
+          maxBytes: maxBytes,
+        );
+      }
+      var current = tasks.task(task.id) ?? (throw StateError('媒体任务不存在'));
+      if (current.state == MediaTaskState.completed ||
+          current.state == MediaTaskState.playable) {
+        return current;
+      }
       current = tasks.transition(task.id, MediaTaskState.downloading);
       final directory = await tasks.cacheDirectory(
-        seriesDirectory: task.seriesDirectoryName,
+        storageDirectory: task.storageDirectoryName,
       );
       final base = File('${directory.path}/${task.cacheKey}.part');
-      final finalFile = File('${directory.path}/${task.cacheKey}.media');
-      final offset = await base.exists() ? await base.length() : 0;
-      final response = await _fetchMediaWithRetry(
+      await _downloadFile(
         candidate.mediaUrl,
-        connect: const {'*'},
+        base,
+        cancel,
         document: candidate.sourceUrl,
-        cancel: cancel,
-        headers: offset == 0 ? const {} : {'Range': 'bytes=$offset-'},
         maxBytes: maxBytes,
       );
       cancel.check();
-      if (response.status < 200 || response.status >= 300) {
-        throw StateError('媒体下载 HTTP ${response.status}');
-      }
-      final append = offset > 0 && response.status == 206;
-      if (offset > 0 && !append) {
-        // A server that ignored Range would duplicate bytes. Start over only
-        // after proving the response was a complete 200 body.
-        await base.delete();
-      }
-      final sink = base.openWrite(
-        mode: append ? FileMode.append : FileMode.write,
-      );
-      await sink.addStream(Stream<List<int>>.fromIterable([response.bytes]));
-      await sink.close();
-      cancel.check();
       final size = await base.length();
       if (size == 0) throw StateError('媒体响应为空');
-      await base.rename(finalFile.path);
-      current = tasks.updateProgress(
-        task.id,
-        size,
-        totalBytes: _contentLength(response, size, offset, append),
-      );
+      final destination = File('${directory.path}/${task.cacheKey}.media');
+      if (await destination.exists()) await destination.delete();
+      final finalFile = await base.rename(destination.path);
+      await _deleteResumeState(base);
+      current = tasks.updateProgress(task.id, size, totalBytes: size);
+      tasks.setLocalRef(task.id, finalFile.path);
       current = tasks.transition(task.id, MediaTaskState.completed);
-      current = tasks.transition(task.id, MediaTaskState.playable);
-      return tasks.setLocalRef(task.id, finalFile.path);
+      return tasks.transition(task.id, MediaTaskState.playable);
     } on Cancelled {
       if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
-        current = tasks.transition(task.id, MediaTaskState.paused);
+        tasks.transition(task.id, MediaTaskState.paused);
       }
-      return current;
-    } on StateError catch (error) {
-      AppErrorLogger.capture(
-        error,
-        module: 'media.download',
-        context: 'download:${task.id}',
-      );
-      if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
-        final code = _errorCode(error.toString());
-        current = tasks.transition(
-          task.id,
-          MediaTaskState.failed,
-          errorCode: code,
-          errorReason: readableError(error),
-        );
-      }
-      rethrow;
-    } catch (error) {
-      AppErrorLogger.capture(
-        error,
-        module: 'media.download',
-        context: 'download:${task.id}',
-      );
-      if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
-        current = tasks.transition(
-          task.id,
-          MediaTaskState.failed,
-          errorCode: _errorCode(error.toString()),
-          errorReason: readableError(error),
-        );
-      }
+      return tasks.task(task.id)!;
+    } catch (error, stack) {
+      _fail(task.id, error, stack, 'download');
       rethrow;
     } finally {
-      _active.remove(task.id);
+      if (identical(_active[task.id], cancel)) _active.remove(task.id);
+      _dartTasks.remove(task.id);
     }
-  }
+  });
 
   /// Downloads an HLS playlist and its referenced local resources. Android's
   /// DownloadManager can fetch a single URL, but a `.m3u8` is only an index;
@@ -1066,15 +1186,14 @@ class MediaDownloadService {
     MediaTask task,
     MediaCandidate candidate, {
     required int maxBytes,
+    required Cancellation cancel,
   }) async {
-    final cancel = Cancellation();
-    _active[task.id] = cancel;
     var current = tasks.task(task.id) ?? task;
     Directory? staging;
     try {
       current = tasks.transition(task.id, MediaTaskState.downloading);
       final directory = await tasks.cacheDirectory(
-        seriesDirectory: task.seriesDirectoryName,
+        storageDirectory: task.storageDirectoryName,
       );
       staging = Directory('${directory.path}/${task.cacheKey}.hls.part');
       await staging.create(recursive: true);
@@ -1184,42 +1303,25 @@ class MediaDownloadService {
       current = tasks.transition(task.id, MediaTaskState.playable);
       final completed = tasks.setLocalRef(task.id, finalFile.path);
       final callback = onCompleted;
-      if (callback != null) unawaited(callback(completed));
+      if (callback != null && !_stopping.contains(task.id)) {
+        unawaited(
+          Future<void>(() async {
+            if (!_stopping.contains(task.id) && tasks.task(task.id) != null) {
+              await callback(completed);
+            }
+          }).catchError((Object error, StackTrace stack) {
+            AppErrorLogger.capture(error, module: 'media.export', stack: stack);
+          }),
+        );
+      }
       return completed;
     } on Cancelled {
       if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
         current = tasks.transition(task.id, MediaTaskState.paused);
       }
       return current;
-    } on StateError catch (error) {
-      AppErrorLogger.capture(
-        error,
-        module: 'media.download',
-        context: 'hls:${task.id}',
-      );
-      if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
-        current = tasks.transition(
-          task.id,
-          MediaTaskState.failed,
-          errorCode: _errorCode(error.toString()),
-          errorReason: readableError(error),
-        );
-      }
-      rethrow;
-    } catch (error) {
-      AppErrorLogger.capture(
-        error,
-        module: 'media.download',
-        context: 'hls:${task.id}',
-      );
-      if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
-        current = tasks.transition(
-          task.id,
-          MediaTaskState.failed,
-          errorCode: _errorCode(error.toString()),
-          errorReason: readableError(error),
-        );
-      }
+    } catch (error, stack) {
+      _fail(task.id, error, stack, 'hls');
       rethrow;
     } finally {
       // Keep the partial HLS directory after pause/failure. The resource map
@@ -1309,7 +1411,9 @@ class MediaDownloadService {
         remote.userInfo.isNotEmpty) {
       throw const FormatException('HLS 分片地址无效');
     }
-    final key = remote.removeFragment().toString();
+    final key = sha256
+        .convert(utf8.encode(remote.removeFragment().toString()))
+        .toString();
     final existing = resources[key];
     if (existing != null) {
       final cached = File('${staging.path}/$existing');
@@ -1318,26 +1422,26 @@ class MediaDownloadService {
       }
       resources.remove(key);
     }
-    final response = await _fetchMediaWithRetry(
+    final name = 'resource_$key.bin';
+    final partial = File('${staging.path}/$name.part');
+    await _downloadFile(
       remote,
-      connect: const {'*'},
+      partial,
+      cancel,
       document: document,
-      cancel: cancel,
-      maxBytes: min(64 * 1024 * 1024, max(1, maxBytes - downloaded)),
+      maxBytes: min(64 * 1024 * 1024, maxBytes),
     );
-    if (response.status < 200 || response.status >= 300) {
-      throw StateError('HLS 分片 HTTP ${response.status}');
-    }
-    if (response.bytes.isEmpty) throw StateError('HLS 分片响应为空');
-    if (downloaded + response.bytes.length > maxBytes) {
+    cancel.check();
+    final size = await partial.length();
+    if (size == 0) throw StateError('HLS 分片响应为空');
+    if (downloaded + size > maxBytes) {
       throw StateError('媒体响应超过 $maxBytes 字节');
     }
-    final name = 'resource_${resources.length.toString().padLeft(5, '0')}.bin';
-    await File('${staging.path}/$name')
-        .writeAsBytes(response.bytes, flush: true);
+    await partial.rename('${staging.path}/$name');
+    await _deleteResumeState(partial);
     resources[key] = name;
     await _writeHlsResources(staging, resources);
-    return (name: name, bytes: response.bytes.length);
+    return (name: name, bytes: size);
   }
 
   Future<Map<String, String>> _readHlsResources(Directory staging) async {
@@ -1351,7 +1455,7 @@ class MediaDownloadService {
         final key = entry.key.toString();
         final name = entry.value.toString();
         if (key.isNotEmpty &&
-            RegExp(r'^resource_\d{5}\.bin$').hasMatch(name) &&
+            RegExp(r'^resource_(?:[0-9a-f]{64}|\d{5})\.bin$').hasMatch(name) &&
             await File('${staging.path}/$name').exists()) {
           result[key] = name;
         }
@@ -1367,7 +1471,142 @@ class MediaDownloadService {
     Map<String, String> resources,
   ) async {
     final file = File('${staging.path}/resources.json');
-    await file.writeAsString(jsonEncode(resources), flush: true);
+    final temporary = File('${file.path}.tmp');
+    await temporary.writeAsString(jsonEncode(resources), flush: true);
+    await temporary.rename(file.path);
+  }
+
+  Future<void> _deleteResumeState(File partial) async {
+    final metadata = File('${partial.path}.resume.json');
+    if (await metadata.exists()) await metadata.delete();
+  }
+
+  Future<Map<String, dynamic>> _resumeState(File partial) async {
+    try {
+      final json = jsonDecode(
+        await File('${partial.path}.resume.json').readAsString(),
+      );
+      return json is Map<String, dynamic> ? json : <String, dynamic>{};
+    } catch (_) {
+      return <String, dynamic>{};
+    }
+  }
+
+  String? _responseValidator(Map<String, String> headers) {
+    final etag = headers[HttpHeaders.etagHeader];
+    if (etag != null && etag.startsWith('"') && etag.endsWith('"')) return etag;
+    final modified = headers[HttpHeaders.lastModifiedHeader];
+    if (modified == null) return null;
+    try {
+      HttpDate.parse(modified);
+      return modified;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Retry from flushed bytes, never from bytes buffered only in memory.
+  /// Sidecars contain a hashed resource identity and validators, no credentials.
+  Future<void> _downloadFile(
+    Uri url,
+    File partial,
+    Cancellation cancel, {
+    required Uri document,
+    required int maxBytes,
+  }) async {
+    final identity = sha256.convert(utf8.encode(url.toString())).toString();
+    Object? lastError;
+    for (var attempt = 0; attempt < 4; attempt++) {
+      cancel.check();
+      final metadata = await _resumeState(partial);
+      final validator = metadata['validator'] as String?;
+      var offset = await partial.exists() ? await partial.length() : 0;
+      if (offset > 0 &&
+          (metadata['identity'] != identity || validator == null)) {
+        // Without a validator two representations cannot safely be joined.
+        await partial.writeAsBytes(const [], flush: true);
+        offset = 0;
+      }
+      try {
+        final response = await http.fetchToFile(
+          url,
+          connect: const {'*'},
+          document: document,
+          cancel: cancel,
+          destination: partial,
+          mediaRequest: true,
+          resumeOffset: offset,
+          maxBytes: maxBytes,
+          headers: {
+            if (offset > 0) 'Range': 'bytes=$offset-',
+            if (offset > 0 && validator != null) 'If-Range': validator,
+          },
+          onHeaders: (status, headers) async {
+            final received = _responseValidator(headers);
+            if (status == 206 &&
+                offset > 0 &&
+                (received == null || received != validator)) {
+              await partial.writeAsBytes(const [], flush: true);
+              await _deleteResumeState(partial);
+              throw const HttpException('媒体响应验证标识缺失或已变化，重新下载');
+            }
+            final state = File('${partial.path}.resume.json');
+            final temporary = File('${state.path}.tmp');
+            await temporary.writeAsString(
+              jsonEncode({
+                'identity': identity,
+                'validator': received ?? (status == 206 ? validator : null),
+              }),
+              flush: true,
+            );
+            await temporary.rename(state.path);
+          },
+        );
+        cancel.check();
+        if (response.status == 416) {
+          final match = RegExp(
+            r'^bytes \*/(\d+)$',
+          ).firstMatch(response.headers[HttpHeaders.contentRangeHeader] ?? '');
+          final total = match == null ? null : int.tryParse(match.group(1)!);
+          if (offset > 0 &&
+              total == offset &&
+              _responseValidator(response.headers) == validator) {
+            return;
+          }
+          await partial.writeAsBytes(const [], flush: true);
+          await _deleteResumeState(partial);
+          lastError = StateError('媒体 Range 已失效，重新下载');
+          continue;
+        }
+        if (response.status == 401 || response.status == 403) {
+          throw StateError('媒体下载需要重新授权 HTTP ${response.status}');
+        }
+        if (_retryableMediaStatus(response.status)) {
+          throw HttpException('媒体服务器暂时不可用 HTTP ${response.status}');
+        }
+        if (response.status != 200 && response.status != 206) {
+          throw StateError('媒体下载 HTTP ${response.status}');
+        }
+        return;
+      } on Cancelled {
+        rethrow;
+      } on SocketException catch (error) {
+        lastError = error;
+      } on HandshakeException catch (error) {
+        lastError = error;
+      } on TimeoutException catch (error) {
+        lastError = error;
+      } on HttpException catch (error) {
+        lastError = error;
+      }
+      cancel.check();
+      if (attempt < 3) {
+        await Future<void>.delayed(
+          Duration(milliseconds: 100 * (1 << attempt)),
+        );
+      }
+    }
+    throw lastError ?? const SocketException('媒体连接失败');
   }
 
   /// CDN edges can reset an otherwise valid request while rotating a signed
@@ -1420,29 +1659,15 @@ class MediaDownloadService {
   static bool _retryableMediaStatus(int status) =>
       status == 408 || status == 425 || status == 429 || status >= 500;
 
-  void pause(String taskId) => _active[taskId]?.cancel();
-
-  Future<bool> _preserveNativePartial(
-    MediaTask task,
-    NativeDownloadRuntime runtime,
-  ) async {
-    final status = await runtime.status(task.id);
-    final raw = status['localUri'] as String?;
-    if (raw == null || !raw.startsWith('file://')) return false;
-    final source = File.fromUri(Uri.parse(raw));
-    if (!await source.exists()) return false;
-    final size = await source.length();
-    if (size <= 0) return false;
-    final directory = await tasks.cacheDirectory(
-      seriesDirectory: task.seriesDirectoryName,
-    );
-    final partial = File('${directory.path}/${task.cacheKey}.part');
-    await source.copy(partial.path);
-    return true;
-  }
-
   static String _errorCode(String? raw) {
     final value = (raw ?? '').toLowerCase();
+    if (value == MediaErrorCode.cacheMissing) {
+      return MediaErrorCode.cacheMissing;
+    }
+    if (value == MediaErrorCode.authorizationRequired ||
+        value == 'reauthorize') {
+      return MediaErrorCode.authorizationRequired;
+    }
     if (value.contains('auth') ||
         value.contains('401') ||
         value.contains('403') ||
@@ -1459,24 +1684,13 @@ class MediaDownloadService {
   static String _nativeErrorReason(String? raw) {
     final value = (raw ?? '').trim();
     if (value.isEmpty) return '后台下载失败，请重试';
+    if (value == MediaErrorCode.cacheMissing) return '后台下载文件缺失，请重试';
     return switch (_errorCode(value)) {
       MediaErrorCode.authorizationRequired => '下载地址需要重新授权',
       MediaErrorCode.diskFull => '设备存储空间不足',
       MediaErrorCode.cancelled => '下载已取消',
       _ => '网络连接中断，已保留已下载内容，可重试',
     };
-  }
-
-  static int _contentLength(
-    FetchResponse response,
-    int size,
-    int offset,
-    bool append,
-  ) {
-    final raw = response.headers[HttpHeaders.contentLengthHeader];
-    final length = raw == null ? null : int.tryParse(raw);
-    if (length == null) return size;
-    return append ? offset + length : length;
   }
 }
 
@@ -1704,7 +1918,12 @@ class Mp4ExportService {
     final report = onProgress ?? (_) {};
     final root = await _directoryProvider();
     final id = 'export_${DateTime.now().microsecondsSinceEpoch}';
-    final outputDirectory = Directory('${root.path}/media_exports/$id');
+    final exportFolder = task.batchDirectory == null
+        ? id
+        : '${mediaSeriesDirectoryName(task.batchDirectory!)}/$id';
+    final outputDirectory = Directory(
+      '${root.path}/media_exports/$exportFolder',
+    );
     await outputDirectory.create(recursive: true);
     final output = File('${outputDirectory.path}/${mediaExportFileName(task)}');
     final temporary = File('${output.path}.part');

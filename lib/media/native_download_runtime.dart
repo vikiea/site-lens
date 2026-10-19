@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 import '../domain/models.dart';
 
 /// OS-managed download bridge. The durable task snapshot stays in
-/// [MediaTaskStore]; Android's DownloadManager supplies process-death and
+/// [MediaTaskStore]; Android WorkManager supplies process-death and
 /// network-change recovery for the bytes.
 class NativeDownloadRuntime {
   NativeDownloadRuntime({MethodChannel? channel})
@@ -15,7 +15,7 @@ class NativeDownloadRuntime {
     MediaTask task,
     MediaCandidate candidate, {
     String? title,
-    String? seriesDirectory,
+    String? storageDirectory,
   }) async {
     if (task.candidateId != candidate.id ||
         task.hostId != candidate.hostId ||
@@ -32,7 +32,7 @@ class NativeDownloadRuntime {
       'title':
           title ??
           (task.displayName.isEmpty ? candidate.title : task.displayName),
-      'seriesDirectory': seriesDirectory ?? task.seriesDirectoryName,
+      'storageDirectory': storageDirectory ?? task.storageDirectoryName,
     });
     return value ?? const <String, Object?>{};
   }

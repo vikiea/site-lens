@@ -60,7 +60,7 @@ void main() {
         'Connection closed while receiving data, uri = https://cdn.example/video.ts?auth_key=secret',
       ),
       module: 'media.download',
-      context: 'task=media_1',
+      context: 'task=media_1 url=https://private.example/watch?token=secret',
     );
 
     final logs = await db.appErrorLogs();
@@ -68,7 +68,9 @@ void main() {
     expect(logs.single.message, '网络连接中断，请重试');
     expect(logs.single.details, contains('https://cdn.example/video.ts'));
     expect(logs.single.details, isNot(contains('secret')));
-    expect(logs.single.context, 'task=media_1');
+    expect(logs.single.context, 'task=media_1 url=[网址已隐藏]');
+    expect(logs.single.context, isNot(contains('private.example')));
+    expect(logs.single.context, isNot(contains('secret')));
   });
 
   test('readable errors hide connection implementation details', () {

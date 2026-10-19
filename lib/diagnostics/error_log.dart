@@ -89,7 +89,7 @@ class AppErrorLogger {
         module: _clip(module, 80),
         message: _clip(message, 240),
         details: _clip(_withStack(details, stack), 8000),
-        context: context == null ? null : _clip(_redact(context), 300),
+        context: context == null ? null : _clip(_redactContext(context), 300),
         deduplicateContext: deduplicateContext,
       );
       return true;
@@ -253,6 +253,17 @@ class AppErrorLogger {
       r'$1=[已隐藏]',
     );
     return result.replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  /// Context is an index used for deduplication and grouping. Keep it free of
+  /// page URLs even when a caller accidentally includes one; details retain
+  /// the existing host/path redaction for human diagnosis.
+  static String _redactContext(String value) {
+    final withoutUrls = value.replaceAll(
+      RegExp(r'https?://[^\s,)]+', caseSensitive: false),
+      '[网址已隐藏]',
+    );
+    return _redact(withoutUrls);
   }
 
   static String _clip(String value, int max) =>

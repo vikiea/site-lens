@@ -2,26 +2,26 @@ package dev.vikiea.site_lens
 
 import android.content.Context
 
-/** Durable native task index. DownloadManager owns the bytes; this repository
- * owns the task-to-download identity so a restarted Flutter engine can
- * reconcile without creating a second download. */
+/** No Cookie, Authorization or other session headers are persisted here. */
 class NativeMediaTaskRepository(context: Context) {
     private val prefs = context.getSharedPreferences("media_task_repository", Context.MODE_PRIVATE)
 
     data class Record(
         val taskId: String,
-        val downloadId: Long,
-        val candidateId: String,
-        val generation: Long,
+        val downloadId: Long = -1L,
+        val candidateId: String = "",
+        val generation: Long = 0L,
         val url: String = "",
         val sourceUrl: String = "",
         val title: String = "",
         val seriesDirectory: String = "未命名媒体",
         val paused: Boolean = false,
+        val cancelled: Boolean = false,
+        val workId: String? = null,
     )
 
     fun save(record: Record) {
-        prefs.edit()
+        check(prefs.edit()
             .putLong("${record.taskId}.downloadId", record.downloadId)
             .putString("${record.taskId}.candidateId", record.candidateId)
             .putLong("${record.taskId}.generation", record.generation)
@@ -30,16 +30,16 @@ class NativeMediaTaskRepository(context: Context) {
             .putString("${record.taskId}.title", record.title)
             .putString("${record.taskId}.seriesDirectory", record.seriesDirectory)
             .putBoolean("${record.taskId}.paused", record.paused)
+            .putBoolean("${record.taskId}.cancelled", record.cancelled)
+            .putString("${record.taskId}.workId", record.workId)
             .putBoolean("${record.taskId}.known", true)
-            .apply()
+            .commit()) { "无法保存下载状态" }
     }
 
     fun read(taskId: String): Record? {
-        val id = prefs.getLong("$taskId.downloadId", -1L)
         if (!prefs.getBoolean("$taskId.known", false)) return null
         return Record(
-            taskId,
-            id,
+            taskId, prefs.getLong("$taskId.downloadId", -1L),
             prefs.getString("$taskId.candidateId", "") ?: "",
             prefs.getLong("$taskId.generation", 0L),
             prefs.getString("$taskId.url", "") ?: "",
@@ -47,20 +47,17 @@ class NativeMediaTaskRepository(context: Context) {
             prefs.getString("$taskId.title", "") ?: "",
             prefs.getString("$taskId.seriesDirectory", "未命名媒体") ?: "未命名媒体",
             prefs.getBoolean("$taskId.paused", false),
+            prefs.getBoolean("$taskId.cancelled", false),
+            prefs.getString("$taskId.workId", null),
         )
     }
 
     fun remove(taskId: String) {
-        prefs.edit()
-            .remove("$taskId.downloadId")
-            .remove("$taskId.candidateId")
-            .remove("$taskId.generation")
-            .remove("$taskId.url")
-            .remove("$taskId.sourceUrl")
-            .remove("$taskId.title")
-            .remove("$taskId.seriesDirectory")
-            .remove("$taskId.paused")
-            .remove("$taskId.known")
-            .apply()
+        val edit = prefs.edit()
+        for (suffix in listOf("downloadId", "candidateId", "generation", "url", "sourceUrl",
+            "title", "seriesDirectory", "paused", "cancelled", "workId", "known")) {
+            edit.remove("$taskId.$suffix")
+        }
+        check(edit.commit()) { "无法删除下载状态" }
     }
 }

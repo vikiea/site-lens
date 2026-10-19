@@ -1,5 +1,6 @@
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/ui/app_controller.dart';
@@ -15,7 +16,11 @@ const _siteUrl = 'https://toolbar.example/';
 /// one fixed row of [browserToolbarItemCount] equal cells that never wraps,
 /// scrolls or folds, with only the handle able to move.
 void main() {
-  Future<AppController> boot(WidgetTester tester, AppDatabase db) async {
+  Future<AppController> boot(
+    WidgetTester tester,
+    AppDatabase db, {
+    MediaQueryData? mediaQuery,
+  }) async {
     late final AppController app;
     late final ActiveBrowserSession tab;
     // openUrl configures the browsing host with the userscript runtime and may
@@ -28,7 +33,10 @@ void main() {
     });
     await tester.pumpWidget(
       MaterialApp(
-        home: BrowserScreen(app: app, site: tab.site),
+        home: MediaQuery(
+          data: mediaQuery ?? MediaQueryData.fromView(tester.view),
+          child: BrowserScreen(app: app, site: tab.site),
+        ),
       ),
     );
     // BrowserScreen starts from a microtask and the fake host has no frame
@@ -148,7 +156,10 @@ void main() {
     expect(handle, findsOneWidget, reason: 'auto-hide hands the screen back');
 
     final before = tester.getRect(handle);
-    await tester.drag(handle, const Offset(-120, -240));
+    final drag = await tester.startGesture(tester.getCenter(handle));
+    await tester.pump(const Duration(milliseconds: 400));
+    await drag.moveBy(const Offset(-120, -240));
+    await drag.up();
     await tester.pump(const Duration(milliseconds: 200));
     final after = tester.getRect(find.byIcon(Icons.keyboard_arrow_up));
     expect(after.center.dx, lessThan(before.center.dx - 60));
@@ -193,5 +204,80 @@ void main() {
       tester.getTopLeft(secondary).dy,
       lessThan(tester.getTopLeft(find.byTooltip('后退')).dy),
     );
+  });
+
+  testWidgets('floating handle toggles and routes short swipes', (
+    tester,
+  ) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final app = await boot(tester, db);
+    addTearDown(() async {
+      await app.shutdown();
+      await db.close();
+    });
+
+    final handle = find.byIcon(Icons.keyboard_arrow_up);
+    await tester.tap(handle);
+    await tester.pump();
+    expect(find.byKey(const ValueKey('browser-navigation')), findsOneWidget);
+    expect(find.byIcon(Icons.keyboard_arrow_down), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.keyboard_arrow_down));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('browser-navigation')), findsNothing);
+
+    final api = app.hosts.api as FakeWebHostApi;
+    final hiddenHandle = find.byIcon(Icons.keyboard_arrow_up);
+    await tester.drag(hiddenHandle, const Offset(96, 0));
+    await tester.pumpAndSettle();
+    expect(api.wentForward, contains(app.activeBrowser!.host.id));
+
+    await tester.drag(
+      find.byIcon(Icons.keyboard_arrow_up),
+      const Offset(0, -96),
+    );
+    await tester.pumpAndSettle();
+    expect(api.navigated[app.activeBrowser!.host.id], contains(_siteUrl));
+  });
+
+  testWidgets('fullscreen clears the WebView viewport inset', (tester) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final app = await boot(
+      tester,
+      db,
+      mediaQuery: const MediaQueryData(
+        padding: EdgeInsets.only(top: 24, bottom: 16),
+      ),
+    );
+    final browserUi = const MethodChannel('site_lens/browser_ui');
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(browserUi, (call) async {
+          calls.add(call);
+          return null;
+        });
+    addTearDown(() async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(browserUi, null);
+      await app.shutdown();
+      await db.close();
+    });
+
+    final viewport = find.byKey(const ValueKey('browser-web-content'));
+    expect(tester.getTopLeft(viewport).dy, closeTo(24, 1));
+
+    await tester.tap(find.byIcon(Icons.keyboard_arrow_up));
+    await tester.pump();
+    await tester.tap(find.byTooltip('更多浏览器操作'));
+    await tester.pump();
+    await tester.tap(find.byTooltip('全屏'));
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pump();
+    expect(calls, isNotEmpty);
+    expect(calls.last.arguments, containsPair('enabled', true));
+    expect(tester.getTopLeft(viewport).dy, closeTo(0, 1));
   });
 }

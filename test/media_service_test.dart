@@ -22,7 +22,7 @@ class FakeNativeDownloads extends NativeDownloadRuntime {
     MediaTask task,
     MediaCandidate candidate, {
     String? title,
-    String? seriesDirectory,
+    String? storageDirectory,
   }) async {
     calls.add('start:${task.id}');
     return statuses[task.id] ?? {'state': 'downloading'};
@@ -34,6 +34,12 @@ class FakeNativeDownloads extends NativeDownloadRuntime {
 
   @override
   Future<void> pause(String taskId) async => calls.add('pause:$taskId');
+
+  @override
+  Future<void> cancel(String taskId) async => calls.add('cancel:$taskId');
+
+  @override
+  Future<void> delete(String taskId) async => calls.add('delete:$taskId');
 
   @override
   Future<Map<String, Object?>> resume(String taskId) async {
@@ -121,6 +127,21 @@ void main() {
     expect(mediaSeriesDirectoryName('母衣半暖默许春朝 - 第3集'), '母衣半暖默许春朝');
     expect(mediaSeriesDirectoryName('A/B: episode=12'), 'A_B');
     expect(mediaSeriesDirectoryName(''), '未命名媒体');
+  });
+
+  test('batch directory becomes the storage directory', () async {
+    final root = await Directory.systemTemp.createTemp('site-lens-batch-');
+    addTearDown(() => root.delete(recursive: true));
+    final store = MediaTaskStore(directoryProvider: () async => root);
+    final task = store.create(
+      candidate(title: '系列 - 第1集'),
+      batchDirectory: '批量下载一',
+    );
+    expect(task.storageDirectoryName, '批量下载一');
+    final directory = await store.cacheDirectory(
+      storageDirectory: task.storageDirectoryName,
+    );
+    expect(directory.path, endsWith('/media_cache/批量下载一'));
   });
 
   test('media playlist groups one series and sorts episodes', () {
@@ -320,10 +341,41 @@ void main() {
       await cached.readAsString(),
     );
     expect(cachedInput.keys, hasLength(1));
-    expect(cachedInput.keys.single.path, endsWith('resource_00000.bin'));
+    expect(
+      cachedInput.keys.single.path,
+      matches(RegExp(r'.*/resource_[0-9a-f]{64}\.bin$')),
+    );
     expect(cached.parent.listSync(), hasLength(3));
     expect(http.calls, hasLength(3));
   });
+
+  test(
+    'direct media download resumes from bytes flushed before a reset',
+    () async {
+      final root = await Directory.systemTemp.createTemp('site-lens-resume-');
+      addTearDown(() => root.delete(recursive: true));
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final media = candidate(url: 'https://cdn.example/video.mp4');
+      final task = store.create(media);
+      final http = _InterruptingHttp();
+
+      final result = await MediaDownloadService(
+        tasks: store,
+        http: http,
+      ).start(task, media);
+
+      expect(result.state, MediaTaskState.playable);
+      expect(http.offsets, [0, 3]);
+      expect(await (await store.cachedFile(task.id))!.readAsBytes(), [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+      ]);
+    },
+  );
 
   test('native task reconciliation restores progress, local URI and playable state', () async {
     final root = await Directory.systemTemp.createTemp(
@@ -367,8 +419,69 @@ void main() {
       expect(native.calls, [
         'start:${task.id}',
         'pause:${task.id}',
-        'resume:${task.id}',
+        'start:${task.id}',
       ]);
+    },
+  );
+
+  test(
+    'delete acquires the task lock before cancelling native transport',
+    () async {
+      final store = MediaTaskStore();
+      final task = store.create(candidate());
+      final native = FakeNativeDownloads();
+      final service = MediaDownloadService(tasks: store, native: native);
+      store.retain(task.id);
+
+      await expectLater(service.delete(task.id), throwsStateError);
+
+      expect(native.calls, isEmpty);
+      expect(store.task(task.id), isNotNull);
+      store.release(task.id);
+    },
+  );
+
+  test(
+    'delete waits through cleanup and removes partial files and task row',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-delete-task-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final task = store.create(candidate(title: '系列 - 第1集'));
+      final directory = await store.cacheDirectory(
+        storageDirectory: task.storageDirectoryName,
+      );
+      final partial = File('${directory.path}/${task.cacheKey}.part')
+        ..writeAsBytesSync([1, 2]);
+      final staging = Directory('${directory.path}/${task.cacheKey}.hls.part')
+        ..createSync();
+      File('${staging.path}/segment.part').writeAsBytesSync([3]);
+      final native = FakeNativeDownloads();
+      final service = MediaDownloadService(tasks: store, native: native);
+
+      await service.delete(task.id);
+
+      expect(await partial.exists(), isFalse);
+      expect(await staging.exists(), isFalse);
+      expect(store.task(task.id), isNull);
+      expect(native.calls, ['cancel:${task.id}', 'delete:${task.id}']);
+    },
+  );
+
+  test(
+    'refreshTask ignores a missing native row for an active Dart task',
+    () async {
+      final store = MediaTaskStore();
+      final task = store.create(candidate());
+      store.transition(task.id, MediaTaskState.downloading);
+      final native = FakeNativeDownloads();
+      final refreshed = await MediaDownloadService(
+        tasks: store,
+        native: native,
+      ).refreshTask(task.id);
+      expect(refreshed.state, MediaTaskState.downloading);
     },
   );
 
@@ -884,6 +997,28 @@ class _StatusHttp extends ControlledHttp {
     bytes: const [],
     headers: const {},
   );
+
+  @override
+  Future<FetchFileResponse> fetchToFile(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    required File destination,
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    int resumeOffset = 0,
+    int maxBytes = 2 * 1024 * 1024 * 1024,
+    Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    Duration timeout = const Duration(seconds: 15),
+  }) async => FetchFileResponse(
+    url: url,
+    status: statusCode,
+    headers: const {},
+    bytesWritten: 0,
+    totalBytes: resumeOffset,
+    appended: false,
+  );
 }
 
 class _MapHttp extends ControlledHttp {
@@ -908,5 +1043,86 @@ class _MapHttp extends ControlledHttp {
     final response = responses[url.toString()];
     if (response == null) throw StateError('missing $url');
     return response;
+  }
+
+  @override
+  Future<FetchFileResponse> fetchToFile(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    required File destination,
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    int resumeOffset = 0,
+    int maxBytes = 2 * 1024 * 1024 * 1024,
+    Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    calls.add(url.toString());
+    final response = responses[url.toString()];
+    if (response == null) throw StateError('missing $url');
+    if (onHeaders != null) await onHeaders(response.status, response.headers);
+    final append = resumeOffset > 0 && response.status == 206;
+    final bytes = response.bytes;
+    await destination.parent.create(recursive: true);
+    await destination.writeAsBytes(
+      append ? [...await destination.readAsBytes(), ...bytes] : bytes,
+      flush: true,
+    );
+    return FetchFileResponse(
+      url: response.url,
+      status: response.status,
+      headers: response.headers,
+      bytesWritten: bytes.length,
+      totalBytes: (append ? resumeOffset : 0) + bytes.length,
+      appended: append,
+    );
+  }
+}
+
+class _InterruptingHttp extends ControlledHttp {
+  final offsets = <int>[];
+  var calls = 0;
+
+  @override
+  Future<FetchFileResponse> fetchToFile(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    required File destination,
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    int resumeOffset = 0,
+    int maxBytes = 2 * 1024 * 1024 * 1024,
+    Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    calls++;
+    offsets.add(resumeOffset);
+    if (calls == 1) {
+      await onHeaders?.call(200, const {'etag': '"v1"'});
+      await destination.writeAsBytes([1, 2, 3], flush: true);
+      throw const SocketException('connection reset by peer');
+    }
+    expect(headers['Range'], 'bytes=3-');
+    expect(headers['If-Range'], '"v1"');
+    final responseHeaders = const {
+      'etag': '"v1"',
+      'content-range': 'bytes 3-5/6',
+    };
+    await onHeaders?.call(206, responseHeaders);
+    final sink = destination.openWrite(mode: FileMode.append);
+    await sink.addStream(Stream<List<int>>.value([4, 5, 6]));
+    await sink.close();
+    return FetchFileResponse(
+      url: url,
+      status: 206,
+      headers: responseHeaders,
+      bytesWritten: 3,
+      totalBytes: 6,
+      appended: true,
+    );
   }
 }

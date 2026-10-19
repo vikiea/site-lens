@@ -55,4 +55,19 @@ class SettingsRepository {
     if (!_changes.isClosed) _changes.add(settings);
     return settings;
   }
+
+  Future<AppSettings> dismissNotice(String id) async {
+    final updated = await db.transaction(() async {
+      final current = await read();
+      final next = current.patch({
+        'dismissedNotices': {...current.dismissedNotices, id}.toList(),
+        if (id == 'media.library') 'mediaLibraryNoticeDismissed': true,
+        if (id == 'media.tasks') 'mediaTasksNoticeDismissed': true,
+      });
+      await db.setSetting(AppPolicy.settingsKey, next.encode());
+      return next;
+    });
+    if (!_changes.isClosed) _changes.add(updated);
+    return updated;
+  }
 }

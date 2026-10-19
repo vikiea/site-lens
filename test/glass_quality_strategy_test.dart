@@ -193,6 +193,8 @@ void main() {
         expect(browsingPanel.quality, GlassQuality.standard);
         expect(browsingPanel.settings.thickness, standard.settings.thickness);
         expect(browsingPanel.settings.rimLight, standard.settings.rimLight);
+        expect(browsingPanel.settings.blur, greaterThan(0));
+        expect(browsingPanel.settings.frost, greaterThan(0));
       } finally {
         debugDefaultTargetPlatformOverride = previous;
       }

@@ -335,7 +335,10 @@ GM_registerMenuCommand('Lease SPA menu', () => {
       );
       expect(session.errorKind, isNull);
 
-      expect(await controller.hosts.api.goBack(session.id), isTrue);
+      final firstBack = controller.hosts.api.goBack(session.id);
+      final repeatedBack = controller.hosts.api.goBack(session.id);
+      expect(await firstBack, isTrue);
+      expect(await repeatedBack, isTrue);
       await waitForCondition(
         tester,
         () => session.loaded && session.url.endsWith('/one'),

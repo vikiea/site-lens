@@ -10,8 +10,55 @@
   const resumeNodes = new Set();
   const contexts = new Set();
   const resumeContexts = new Set();
-  const childPlaying = new Map();
-  const childCandidates = new Map();
+  let frameId = newFrameId();
+  let documentId = window.parent === window ? frameId : null;
+  let epoch = -1;
+  let commandSequence = -1;
+  let connected = false;
+  let alive = true;
+  let lastState = '';
+  const bridge = window[config.bridge];
+  function newFrameId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+    return 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2);
+  }
+  function post(kind, fields = {}) {
+    try {
+      if (!documentId) return;
+      const raw = JSON.stringify({kind, token: config.token, frame: frameId, document: documentId, epoch, ...fields});
+      if (raw.length <= 4096 && bridge) bridge.postMessage(raw);
+    } catch (_) {}
+  }
+  function connect() {
+    if (!alive) return;
+    if (window.parent !== window) {
+      try {
+        window.parent.postMessage({
+          kind: 'site-lens-media-frame-hello',
+          token: config.token,
+          frame: frameId,
+        }, '*');
+      } catch (_) {}
+    }
+    if (documentId) post('hello');
+  }
+  function directChildren() {
+    return Array.from(
+      {length: Math.min(window.frames.length, 64)},
+      (_, index) => window.frames[index],
+    );
+  }
+  function broadcastDocumentId() {
+    if (!documentId) return;
+    const message = {
+      kind: 'site-lens-media-frame-id',
+      token: config.token,
+      document: documentId,
+    };
+    for (const child of directChildren()) {
+      try { child.postMessage(message, '*'); } catch (_) {}
+    }
+  }
   const mediaAttributes = [
     'data-play-src',
     'data-video-src',
@@ -22,7 +69,7 @@
   ];
   let blocked = config.blocked !== false;
   let needsGesture = false;
-  let lastPlaying = null;
+  let lastActiveNode = null;
   let lastCandidates = '';
   let lastCandidateList = [];
   let reportScheduled = false;
@@ -43,13 +90,11 @@
   }
   function mediaEvent(type,node) {
     track(node);
+    if ((type === 'play' || type === 'playing') && !node.paused && !node.ended) lastActiveNode = node;
     if (['ended','emptied'].includes(type) || (['play','playing'].includes(type) && !node.paused && !node.ended)) resumeNodes.delete(node);
     if (blocked && type!=='pause' && type!=='ended') pause(); else scheduleReport();
   }
   function collect() {
-    const children = Array.from({length:Math.min(window.frames.length,64)}, (_,i) => window.frames[i]);
-    for (const frame of childPlaying.keys()) if (!children.includes(frame)) childPlaying.delete(frame);
-    for (const frame of childCandidates.keys()) if (!children.includes(frame)) childCandidates.delete(frame);
     for (const node of nodes) {
       if (node.isConnected) connectedBefore.add(node);
       if ((!node.isConnected && connectedBefore.has(node)) ||
@@ -144,9 +189,10 @@
     } catch (_) {}
   }
   function report() {
+    if (!alive) return;
     collect();
     const playing = Array.from(nodes).some(node => !node.paused && !node.ended) ||
-      Array.from(contexts).some(ctx => ctx.state === 'running') || Array.from(childPlaying.values()).some(Boolean);
+      Array.from(contexts).some(ctx => ctx.state === 'running');
     const candidates = [];
     const seen = new Map();
     const episodes = [];
@@ -175,12 +221,6 @@
         addCandidate(candidates, seen, entry.name, entry.initiatorType || '');
       }
     }
-    for (const child of childCandidates.values()) {
-      if (!Array.isArray(child)) continue;
-      for (const candidate of child) {
-        addCandidate(candidates, seen, candidate?.url, candidate?.mime, candidate?.durationMs, true, candidate?.title, candidate?.thumbnail, candidate?.episodeNumber);
-      }
-    }
     if (episodes.length > 1) {
       const episodeByUrl = new Map();
       episodes.forEach((item, index) => {
@@ -200,19 +240,35 @@
         }
       }
     }
-    lastCandidateList = episodes.length > 1 ? episodes : candidates;
+    // Resource timing can contain ads and manifests; only a page-exposed
+    // playlist may advertise episode switching.
+    lastCandidateList = episodes;
+    if (!connected) { connect(); return; }
+    const state = {
+      playing,
+      resumable: resumeNodes.size > 0 || resumeContexts.size > 0 ||
+        (lastActiveNode != null && nodes.has(lastActiveNode) && !lastActiveNode.ended),
+      canSkip: canSwitchCandidate(),
+      title: (document.title || '').slice(0, 512),
+    };
+    const stateKey = JSON.stringify(state);
+    if (stateKey !== lastState) { lastState = stateKey; post('state', state); }
     const candidateKey = JSON.stringify(candidates);
-    if (playing === lastPlaying && candidateKey === lastCandidates) return;
-    lastPlaying = playing;
+    if (candidateKey === lastCandidates) return;
     lastCandidates = candidateKey;
-    try {
-      if (window.parent !== window) {
-        window.parent.postMessage({kind:'site-lens-media-state',token:config.token,playing,candidates}, '*');
-      } else {
-        window[config.bridge].postMessage(JSON.stringify({playing, title: (document.title || '').slice(0,512), candidates}));
+    // Discovery must never make playback state exceed the native message limit.
+    let batch = [];
+    for (const candidate of candidates.slice(0, 256)) {
+      const message = {kind:'candidates', token:config.token, frame:frameId, document:documentId, epoch, candidates:[...batch,candidate]};
+      if (JSON.stringify(message).length > 4096) {
+        if (batch.length) post('candidates', {candidates:batch});
+        batch = [];
       }
-    } catch (_) { /* Detached or unsupported frames have no native authority. */ }
+      if (JSON.stringify({...message,candidates:[candidate]}).length <= 4096) batch.push(candidate);
+    }
+    if (batch.length) post('candidates', {candidates:batch});
   }
+
   // Video pages often mutate their player DOM hundreds of times per second.
   // Coalesce those callbacks so discovery cannot starve the renderer or the
   // page's own playback thread.
@@ -239,11 +295,21 @@
   // data-play-src/data-video-src attributes. The page remains authoritative;
   // this only changes the already-discovered media element and never invents
   // a URL or performs a network request itself.
+  function canSwitchCandidate() {
+    const node = lastActiveNode;
+    if (!node || !node.isConnected || lastCandidateList.length < 2) return false;
+    try {
+      const current = new URL(node.currentSrc || node.src || '', document.baseURI);
+      // Never replace a MediaSource/blob player with a raw manifest URL.
+      if (!['http:', 'https:'].includes(current.protocol)) return false;
+      return lastCandidateList.some(item => candidateKey(new URL(item.url)) === candidateKey(current));
+    } catch (_) { return false; }
+  }
   function switchCandidate(direction) {
     collect();
-    if (lastCandidateList.length < 2) return;
-    const node = Array.from(nodes).find(value => value && value.isConnected);
-    if (!node) return;
+    if (!canSwitchCandidate()) return false;
+    const node = lastActiveNode;
+    if (!node) return false;
     const current = node.currentSrc || node.src || '';
     let currentKey = '';
     try { currentKey = candidateKey(new URL(current, document.baseURI)); } catch (_) {}
@@ -255,16 +321,15 @@
       ? (direction > 0 ? 0 : lastCandidateList.length - 1)
       : (index + direction + lastCandidateList.length) % lastCandidateList.length;
     const target = lastCandidateList[targetIndex];
-    if (!target || target.url === current) return;
+    if (!target || target.url === current) return false;
     try {
       blocked = false;
       needsGesture = false;
       node.pause();
       node.src = target.url;
       if (typeof node.load === 'function') node.load();
-      Promise.resolve(originalPlay.call(node)).catch(() => {});
-      scheduleReport();
-    } catch (_) {}
+      return Promise.resolve(originalPlay.call(node)).then(() => { scheduleReport(); return true; }, () => false);
+    } catch (_) { return false; }
   }
   function pause() {
     collect();
@@ -281,42 +346,109 @@
     }
     scheduleReport();
   }
-  function relay(data) {
-    for (let i = 0; i < window.frames.length; i++) {
-      try { window.frames[i].postMessage(data, '*'); } catch (_) { }
-    }
-  }
-  function apply(action) {
+  async function resume() {
     collect();
-    if (action === 'pause') { blocked = true; pause(); }
-    else if (action === 'unblock') { blocked = false; }
-    else if (action === 'resume') {
-      blocked = false;
-      needsGesture = false;
-      for (const node of resumeNodes) {
-        try { Promise.resolve(originalPlay.call(node)).catch(() => {}); } catch (_) { }
-      }
-      resumeNodes.clear();
-      for (const ctx of resumeContexts) {
-        try { Promise.resolve(ctx.resume()).catch(() => {}); } catch (_) {}
-      }
-      resumeContexts.clear();
-      scheduleReport();
+    blocked = false;
+    needsGesture = false;
+    const targets = Array.from(resumeNodes);
+    // A system play command can resume the active element paused by the site,
+    // without reviving every old paused/ended player in the document.
+    if (!targets.length) {
+      const node = lastActiveNode;
+      if (node && nodes.has(node) && !node.ended) targets.push(node);
     }
-    else if (action === 'next' || action === 'previous') {
-      blocked = false;
-      needsGesture = false;
-      switchCandidate(action === 'next' ? 1 : -1);
-    }
-    relay({kind: 'site-lens-media', token: config.token, action});
+    const results = await Promise.all(targets.map(async node => {
+      try {
+        await originalPlay.call(node);
+        if (blocked || !alive) { node.pause(); return false; }
+        lastActiveNode = node;
+        resumeNodes.delete(node);
+        return true;
+      } catch (_) { resumeNodes.add(node); return false; }
+    }));
+    const audioResults = await Promise.all(Array.from(resumeContexts).map(async ctx => {
+      try {
+        await ctx.resume();
+        if (blocked || !alive) { await ctx.suspend(); return false; }
+        resumeContexts.delete(ctx); return true;
+      }
+      catch (_) { return false; }
+    }));
+    scheduleReport();
+    return results.length + audioResults.length > 0 && [...results,...audioResults].every(Boolean);
   }
-  Object.defineProperty(window, '__siteLensMediaControl', {value: {apply}, configurable: false});
+  async function apply(action) {
+    collect();
+    if (action === 'pause') { blocked = true; pause(); return true; }
+    if (action === 'unblock') { blocked = false; return true; }
+    if (action === 'resume') return resume();
+    if (action === 'next' || action === 'previous') {
+      blocked = false;
+      needsGesture = false;
+      return switchCandidate(action === 'next' ? 1 : -1);
+    }
+    return false;
+  }
+  if (bridge) bridge.onmessage = async event => {
+    let data;
+    try { data = JSON.parse(event.data); } catch (_) { return; }
+    if (!alive || data.token !== config.token || data.frame !== frameId || data.document !== documentId ||
+        !Number.isSafeInteger(data.epoch) || data.epoch < epoch ||
+        !Number.isSafeInteger(data.command) || data.command <= commandSequence ||
+        !['pause','unblock','resume','next','previous'].includes(data.action)) return;
+    epoch = data.epoch;
+    commandSequence = data.command;
+    const first = !connected;
+    connected = true;
+    const ok = await apply(data.action);
+    post('ack', {command:data.command, ok});
+    if (first) { lastState = ''; lastCandidates = ''; }
+    scheduleReport();
+  };
+  window.addEventListener('message', event => {
+    const data = event.data;
+    if (!data || data.token !== config.token) return;
+    if (alive && documentId && data.kind === 'site-lens-media-frame-hello') {
+      if (directChildren().includes(event.source)) {
+        try {
+          event.source.postMessage({
+            kind: 'site-lens-media-frame-id',
+            token: config.token,
+            document: documentId,
+          }, '*');
+        } catch (_) {}
+      }
+      return;
+    }
+    if (window.parent !== window &&
+        event.source === window.parent &&
+        data.kind === 'site-lens-media-frame-id' &&
+        typeof data.document === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(data.document)) {
+      if (documentId && documentId !== data.document) {
+        blocked = true;
+        pause();
+        frameId = newFrameId();
+        epoch = -1; commandSequence = -1; connected = false;
+        lastState = ''; lastCandidates = '';
+      }
+      if (documentId === data.document) {
+        broadcastDocumentId();
+        post('hello');
+        return;
+      }
+      documentId = data.document;
+      broadcastDocumentId();
+      post('hello');
+    }
+  });
+  Object.defineProperty(window, '__siteLensMediaControl', {value: {apply, connect}, configurable: false});
   HTMLMediaElement.prototype.play = function (...args) {
     if (!this.isConnected) connectedBefore.delete(this);
     track(this);
     if (blocked || needsGesture) {
       return Promise.reject(new DOMException('Media paused by application policy', 'NotAllowedError'));
     }
+    lastActiveNode = this;
     return originalPlay.apply(this, args);
   };
   for (const type of ['play', 'playing', 'pause', 'ended', 'emptied']) {
@@ -351,25 +483,25 @@
       },
     });
   }
-  window.addEventListener('message', event => {
-    const data = event.data;
-    if (data && data.kind === 'site-lens-media-state' && data.token === config.token && typeof data.playing === 'boolean') {
-      const children = Array.from({length:Math.min(window.frames.length,64)}, (_,i) => window.frames[i]);
-      if (children.includes(event.source)) {
-        for (const frame of childPlaying.keys()) if (!children.includes(frame)) childPlaying.delete(frame);
-        childPlaying.set(event.source,data.playing); scheduleReport();
-        childCandidates.set(event.source, Array.isArray(data.candidates) ? data.candidates : []);
-        scheduleReport();
-      }
+  window.addEventListener('pagehide', () => {
+    post('gone');
+    alive = false;
+    blocked = true;
+    pause();
+  });
+  window.addEventListener('pageshow', event => {
+    if (event.persisted) {
+      frameId = newFrameId();
+      documentId = window.parent === window ? frameId : null;
+      epoch = -1; commandSequence = -1;
+      connected = false; alive = true; lastState = ''; lastCandidates = '';
     }
-    if (event.source === window.parent && data && data.kind === 'site-lens-media' &&
-        data.token === config.token && ['pause', 'unblock', 'resume', 'next', 'previous'].includes(data.action)) {
-      apply(data.action);
-    }
+    connect();
   });
   if (typeof MutationObserver === 'function') {
     new MutationObserver(() => scheduleReport()).observe(document, {childList:true,subtree:true});
   }
   document.addEventListener('DOMContentLoaded', () => { collect(); if (blocked) pause(); else scheduleReport(); });
-  if (typeof setInterval === 'function') setInterval(() => scheduleReport(), 1500);
+  if (typeof setInterval === 'function') setInterval(() => { connect(); if (connected) scheduleReport(); }, 1500);
+  connect();
 })();

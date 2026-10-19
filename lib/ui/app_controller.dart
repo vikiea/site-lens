@@ -92,7 +92,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     mediaLibrary.addListener(notifyMediaChanged);
     mediaDownloads.onCompleted = _autoConvertCompletedMedia;
     castSessions = CastSessionController(tasks: mediaTasks);
-    mediaCast = DlnaCastController(castSessions);
+    mediaCast = DlnaCastController(
+      castSessions,
+      onTemporaryTaskFinished: cleanupTemporaryCastTask,
+    );
     mediaPlayback = NativePlaybackController();
     hosts.onNewWindow = (hostId, url) {
       unawaited(_openLinkInNewTab(hostId, url));
@@ -133,6 +136,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   int _restorePolicyEpoch = 0;
   Future<void>? _shutdownFuture;
   Future<void> _glassQualityWrites = Future.value();
+  Future<void>? _mediaPolicyRun;
+  bool _mediaPolicyAgain = false;
+  int _mediaPolicyEpoch = 0;
   bool _disposed = false;
   bool _browserVisible = false;
   bool _browserSurfaceActive = false;
@@ -161,8 +167,29 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(syncMediaPolicy());
   }
 
-  Future<void> syncMediaPolicy() async {
-    if (_disposed) return;
+  Future<void> syncMediaPolicy() {
+    if (_disposed) return Future<void>.value();
+    _mediaPolicyEpoch++;
+    _mediaPolicyAgain = true;
+    final running = _mediaPolicyRun;
+    if (running != null) return running;
+    final run = _drainMediaPolicy();
+    _mediaPolicyRun = run;
+    run.whenComplete(() {
+      if (identical(_mediaPolicyRun, run)) _mediaPolicyRun = null;
+    });
+    return run;
+  }
+
+  Future<void> _drainMediaPolicy() async {
+    do {
+      _mediaPolicyAgain = false;
+      await _syncMediaPolicy(_mediaPolicyEpoch);
+    } while (_mediaPolicyAgain && !_disposed);
+  }
+
+  Future<void> _syncMediaPolicy(int epoch) async {
+    if (_disposed || epoch != _mediaPolicyEpoch) return;
     // Pause every inactive host first so switching never overlaps audible tabs.
     final sessions = hosts.sessions.values.where((h) => !h.disposed).toList();
     final current = activeBrowser?.loadedHost;
@@ -172,7 +199,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       ),
     );
     for (final h in sessions) {
-      if (h.disposed || _disposed) continue;
+      if (h.disposed || _disposed || epoch != _mediaPolicyEpoch) return;
       try {
         if (identical(h, activeBrowser?.loadedHost) &&
             _browserVisible &&
@@ -186,6 +213,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           _foreground,
           allowBackgroundPlayback,
         );
+        if (_disposed || epoch != _mediaPolicyEpoch) return;
         final selected = identical(h, activeBrowser?.loadedHost);
         if (selected) mediaSupported = supported;
         if (!supported &&
@@ -200,6 +228,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           await hosts.destroy(h);
         }
       } catch (e) {
+        if (_disposed || epoch != _mediaPolicyEpoch) return;
         AppErrorLogger.capture(e, module: 'media.policy');
         if (!h.disposed && !_disposed) {
           error = '播放策略应用失败：${friendlyError(e)}';
@@ -629,6 +658,14 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> setMediaLibraryNoticeDismissed(bool value) =>
       updateSettings({'mediaLibraryNoticeDismissed': value});
 
+  Future<void> setMediaTasksNoticeDismissed(bool value) =>
+      updateSettings({'mediaTasksNoticeDismissed': value});
+
+  Future<void> dismissHelpNotice(String id) async {
+    settings = await settingsRepository.dismissNotice(id);
+    notifyListeners();
+  }
+
   Future<void> setPlayerVerticalGesture(PlayerVerticalGestureMode value) =>
       updateSettings({'playerVerticalGesture': value.name});
 
@@ -706,8 +743,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           artifactMime = mime;
           final baseName = mediaExportFileName(task)
               .replaceFirst(RegExp(r'\.mp4$', caseSensitive: false), '');
+          final folder = task.batchDirectory == null
+              ? 'direct_${DateTime.now().microsecondsSinceEpoch}'
+              : mediaSeriesDirectoryName(task.batchDirectory!);
           final directory = Directory(
-            '${(await mediaTasks.cacheRootDirectory()).parent.path}/media_exports/direct_${DateTime.now().microsecondsSinceEpoch}',
+            '${(await mediaTasks.cacheRootDirectory()).parent.path}/media_exports/$folder/${task.cacheKey}',
           );
           await directory.create(recursive: true);
           final name = '$baseName.mp4';
@@ -746,20 +786,37 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     bool deleteTask = false,
   }) async {
     if (deleteTaskCache) {
-      await mediaTasks.withExclusive(taskId, () async {
-        if (mediaLibrary.item(taskId) != null) {
-          await mediaLibrary.delete(taskId, exclusiveAlreadyHeld: true);
-        }
-        await nativeDownloads?.delete(taskId);
-        await mediaTasks.deleteCachedFiles(taskId, exclusiveAlreadyHeld: true);
-        if (deleteTask) {
-          await mediaTasks.delete(taskId, exclusiveAlreadyHeld: true);
-        }
-      });
+      await mediaDownloads.delete(
+        taskId,
+        deleteTask: deleteTask,
+        beforeDelete: mediaLibrary.item(taskId) == null
+            ? null
+            : () => mediaLibrary.delete(taskId, exclusiveAlreadyHeld: true),
+      );
     } else {
       await mediaLibrary.delete(taskId);
     }
     notifyMediaChanged();
+  }
+
+  Future<void> cleanupTemporaryCastTask(String taskId) async {
+    final task = mediaTasks.task(taskId);
+    if (task == null) return;
+    if (mediaLibrary.item(taskId) != null) {
+      await deleteMediaArtifact(
+        taskId,
+        deleteTaskCache: true,
+        deleteTask: true,
+      );
+      return;
+    }
+    if (mediaTasks.canDelete(taskId)) {
+      await mediaTasks.withExclusive(
+        taskId,
+        () => mediaTasks.delete(taskId, exclusiveAlreadyHeld: true),
+      );
+      notifyMediaChanged();
+    }
   }
 
   Future<File?> mediaPlaybackFile(MediaTask task) async {

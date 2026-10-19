@@ -300,8 +300,34 @@ class FetchResponse {
   final Map<String, String> headers;
 }
 
+/// Result of a streamed response written to a caller-owned file.
+///
+/// The destination is deliberately left in place when the response fails so
+/// the caller can retry from the bytes that were flushed before the failure.
+class FetchFileResponse {
+  const FetchFileResponse({
+    required this.url,
+    required this.status,
+    required this.headers,
+    required this.bytesWritten,
+    required this.totalBytes,
+    required this.appended,
+  });
+
+  final Uri url;
+  final int status;
+  final Map<String, String> headers;
+  final int bytesWritten;
+  final int totalBytes;
+  final bool appended;
+}
+
 class ControlledHttp {
-  ControlledHttp({this.resolve = InternetAddress.lookup});
+  ControlledHttp({
+    this.resolve = InternetAddress.lookup,
+    this.allowLocal = false,
+  });
+  final bool allowLocal;
   final Future<List<InternetAddress>> Function(String) resolve;
   Future<FetchResponse> fetch(
     Uri url, {
@@ -324,6 +350,7 @@ class ControlledHttp {
         port,
         cancel: cancel,
         resolve: resolve,
+        allowLocal: allowLocal,
       );
     cancel.onCancel(() => client.close(force: true));
     final task = _fetch(
@@ -340,6 +367,64 @@ class ControlledHttp {
     );
     try {
       return await task.timeout(timeout);
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// Streams a response into [destination], preserving a partial file when a
+  /// socket, timeout or cancellation interrupts the body.
+  ///
+  /// When [resumeOffset] is positive the caller must send a Range header. A
+  /// 206 response is appended only when its Content-Range starts at exactly
+  /// that offset. A 200 response truncates the destination before writing,
+  /// which is the safe fallback for servers that ignore Range.
+  Future<FetchFileResponse> fetchToFile(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    required File destination,
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    int resumeOffset = 0,
+    int maxBytes = 2 * 1024 * 1024 * 1024,
+    Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    if (resumeOffset < 0) throw RangeError('续传偏移无效');
+    final client = HttpClient()
+      ..autoUncompress = false
+      ..connectionTimeout = timeout
+      ..findProxy = ((_) => 'DIRECT')
+      ..connectionFactory = (uri, host, port) => NetworkPolicy.connect(
+        uri,
+        host,
+        port,
+        cancel: cancel,
+        resolve: resolve,
+        allowLocal: allowLocal,
+      );
+    cancel.onCancel(() => client.close(force: true));
+    final task = _fetchToFile(
+      client,
+      url,
+      connect,
+      document,
+      cancel,
+      headers,
+      mediaRequest,
+      destination,
+      resumeOffset,
+      maxBytes,
+      onHeaders,
+      timeout,
+    );
+    try {
+      return await task;
+    } catch (_) {
+      if (cancel.cancelled) throw const Cancelled();
+      rethrow;
     } finally {
       client.close(force: true);
     }
@@ -368,28 +453,10 @@ class ControlledHttp {
     ].contains(method)) {
       throw StateError('不支持 HTTP 方法');
     }
-    const forbidden = {
-      'cookie',
-      'cookie2',
-      'host',
-      'origin',
-      'referer',
-      'authorization',
-      'proxy-authorization',
-      'connection',
-      'content-length',
-      'transfer-encoding',
-      'upgrade',
-    };
-    for (final key in headers.keys) {
-      if (forbidden.contains(key.toLowerCase()) ||
-          key.toLowerCase().startsWith('sec-')) {
-        throw StateError('禁止请求头 $key');
-      }
-    }
+    _validateHeaders(headers);
     for (var redirects = 0; redirects <= 5; redirects++) {
       cancel.check();
-      NetworkPolicy.validateTarget(uri, connect, document);
+      if (!allowLocal) NetworkPolicy.validateTarget(uri, connect, document);
       final request = await client.openUrl(method, uri);
       request.followRedirects = false;
       headers.forEach(request.headers.set);
@@ -457,6 +524,202 @@ class ControlledHttp {
       );
     }
     throw StateError('重定向过多');
+  }
+
+  Future<FetchFileResponse> _fetchToFile(
+    HttpClient client,
+    Uri uri,
+    Set<String> connect,
+    Uri document,
+    Cancellation cancel,
+    Map<String, String> headers,
+    bool mediaRequest,
+    File destination,
+    int resumeOffset,
+    int maxBytes,
+    Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    Duration timeout,
+  ) async {
+    _validateHeaders(headers);
+    for (var redirects = 0; redirects <= 5; redirects++) {
+      cancel.check();
+      if (!allowLocal) NetworkPolicy.validateTarget(uri, connect, document);
+      final request = await client.openUrl('GET', uri).timeout(timeout);
+      request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
+      request.followRedirects = false;
+      headers.forEach(request.headers.set);
+      if (mediaRequest) {
+        request.headers.set(
+          HttpHeaders.userAgentHeader,
+          'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
+          '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+        );
+        request.headers.set(HttpHeaders.acceptHeader, '*/*');
+        request.headers.set(HttpHeaders.refererHeader, document.toString());
+        if (document.scheme == 'http' || document.scheme == 'https') {
+          request.headers.set('origin', document.origin);
+        }
+      }
+      final response = await request.close().timeout(timeout);
+      final location = response.headers.value(HttpHeaders.locationHeader);
+      if ([301, 302, 303, 307, 308].contains(response.statusCode) &&
+          location != null) {
+        if (redirects == 5) throw StateError('重定向过多');
+        final next = webUri(uri.resolve(location).toString());
+        if (uri.scheme == 'https' && next.scheme != 'https') {
+          throw StateError('禁止 HTTPS 降级重定向');
+        }
+        if (next.origin != uri.origin) {
+          headers = {
+            for (final entry in headers.entries)
+              if (['range', 'if-range'].contains(entry.key.toLowerCase()))
+                entry.key: entry.value,
+          };
+        }
+        uri = next;
+        continue;
+      }
+
+      final responseHeaders = <String, String>{};
+      response.headers.forEach(
+        (name, values) =>
+            responseHeaders[name.toLowerCase()] = values.join(', '),
+      );
+      if (response.statusCode == HttpStatus.requestedRangeNotSatisfiable) {
+        return FetchFileResponse(
+          url: uri,
+          status: response.statusCode,
+          headers: responseHeaders,
+          bytesWritten: 0,
+          totalBytes: resumeOffset,
+          appended: false,
+        );
+      }
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return FetchFileResponse(
+          url: uri,
+          status: response.statusCode,
+          headers: responseHeaders,
+          bytesWritten: 0,
+          totalBytes: resumeOffset,
+          appended: false,
+        );
+      }
+
+      if (response.statusCode != 200 && response.statusCode != 206) {
+        throw StateError('媒体响应状态无效 HTTP ${response.statusCode}');
+      }
+      final encoding = responseHeaders[HttpHeaders.contentEncodingHeader];
+      if (encoding != null && encoding != 'identity') {
+        throw StateError('媒体续传不支持压缩响应');
+      }
+      final appended = resumeOffset > 0 && response.statusCode == 206;
+      final range = _parseContentRange(
+        responseHeaders[HttpHeaders.contentRangeHeader],
+      );
+      if (response.statusCode == 206) {
+        final contentRange = _parseContentRange(
+          responseHeaders[HttpHeaders.contentRangeHeader],
+        );
+        if (contentRange == null ||
+            contentRange.total == null ||
+            contentRange.start != resumeOffset ||
+            contentRange.end! < contentRange.start ||
+            (contentRange.total != null &&
+                contentRange.end! >= contentRange.total!)) {
+          throw StateError('媒体响应 Range 起点无效');
+        }
+      }
+      final actualOffset = await destination.exists()
+          ? await destination.length()
+          : 0;
+      if (appended && actualOffset != resumeOffset) {
+        throw StateError('媒体续传文件长度已变化');
+      }
+      final length = int.tryParse(
+        responseHeaders[HttpHeaders.contentLengthHeader] ?? '',
+      );
+      if (length != null && length + (appended ? resumeOffset : 0) > maxBytes) {
+        throw StateError('响应超过 $maxBytes 字节');
+      }
+      await destination.parent.create(recursive: true);
+      if (!appended) {
+        await destination.writeAsBytes(const [], flush: true);
+      }
+      if (onHeaders != null) {
+        await onHeaders(response.statusCode, responseHeaders);
+      }
+      cancel.check();
+      final sink = destination.openWrite(
+        mode: appended ? FileMode.append : FileMode.write,
+      );
+      var written = 0;
+      try {
+        await for (final chunk in response.timeout(timeout)) {
+          cancel.check();
+          written += chunk.length;
+          final total = (appended ? resumeOffset : 0) + written;
+          if (total > maxBytes) throw StateError('响应超过 $maxBytes 字节');
+          sink.add(chunk);
+          await sink.flush();
+        }
+      } finally {
+        await sink.close();
+      }
+      cancel.check();
+      if ((length != null && written != length) ||
+          (response.statusCode == 206 &&
+              written != range!.end! - range.start + 1)) {
+        throw const HttpException('媒体响应未完整接收');
+      }
+      if (response.statusCode == 206 &&
+          range!.total != null &&
+          range.end! + 1 != range.total) {
+        throw const HttpException('媒体响应只包含部分区间');
+      }
+      return FetchFileResponse(
+        url: uri,
+        status: response.statusCode,
+        headers: responseHeaders,
+        bytesWritten: written,
+        totalBytes: (appended ? resumeOffset : 0) + written,
+        appended: appended,
+      );
+    }
+    throw StateError('重定向过多');
+  }
+
+  void _validateHeaders(Map<String, String> headers) {
+    const forbidden = {
+      'cookie',
+      'cookie2',
+      'host',
+      'origin',
+      'referer',
+      'authorization',
+      'proxy-authorization',
+      'connection',
+      'content-length',
+      'transfer-encoding',
+      'upgrade',
+    };
+    for (final key in headers.keys) {
+      if (forbidden.contains(key.toLowerCase()) ||
+          key.toLowerCase().startsWith('sec-')) {
+        throw StateError('禁止请求头 $key');
+      }
+    }
+  }
+
+  ({int start, int? end, int? total})? _parseContentRange(String? raw) {
+    if (raw == null) return null;
+    final match = RegExp(r'^bytes (\d+)-(\d+)/(\d+|\*)$').firstMatch(raw);
+    if (match == null) return null;
+    return (
+      start: int.parse(match.group(1)!),
+      end: int.parse(match.group(2)!),
+      total: match.group(3) == '*' ? null : int.parse(match.group(3)!),
+    );
   }
 }
 

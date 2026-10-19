@@ -8,17 +8,20 @@ import 'package:flutter/services.dart';
 
 import '../diagnostics/error_log.dart';
 import '../domain/models.dart';
-import '../media/dlna_service.dart';
 import '../media/media_service.dart';
 import '../media/media_library.dart';
 import '../settings/app_settings.dart';
 import 'app_controller.dart';
+import 'dlna_cast_screen.dart';
 import 'glass_surface.dart';
+import 'help_notice.dart';
 import 'ui_primitives.dart';
 import 'ui_util.dart';
 import 'app_theme.dart';
 
 enum _VideoFitMode { contain, cover, fill }
+
+enum _MediaBatchAction { retry, refresh, export, delete }
 
 const _playbackSpeeds = <double>[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3, 4, 8];
 
@@ -88,12 +91,16 @@ class NativeMediaPlayerScreen extends StatefulWidget {
     super.key,
     required this.app,
     required this.session,
+    this.task,
+    this.candidate,
     this.playlist = const [],
     this.playlistIndex = 0,
   });
 
   final AppController app;
   final NativePlaybackSession session;
+  final MediaTask? task;
+  final MediaCandidate? candidate;
   final List<MediaTask> playlist;
   final int playlistIndex;
 
@@ -567,6 +574,31 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     if (mounted) Navigator.of(context).maybePop();
   }
 
+  Future<void> _openCastControls() async {
+    if (!_canControl) return;
+    final currentTask = widget.playlist.isEmpty
+        ? widget.task
+        : widget.playlist[_playlistIndex];
+    final candidate = widget.candidate;
+    if (currentTask == null && candidate == null) {
+      _showGestureHint('当前媒体没有可投屏来源');
+      return;
+    }
+    await showDlnaCastControls(
+      context,
+      widget.app,
+      task: currentTask,
+      candidate: candidate,
+      initialPosition: Duration(milliseconds: _session.positionMs),
+      onCastStarted: () async {
+        if (_session.state == NativePlaybackState.playing) {
+          await widget.app.nativeMedia.pause(sessionId: _session.id);
+        }
+      },
+    );
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
     _states?.cancel();
@@ -712,6 +744,15 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
                           color: Colors.white,
                           icon: const Icon(Icons.queue_music),
                           onPressed: _showPlaylist,
+                        ),
+                        IconButton(
+                          tooltip: 'DLNA 投屏',
+                          color: Colors.white,
+                          icon: const Icon(Icons.cast_outlined),
+                          onPressed:
+                              widget.task == null && widget.candidate == null
+                              ? null
+                              : () => unawaited(_openCastControls()),
                         ),
                       ],
                     ),
@@ -872,6 +913,7 @@ Future<void> openMediaTaskPlayer(
           builder: (_) => NativeMediaPlayerScreen(
             app: app,
             session: session,
+            task: task,
             playlist: playlist,
             playlistIndex: playlistIndex < 0 ? 0 : playlistIndex,
           ),
@@ -896,6 +938,7 @@ class MediaLibraryScreen extends StatefulWidget {
 class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
   AppController get app => widget.app;
   String? _error;
+  String? _folder;
 
   @override
   void initState() {
@@ -1018,19 +1061,28 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: Listenable.merge([app, app.mediaLibrary]),
     builder: (context, _) {
-      final exports = app.mediaLibrary.items;
-      final colors = SiteLensColors.of(context);
+      final allExports = app.mediaLibrary.items;
+      final folders = <String, int>{};
+      for (final item in allExports) {
+        final folder = app.mediaTasks.task(item.taskId)?.batchDirectory;
+        if (folder != null) {
+          folders.update(folder, (count) => count + 1, ifAbsent: () => 1);
+        }
+      }
+      final exports = allExports
+          .where(
+            (item) =>
+                app.mediaTasks.task(item.taskId)?.batchDirectory == _folder,
+          )
+          .toList();
       return SiteLensPageScaffold(
         title: '媒体',
         actions: [
-          if (app.castSessions.active != null)
+          if (app.mediaCast.status.active)
             IconButton(
-              tooltip: '停止 DLNA 投屏',
-              icon: const Icon(Icons.stop_screen_share_outlined),
-              onPressed: () => safely(context, () async {
-                await app.mediaCast.stop();
-                app.notifyMediaChanged();
-              }),
+              tooltip: '投屏控制',
+              icon: const Icon(Icons.cast_connected),
+              onPressed: () => showDlnaCastControls(context, app),
             ),
           IconButton(
             tooltip: '媒体任务',
@@ -1055,36 +1107,28 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
                 text: _error!,
                 onDismiss: () => setState(() => _error = null),
               ),
-            if (!app.settings.mediaLibraryNoticeDismissed) ...[
-              SiteLensPanel(
-                padding: const EdgeInsets.fromLTRB(18, 12, 10, 8),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '这里展示已导出的 MP4，点击媒体卡片即可播放。下载、重试和批量导出请进入媒体任务。',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton(
-                        onPressed: () => safely(
-                          context,
-                          () => app.setMediaLibraryNoticeDismissed(true),
-                        ),
-                        style: TextButton.styleFrom(
-                          foregroundColor: colors.sectionLabel,
-                          textStyle: Theme.of(context).textTheme.labelSmall,
-                        ),
-                        child: const Text('不再提示'),
-                      ),
-                    ),
-                  ],
-                ),
+            SiteLensHelpNotice(
+              app: app,
+              noticeId: 'media.library',
+              text: '这里展示已导出的 MP4，点击媒体卡片即可播放。下载、重试和批量导出请进入媒体任务。',
+            ),
+            if (_folder != null)
+              _MediaFolderRow(
+                title: _folder!,
+                count: exports.length,
+                onOpen: () => setState(() => _folder = null),
+                parent: true,
               ),
-              const SizedBox(height: SiteLensMetrics.sectionGap),
-            ],
-            if (exports.isEmpty)
+            if (_folder == null)
+              for (final entry in folders.entries) ...[
+                _MediaFolderRow(
+                  title: entry.key,
+                  count: entry.value,
+                  onOpen: () => setState(() => _folder = entry.key),
+                ),
+                const SizedBox(height: SiteLensMetrics.itemGap),
+              ],
+            if (allExports.isEmpty)
               const SiteLensPanel(
                 child: ListTile(
                   leading: Icon(Icons.video_library_outlined),
@@ -1207,7 +1251,7 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
                 ),
             ],
           ),
-          onTap: snapshot.hasError ? null : () => widget.onAction('play'),
+          onTap: () => widget.onAction('play'),
           trailing: widget.app.mediaLibrary.busy(item.taskId)
               ? const SizedBox(
                   width: 20,
@@ -1304,6 +1348,7 @@ Future<void> showMediaTaskDetails(
               _MediaDetailRow(label: '元数据检查', value: metadataError),
             if (_taskErrorLabel(task).isNotEmpty)
               _MediaDetailRow(label: '错误原因', value: _taskErrorLabel(task)),
+            _MediaDetailRow(label: '文件夹', value: task.storageDirectoryName),
             _MediaDetailRow(label: '来源页面', value: task.sourceUrl.toString()),
           ],
         ),
@@ -1316,65 +1361,7 @@ Future<void> castMediaTask(
   BuildContext context,
   AppController app,
   MediaTask task,
-) async {
-  final file = await app.mediaPlaybackFile(task);
-  if (file == null) throw StateError('该媒体没有可投屏的本地文件');
-  final devices = await const DlnaDiscovery().discover();
-  if (devices.isEmpty) throw StateError('局域网内没有发现可用的 DLNA 接收端');
-  if (!context.mounted) return;
-  final device = await showModalBottomSheet<CastDevice>(
-    context: context,
-    showDragHandle: true,
-    builder: (sheetContext) => SafeArea(
-      child: ListView(
-        shrinkWrap: true,
-        children: [
-          for (final device in devices)
-            ListTile(
-              leading: const Icon(Icons.cast),
-              title: Text(device.name),
-              onTap: () => Navigator.pop(sheetContext, device),
-            ),
-        ],
-      ),
-    ),
-  );
-  if (device == null) return;
-  var resolvedFile = file;
-  var hls = file.path.toLowerCase().endsWith('.m3u8');
-  Future<void> prepareMp4() async {
-    await app.exportMediaTask(task, deliverToConfiguredDirectory: false);
-    final exportedFile = await app.mediaLibrary.localFile(task.id);
-    if (exportedFile == null) {
-      throw StateError('该设备不支持 HLS，且本地 MP4 导出失败');
-    }
-    resolvedFile = exportedFile;
-    hls = false;
-  }
-
-  Future<void> startCast() => app.mediaCast.cast(
-    device: device,
-    mediaTaskId: task.id,
-    mediaUrl: resolvedFile.uri,
-    localFile: hls ? null : resolvedFile,
-    localHlsPlaylist: hls ? resolvedFile : null,
-    mime: hls ? 'application/vnd.apple.mpegurl' : 'video/mp4',
-    title: task.displayName,
-  );
-
-  if (hls && !device.supportsHls) await prepareMp4();
-  try {
-    await startCast();
-  } on DlnaUnsupportedFormatException catch (error) {
-    // Some renderers advertise HLS but reject it at SetURI/Play. Retry exactly
-    // once using the existing local remux, without opening an export picker.
-    if (!hls || !error.requiresMp4) rethrow;
-    await prepareMp4();
-    await startCast();
-  }
-  app.notifyMediaChanged();
-  if (context.mounted) showShortToast(context, '已连接到 ${device.name}');
-}
+) => showDlnaCastControls(context, app, task: task);
 
 class MediaManagementScreen extends StatefulWidget {
   const MediaManagementScreen({super.key, required this.app});
@@ -1485,6 +1472,8 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   StreamSubscription<NativePlaybackSession>? _mediaStates;
   final _operations = <String>{};
   bool _selectionMode = false;
+  bool _batchBusy = false;
+  String? _folder;
   final _selectedTaskIds = <String>{};
 
   @override
@@ -1551,36 +1540,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   bool _taskBusy(String taskId) => _operations.contains(taskId);
 
   Future<void> _refreshNative(MediaTask task) async {
-    final native = widget.app.nativeDownloads;
-    if (native == null) throw StateError('iOS 不支持原生后台下载');
-    final status = await native.status(task.id);
-    final state = status['state'] as String?;
-    final bytes = (status['bytesDownloaded'] as num?)?.toInt();
-    final total = (status['totalBytes'] as num?)?.toInt();
-    if (bytes != null) {
-      widget.app.mediaTasks.updateProgress(task.id, bytes, totalBytes: total);
-    }
-    final localUri = status['localUri'] as String?;
-    if (localUri != null && localUri.startsWith('file://')) {
-      widget.app.mediaTasks.setLocalRef(
-        task.id,
-        Uri.parse(localUri).toFilePath(),
-      );
-    }
-    if (state == 'paused' && task.state == MediaTaskState.downloading) {
-      widget.app.mediaTasks.transition(task.id, MediaTaskState.paused);
-    }
-    if (state == 'completed' && task.state == MediaTaskState.downloading) {
-      widget.app.mediaTasks.transition(task.id, MediaTaskState.completed);
-      widget.app.mediaTasks.transition(task.id, MediaTaskState.playable);
-    }
-    if (state == 'failed' && task.state == MediaTaskState.downloading) {
-      widget.app.mediaTasks.transition(
-        task.id,
-        MediaTaskState.failed,
-        errorCode: status['errorCode']?.toString(),
-      );
-    }
+    await widget.app.mediaDownloads.refreshTask(task.id);
     if (mounted) setState(() {});
   }
 
@@ -1592,22 +1552,29 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     final candidate = await widget.app.db.mediaCandidate(task.candidateId);
     if (candidate == null) throw StateError('媒体候选已不存在');
     if (task.state == MediaTaskState.downloading) {
-      await widget.app.mediaDownloads.pauseNative(task.id);
+      await widget.app.mediaDownloads.pause(task.id);
     } else if (task.state == MediaTaskState.paused) {
       await widget.app.mediaDownloads.resumeNative(task.id, candidate);
     }
     if (mounted) setState(() {});
   }
 
-  Future<void> _retry(MediaTask task, MediaCandidate? candidate) async {
+  Future<void> _retry(
+    MediaTask task,
+    MediaCandidate? candidate, {
+    bool notify = true,
+  }) async {
     final resolved =
         candidate ?? await widget.app.db.mediaCandidate(task.candidateId);
     if (resolved == null) throw StateError('媒体候选已不存在');
     if (task.state == MediaTaskState.paused) {
       await _togglePause(task);
     } else if (task.errorCode == MediaErrorCode.cacheMissing) {
-      await widget.app.nativeDownloads?.delete(task.id);
-      await widget.app.mediaDownloads.startNative(task, resolved);
+      await widget.app.mediaDownloads.delete(task.id, deleteTask: false);
+      await widget.app.mediaDownloads.startNative(
+        widget.app.mediaTasks.task(task.id)!,
+        resolved,
+      );
     } else if (task.state == MediaTaskState.failed &&
         widget.app.nativeDownloads != null &&
         !resolved.isHls) {
@@ -1615,7 +1582,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     } else {
       await widget.app.mediaDownloads.startNative(task, resolved);
     }
-    if (mounted) {
+    if (mounted && notify) {
       showShortToast(context, '已开始续传');
       setState(() {});
     }
@@ -1642,41 +1609,114 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
       task.state == MediaTaskState.completed ||
       task.state == MediaTaskState.playable;
 
-  Future<void> _batchExport() async {
+  bool _isBatchSelectable(MediaTask task) => !_batchBusy && !_taskBusy(task.id);
+
+  bool _batchEligible(MediaTask task, _MediaBatchAction action) =>
+      switch (action) {
+        _MediaBatchAction.export => _isBatchExportable(task),
+        _MediaBatchAction.retry => {
+          MediaTaskState.failed,
+          MediaTaskState.cancelled,
+          MediaTaskState.paused,
+        }.contains(task.state),
+        _MediaBatchAction.refresh || _MediaBatchAction.delete => true,
+      };
+
+  Future<void> _runBatch(_MediaBatchAction action) async {
+    if (_batchBusy || !mounted) return;
     final selected = widget.app.mediaTasks.tasks
         .where((task) => _selectedTaskIds.contains(task.id))
-        .where(_isBatchExportable)
         .toList();
-    if (selected.isEmpty) {
-      showShortToast(context, '没有可导出的任务');
-      return;
-    }
-    var exported = 0;
-    var failed = 0;
-    for (final task in selected) {
-      if (!_operations.add(task.id)) {
-        failed++;
-        continue;
+    if (selected.isEmpty) return;
+    setState(() => _batchBusy = true);
+    final failedIds = <String>{};
+    var succeeded = 0;
+    var skipped = 0;
+    try {
+      if (action == _MediaBatchAction.delete) {
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => SiteLensAlertDialog(
+            title: const Text('批量删除媒体任务'),
+            content: Text(
+              '删除选中的 ${selected.length} 个任务、下载缓存和已导出媒体文件？正在播放、导出或投屏的任务会保留。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('删除'),
+              ),
+            ],
+          ),
+        );
+        if (confirmed != true) return;
       }
-      if (mounted) setState(() {});
-      try {
-        await widget.app.exportMediaTask(task);
-        exported++;
-      } catch (error) {
-        failed++;
-      } finally {
-        _operations.remove(task.id);
+      for (final snapshot in selected) {
+        final task = widget.app.mediaTasks.task(snapshot.id);
+        if (task == null || !_batchEligible(task, action)) {
+          skipped++;
+          continue;
+        }
+        if (!_operations.add(task.id)) {
+          failedIds.add(task.id);
+          continue;
+        }
+        try {
+          switch (action) {
+            case _MediaBatchAction.retry:
+              await _retry(task, null, notify: false);
+            case _MediaBatchAction.refresh:
+              await _refreshNative(task);
+            case _MediaBatchAction.export:
+              await widget.app.exportMediaTask(task);
+            case _MediaBatchAction.delete:
+              await widget.app.deleteMediaArtifact(
+                task.id,
+                deleteTaskCache: true,
+                deleteTask: true,
+              );
+          }
+          succeeded++;
+        } catch (error, stack) {
+          failedIds.add(task.id);
+          AppErrorLogger.capture(
+            error,
+            stack: stack,
+            module: 'media.batch',
+            context: '${action.name}:${task.id}',
+          );
+        } finally {
+          _operations.remove(task.id);
+        }
       }
+      if (!mounted) return;
+      setState(() {
+        _selectedTaskIds
+          ..clear()
+          ..addAll(failedIds);
+        _selectionMode = failedIds.isNotEmpty;
+      });
+      final verb = switch (action) {
+        _MediaBatchAction.retry => '已重试',
+        _MediaBatchAction.refresh => '已刷新',
+        _MediaBatchAction.export => '已导出',
+        _MediaBatchAction.delete => '已删除',
+      };
+      showShortToast(
+        context,
+        [
+          '$verb $succeeded 个',
+          if (failedIds.isNotEmpty) '${failedIds.length} 个失败',
+          if (skipped > 0) '跳过 $skipped 个',
+        ].join('，'),
+      );
+    } finally {
+      if (mounted) setState(() => _batchBusy = false);
     }
-    if (!mounted) return;
-    setState(() {
-      _selectionMode = false;
-      _selectedTaskIds.clear();
-    });
-    showShortToast(
-      context,
-      failed == 0 ? '已导出 $exported 个' : '已导出 $exported 个，$failed 个失败',
-    );
   }
 
   void _toggleSelection(String taskId) {
@@ -1689,13 +1729,23 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     setState(() {
       _selectedTaskIds
         ..clear()
-        ..addAll(tasks.where(_isBatchExportable).map((task) => task.id));
+        ..addAll(tasks.where(_isBatchSelectable).map((task) => task.id));
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    final tasks = widget.app.mediaTasks.tasks;
+    final allTasks = widget.app.mediaTasks.tasks;
+    final folders = <String, int>{};
+    for (final task in allTasks) {
+      final folder = task.batchDirectory;
+      if (folder != null) {
+        folders.update(folder, (count) => count + 1, ifAbsent: () => 1);
+      }
+    }
+    final tasks = allTasks
+        .where((task) => task.batchDirectory == _folder)
+        .toList();
     final activePlayback = widget.app.nativeMedia.active;
     return SiteLensPageScaffold(
       title: _selectionMode ? '已选 ${_selectedTaskIds.length} 项' : '媒体任务',
@@ -1710,20 +1760,47 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           IconButton(
             tooltip: '全选',
             icon: const Icon(Icons.select_all),
-            onPressed: () => _selectAll(tasks),
+            onPressed: _batchBusy ? null : () => _selectAll(tasks),
           ),
-          IconButton(
-            tooltip: '批量导出',
-            icon: const Icon(Icons.file_download_outlined),
-            onPressed: _selectedTaskIds.isEmpty ? null : _batchExport,
+          PopupMenuButton<_MediaBatchAction>(
+            tooltip: '批量操作',
+            enabled: !_batchBusy && _selectedTaskIds.isNotEmpty,
+            icon: _batchBusy
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.more_vert),
+            onSelected: (action) => unawaited(_runBatch(action)),
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: _MediaBatchAction.retry,
+                child: Text('批量重试下载'),
+              ),
+              PopupMenuItem(
+                value: _MediaBatchAction.refresh,
+                child: Text('批量刷新后台状态'),
+              ),
+              PopupMenuItem(
+                value: _MediaBatchAction.export,
+                child: Text('批量导出 MP4'),
+              ),
+              PopupMenuItem(
+                value: _MediaBatchAction.delete,
+                child: Text('批量删除'),
+              ),
+            ],
           ),
           IconButton(
             tooltip: '退出选择',
             icon: const Icon(Icons.close),
-            onPressed: () => setState(() {
-              _selectionMode = false;
-              _selectedTaskIds.clear();
-            }),
+            onPressed: _batchBusy
+                ? null
+                : () => setState(() {
+                    _selectionMode = false;
+                    _selectedTaskIds.clear();
+                  }),
           ),
         ],
       ],
@@ -1735,6 +1812,11 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           32,
         ),
         children: [
+          SiteLensHelpNotice(
+            app: widget.app,
+            noticeId: 'media.tasks',
+            text: '这里展示媒体任务的下载、播放和导出状态；可选择多个任务进行重试、刷新、删除或导出。',
+          ),
           if (activePlayback != null)
             SiteLensPanel(
               child: Row(
@@ -1781,15 +1863,30 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                 ],
               ),
             ),
-          const SizedBox(height: 14),
-          SiteLensPanel(
-            child: Text(
-              '下载、播放和导出任务独立于标签页保存。凭据不会写入任务或缓存；需要登录态时会回到重新授权。',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-          ),
           const SizedBox(height: SiteLensMetrics.sectionGap),
-          if (tasks.isEmpty)
+          if (_folder != null)
+            _MediaFolderRow(
+              title: _folder!,
+              count: tasks.length,
+              onOpen: () => setState(() {
+                _folder = null;
+                _selectedTaskIds.clear();
+              }),
+              parent: true,
+            ),
+          if (_folder == null)
+            for (final entry in folders.entries) ...[
+              _MediaFolderRow(
+                title: entry.key,
+                count: entry.value,
+                onOpen: () => setState(() {
+                  _folder = entry.key;
+                  _selectedTaskIds.clear();
+                }),
+              ),
+              const SizedBox(height: SiteLensMetrics.itemGap),
+            ],
+          if (allTasks.isEmpty)
             const SiteLensPanel(
               child: ListTile(
                 leading: Icon(Icons.download_done),
@@ -1808,7 +1905,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                       leading: _selectionMode
                           ? Checkbox(
                               value: _selectedTaskIds.contains(task.id),
-                              onChanged: _isBatchExportable(task)
+                              onChanged: _isBatchSelectable(task)
                                   ? (_) => _toggleSelection(task.id)
                                   : null,
                             )
@@ -1825,7 +1922,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                         '${_mediaTaskStateLabel(task.state)} · ${_taskProgressLabel(task)}${_taskErrorLabel(task).isEmpty ? '' : ' · ${_taskErrorLabel(task)}'}',
                       ),
                       onTap: _selectionMode
-                          ? (_isBatchExportable(task)
+                          ? (_isBatchSelectable(task)
                                 ? () => _toggleSelection(task.id)
                                 : null)
                           : task.state == MediaTaskState.playable
@@ -1835,7 +1932,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                           : null,
                       trailing: _selectionMode
                           ? Text(
-                              _isBatchExportable(task) ? '可导出' : '未完成',
+                              _isBatchSelectable(task) ? '可处理' : '执行中',
                               style: Theme.of(context).textTheme.bodySmall,
                             )
                           : PopupMenuButton<String>(
@@ -1871,21 +1968,9 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                                   case 'cancel':
                                     unawaited(
                                       _run(() async {
-                                        final native =
-                                            widget.app.nativeDownloads;
-                                        if (native == null) {
-                                          throw StateError('iOS 不支持原生后台下载');
-                                        }
-                                        await native.cancel(task.id);
-                                        if (widget.app.mediaTasks
-                                                .task(task.id)
-                                                ?.state ==
-                                            MediaTaskState.downloading) {
-                                          widget.app.mediaTasks.transition(
-                                            task.id,
-                                            MediaTaskState.cancelled,
-                                          );
-                                        }
+                                        await widget.app.mediaDownloads.cancel(
+                                          task.id,
+                                        );
                                         if (mounted) setState(() {});
                                       }, taskId: task.id),
                                     );
@@ -2126,4 +2211,30 @@ class _TaskThumbnail extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Shared folder navigation for cached tasks and exported media.
+class _MediaFolderRow extends StatelessWidget {
+  const _MediaFolderRow({
+    required this.title,
+    required this.count,
+    required this.onOpen,
+    this.parent = false,
+  });
+  final String title;
+  final int count;
+  final VoidCallback onOpen;
+  final bool parent;
+
+  @override
+  Widget build(BuildContext context) => SiteLensPanel(
+    padding: EdgeInsets.zero,
+    child: ListTile(
+      leading: Icon(parent ? Icons.folder_open : Icons.folder_outlined),
+      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(parent ? '$count 项 · 返回全部文件夹' : '$count 项'),
+      trailing: Icon(parent ? Icons.arrow_upward : Icons.chevron_right),
+      onTap: onOpen,
+    ),
+  );
 }

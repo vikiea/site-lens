@@ -8,6 +8,7 @@ import 'package:site_lens/data/database.dart';
 import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/screens.dart';
+import 'package:site_lens/web_host/native_hosts.dart';
 import 'package:site_lens/web_host/web_host.g.dart';
 
 import 'fake_web_host_api.dart';
@@ -224,6 +225,65 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     });
   }
+
+  testWidgets(
+    'closing all tabs from the active browser route pops only that route',
+    (tester) async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final app = AppController(db, api: FakeWebHostApi());
+      addTearDown(() async {
+        await tester.pumpAndSettle();
+        await tester.pumpWidget(const SizedBox.shrink());
+        app.dispose();
+        await tester.pump();
+        await tester.runAsync(app.shutdown);
+        await db.close();
+      });
+      await app.load();
+      final host = HostSession(
+        1,
+        HostPurpose.browsing,
+        HostCapabilities(
+          platform: 'Android WebView test',
+          isolatedScripts: true,
+          documentStart: true,
+          privateProbes: true,
+          reason: '',
+        ),
+      );
+      final tab = ActiveBrowserSession(
+        Candidate(
+          id: 0,
+          url: Uri.parse('https://close-all.example/'),
+          label: 'close-all',
+        ),
+        host,
+      );
+      app.browserTabs.add(tab);
+      app.activeBrowser = tab;
+      final navigatorKey = GlobalKey<NavigatorState>();
+      await tester.pumpWidget(
+        MaterialApp(navigatorKey: navigatorKey, home: const SizedBox.shrink()),
+      );
+      await tester.runAsync(() async {
+        unawaited(
+          navigatorKey.currentState!.push(
+            MaterialPageRoute<void>(
+              builder: (_) => BrowserScreen(app: app, site: tab.site),
+            ),
+          ),
+        );
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(navigatorKey.currentState!.canPop(), isTrue);
+      await tester.runAsync(() => app.closeAllTabs(persist: false));
+      await tester.pump();
+      await tester.pump();
+      expect(navigatorKey.currentState!.canPop(), isFalse);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+    },
+  );
   testWidgets('late startup error cannot cover a healthy selected tab', (
     tester,
   ) async {

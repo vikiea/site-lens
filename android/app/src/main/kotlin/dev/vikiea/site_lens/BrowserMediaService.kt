@@ -48,6 +48,7 @@ class BrowserMediaService : Service() {
         // Stale PendingIntents cannot control a newly selected tab or host.
         if (next == null) { stopSelf(); return START_NOT_STICKY }
         if (intent?.getStringExtra("owner") != next.token) return START_NOT_STICKY
+        if (intent?.data?.host != null && intent.data?.host != next.token) return START_NOT_STICKY
         token = next.token
         if (intent.action in listOf("resume", "pause", "stop", "next", "previous")) {
             dispatch(intent.action!!)
@@ -63,13 +64,17 @@ class BrowserMediaService : Service() {
         session?.setPlaybackState(PlaybackState.Builder()
             .setActions(
                 PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or
-                    PlaybackState.ACTION_PLAY_PAUSE or
-                    PlaybackState.ACTION_STOP or PlaybackState.ACTION_SKIP_TO_NEXT or
-                    PlaybackState.ACTION_SKIP_TO_PREVIOUS,
+                    PlaybackState.ACTION_PLAY_PAUSE or PlaybackState.ACTION_STOP or
+                    if (active.canSkip) PlaybackState.ACTION_SKIP_TO_NEXT or
+                        PlaybackState.ACTION_SKIP_TO_PREVIOUS else 0L,
             )
-            .addCustomAction(PlaybackState.CustomAction.Builder("previous", "上一集", android.R.drawable.ic_media_previous).build())
-            .addCustomAction(PlaybackState.CustomAction.Builder("next", "下一集", android.R.drawable.ic_media_next).build())
-            .addCustomAction(PlaybackState.CustomAction.Builder("stop", "停止", android.R.drawable.ic_menu_close_clear_cancel).build())
+            .apply {
+                if (active.canSkip) {
+                    addCustomAction(PlaybackState.CustomAction.Builder("previous", "上一集", android.R.drawable.ic_media_previous).build())
+                    addCustomAction(PlaybackState.CustomAction.Builder("next", "下一集", android.R.drawable.ic_media_next).build())
+                }
+                addCustomAction(PlaybackState.CustomAction.Builder("stop", "停止", android.R.drawable.ic_menu_close_clear_cancel).build())
+            }
             .setState(if (active.playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED,
                 PlaybackState.PLAYBACK_POSITION_UNKNOWN, if (active.playing) 1f else 0f).build())
         val open = PendingIntent.getActivity(this, 0,
@@ -85,22 +90,36 @@ class BrowserMediaService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             return Notification.Action.Builder(icon, label, pending).build()
         }
+        val compactActions = if (active.canSkip) intArrayOf(0, 1, 2) else intArrayOf(0, 1)
         val notification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_media_play).setContentTitle(active.title)
             .setContentText("择站 · 当前标签").setContentIntent(open).setOnlyAlertOnce(true)
             .setOngoing(active.playing)
-            .setStyle(Notification.MediaStyle().setMediaSession(session?.sessionToken).setShowActionsInCompactView(0, 1, 2))
-            .addAction(action("previous", android.R.drawable.ic_media_previous, "上一集"))
-            .addAction(if (active.playing) action("pause", android.R.drawable.ic_media_pause, "暂停")
-                else action("resume", android.R.drawable.ic_media_play, "继续"))
-            .addAction(action("next", android.R.drawable.ic_media_next, "下一集"))
-            .addAction(action("stop", android.R.drawable.ic_menu_close_clear_cancel, "停止")).build()
+            .setStyle(Notification.MediaStyle().setMediaSession(session?.sessionToken)
+                .setShowActionsInCompactView(*compactActions))
+            .apply {
+                if (active.canSkip) {
+                    addAction(action("previous", android.R.drawable.ic_media_previous, "上一集"))
+                }
+                addAction(if (active.playing) action("pause", android.R.drawable.ic_media_pause, "暂停")
+                    else action("resume", android.R.drawable.ic_media_play, "继续"))
+                if (active.canSkip) {
+                    addAction(action("next", android.R.drawable.ic_media_next, "下一集"))
+                }
+                addAction(action("stop", android.R.drawable.ic_menu_close_clear_cancel, "停止"))
+            }
+            .build()
         if (Build.VERSION.SDK_INT >= 29) startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         else startForeground(ID, notification)
     }
 
     private fun dispatch(action: String) {
-        owner?.takeIf { it.token == token }?.command?.invoke(action)
+        val active = owner ?: return
+        // MediaSession callbacks do not carry the PendingIntent owner token.
+        // Adopt the latest owner before dispatching so a handoff does not leave
+        // the new tab's notification controls inert while onStartCommand is in flight.
+        token = active.token
+        active.command(action)
         if (action == "stop") stopSelf() else render()
     }
     override fun onBind(intent: Intent?): IBinder? = null
@@ -113,18 +132,18 @@ class BrowserMediaService : Service() {
         super.onDestroy()
     }
 
-    private data class Owner(val token: String, var title: String, var playing: Boolean, val command: (String) -> Unit)
+    private data class Owner(val token: String, var title: String, var playing: Boolean, var canSkip: Boolean, val command: (String) -> Unit)
     companion object {
         private const val CHANNEL = "site-lens-browser-media"
         private const val ID = 24001
         private var owner: Owner? = null
         fun owns(token: String) = owner?.token == token
         fun update(context: Context, token: String, title: String, playing: Boolean, foreground: Boolean,
-                   command: (String) -> Unit): Boolean {
+                   canSkip: Boolean, command: (String) -> Unit): Boolean {
             if (!foreground && !owns(token)) return false
             if (!playing && !owns(token)) return true
             val previous = owner
-            owner = Owner(token, title.take(512), playing, command)
+            owner = Owner(token, title.take(512), playing, canSkip, command)
             try {
                 val serviceIntent = Intent(context, BrowserMediaService::class.java).putExtra("owner", token)
                 if (previous?.token == token) {

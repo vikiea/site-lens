@@ -270,11 +270,22 @@ class MediaLibrary extends ChangeNotifier {
     final value = _items[taskId] ?? (throw StateError('媒体文件不存在'));
     final source =
         (await localFile(taskId))?.path ?? value.libraryCopy ?? value.location;
-    final uri = Uri.tryParse(directory.trim());
+    var uri = Uri.tryParse(directory.trim());
     if (uri == null ||
         (uri.hasScheme && uri.scheme != 'file' && uri.scheme != 'content') ||
         (uri.scheme == 'content' && uri.host.isEmpty)) {
       throw StateError('保存目录无效，请在媒体管理中重新选择 MP4 保存目录');
+    }
+    final batchDirectory = tasks.task(taskId)?.batchDirectory;
+    if (batchDirectory != null &&
+        batchDirectory.trim().isNotEmpty &&
+        uri.scheme != 'content') {
+      final root = uri.scheme == 'file'
+          ? Directory.fromUri(uri)
+          : Directory(directory);
+      uri = Directory(
+        '${root.path}${Platform.pathSeparator}${mediaSeriesDirectoryName(batchDirectory)}',
+      ).uri;
     }
     String target;
     if (uri.scheme == 'content') {
@@ -283,6 +294,9 @@ class MediaLibrary extends ChangeNotifier {
         source: source,
         directory: uri,
         fileName: value.name,
+        subdirectory: batchDirectory == null
+            ? null
+            : mediaSeriesDirectoryName(batchDirectory),
       );
     } else {
       final dir = uri.scheme == 'file'
@@ -434,7 +448,7 @@ class MediaLibrary extends ChangeNotifier {
             await file.resolveSymbolicLinks() == cachePath) {
           final task = tasks.task(taskId)!;
           final directory = await tasks.cacheDirectory(
-            seriesDirectory: task.seriesDirectoryName,
+            storageDirectory: task.storageDirectoryName,
           );
           final copy = File('${directory.path}/${task.cacheKey}.media');
           if (copy.absolute.path != originalCache.absolute.path) {

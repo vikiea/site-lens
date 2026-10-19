@@ -11,6 +11,8 @@ class FakeWebHostApi extends WebHostApi {
   final destroyed = <int>[];
   final navigated = <int, List<String>>{};
   final reloaded = <int>[];
+  final wentBack = <int>[];
+  final wentForward = <int>[];
   final activity = <int, List<bool>>{};
   @override
   Future<bool> setHostActivity(
@@ -65,6 +67,18 @@ class FakeWebHostApi extends WebHostApi {
   @override
   Future<void> reload(int hostId) async {
     reloaded.add(hostId);
+  }
+
+  @override
+  Future<bool> goBack(int hostId) async {
+    wentBack.add(hostId);
+    return true;
+  }
+
+  @override
+  Future<bool> goForward(int hostId) async {
+    wentForward.add(hostId);
+    return true;
   }
 
   @override

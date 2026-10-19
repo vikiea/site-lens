@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../domain/models.dart';
@@ -33,6 +34,7 @@ class DlnaDiscovery {
     final services = _serviceEndpoints(source, base);
     _DlnaServiceEndpoint? avTransport;
     _DlnaServiceEndpoint? connectionManager;
+    _DlnaServiceEndpoint? renderingControl;
     for (final service in services) {
       final type = service.serviceType.toLowerCase();
       if (type.contains(':avtransport:') && avTransport == null) {
@@ -40,6 +42,9 @@ class DlnaDiscovery {
       } else if (type.contains(':connectionmanager:') &&
           connectionManager == null) {
         connectionManager = service;
+      } else if (type.contains(':renderingcontrol:') &&
+          renderingControl == null) {
+        renderingControl = service;
       }
     }
     if (avTransport == null) return null;
@@ -50,6 +55,8 @@ class DlnaDiscovery {
       avTransportControlUrl: avTransport.controlUrl,
       connectionManagerServiceType: connectionManager?.serviceType,
       connectionManagerControlUrl: connectionManager?.controlUrl,
+      renderingControlServiceType: renderingControl?.serviceType,
+      renderingControlControlUrl: renderingControl?.controlUrl,
     );
   }
 
@@ -151,6 +158,8 @@ class DlnaDiscovery {
           connectionManagerControlUrl: connectionManagerUrl,
           connectionManagerServiceType:
               description.connectionManagerServiceType,
+          renderingControlControlUrl: description.renderingControlControlUrl,
+          renderingControlServiceType: description.renderingControlServiceType,
           timeout: timeout,
         );
         try {
@@ -211,6 +220,8 @@ class DlnaDeviceDescription {
     required this.avTransportControlUrl,
     this.connectionManagerServiceType,
     this.connectionManagerControlUrl,
+    this.renderingControlServiceType,
+    this.renderingControlControlUrl,
   });
 
   final Uri descriptionUrl;
@@ -219,6 +230,8 @@ class DlnaDeviceDescription {
   final Uri avTransportControlUrl;
   final String? connectionManagerServiceType;
   final Uri? connectionManagerControlUrl;
+  final String? renderingControlServiceType;
+  final Uri? renderingControlControlUrl;
 }
 
 class _DlnaServiceEndpoint {
@@ -335,6 +348,18 @@ class DlnaSoapException extends StateError {
   final String? description;
 }
 
+/// An optional renderer command is unavailable. The active cast session stays
+/// intact so the caller can keep playback running and disable only that
+/// control.
+class DlnaOptionalCommandUnsupportedException extends StateError {
+  DlnaOptionalCommandUnsupportedException({
+    required this.action,
+    String? message,
+  }) : super(message ?? '接收设备不支持 $action');
+
+  final String action;
+}
+
 class DlnaSoapClient {
   DlnaSoapClient(
     this.controlUrl, {
@@ -342,10 +367,15 @@ class DlnaSoapClient {
     this.avTransportServiceType = 'urn:schemas-upnp-org:service:AVTransport:1',
     this.connectionManagerControlUrl,
     String? connectionManagerServiceType,
+    this.renderingControlControlUrl,
+    String? renderingControlServiceType,
     this.timeout = const Duration(seconds: 5),
   }) : connectionManagerServiceType =
            connectionManagerServiceType ??
            'urn:schemas-upnp-org:service:ConnectionManager:1',
+       renderingControlServiceType =
+           renderingControlServiceType ??
+           'urn:schemas-upnp-org:service:RenderingControl:1',
        _client = client ?? HttpClient() {
     _client.connectionTimeout = timeout;
     // UPnP control is always sent to the selected LAN endpoint directly.
@@ -356,6 +386,8 @@ class DlnaSoapClient {
   final String avTransportServiceType;
   final Uri? connectionManagerControlUrl;
   final String connectionManagerServiceType;
+  final Uri? renderingControlControlUrl;
+  final String renderingControlServiceType;
   final Duration timeout;
   final HttpClient _client;
 
@@ -378,6 +410,37 @@ class DlnaSoapClient {
     'Seek',
     '<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>${_clock(position)}</Target>',
   );
+
+  Future<int?> getVolume() async {
+    final endpoint = renderingControlControlUrl;
+    if (endpoint == null) return null;
+    final response = await _actionResponse(
+      'GetVolume',
+      '<InstanceID>0</InstanceID><Channel>Master</Channel>',
+      serviceType: renderingControlServiceType,
+      endpoint: endpoint,
+    );
+    final raw = _xmlValue(response, 'CurrentVolume');
+    final volume = raw == null ? null : int.tryParse(raw);
+    if (volume == null || volume < 0 || volume > 100) {
+      throw StateError('接收设备未返回有效的音量');
+    }
+    return volume;
+  }
+
+  Future<void> setVolume(int volume) async {
+    final endpoint = renderingControlControlUrl;
+    if (endpoint == null) {
+      throw DlnaOptionalCommandUnsupportedException(action: '音量控制');
+    }
+    final bounded = volume.clamp(0, 100);
+    await _actionResponse(
+      'SetVolume',
+      '<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredVolume>$bounded</DesiredVolume>',
+      serviceType: renderingControlServiceType,
+      endpoint: endpoint,
+    );
+  }
 
   Future<String> getProtocolInfo() => _actionResponse(
     'GetProtocolInfo',
@@ -413,6 +476,7 @@ class DlnaSoapClient {
     return DlnaPositionInfo(
       trackUri: Uri.tryParse(_xmlValue(response, 'TrackURI') ?? ''),
       position: _parseClock(_xmlValue(response, 'RelTime')),
+      duration: _parseClock(_xmlValue(response, 'TrackDuration')),
     );
   }
 
@@ -487,7 +551,6 @@ class DlnaSoapClient {
       })().timeout(timeout);
     } on TimeoutException {
       pending?.abort();
-      close();
       throw TimeoutException('DLNA $action 超时', timeout);
     }
   }
@@ -527,9 +590,14 @@ class DlnaTransportInfo {
 }
 
 class DlnaPositionInfo {
-  const DlnaPositionInfo({required this.trackUri, required this.position});
+  const DlnaPositionInfo({
+    required this.trackUri,
+    required this.position,
+    this.duration,
+  });
   final Uri? trackUri;
   final Duration? position;
+  final Duration? duration;
 }
 
 Duration? _parseClock(String? raw) {
@@ -591,12 +659,47 @@ class DlnaProtocolInfo {
   bool supportsMime(String mime) => mimeFor(mime) != null;
 }
 
+/// Observable state for the in-app DLNA control surface.
+class DlnaCastStatus {
+  const DlnaCastStatus({
+    this.session,
+    this.device,
+    this.transport,
+    this.position,
+    this.duration,
+    this.volume,
+    this.volumeSupported = false,
+    this.seekSupported = true,
+  });
+
+  final CastSession? session;
+  final CastDevice? device;
+  final DlnaTransportInfo? transport;
+  final Duration? position;
+  final Duration? duration;
+  final int? volume;
+  final bool volumeSupported;
+  final bool seekSupported;
+
+  bool get active =>
+      session != null &&
+      session!.state != CastSessionState.failed &&
+      session!.state != CastSessionState.stopped;
+
+  bool get canSeek => controllable && seekSupported && position != null;
+
+  bool get controllable =>
+      session?.state == CastSessionState.playing ||
+      session?.state == CastSessionState.paused;
+}
+
 /// Couples the protocol client to the Dart single-session state machine. The
 /// caller supplies a public URL or a [MediaRelayServer.url] that was issued
 /// for the selected task; the SOAP client never receives browser credentials.
-class DlnaCastController {
+class DlnaCastController extends ChangeNotifier {
   DlnaCastController(
     this.sessions, {
+    this.onTemporaryTaskFinished,
     this.commandTimeout = const Duration(seconds: 5),
     this.confirmationTimeout = const Duration(seconds: 12),
     this.pollInterval = const Duration(milliseconds: 500),
@@ -605,6 +708,7 @@ class DlnaCastController {
   });
 
   final CastSessionController sessions;
+  final Future<void> Function(String taskId)? onTemporaryTaskFinished;
   final Duration commandTimeout;
   final Duration confirmationTimeout;
   final Duration pollInterval;
@@ -615,10 +719,62 @@ class DlnaCastController {
   HlsRelayServer? _hlsRelay;
   Timer? _monitor;
   Timer? _expiry;
-  bool _monitoring = false;
+  int? _monitoringEpoch;
+  Future<void> _commands = Future<void>.value();
+  Future<CastSession>? _stopping;
   int _epoch = 0;
+  CastDevice? _device;
+  DlnaTransportInfo? _transport;
+  Duration? _position;
+  Duration? _duration;
+  int? _volume;
+  bool _volumeSupported = false;
+  bool _seekSupported = true;
+  Uri? _expectedUri;
+  bool _disposed = false;
 
   CastSession? get active => sessions.active;
+
+  void markTemporaryTask(String taskId) => _temporaryTaskIds.add(taskId);
+
+  final _temporaryTaskIds = <String>{};
+
+  DlnaCastStatus get status => DlnaCastStatus(
+    session: active,
+    device: _device,
+    transport: _transport,
+    position: _position,
+    duration: _duration,
+    volume: _volume,
+    volumeSupported: _volumeSupported,
+    seekSupported: _seekSupported,
+  );
+
+  void _changed() {
+    if (!_disposed) notifyListeners();
+  }
+
+  CastSession _transition(CastSessionState next, {String? errorCode}) {
+    final previous = sessions.active;
+    final value = sessions.transition(next, errorCode: errorCode);
+    if ((next == CastSessionState.failed || next == CastSessionState.stopped) &&
+        previous != null &&
+        _temporaryTaskIds.remove(previous.mediaTaskId)) {
+      final cleanup = onTemporaryTaskFinished;
+      if (cleanup != null) unawaited(cleanup(previous.mediaTaskId));
+    }
+    _changed();
+    return value;
+  }
+
+  void _resetControls() {
+    _transport = null;
+    _position = null;
+    _duration = null;
+    _volume = null;
+    _volumeSupported = false;
+    _seekSupported = true;
+  }
 
   Future<CastSession> cast({
     required CastDevice device,
@@ -629,13 +785,30 @@ class DlnaCastController {
     String mime = 'video/mp4',
     String title = 'Site Lens',
   }) async {
+    if (_disposed) throw StateError('投屏控制器已关闭');
+    if (_stopping != null) throw StateError('正在停止投屏，请稍后重试');
+    if (sessions.tasks.isExclusive(mediaTaskId)) {
+      throw StateError('媒体任务正在执行文件操作，请稍后重试');
+    }
+    if (localFile == null &&
+        localHlsPlaylist == null &&
+        (!const {'http', 'https'}.contains(mediaUrl.scheme) ||
+            mediaUrl.host.isEmpty ||
+            mediaUrl.userInfo.isNotEmpty)) {
+      throw StateError('远程投屏媒体地址无效');
+    }
     sessions.begin(device: device, mediaTaskId: mediaTaskId);
     final epoch = ++_epoch;
+    _device = device;
+    _resetControls();
+    _changed();
     DlnaSoapClient? soap;
     MediaRelayServer? relay;
     HlsRelayServer? hlsRelay;
     try {
-      sessions.transition(CastSessionState.connecting);
+      _checkEpoch(epoch);
+      _transition(CastSessionState.connecting);
+      _checkEpoch(epoch);
       final profile = DlnaDiscovery.profileFor(device);
       soap = DlnaSoapClient(
         device.address,
@@ -644,6 +817,8 @@ class DlnaCastController {
             'urn:schemas-upnp-org:service:AVTransport:1',
         connectionManagerControlUrl: profile?.connectionManagerControlUrl,
         connectionManagerServiceType: profile?.connectionManagerServiceType,
+        renderingControlControlUrl: profile?.renderingControlControlUrl,
+        renderingControlServiceType: profile?.renderingControlServiceType,
         timeout: commandTimeout,
       );
       _soap = soap;
@@ -700,14 +875,21 @@ class DlnaCastController {
         size = await localFile.length();
       }
       _checkEpoch(epoch);
-      sessions.transition(CastSessionState.settingMedia);
+      _transition(CastSessionState.settingMedia);
+      _checkEpoch(epoch);
       await soap.setMedia(mediaUrl, mime: mime, title: title, size: size);
       _checkEpoch(epoch);
       await soap.play();
       _checkEpoch(epoch);
+      _expectedUri = mediaUrl;
       await _confirmPlayback(soap, mediaUrl, epoch);
       _checkEpoch(epoch);
-      final result = sessions.transition(CastSessionState.playing);
+      final result = _transition(CastSessionState.playing);
+      _transport = const DlnaTransportInfo('PLAYING', 'OK');
+      await _refreshPosition(soap, epoch, ignoreErrors: true);
+      await _refreshVolume(soap, epoch);
+      _checkEpoch(epoch);
+      _changed();
       _monitor = Timer.periodic(monitorInterval, (_) {
         unawaited(_pollTransport(epoch));
       });
@@ -762,16 +944,21 @@ class DlnaCastController {
         throw StateError('电视播放失败：${transport.status}（${transport.state}）');
       }
       if (transport.state == 'PLAYING') {
-        late final DlnaPositionInfo position;
+        DlnaPositionInfo? position;
         try {
           position = await soap.positionInfo().timeout(
             deadline.difference(DateTime.now()),
           );
         } on TimeoutException {
           break;
+        } on DlnaSoapException catch (error) {
+          if (!_isOptionalUnsupported(error)) rethrow;
         }
         _checkEpoch(epoch);
-        var current = position.trackUri;
+        _position = position?.position;
+        _duration = position?.duration ?? _duration;
+        _changed();
+        var current = position?.trackUri;
         if (current == null || !current.hasScheme) {
           current = await soap.currentMedia().timeout(
             deadline.difference(DateTime.now()),
@@ -790,13 +977,25 @@ class DlnaCastController {
   }
 
   Future<void> _pollTransport(int epoch) async {
-    if (epoch != _epoch || _monitoring) return;
+    if (epoch != _epoch || _monitoringEpoch != null) return;
+    _monitoringEpoch = epoch;
+    try {
+      await _enqueue(epoch, () => _readTransport(epoch));
+    } catch (_) {
+      // An explicit stop invalidates queued monitor work.
+    } finally {
+      if (_monitoringEpoch == epoch) _monitoringEpoch = null;
+    }
+  }
+
+  Future<void> _readTransport(int epoch) async {
     final soap = _soap;
     if (soap == null) return;
-    _monitoring = true;
     try {
       final transport = await soap.transportInfo();
       if (epoch != _epoch) return;
+      _transport = transport;
+      _changed();
       if (transport.status != 'OK') {
         await _failActive(epoch, '电视播放失败：${transport.status}');
       } else if (transport.state == 'STOPPED' ||
@@ -804,18 +1003,32 @@ class DlnaCastController {
         _epoch++;
         await _closeResources();
         _finish(CastSessionState.stopped);
+        _resetControls();
+        _changed();
       } else if (transport.state == 'PAUSED_PLAYBACK' &&
           sessions.active?.state == CastSessionState.playing) {
-        sessions.transition(CastSessionState.paused);
+        _transition(CastSessionState.paused);
       } else if (transport.state == 'PLAYING' &&
           sessions.active?.state == CastSessionState.paused) {
-        sessions.transition(CastSessionState.playing);
+        _transition(CastSessionState.playing);
+      }
+      if (epoch == _epoch &&
+          transport.state != 'STOPPED' &&
+          transport.state != 'NO_MEDIA_PRESENT') {
+        await _refreshPosition(soap, epoch, ignoreErrors: true);
       }
     } catch (error) {
       await _failActive(epoch, _castError(error));
-    } finally {
-      _monitoring = false;
     }
+  }
+
+  Future<T> _enqueue<T>(int epoch, Future<T> Function() action) {
+    final future = _commands.then((_) {
+      _checkEpoch(epoch);
+      return action();
+    });
+    _commands = future.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return future;
   }
 
   Future<void> _failActive(int epoch, String message) async {
@@ -825,7 +1038,52 @@ class DlnaCastController {
     _finish(CastSessionState.failed, errorCode: message);
   }
 
-  Future<CastSession> pause() async {
+  Future<void> _refreshPosition(
+    DlnaSoapClient soap,
+    int epoch, {
+    required bool ignoreErrors,
+  }) async {
+    try {
+      final position = await soap.positionInfo();
+      if (epoch != _epoch) return;
+      _position = position.position ?? _position;
+      _duration = position.duration ?? _duration;
+      _changed();
+    } catch (_) {
+      if (!ignoreErrors) rethrow;
+    }
+  }
+
+  Future<void> _refreshVolume(DlnaSoapClient soap, int epoch) async {
+    try {
+      final volume = await soap.getVolume();
+      if (epoch != _epoch) return;
+      _volume = volume;
+      _volumeSupported = volume != null;
+      _changed();
+    } on DlnaSoapException catch (error) {
+      if (epoch != _epoch) return;
+      if (_isOptionalUnsupported(error)) {
+        _volume = null;
+        _volumeSupported = false;
+        _changed();
+        return;
+      }
+      // Capability probing is optional after playback has been confirmed.
+    } catch (_) {
+      // A receiver may expose RenderingControl but reject GetVolume. Keep
+      // playback alive and leave the volume control unavailable.
+      if (epoch == _epoch) {
+        _volume = null;
+        _volumeSupported = false;
+        _changed();
+      }
+    }
+  }
+
+  Future<CastSession> pause() => _enqueue(_epoch, _pause);
+
+  Future<CastSession> _pause() async {
     final soap = _soap ?? (throw StateError('投屏会话不存在'));
     final epoch = _epoch;
     try {
@@ -836,14 +1094,22 @@ class DlnaCastController {
         throw StateError('电视未确认暂停播放');
       }
       _checkEpoch(epoch);
-      return sessions.transition(CastSessionState.paused);
+      _transport = transport;
+      final result = _transition(CastSessionState.paused);
+      await _refreshPosition(soap, epoch, ignoreErrors: true);
+      return result;
     } catch (error) {
+      if (error is DlnaSoapException && _isOptionalUnsupported(error)) {
+        throw DlnaOptionalCommandUnsupportedException(action: '暂停');
+      }
       await _failActive(epoch, _castError(error));
       rethrow;
     }
   }
 
-  Future<CastSession> resume() async {
+  Future<CastSession> resume() => _enqueue(_epoch, _resume);
+
+  Future<CastSession> _resume() async {
     final soap = _soap ?? (throw StateError('投屏会话不存在'));
     final epoch = _epoch;
     try {
@@ -851,18 +1117,37 @@ class DlnaCastController {
       if (currentUri == null || !currentUri.hasScheme) {
         throw StateError('电视没有可继续播放的媒体');
       }
+      _checkEpoch(epoch);
+      if (currentUri != _expectedUri) {
+        throw StateError('电视已切换到其他媒体，请重新投屏');
+      }
       await soap.play();
       _checkEpoch(epoch);
       await _confirmPlayback(soap, currentUri, epoch);
       _checkEpoch(epoch);
-      return sessions.transition(CastSessionState.playing);
+      final result = _transition(CastSessionState.playing);
+      await _refreshPosition(soap, epoch, ignoreErrors: true);
+      return result;
     } catch (error) {
+      if (error is DlnaSoapException && _isOptionalUnsupported(error)) {
+        throw DlnaOptionalCommandUnsupportedException(action: '继续播放');
+      }
       await _failActive(epoch, _castError(error));
       rethrow;
     }
   }
 
-  Future<CastSession> stop() async {
+  Future<CastSession> stop() {
+    final pending = _stopping;
+    if (pending != null) return pending;
+    final stopping = _stop();
+    _stopping = stopping;
+    return stopping.whenComplete(() {
+      if (identical(_stopping, stopping)) _stopping = null;
+    });
+  }
+
+  Future<CastSession> _stop() async {
     _epoch++;
     final soap = _soap;
     Object? failure;
@@ -878,8 +1163,125 @@ class DlnaCastController {
       throw failure;
     }
     _finish(CastSessionState.stopped);
+    _resetControls();
+    _changed();
     return sessions.active ?? (throw StateError('投屏会话不存在'));
   }
+
+  Future<DlnaCastStatus> refresh() => _enqueue(_epoch, _refresh);
+
+  Future<DlnaCastStatus> _refresh() async {
+    final soap = _soap ?? (throw StateError('投屏会话不存在'));
+    final epoch = _epoch;
+    final transport = await soap.transportInfo();
+    _checkEpoch(epoch);
+    if (transport.status != 'OK') {
+      await _failActive(epoch, '电视播放失败：${transport.status}');
+      return status;
+    }
+    _transport = transport;
+    if (transport.state == 'STOPPED' || transport.state == 'NO_MEDIA_PRESENT') {
+      _epoch++;
+      await _closeResources();
+      _finish(CastSessionState.stopped);
+      _resetControls();
+      _changed();
+      return status;
+    }
+    if (transport.state == 'PAUSED_PLAYBACK' &&
+        sessions.active?.state == CastSessionState.playing) {
+      _transition(CastSessionState.paused);
+    } else if (transport.state == 'PLAYING' &&
+        sessions.active?.state == CastSessionState.paused) {
+      _transition(CastSessionState.playing);
+    }
+    await _refreshPosition(soap, epoch, ignoreErrors: true);
+    await _refreshVolume(soap, epoch);
+    _checkEpoch(epoch);
+    return status;
+  }
+
+  Future<DlnaCastStatus> seek(Duration position) =>
+      _enqueue(_epoch, () => _seek(position));
+
+  Future<DlnaCastStatus> _seek(Duration position) async {
+    final soap = _soap ?? (throw StateError('投屏会话不存在'));
+    final epoch = _epoch;
+    final duration = _duration;
+    final bounded = duration == null || duration <= Duration.zero
+        ? (position < Duration.zero ? Duration.zero : position)
+        : _clampDuration(position, Duration.zero, duration);
+    try {
+      await soap.seek(bounded);
+      _checkEpoch(epoch);
+      _position = bounded;
+      _changed();
+      await _refreshPosition(soap, epoch, ignoreErrors: true);
+      return status;
+    } on DlnaSoapException catch (error) {
+      if (_isOptionalUnsupported(error)) {
+        if (epoch != _epoch) rethrow;
+        _seekSupported = false;
+        _changed();
+        throw DlnaOptionalCommandUnsupportedException(
+          action: '进度控制',
+          message: '接收设备不支持拖动播放进度',
+        );
+      }
+      await _failActive(epoch, _castError(error));
+      rethrow;
+    } catch (error) {
+      await _failActive(epoch, _castError(error));
+      rethrow;
+    }
+  }
+
+  Future<DlnaCastStatus> seekBy(Duration offset) =>
+      _enqueue(_epoch, () => _seek((_position ?? Duration.zero) + offset));
+
+  Future<DlnaCastStatus> setVolume(int percent) =>
+      _enqueue(_epoch, () => _setVolume(percent));
+
+  Future<DlnaCastStatus> _setVolume(int percent) async {
+    final soap = _soap ?? (throw StateError('投屏会话不存在'));
+    final epoch = _epoch;
+    try {
+      await soap.setVolume(percent);
+      _checkEpoch(epoch);
+      _volume = percent.clamp(0, 100).toInt();
+      _volumeSupported = true;
+      _changed();
+      return status;
+    } on DlnaOptionalCommandUnsupportedException {
+      rethrow;
+    } on DlnaSoapException catch (error) {
+      if (_isOptionalUnsupported(error)) {
+        if (epoch != _epoch) rethrow;
+        _volumeSupported = false;
+        _volume = null;
+        _changed();
+        throw DlnaOptionalCommandUnsupportedException(
+          action: '音量控制',
+          message: '接收设备不支持音量控制',
+        );
+      }
+      await _failActive(epoch, _castError(error));
+      rethrow;
+    } catch (error) {
+      await _failActive(epoch, _castError(error));
+      rethrow;
+    }
+  }
+
+  Future<DlnaCastStatus> adjustVolume(int delta) => _enqueue(_epoch, () async {
+    final current =
+        _volume ??
+        (throw DlnaOptionalCommandUnsupportedException(
+          action: '音量控制',
+          message: '当前设备未提供音量状态',
+        ));
+    return _setVolume(current + delta);
+  });
 
   CastSession? _finish(CastSessionState next, {String? errorCode}) {
     final current = sessions.active;
@@ -888,7 +1290,7 @@ class DlnaCastController {
         current.state == CastSessionState.stopped) {
       return current;
     }
-    return sessions.transition(next, errorCode: errorCode);
+    return _transition(next, errorCode: errorCode);
   }
 
   Future<void> _closeResources() async {
@@ -915,6 +1317,27 @@ class DlnaCastController {
     return error is StateError ? error.message : '投屏失败，请检查接收设备';
   }
 
+  bool _isOptionalUnsupported(DlnaSoapException error) => const {
+    401,
+    402,
+    501,
+    600,
+    601,
+    602,
+    701,
+    710,
+    711,
+  }.contains(error.upnpCode);
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _epoch++;
+    unawaited(_closeResources());
+    _finish(CastSessionState.stopped);
+    super.dispose();
+  }
+
   Object _normalizeCastError(Object error, String mime) {
     if (error is DlnaSoapException &&
         (error.upnpCode == 704 || error.upnpCode == 714)) {
@@ -927,6 +1350,12 @@ class DlnaCastController {
     }
     return error;
   }
+}
+
+Duration _clampDuration(Duration value, Duration minimum, Duration maximum) {
+  if (value < minimum) return minimum;
+  if (value > maximum) return maximum;
+  return value;
 }
 
 /// Determines the local IPv4 address selected by the OS route to this receiver.

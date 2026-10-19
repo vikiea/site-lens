@@ -830,6 +830,7 @@ class MediaTask {
     required this.state,
     required this.updatedAt,
     this.displayTitle = '',
+    this.batchDirectory,
     this.episodeLabel,
     this.bytesDownloaded = 0,
     this.totalBytes,
@@ -847,6 +848,11 @@ class MediaTask {
   final MediaTaskState state;
   final DateTime updatedAt;
   final String displayTitle;
+
+  /// Optional directory shared by one user initiated batch.
+  ///
+  /// Older rows omit this field and continue to use the series directory.
+  final String? batchDirectory;
   final String? episodeLabel;
   final int bytesDownloaded;
   final int? totalBytes;
@@ -879,9 +885,15 @@ class MediaTask {
 
   String get seriesDirectoryName => mediaSeriesDirectoryName(displayTitle);
 
+  String get storageDirectoryName =>
+      batchDirectory == null || batchDirectory!.trim().isEmpty
+      ? seriesDirectoryName
+      : mediaSeriesDirectoryName(batchDirectory!);
+
   MediaTask copyWith({
     MediaTaskState? state,
     String? displayTitle,
+    Object? batchDirectory = _unset,
     Object? episodeLabel = _unset,
     int? bytesDownloaded,
     Object? totalBytes = _unset,
@@ -898,6 +910,9 @@ class MediaTask {
     state: state ?? this.state,
     updatedAt: DateTime.now().toUtc(),
     displayTitle: displayTitle ?? this.displayTitle,
+    batchDirectory: identical(batchDirectory, _unset)
+        ? this.batchDirectory
+        : batchDirectory as String?,
     episodeLabel: identical(episodeLabel, _unset)
         ? this.episodeLabel
         : episodeLabel as String?,
@@ -926,6 +941,7 @@ class MediaTask {
     'state': state.name,
     'updatedAt': updatedAt.toIso8601String(),
     'displayTitle': displayTitle,
+    'batchDirectory': batchDirectory,
     'episodeLabel': episodeLabel,
     'bytesDownloaded': bytesDownloaded,
     'totalBytes': totalBytes,
@@ -944,6 +960,7 @@ class MediaTask {
     state: MediaTaskState.values.byName(json['state'] as String),
     updatedAt: DateTime.parse(json['updatedAt'] as String),
     displayTitle: json['displayTitle'] as String? ?? '',
+    batchDirectory: json['batchDirectory'] as String?,
     episodeLabel: json['episodeLabel'] as String?,
     bytesDownloaded: (json['bytesDownloaded'] as num?)?.toInt() ?? 0,
     totalBytes: (json['totalBytes'] as num?)?.toInt(),

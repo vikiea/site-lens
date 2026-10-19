@@ -93,6 +93,8 @@ class AppSettings {
     this.autoConvertToMp4 = false,
     this.mp4ExportDirectory,
     this.mediaLibraryNoticeDismissed = false,
+    this.mediaTasksNoticeDismissed = false,
+    this.dismissedNotices = const {},
     this.playerVerticalGesture = PlayerVerticalGestureMode.brightnessVolume,
     this.restoreBrowserSessions = true,
     this.backgroundHealthCheck = true,
@@ -115,6 +117,8 @@ class AppSettings {
   final bool autoConvertToMp4;
   final String? mp4ExportDirectory;
   final bool mediaLibraryNoticeDismissed;
+  final bool mediaTasksNoticeDismissed;
+  final Set<String> dismissedNotices;
   final PlayerVerticalGestureMode playerVerticalGesture;
   final bool restoreBrowserSessions;
   final bool backgroundHealthCheck;
@@ -137,6 +141,8 @@ class AppSettings {
     'autoConvertToMp4': autoConvertToMp4,
     'mp4ExportDirectory': mp4ExportDirectory,
     'mediaLibraryNoticeDismissed': mediaLibraryNoticeDismissed,
+    'mediaTasksNoticeDismissed': mediaTasksNoticeDismissed,
+    'dismissedNotices': dismissedNotices.toList()..sort(),
     'playerVerticalGesture': playerVerticalGesture.name,
     'restoreBrowserSessions': restoreBrowserSessions,
     'backgroundHealthCheck': backgroundHealthCheck,
@@ -215,6 +221,15 @@ class AppSettings {
       autoConvertToMp4: flag('autoConvertToMp4', false),
       mp4ExportDirectory: directory('mp4ExportDirectory'),
       mediaLibraryNoticeDismissed: flag('mediaLibraryNoticeDismissed', false),
+      mediaTasksNoticeDismissed: flag('mediaTasksNoticeDismissed', false),
+      dismissedNotices: Set.unmodifiable(
+        (json['dismissedNotices'] is List
+                ? json['dismissedNotices'] as List
+                : const [])
+            .whereType<String>()
+            .where((id) => RegExp(r'^[a-z][a-z0-9_.-]{0,79}$').hasMatch(id))
+            .take(100),
+      ),
       playerVerticalGesture: choice(
         'playerVerticalGesture',
         PlayerVerticalGestureMode.values,
@@ -246,6 +261,8 @@ class AppSettings {
       'autoConvertToMp4',
       'mp4ExportDirectory',
       'mediaLibraryNoticeDismissed',
+      'mediaTasksNoticeDismissed',
+      'dismissedNotices',
       'playerVerticalGesture',
       'restoreBrowserSessions',
       'backgroundHealthCheck',
@@ -293,6 +310,17 @@ class AppSettings {
         if (value is! num || !value.isFinite || value < 0 || value > 1) {
           throw const FormatException('位置必须在有效范围内');
         }
+      } else if (entry.key == 'dismissedNotices') {
+        final value = entry.value;
+        if (value is! List ||
+            value.length > 100 ||
+            value.any(
+              (id) =>
+                  id is! String ||
+                  !RegExp(r'^[a-z][a-z0-9_.-]{0,79}$').hasMatch(id),
+            )) {
+          throw const FormatException('提示偏好无效');
+        }
       } else if (entry.key == 'mp4ExportDirectory') {
         if (entry.value != null && entry.value is! String) {
           throw const FormatException('MP4 保存目录必须是文本路径');
@@ -303,6 +331,11 @@ class AppSettings {
     }
     return AppSettings.fromJson({...toJson(), ...changes});
   }
+
+  bool isNoticeDismissed(String id) =>
+      dismissedNotices.contains(id) ||
+      (id == 'media.library' && mediaLibraryNoticeDismissed) ||
+      (id == 'media.tasks' && mediaTasksNoticeDismissed);
 }
 
 abstract final class AppPolicy {

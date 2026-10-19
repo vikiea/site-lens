@@ -92,6 +92,8 @@ flutter {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
+    implementation("androidx.work:work-runtime:2.11.2")
+    testImplementation("junit:junit:4.13.2")
     implementation("androidx.webkit:webkit:1.17.1")
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
     // MediaPlayer cannot reliably decode HLS playlists emitted by modern

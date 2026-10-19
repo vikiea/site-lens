@@ -93,7 +93,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             }
             "validateOutput" -> validateOutput(argument("path"))
             "deliver" -> { deliver(argument("source"), Uri.parse(argument("destination"))); null }
-            "deliverToDirectory" -> deliverToDirectory(argument("source"), Uri.parse(argument("directory")), argument("fileName"))
+            "deliverToDirectory" -> deliverToDirectory(argument("source"), Uri.parse(argument("directory")), argument("fileName"), call.argument<String>("subdirectory"))
             "inspect" -> inspect(argument("source"))
             "materialize" -> materialize(argument("source"))
             "rename" -> rename(argument("source"), argument("fileName"))
@@ -467,17 +467,39 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         require(actualSize == count && actual.digest().contentEquals(expected.digest())) { "导出文件校验失败" }
     }
 
-    private fun deliverToDirectory(sourcePath: String, directory: Uri, fileName: String): String {
+    private fun deliverToDirectory(sourcePath: String, directory: Uri, fileName: String, subdirectory: String? = null): String {
         sourceStream(sourcePath).close()
         require(directory.scheme == "content") { "系统目录无效" }
         validateName(fileName)
         require(context.contentResolver.persistedUriPermissions.any { it.uri == directory && it.isWritePermission && it.isReadPermission }) {
             "保存目录权限已失效，请在媒体管理中重新选择 MP4 保存目录"
         }
-        val treeDocument = DocumentsContract.buildDocumentUriUsingTree(
+        var treeDocument = DocumentsContract.buildDocumentUriUsingTree(
             directory,
             DocumentsContract.getTreeDocumentId(directory),
         )
+        if (!subdirectory.isNullOrBlank()) {
+            validateName(subdirectory)
+            val children = DocumentsContract.buildChildDocumentsUriUsingTree(
+                directory, DocumentsContract.getDocumentId(treeDocument),
+            )
+            var folder: Uri? = null
+            context.contentResolver.query(children, arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+            ), null, null, null)?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    if (cursor.getString(1) != subdirectory) continue
+                    require(cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR) { "批次目录名称已被文件占用" }
+                    folder = DocumentsContract.buildDocumentUriUsingTree(directory, cursor.getString(0))
+                    break
+                }
+            }
+            treeDocument = folder ?: DocumentsContract.createDocument(
+                context.contentResolver, treeDocument, DocumentsContract.Document.MIME_TYPE_DIR, subdirectory,
+            ) ?: error("无法创建批次目录")
+        }
         val target = DocumentsContract.createDocument(
             context.contentResolver,
             treeDocument,

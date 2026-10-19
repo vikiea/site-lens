@@ -1,137 +1,304 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+
 const handlers = new Map();
+const outbound = [];
 const nodes = [];
 const dataElements = [];
 const performanceEntries = [];
+
 class Media {
-  paused = true; ended = false; isConnected = true;
-  async play() { this.paused = false; }
+  paused = true;
+  ended = false;
+  isConnected = true;
+  currentSrc = 'https://example.test/current.mp4';
+  src = this.currentSrc;
+  duration = 120;
+  addEventListener(name, callback) { handlers.set(name, callback); }
+  async play() { this.paused = false; return undefined; }
   pause() { this.paused = true; }
+  load() {}
 }
+
 class DataElement {
   constructor(attributes) { this.attributes = attributes; }
   getAttribute(name) { return this.attributes[name] ?? null; }
+  get textContent() { return ''; }
 }
+
 class Audio {
   state = 'running';
-  handlers=[];
-  addEventListener(name,callback) { this.handlers.push(callback); }
-  async suspend() { this.state='suspended';this.handlers.forEach(fn=>fn()); }
-  async resume() { this.state='running';this.handlers.forEach(fn=>fn()); }
+  handlers = [];
+  addEventListener(name, callback) { this.handlers.push(callback); }
+  async suspend() { this.state = 'suspended'; this.handlers.forEach(fn => fn()); }
+  async resume() { this.state = 'running'; this.handlers.forEach(fn => fn()); }
 }
-const document = {
-  title:'测试媒体',
-  baseURI:'https://example.test/video/3520/',
-  querySelectorAll:(selector)=>selector === 'video,audio' ? nodes : dataElements,
-  addEventListener:(name,fn)=>handlers.set(name,fn),
+
+const bridge = {
+  onmessage: null,
+  postMessage(raw) { outbound.push(JSON.parse(raw)); },
 };
-const telemetry=[];
-const window = {document, frames:[],AudioContext:Audio,addEventListener:(name,fn)=>handlers.set(name,fn),bridge:{postMessage:raw=>telemetry.push(JSON.parse(raw))}};
-window.parent=window;
-const performance = {getEntriesByType:()=>performanceEntries};
+const document = {
+  title: '测试媒体',
+  baseURI: 'https://example.test/video/3520/',
+  querySelectorAll(selector) {
+    return selector === 'video,audio' ? nodes : dataElements;
+  },
+  addEventListener(name, callback) { handlers.set(name, callback); },
+};
+const window = {
+  document,
+  frames: [],
+  crypto: { randomUUID: () => 'frame-main' },
+  AudioContext: Audio,
+  addEventListener(name, callback) { handlers.set(name, callback); },
+  lensMedia: bridge,
+};
+window.parent = window;
+
 let mutation;
-class Observer { constructor(callback){mutation=callback;} observe(){} }
-const scope = {window,document,HTMLMediaElement:Media,DOMException,console,Promise,URL,MutationObserver:Observer,performance};
+class Observer { constructor(callback) { mutation = callback; } observe() {} }
+
+const scope = {
+  window,
+  document,
+  HTMLMediaElement: Media,
+  DOMException,
+  Promise,
+  URL,
+  MutationObserver: Observer,
+  performance: { getEntriesByType: () => performanceEntries },
+  console,
+  setTimeout,
+  clearTimeout,
+};
 vm.createContext(scope);
-const source=fs.readFileSync(new URL('../web_assets/media_lifecycle.js',import.meta.url),'utf8')
-  .replace('__SITE_LENS_MEDIA_CONFIG__',JSON.stringify({bridge:'bridge',token:'test',blocked:false}));
-vm.runInContext(source,scope);
-const media=new Media();nodes.push(media);
-dataElements.push(new DataElement({'data-play-src':'/assets/movie.m3u8?token=1'}));
-performanceEntries.push({name:'https://cdn.example.test/movie.mp4?token=2',initiatorType:'fetch'});
-performanceEntries.push({name:'https://cdn.example.test/video/segment0.ts?auth=1',initiatorType:'video'});
-performanceEntries.push({name:'https://cdn.example.test/video/segment1.ts?auth=2',initiatorType:'video'});
-await media.play();
-assert.equal(media.paused,false);
-window.__siteLensMediaControl.apply('pause');
-assert.deepEqual(
-  telemetry.at(-1).candidates.map(candidate => candidate.url),
-  [
-    'https://example.test/assets/movie.m3u8?token=1',
-    'https://cdn.example.test/movie.mp4?token=2',
-  ],
-  'DOM media attributes and loaded media resources must be reported',
-);
-assert.deepEqual(
-  telemetry.at(-1).candidates.map(candidate => candidate.mime),
-  ['application/vnd.apple.mpegurl', 'video/mp4'],
-  'media MIME is inferred when the page omits a type attribute',
-);
-assert.equal(media.paused,true);
-await assert.rejects(media.play(),{name:'NotAllowedError'});
-window.__siteLensMediaControl.apply('unblock');
-await assert.rejects(media.play(),{name:'NotAllowedError'});
-handlers.get('pointerdown')({isTrusted:false});
-await assert.rejects(media.play(),{name:'NotAllowedError'});
-handlers.get('pointerdown')({isTrusted:true});
-await media.play();
-const audio=new window.AudioContext();
-window.__siteLensMediaControl.apply('pause');
-assert.equal(audio.state,'suspended');
-window.__siteLensMediaControl.apply('resume');
-assert.equal(media.paused,false);
-assert.equal(audio.state,'running');
-assert.equal(telemetry.at(-1).playing,true);
-window.__siteLensMediaControl.apply('pause');
-media.isConnected=false;
-window.__siteLensMediaControl.apply('resume');
-assert.equal(media.paused,true,'removed nodes must never be restarted');
-console.log('Media lifecycle pause, explicit gesture, resume, WebAudio and detached-element regression PASS.');
-// Natural completion must retire an earlier policy-pause reservation.
-window.__siteLensMediaControl.apply('unblock');
-handlers.get('pointerdown')({isTrusted:true});
-const old = new Media(), current = new Media(); nodes.push(old,current);
-await old.play(); window.__siteLensMediaControl.apply('pause');
-window.__siteLensMediaControl.apply('unblock');handlers.get('pointerdown')({isTrusted:true});
-await old.play();handlers.get('playing')({target:old});
-old.pause();old.ended=true;handlers.get('ended')({target:old});
-await current.play();window.__siteLensMediaControl.apply('pause');
-window.__siteLensMediaControl.apply('resume');
-assert.equal(old.paused,true,'naturally ended media must not be restarted');
-assert.equal(current.paused,false);
-console.log('Naturally ended media reservation regression PASS.');
+const source = fs.readFileSync(new URL('../web_assets/media_lifecycle.js', import.meta.url), 'utf8')
+  .replace('__SITE_LENS_MEDIA_CONFIG__', JSON.stringify({
+    bridge: 'lensMedia',
+    token: 'document-token',
+    blocked: false,
+  }));
+vm.runInContext(source, scope);
 
-window.__siteLensMediaControl.apply('pause');
-const child = {};window.frames=[child];
-handlers.get('message')({source:child,data:{kind:'site-lens-media-state',token:'test',playing:true}});
-assert.equal(telemetry.at(-1).playing,true);
-window.frames=[];mutation();
-assert.equal(telemetry.at(-1).playing,false,'removed final iframe must clear playback telemetry');
-console.log('Removed iframe playback telemetry regression PASS.');
+const waitForReport = () => new Promise(resolve => setTimeout(resolve, 150));
 
-window.frames=[];window.__siteLensMediaControl.apply('unblock');
-handlers.get('pointerdown')({isTrusted:true});
-const detached = new Media();detached.isConnected=false;
-await detached.play();
-window.__siteLensMediaControl.apply('pause');
-assert.equal(detached.paused,true,'new Audio() must be paused even without DOM insertion');
-window.__siteLensMediaControl.apply('unblock');
-assert.equal(detached.paused,true,'visibility alone must not restart detached audio');
-window.__siteLensMediaControl.apply('resume');
-assert.equal(detached.paused,false,'system resume restores the policy-paused detached audio');
-console.log('Detached Audio lifecycle regression PASS.');
+const hello = outbound.find(value => value.kind === 'hello');
+assert.ok(hello, 'each frame must establish an explicit native handshake');
+assert.equal(hello.token, 'document-token');
+assert.equal(hello.frame, 'frame-main');
 
-window.__siteLensMediaControl.apply('unblock');handlers.get('pointerdown')({isTrusted:true});
-const oldContext = new window.AudioContext();
-window.__siteLensMediaControl.apply('pause');
-window.__siteLensMediaControl.apply('unblock');handlers.get('pointerdown')({isTrusted:true});
-await oldContext.resume();await oldContext.suspend();
-const activeContext = new window.AudioContext();
-window.__siteLensMediaControl.apply('pause');window.__siteLensMediaControl.apply('resume');
-assert.equal(oldContext.state,'suspended','page-paused old context must not restart');
-assert.equal(activeContext.state,'running');
-console.log('Retired WebAudio policy reservation regression PASS.');
+let command = 0;
+async function native(action, overrides = {}) {
+  assert.equal(typeof bridge.onmessage, 'function');
+  await bridge.onmessage({
+    data: JSON.stringify({
+      token: 'document-token',
+      frame: 'frame-main',
+      document: 'frame-main',
+      epoch: 0,
+      command: ++command,
+      action,
+      ...overrides,
+    }),
+  });
+}
 
-// A multi-episode page title describes the active episode only. Explicit row
-// episode metadata must replace it for each separately selected resource.
-document.title = '示例系列 - 第4集';
-dataElements.length = 0;
-dataElements.push(new DataElement({'data-play-src':'/assets/ep7.m3u8','data-episode':'7'}));
-dataElements.push(new DataElement({'data-play-src':'/assets/ep8.m3u8','data-episode':'8'}));
+nodes.push(new Media());
+dataElements.push(new DataElement({'data-play-src': '/assets/movie.m3u8?token=1'}));
+performanceEntries.push({name: 'https://cdn.example.test/movie.mp4?token=2', initiatorType: 'fetch'});
+await native('unblock');
+await nodes[0].play();
+handlers.get('playing')?.({target: nodes[0]});
 mutation();
-const episodeCandidates = telemetry.at(-1).candidates.filter(value => value.episodeNumber != null);
-assert.deepEqual(episodeCandidates.map(value => value.title), ['示例系列 - 第7集','示例系列 - 第8集']);
-assert.deepEqual(episodeCandidates.map(value => value.episodeNumber), [7,8]);
-console.log('Explicit episode title priority regression PASS.');
+await waitForReport();
+assert.equal(outbound.filter(value => value.kind === 'candidates').at(-1).kind, 'candidates');
+assert.ok(outbound.some(value => value.kind === 'state' && value.playing === true));
+assert.ok(outbound.every(value => JSON.stringify(value).length <= 4096));
+const mimeValues = outbound.filter(value => value.kind === 'candidates')
+  .flatMap(value => value.candidates).map(value => value.mime);
+assert.ok(mimeValues.includes('application/vnd.apple.mpegurl'));
+assert.ok(mimeValues.includes('video/mp4'));
+console.log('Direct frame handshake and split state/candidate telemetry PASS.');
+
+await native('pause');
+assert.equal(nodes[0].paused, true);
+assert.ok(outbound.some(value => value.kind === 'ack' && value.ok === true));
+await native('resume');
+assert.equal(nodes[0].paused, false);
+console.log('Notification pause/resume policy reservation PASS.');
+
+const stateBeforeStale = outbound.filter(value => value.kind === 'state').at(-1);
+await native('pause', {token: 'stale-token'});
+assert.equal(outbound.filter(value => value.kind === 'state').at(-1), stateBeforeStale);
+await native('resume', {frame: 'retired-frame'});
+assert.equal(outbound.filter(value => value.kind === 'state').at(-1), stateBeforeStale);
+console.log('Stale token and frame ownership boundaries PASS.');
+
+dataElements.length = 0;
+for (let index = 0; index < 80; index++) {
+  dataElements.push(new DataElement({
+    'data-play-src': 'https://cdn.example.test/episode-' + index +
+      '.mp4?token=' + 'x'.repeat(100),
+  }));
+}
+mutation();
+await waitForReport();
+const candidateMessages = outbound.filter(value => value.kind === 'candidates');
+assert.ok(candidateMessages.length > 1, 'large candidate sets must be chunked');
+assert.ok(candidateMessages.every(value => JSON.stringify(value).length <= 4096));
+await nodes[0].play();
+handlers.get('playing')?.({target: nodes[0]});
+await waitForReport();
+assert.equal(outbound.filter(value => value.kind === 'state').at(-1).playing, true);
+console.log('Large candidate set keeps state telemetry and chunks candidates under the native limit PASS.');
+
+handlers.get('pagehide')?.({});
+assert.equal(outbound.at(-1).kind, 'gone');
+console.log('Frame lifecycle retirement PASS.');
+
+function timingFrame({main, parent, bridge, frameName}) {
+  const localHandlers = new Map();
+  const localDocument = {
+    title: frameName,
+    baseURI: 'https://example.test/',
+    querySelectorAll: () => [],
+    addEventListener(name, callback) { localHandlers.set(name, callback); },
+  };
+  const localWindow = {
+    document: localDocument,
+    frames: [],
+    crypto: {randomUUID: () => frameName},
+    addEventListener(name, callback) { localHandlers.set(name, callback); },
+    lensMedia: bridge,
+    parent: parent || null,
+  };
+  if (main) localWindow.parent = localWindow;
+  localWindow.postMessage = (data, _) => {
+    localHandlers.get('message')?.({source: parent || localWindow, data});
+  };
+  const localScope = {
+    window: localWindow,
+    document: localDocument,
+    HTMLMediaElement: Media,
+    DOMException,
+    Promise,
+    URL,
+    MutationObserver: class { observe() {} },
+    performance: {getEntriesByType: () => []},
+    console,
+    setTimeout,
+    clearTimeout,
+  };
+  vm.createContext(localScope);
+  vm.runInContext(
+    source,
+    localScope,
+  );
+  return {window: localWindow, handlers: localHandlers};
+}
+
+const timingMainOutbound = [];
+const timingChildOutbound = [];
+const timingMainBridge = {
+  onmessage: null,
+  postMessage(raw) { timingMainOutbound.push(JSON.parse(raw)); },
+};
+const timingChildBridge = {
+  onmessage: null,
+  postMessage(raw) { timingChildOutbound.push(JSON.parse(raw)); },
+};
+let timingMainMessage;
+const timingMain = {
+  document: {title: 'main', baseURI: 'https://example.test/', querySelectorAll: () => [], addEventListener() {}},
+  frames: [],
+  crypto: {randomUUID: () => 'timing-main'},
+  lensMedia: timingMainBridge,
+  parent: null,
+  addEventListener(name, callback) { if (name === 'message') timingMainMessage = callback; },
+};
+timingMain.parent = timingMain;
+timingMain.postMessage = () => {};
+const timingMainScope = {
+  window: timingMain,
+  document: timingMain.document,
+  HTMLMediaElement: Media,
+  DOMException,
+  Promise,
+  URL,
+  MutationObserver: class { observe() {} },
+  performance: {getEntriesByType: () => []},
+  console,
+  setTimeout,
+  clearTimeout,
+};
+vm.createContext(timingMainScope);
+vm.runInContext(source, timingMainScope);
+const deferredMainHello = timingMainOutbound.splice(0);
+
+let timingChildMessage;
+const timingChild = {
+  document: {title: 'child', baseURI: 'https://example.test/', querySelectorAll: () => [], addEventListener() {}},
+  frames: [],
+  crypto: {randomUUID: () => 'timing-child'},
+  lensMedia: timingChildBridge,
+  parent: timingMain,
+  addEventListener(name, callback) { if (name === 'message') timingChildMessage = callback; },
+};
+timingChild.postMessage = (data, _) => {
+  timingChildMessage?.({source: timingMain, data});
+};
+timingMain.frames = [timingChild];
+timingMain.postMessage = (data, _) => {
+  timingMainMessage?.({source: timingChild, data});
+};
+const timingChildScope = {
+  window: timingChild,
+  document: timingChild.document,
+  HTMLMediaElement: Media,
+  DOMException,
+  Promise,
+  URL,
+  MutationObserver: class { observe() {} },
+  performance: {getEntriesByType: () => []},
+  console,
+  setTimeout,
+  clearTimeout,
+};
+vm.createContext(timingChildScope);
+vm.runInContext(source, timingChildScope);
+const timingMainHello = deferredMainHello.find(value => value.kind === 'hello');
+const timingChildHello = timingChildOutbound.find(value => value.kind === 'hello');
+assert.ok(timingMainHello);
+assert.ok(timingChildHello);
+assert.equal(timingChildHello.document, timingMainHello.document);
+console.log('Out-of-order main/child hello shares one document identity PASS.');
+
+const nestedMessages = [];
+const nestedChild = {
+  postMessage(data, _) { nestedMessages.push(data); },
+};
+timingChild.frames = [nestedChild];
+timingChildMessage?.({
+  source: nestedChild,
+  data: {
+    kind: 'site-lens-media-frame-hello',
+    token: 'document-token',
+    frame: 'timing-grandchild',
+  },
+});
+assert.equal(nestedMessages.at(-1).kind, 'site-lens-media-frame-id');
+assert.equal(nestedMessages.at(-1).document, timingMainHello.document);
+nestedMessages.length = 0;
+timingChildMessage?.({
+  source: timingMain,
+  data: {
+    kind: 'site-lens-media-frame-id',
+    token: 'document-token',
+    document: timingMainHello.document,
+  },
+});
+assert.equal(nestedMessages.at(-1).kind, 'site-lens-media-frame-id');
+assert.equal(nestedMessages.at(-1).document, timingMainHello.document);
+console.log('Nested iframe parent response and child reconnect broadcast PASS.');

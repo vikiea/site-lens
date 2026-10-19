@@ -562,6 +562,43 @@ class SiteLensNotice extends StatelessWidget {
   }
 }
 
+/// A persistent informational notice with one quiet, durable dismissal action.
+/// The caller owns the setting so the same surface can be used by any screen.
+class SiteLensPersistentNotice extends StatelessWidget {
+  const SiteLensPersistentNotice({
+    super.key,
+    required this.dismissed,
+    required this.text,
+    required this.onDismiss,
+  });
+
+  final bool dismissed;
+  final String text;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    if (dismissed) return const SizedBox.shrink();
+    final colors = SiteLensColors.of(context);
+    return SiteLensNotice(
+      tone: SiteLensNoticeTone.info,
+      text: text,
+      action: TextButton(
+        onPressed: onDismiss,
+        style: TextButton.styleFrom(
+          foregroundColor: colors.sectionLabel,
+          textStyle: Theme.of(context).textTheme.labelSmall,
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          minimumSize: Size.zero,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        child: const Text('不再提示'),
+      ),
+    );
+  }
+}
+
 /// Material's dialog semantics and route behavior with a liquid-glass body.
 class SiteLensAlertDialog extends StatelessWidget {
   const SiteLensAlertDialog({

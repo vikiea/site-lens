@@ -33,6 +33,7 @@ import '../settings/app_settings.dart'
         UpdateChannelLabel,
         PlayerVerticalGestureModeLabel;
 import 'glass_surface.dart';
+import 'help_notice.dart';
 import 'browser_entry.dart';
 import 'profile_panel.dart';
 import 'media_tasks_screen.dart';
@@ -530,11 +531,11 @@ class ScriptsPage extends StatelessWidget {
         const SizedBox(height: SiteLensMetrics.itemGap),
         _GlobalScriptSwitchPanel(app: app),
         const SizedBox(height: SiteLensMetrics.itemGap),
-        SiteLensNotice(
+        SiteLensHelpNotice(
+          app: app,
+          noticeId: 'scripts.overview',
           text: '主框架限定；不是完整 Tampermonkey。网络不附带登录 Cookie。修改脚本后必须重新确认。',
-          tone: SiteLensNoticeTone.info,
         ),
-        const SizedBox(height: SiteLensMetrics.itemGap),
         if (app.installed.isEmpty)
           const SiteLensEmptyState(
             icon: Icons.code,
@@ -1211,11 +1212,11 @@ class _ScriptEditorState extends State<ScriptEditor> {
             32,
           ),
           children: [
-            SiteLensNotice(
+            SiteLensHelpNotice(
+              app: widget.app,
+              noticeId: 'scripts.editor.reset',
               text: '保存后会撤销当前确认摘要；重新启用时需要再次确认权限和固定依赖。',
-              tone: SiteLensNoticeTone.info,
             ),
-            const SizedBox(height: SiteLensMetrics.itemGap),
             SiteLensPanel(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1494,11 +1495,11 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
           32,
         ),
         children: [
-          const SiteLensNotice(
-            tone: SiteLensNoticeTone.info,
+          SiteLensHelpNotice(
+            app: app,
+            noticeId: 'filters.overview',
             text: '规则只处理网页请求和页面元素，不读取 Cookie、账号密码或站点存储。内置推荐源只保存来源地址，点击刷新后才下载、校验并编译规则；不支持的语法会显示为降级状态。',
           ),
-          const SizedBox(height: SiteLensMetrics.sectionGap),
           SiteLensPanel(
             padding: EdgeInsets.zero,
             child: Column(
@@ -2758,12 +2759,14 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   void didPushNext() {
     _covered = true;
     widget.app.browserVisible = false;
+    unawaited(_leaveFullscreen());
   }
 
   @override
   void didPopNext() {
     _covered = false;
     widget.app.browserVisible = true;
+    _scheduleExitAfterAllTabsClosed();
   }
 
   String? error;
@@ -2782,8 +2785,26 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   Timer? _hideTimer;
   bool _navigationVisible = false;
   bool _moreNavigationVisible = false;
-  bool _webViewFullScreen = false;
+  int? _manualFullscreenHostId;
+  bool get _webViewFullScreen =>
+      !_covered &&
+      host != null &&
+      !host!.disposed &&
+      (_manualFullscreenHostId == host!.id || host!.fullscreen);
+  int? _systemUiHostId;
+  Future<void> _systemUiWrites = Future.value();
   bool _backInFlight = false;
+  bool _forwardInFlight = false;
+  bool _handleDragActive = false;
+  Offset _handleSwipeOffset = Offset.zero;
+  Offset? _handlePointerDown;
+  Timer? _handleLongPressTimer;
+  bool _emptyRoutePopScheduled = false;
+  bool _hasHadTabs = false;
+  bool _exiting = false;
+  bool _surfaceReady = false;
+  bool _appChangeInFlight = false;
+  ModalRoute<dynamic>? _tabSwitcherRoute;
   late bool _autoHideEnabled;
   int _toolbarHolds = 0;
   int _lastInteraction = 0;
@@ -2797,6 +2818,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   void initState() {
     super.initState();
     _autoHideEnabled = widget.app.settings.autoHideBrowserControls;
+    _hasHadTabs = _tabs.isNotEmpty;
     widget.app.addListener(_appChanged);
     widget.app.hosts.changed.addListener(_changed);
     // Deferred: opening a tab notifies the controller, and doing that from
@@ -2806,26 +2828,84 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
       // Mark the route as a WebView route before creating the native view so
       // Android keeps Flutter glass on the 0.1.3-safe tier during composition.
       widget.app.browserSurfaceActive = true;
+      if (mounted) setState(() => _surfaceReady = true);
       widget.app.browserVisible = true;
       unawaited(_start());
     });
   }
 
   void _appChanged() {
-    final autoHide = widget.app.settings.autoHideBrowserControls;
-    if (autoHide != _autoHideEnabled) {
-      _autoHideEnabled = autoHide;
-      _hideTimer?.cancel();
-      if (autoHide && _navigationVisible) {
-        _armHideTimer();
+    if (_appChangeInFlight) return;
+    _appChangeInFlight = true;
+    try {
+      if (_tabs.isNotEmpty) _hasHadTabs = true;
+      final autoHide = widget.app.settings.autoHideBrowserControls;
+      if (autoHide != _autoHideEnabled) {
+        _autoHideEnabled = autoHide;
+        _hideTimer?.cancel();
+        if (autoHide && _navigationVisible) {
+          _armHideTimer();
+        }
       }
+      if (host != null && !host!.disposed && _tab?.failure == null) {
+        error = null;
+        widget.app.browserVisible = !_covered;
+      }
+      if (_manualFullscreenHostId != null &&
+          (host == null ||
+              host!.disposed ||
+              host!.id != _manualFullscreenHostId)) {
+        final staleHostId = _manualFullscreenHostId;
+        _manualFullscreenHostId = null;
+        unawaited(
+          _applyBrowserSystemUi(
+            false,
+            exitNative: true,
+            targetHostId: staleHostId,
+          ),
+        );
+      }
+      _syncDismissal();
+      _scheduleExitAfterAllTabsClosed();
+      if (mounted) setState(() {});
+    } finally {
+      _appChangeInFlight = false;
     }
-    if (host != null && !host!.disposed && _tab?.failure == null) {
-      error = null;
-      widget.app.browserVisible = !_covered;
+  }
+
+  void _scheduleExitAfterAllTabsClosed() {
+    if (!mounted ||
+        !_hasHadTabs ||
+        _exiting ||
+        widget.app.browserTabs.isNotEmpty ||
+        _emptyRoutePopScheduled) {
+      return;
     }
-    _syncDismissal();
-    if (mounted) setState(() {});
+    final route = ModalRoute.of(context);
+    if (route == null || !route.isActive || route.isFirst) return;
+    _emptyRoutePopScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _emptyRoutePopScheduled = false;
+      if (!mounted || _exiting || widget.app.browserTabs.isNotEmpty) return;
+      _exiting = true;
+      widget.app.cancel('已关闭全部浏览标签页');
+      _hideTimer?.cancel();
+      final sheet = _tabSwitcherRoute;
+      if (sheet != null) _removeOwnedRoute(sheet);
+      _removeOwnedRoute(route);
+    });
+  }
+
+  // Async tab destruction may finish under another modal/page. Operate on the
+  // captured route identity instead of popping whichever route is now on top.
+  void _removeOwnedRoute(ModalRoute<dynamic> route) {
+    final navigator = route.navigator;
+    if (navigator == null || !route.isActive || route.isFirst) return;
+    if (route.isCurrent) {
+      navigator.pop();
+    } else {
+      navigator.removeRoute(route);
+    }
   }
 
   /// Re-arms the dismissed banner: a different tab, or an error that went away,
@@ -2889,7 +2969,8 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     widget.app.browserVisible = false;
     widget.app.browserSurfaceActive = false;
     _hideTimer?.cancel();
-    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
+    _handleLongPressTimer?.cancel();
+    unawaited(_leaveFullscreen(updateState: false));
     // Tabs are owned by AppController so the home floating entry can restore
     // the same native WebView without recreating it.
     super.dispose();
@@ -2932,12 +3013,6 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   Future<void> _persistControls() =>
       widget.app.setBrowserControlsFraction(widget.app.browserControlsFraction);
 
-  void _showNavigation() {
-    if (!mounted) return;
-    setState(() => _navigationVisible = true);
-    _armHideTimer();
-  }
-
   void _armHideTimer() {
     _hideTimer?.cancel();
     if (!mounted ||
@@ -2974,13 +3049,85 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
 
   Future<void> _toggleWebViewFullScreen() async {
     if (!mounted) return;
-    setState(() => _webViewFullScreen = !_webViewFullScreen);
-    await SystemChrome.setEnabledSystemUIMode(
-      _webViewFullScreen
-          ? SystemUiMode.immersiveSticky
-          : SystemUiMode.edgeToEdge,
-    );
+    if (_webViewFullScreen) {
+      await _leaveFullscreen();
+    } else {
+      setState(() => _manualFullscreenHostId = host?.id);
+      await _applyBrowserSystemUi(true);
+    }
     _keepNavigationVisible();
+  }
+
+  Future<void> _leaveFullscreen({bool updateState = true}) async {
+    final id = _systemUiHostId ?? host?.id;
+    _manualFullscreenHostId = null;
+    if (updateState && mounted) setState(() {});
+    await _applyBrowserSystemUi(false, exitNative: true, targetHostId: id);
+    _systemUiHostId = null;
+  }
+
+  Future<void> _applyBrowserSystemUi(
+    bool enabled, {
+    bool exitNative = false,
+    int? targetHostId,
+  }) {
+    final hostId =
+        targetHostId ??
+        (enabled ? host?.id ?? _systemUiHostId : _systemUiHostId ?? host?.id);
+    if (hostId != null) _systemUiHostId = hostId;
+    _systemUiWrites = _systemUiWrites
+        .then((_) async {
+          if (enabled &&
+              (!mounted ||
+                  _covered ||
+                  host?.id != hostId ||
+                  host?.disposed == true)) {
+            return;
+          }
+          // Android visibility belongs exclusively to the registry. A stale
+          // Flutter edgeToEdge request would bypass its owner check.
+          if (!Platform.isAndroid) {
+            await SystemChrome.setEnabledSystemUIMode(
+              enabled ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+            );
+          }
+          // Android 16 targets ignore legacy system UI modes. The native insets
+          // controller owns visibility; Dart owns the viewport's safe-area layout.
+          if (hostId != null) {
+            try {
+              await const MethodChannel('site_lens/browser_ui')
+                  .invokeMethod<void>(
+                    exitNative ? 'exitFullscreen' : 'setFullscreen',
+                    {'hostId': hostId, 'enabled': enabled},
+                  );
+            } on MissingPluginException {
+              // Unit tests and older platform hosts retain the Flutter fallback.
+            }
+          }
+        })
+        .catchError((Object error) {
+          if (mounted) {
+            this.error = friendlyError(error);
+            setState(() {});
+          }
+        });
+    return _systemUiWrites;
+  }
+
+  void _toggleNavigationVisibility() {
+    if (!mounted) return;
+    _handleLongPressTimer?.cancel();
+    _handleLongPressTimer = null;
+    _handleDragActive = false;
+    setState(() {
+      _navigationVisible = !_navigationVisible;
+      _moreNavigationVisible = false;
+    });
+    if (_navigationVisible) {
+      _armHideTimer();
+    } else {
+      _hideTimer?.cancel();
+    }
   }
 
   /// Transient surfaces hold the toolbar open: its countdown resumes when the
@@ -2993,6 +3140,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     } finally {
       _toolbarHolds--;
       _keepNavigationVisible();
+      _scheduleExitAfterAllTabsClosed();
     }
   }
 
@@ -3008,6 +3156,16 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     final current = host;
     if (current == null) return;
     await widget.app.hosts.api.goForward(current.id);
+  }
+
+  Future<void> _goForwardFromUi() async {
+    if (_forwardInFlight || !mounted) return;
+    _forwardInFlight = true;
+    try {
+      await _goForward();
+    } finally {
+      _forwardInFlight = false;
+    }
   }
 
   Future<void> _reload() async {
@@ -3045,13 +3203,21 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   }
 
   Future<void> _exitToHomeAsync() async {
-    final tab = _tab;
-    if (tab != null && _currentTabIsInaccessible) {
-      await widget.app.closeTab(tab);
+    if (_exiting || !mounted) return;
+    _exiting = true;
+    final route = ModalRoute.of(context);
+    try {
+      final tab = _tab;
+      if (tab != null && _currentTabIsInaccessible) {
+        await widget.app.closeTab(tab);
+      }
+      widget.app.cancel('已退出浏览页');
+      _hideTimer?.cancel();
+      if (mounted && route != null) _removeOwnedRoute(route);
+    } catch (_) {
+      _exiting = false;
+      rethrow;
     }
-    widget.app.cancel('已退出浏览页');
-    _hideTimer?.cancel();
-    if (mounted) Navigator.of(context).pop();
   }
 
   /// Really destroys the current tab's native WebView.
@@ -3075,10 +3241,89 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     );
   });
 
-  Future<void> _openTabSwitcher() => _withToolbarHeld(
-    () =>
-        showTabSwitcher(context, widget.app, onAdd: () => unawaited(_addTab())),
-  );
+  Future<void> _openTabSwitcher() => _withToolbarHeld(() async {
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        builder: (sheetContext) {
+          _tabSwitcherRoute = ModalRoute.of(sheetContext);
+          return SafeArea(
+            child: ListenableBuilder(
+              listenable: widget.app,
+              builder: (context, _) => ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.sizeOf(context).height * 0.7,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: SiteLensMetrics.pagePadding,
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '标签页 ${_tabs.length}/${AppPolicy.maxBrowserTabs}',
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                          ),
+                          TextButton.icon(
+                            onPressed: () => unawaited(_addTab()),
+                            icon: const Icon(Icons.add, size: 18),
+                            label: const Text('新建'),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Flexible(
+                      child: GridView.count(
+                        shrinkWrap: true,
+                        crossAxisCount: 2,
+                        mainAxisSpacing: SiteLensMetrics.itemGap,
+                        crossAxisSpacing: SiteLensMetrics.itemGap,
+                        childAspectRatio: 0.92,
+                        padding: const EdgeInsets.all(
+                          SiteLensMetrics.pagePadding,
+                        ),
+                        children: [
+                          for (final tab in _tabs)
+                            BrowserTabCard(
+                              tab: tab,
+                              active: identical(tab, _tab),
+                              onSelect: () {
+                                final route = _tabSwitcherRoute;
+                                if (route != null) _removeOwnedRoute(route);
+                                unawaited(
+                                  safely(
+                                    this.context,
+                                    () => widget.app.activateTab(tab),
+                                  ),
+                                );
+                              },
+                              onClose: () => unawaited(
+                                safely(
+                                  this.context,
+                                  () => widget.app.closeTab(tab),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    } finally {
+      _tabSwitcherRoute = null;
+    }
+  });
 
   Future<void> _showFilterDiagnostics() => _withToolbarHeld(() async {
     final currentHost = host;
@@ -3137,6 +3382,10 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     if (_backInFlight || !mounted) return;
     _backInFlight = true;
     try {
+      if (_webViewFullScreen) {
+        await _leaveFullscreen();
+        return;
+      }
       if (await _goBack()) return;
       await _exitToHomeAsync();
     } finally {
@@ -3144,8 +3393,73 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     }
   }
 
+  static const _handleSwipeDistance = 48.0;
+  static const _handleLongPressDelay = Duration(milliseconds: 320);
+
+  void _handlePanDown(DragDownDetails details) {
+    _handlePointerDown = details.globalPosition;
+    _handleSwipeOffset = Offset.zero;
+    _handleDragActive = false;
+    _handleLongPressTimer?.cancel();
+    _handleLongPressTimer = Timer(_handleLongPressDelay, () {
+      _handleDragActive = true;
+      _handleSwipeOffset = Offset.zero;
+    });
+  }
+
+  void _handlePanStart(DragStartDetails details) {
+    final delta =
+        details.globalPosition - (_handlePointerDown ?? details.globalPosition);
+    if (_handleDragActive) {
+      _moveControls(
+        DragUpdateDetails(globalPosition: details.globalPosition, delta: delta),
+      );
+    } else {
+      // Once a swipe has moved beyond touch slop, a slow gesture must not
+      // become a long-press reposition half way through the same pointer.
+      _handleLongPressTimer?.cancel();
+      _handleSwipeOffset = delta;
+    }
+  }
+
+  void _handlePanUpdate(DragUpdateDetails details) {
+    if (_handleDragActive) {
+      _moveControls(details);
+    } else {
+      _handleSwipeOffset += details.delta;
+    }
+  }
+
+  Future<void> _handlePanEnd(DragEndDetails details) async {
+    _handleLongPressTimer?.cancel();
+    _handleLongPressTimer = null;
+    final wasDrag = _handleDragActive;
+    final delta = _handleSwipeOffset;
+    _handleDragActive = false;
+    _handlePointerDown = null;
+    _handleSwipeOffset = Offset.zero;
+    if (wasDrag) {
+      await _persistControls();
+      return;
+    }
+    if (delta.distance < _handleSwipeDistance) return;
+    if (delta.dx.abs() >= delta.dy.abs()) {
+      if (delta.dx < 0) {
+        await _systemBack();
+      } else {
+        await _goForwardFromUi();
+      }
+    } else if (delta.dy < 0) {
+      await _goHome();
+    }
+  }
+
   Widget _webContent() {
     final current = host;
+    if (!_surfaceReady) return const SizedBox.shrink();
+    if (_hasHadTabs && widget.app.browserTabs.isEmpty) {
+      return const SizedBox.shrink();
+    }
     if (error != null || _tab?.failure != null || current?.disposed == true) {
       return ColoredBox(
         color: Theme.of(context).colorScheme.surface,
@@ -3222,144 +3536,177 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     final current = host;
     final tab = _tab;
     final padding = MediaQuery.paddingOf(context);
-    final bottomInset = padding.bottom;
-    final topInset = padding.top;
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) unawaited(_systemBack());
-      },
-      child: SiteLensGlassGroup(
-        child: Scaffold(
-          backgroundColor: Theme.of(context).colorScheme.surface,
-          body: Stack(
-            fit: StackFit.expand,
-            children: [
-              // Keep the web viewport below the system status bar so the site's
-              // own top toolbar stays visible and tappable instead of being
-              // swallowed by the status bar window.
-              Padding(
-                padding: EdgeInsets.only(top: topInset),
-                child: _webContent(),
-              ),
-              if (current?.error != null && current!.error != _dismissedError)
-                Positioned(
-                  top: topInset + 8,
-                  left: 12,
-                  right: 12,
-                  child: _BrowserNotice(
-                    text: friendlyError(current.error!),
-                    action: TextButton(
-                      onPressed: () => safely(
-                        context,
-                        () => widget.app.disableAllScripts(true),
-                      ),
-                      child: const Text('关闭全部脚本'),
-                    ),
-                    onDismiss: () => setState(() {
-                      _dismissedError = current.error;
-                      _dismissedHostId = current.id;
-                    }),
+    final bottomInset = _webViewFullScreen ? 0.0 : padding.bottom;
+    final topInset = _webViewFullScreen ? 0.0 : padding.top;
+    // Keep the WebView route at the standard compatibility tier from its
+    // first frame. The app-level browserSurfaceActive flag is intentionally
+    // notified from a microtask, so this local scope closes that short window
+    // without changing the global settings or renderer policy.
+    final browserGlassStrategy = SiteLensGlassQualityStrategy(
+      mode: widget.app.settings.glassQualityMode,
+      allSurfacesHighQuality: widget.app.settings.highQualityAllSurfaces,
+      webViewVisible: true,
+    );
+    return SiteLensGlassPolicyScope(
+      strategy: browserGlassStrategy,
+      child: PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) unawaited(_systemBack());
+        },
+        child: SiteLensGlassGroup(
+          child: Scaffold(
+            backgroundColor: Theme.of(context).colorScheme.surface,
+            body: Stack(
+              fit: StackFit.expand,
+              children: [
+                // Keep the web viewport below the system status bar so the site's
+                // own top toolbar stays visible and tappable instead of being
+                // swallowed by the status bar window.
+                Padding(
+                  key: const ValueKey('browser-web-viewport'),
+                  padding: EdgeInsets.only(top: topInset),
+                  child: KeyedSubtree(
+                    key: const ValueKey('browser-web-content'),
+                    child: _webContent(),
                   ),
                 ),
-              if (current != null && !current.capabilities.isolatedScripts)
-                Positioned(
-                  top: topInset + 8,
-                  left: 12,
-                  right: 12,
-                  child: const _BrowserNotice(
-                    tone: _NoticeTone.warning,
-                    text: '本机不支持安全隔离，特权脚本已关闭；普通浏览不受影响。',
-                  ),
-                ),
-              // The toolbar is pinned to the bottom edge and overlays the page,
-              // so the WebView keeps its size while the bar is open.
-              if (tab != null && _navigationVisible)
-                Positioned(
-                  left: SiteLensMetrics.toolbarInset,
-                  right: SiteLensMetrics.toolbarInset,
-                  bottom: bottomInset + SiteLensMetrics.toolbarInset,
-                  child: Listener(
-                    key: const ValueKey('browser-navigation'),
-                    behavior: HitTestBehavior.opaque,
-                    onPointerDown: (_) => _keepNavigationVisible(),
-                    onPointerMove: (_) => _keepNavigationVisible(),
-                    onPointerUp: (_) => _keepNavigationVisible(),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        if (_moreNavigationVisible) ...[
-                          _BrowserMoreNavigation(
-                            onNewTab: () {
-                              _closeMoreNavigation();
-                              unawaited(_addTab());
-                            },
-                            onMediaCandidates: () {
-                              _closeMoreNavigation();
-                              unawaited(_showMediaCandidatesSheet());
-                            },
-                            onMenus: () {
-                              _closeMoreNavigation();
-                              unawaited(_menus());
-                            },
-                            onCloseTab: () {
-                              _closeMoreNavigation();
-                              unawaited(_closeTab());
-                            },
-                            onFilterDiagnostics: () {
-                              _closeMoreNavigation();
-                              unawaited(_showFilterDiagnostics());
-                            },
-                            onFullScreen: () =>
-                                unawaited(_toggleWebViewFullScreen()),
-                            fullScreen: _webViewFullScreen,
-                          ),
-                          const SizedBox(height: 4),
-                        ],
-                        _BrowserNavigation(
-                          tabsCount: _tabs.length,
-                          onTabs: () => unawaited(_openTabSwitcher()),
-                          onBack: () => unawaited(_goBack()),
-                          onForward: () => unawaited(_goForward()),
-                          onReload: () => unawaited(_reload()),
-                          onHome: () => unawaited(_goHome()),
-                          onExit: _exitToHome,
-                          onMore: _toggleMoreNavigation,
+                if (current?.error != null && current!.error != _dismissedError)
+                  Positioned(
+                    top: topInset + 8,
+                    left: 12,
+                    right: 12,
+                    child: _BrowserNotice(
+                      text: friendlyError(current.error!),
+                      action: TextButton(
+                        onPressed: () => safely(
+                          context,
+                          () => widget.app.disableAllScripts(true),
                         ),
-                      ],
+                        child: const Text('关闭全部脚本'),
+                      ),
+                      onDismiss: () => setState(() {
+                        _dismissedError = current.error;
+                        _dismissedHostId = current.id;
+                      }),
                     ),
                   ),
-                ),
-              // Only the handle moves. Pages — and the user scripts running in
-              // them — often own the bottom edge, and only the user knows where
-              // they must not overlap. Dragging moves it; a tap opens the bar.
-              if (tab != null && !_navigationVisible)
-                Positioned.fill(
-                  child: Padding(
-                    padding: EdgeInsets.only(
-                      left: SiteLensMetrics.toolbarInset,
-                      right: SiteLensMetrics.toolbarInset,
-                      top: topInset + SiteLensMetrics.toolbarInset,
-                      bottom: bottomInset + SiteLensMetrics.toolbarInset,
+                if (current != null && !current.capabilities.isolatedScripts)
+                  Positioned(
+                    top: topInset + 8,
+                    left: 12,
+                    right: 12,
+                    child: const _BrowserNotice(
+                      tone: _NoticeTone.warning,
+                      text: '本机不支持安全隔离，特权脚本已关闭；普通浏览不受影响。',
                     ),
-                    child: Align(
-                      alignment: Alignment(
-                        widget.app.browserControlsFraction.dx * 2 - 1,
-                        widget.app.browserControlsFraction.dy * 2 - 1,
-                      ),
-                      child: GestureDetector(
-                        key: _controlsKey,
-                        behavior: HitTestBehavior.opaque,
-                        onTap: _showNavigation,
-                        onPanUpdate: _moveControls,
-                        onPanEnd: (_) => unawaited(_persistControls()),
-                        child: const _BrowserHandle(),
+                  ),
+                // The toolbar is pinned to the bottom edge and overlays the page,
+                // so the WebView keeps its size while the bar is open.
+                if (tab != null && _navigationVisible)
+                  Positioned(
+                    left: SiteLensMetrics.toolbarInset,
+                    right: SiteLensMetrics.toolbarInset,
+                    bottom: bottomInset + SiteLensMetrics.toolbarInset,
+                    child: Listener(
+                      key: const ValueKey('browser-navigation'),
+                      behavior: HitTestBehavior.opaque,
+                      onPointerDown: (_) => _keepNavigationVisible(),
+                      onPointerMove: (_) => _keepNavigationVisible(),
+                      onPointerUp: (_) => _keepNavigationVisible(),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (_moreNavigationVisible) ...[
+                            _BrowserMoreNavigation(
+                              onNewTab: () {
+                                _closeMoreNavigation();
+                                unawaited(_addTab());
+                              },
+                              onMediaCandidates: () {
+                                _closeMoreNavigation();
+                                unawaited(_showMediaCandidatesSheet());
+                              },
+                              onMenus: () {
+                                _closeMoreNavigation();
+                                unawaited(_menus());
+                              },
+                              onCloseTab: () {
+                                _closeMoreNavigation();
+                                unawaited(_closeTab());
+                              },
+                              onFilterDiagnostics: () {
+                                _closeMoreNavigation();
+                                unawaited(_showFilterDiagnostics());
+                              },
+                              onFullScreen: () =>
+                                  unawaited(_toggleWebViewFullScreen()),
+                              fullScreen: _webViewFullScreen,
+                            ),
+                            const SizedBox(height: 4),
+                          ],
+                          _BrowserNavigation(
+                            tabsCount: _tabs.length,
+                            onTabs: () => unawaited(_openTabSwitcher()),
+                            onBack: () => unawaited(_systemBack()),
+                            onForward: () => unawaited(_goForwardFromUi()),
+                            onReload: () => unawaited(_reload()),
+                            onHome: () => unawaited(_goHome()),
+                            onExit: _exitToHome,
+                            onMore: _toggleMoreNavigation,
+                          ),
+                        ],
                       ),
                     ),
                   ),
-                ),
-            ],
+                // The handle is always available: a tap toggles the toolbar, a
+                // short swipe invokes navigation, and a long press followed by a
+                // move changes its position. Pages and scripts keep the rest of
+                // the surface, so only this small control owns these gestures.
+                if (tab != null)
+                  Positioned.fill(
+                    child: Padding(
+                      padding: EdgeInsets.only(
+                        left: SiteLensMetrics.toolbarInset,
+                        right: SiteLensMetrics.toolbarInset,
+                        top: topInset + SiteLensMetrics.toolbarInset,
+                        bottom:
+                            bottomInset +
+                            SiteLensMetrics.toolbarInset +
+                            (_navigationVisible
+                                ? SiteLensMetrics.toolbarHeight *
+                                          (_moreNavigationVisible ? 2 : 1) +
+                                      SiteLensMetrics.itemGap
+                                : 0),
+                      ),
+                      child: Align(
+                        alignment: Alignment(
+                          widget.app.browserControlsFraction.dx * 2 - 1,
+                          widget.app.browserControlsFraction.dy * 2 - 1,
+                        ),
+                        child: GestureDetector(
+                          key: _controlsKey,
+                          behavior: HitTestBehavior.opaque,
+                          onTap: _toggleNavigationVisibility,
+                          onPanDown: _handlePanDown,
+                          onPanStart: _handlePanStart,
+                          onPanUpdate: _handlePanUpdate,
+                          onPanEnd: (details) =>
+                              unawaited(_handlePanEnd(details)),
+                          onPanCancel: () {
+                            _handleLongPressTimer?.cancel();
+                            _handleLongPressTimer = null;
+                            _handleDragActive = false;
+                            _handleSwipeOffset = Offset.zero;
+                          },
+                          child: _BrowserHandle(expanded: _navigationVisible),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),
@@ -3537,6 +3884,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                           builder: (_) => NativeMediaPlayerScreen(
                             app: widget.app,
                             session: session,
+                            candidate: authorized,
                           ),
                         ),
                       );
@@ -3565,6 +3913,12 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     var added = 0;
     var skipped = 0;
     var failed = 0;
+    final batchName = candidates.length > 1
+        ? mediaSeriesDirectoryName(
+            '${String.fromCharCodes(mediaSeriesDirectoryName(candidates.first.title).runes.take(48))}'
+            ' - 批次${DateTime.now().microsecondsSinceEpoch}',
+          )
+        : null;
     final starts = <Future<void>>[];
     for (final candidate in candidates) {
       try {
@@ -3579,7 +3933,10 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
           skipped++;
           continue;
         }
-        final task = widget.app.mediaTasks.create(authorized);
+        final task = widget.app.mediaTasks.create(
+          authorized,
+          batchDirectory: batchName,
+        );
         added++;
         starts.add(
           widget.app.mediaDownloads
@@ -3794,11 +4151,12 @@ class _BrowserMoreNavigation extends StatelessWidget {
 /// user drags where the page's own controls are not. Tapping it reveals the
 /// toolbar; the toolbar itself is fixed.
 class _BrowserHandle extends StatelessWidget {
-  const _BrowserHandle();
+  const _BrowserHandle({required this.expanded});
+  final bool expanded;
   @override
   Widget build(BuildContext context) => Semantics(
     button: true,
-    label: '展开浏览工具栏（可拖动）',
+    label: expanded ? '收起浏览工具栏（可长按拖动）' : '展开浏览工具栏（可长按拖动）',
     child: SiteLensGlassSurface(
       role: SiteLensSurfaceRole.platformView,
       radius: 18,
@@ -3806,7 +4164,7 @@ class _BrowserHandle extends StatelessWidget {
         width: 60,
         height: 36,
         child: Icon(
-          Icons.keyboard_arrow_up,
+          expanded ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up,
           size: 16,
           color: Theme.of(context).colorScheme.onSurface,
         ),

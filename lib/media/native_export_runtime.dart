@@ -48,10 +48,12 @@ class NativeExportRuntime {
     required String source,
     required Uri directory,
     required String fileName,
+    String? subdirectory,
   }) async => (await _channel.invokeMethod<String>('deliverToDirectory', {
     'source': source,
     'directory': directory.toString(),
     'fileName': fileName,
+    'subdirectory': ?subdirectory,
   }))!;
 
   Future<Map<String, Object?>> inspect(String source) async => (await _channel

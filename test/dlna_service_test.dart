@@ -9,32 +9,31 @@ import 'package:site_lens/media/media_service.dart';
 
 void main() {
   _httpTests();
-  test(
-    'device description resolves URLBase and selects AVTransport services',
-    () {
-      final description = DlnaDiscovery.parseDescription(
-        '''<?xml version="1.0"?>
+  test('device description resolves URLBase and selects renderer services', () {
+    final description = DlnaDiscovery.parseDescription('''<?xml version="1.0"?>
 <root xmlns="urn:schemas-upnp-org:device-1-0">
   <URLBase>http://tv.example:8080/upnp/</URLBase>
   <device><serviceList>
     <service><serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType><controlURL>cm/control</controlURL></service>
     <service><serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType><controlURL>/av/control</controlURL></service>
+    <service><serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType><controlURL>render/control</controlURL></service>
   </serviceList></device>
-</root>''',
-        Uri.parse('http://tv.example:8080/description.xml'),
-      );
+</root>''', Uri.parse('http://tv.example:8080/description.xml'));
 
-      expect(description, isNotNull);
-      expect(
-        description!.avTransportControlUrl,
-        Uri.parse('http://tv.example:8080/av/control'),
-      );
-      expect(
-        description.connectionManagerControlUrl,
-        Uri.parse('http://tv.example:8080/upnp/cm/control'),
-      );
-    },
-  );
+    expect(description, isNotNull);
+    expect(
+      description!.avTransportControlUrl,
+      Uri.parse('http://tv.example:8080/av/control'),
+    );
+    expect(
+      description.connectionManagerControlUrl,
+      Uri.parse('http://tv.example:8080/upnp/cm/control'),
+    );
+    expect(
+      description.renderingControlControlUrl,
+      Uri.parse('http://tv.example:8080/upnp/render/control'),
+    );
+  });
 
   test('protocol info accepts only renderer sink MIME entries', () {
     final info = DlnaProtocolInfo.parse(
@@ -177,6 +176,10 @@ void _httpTests() {
         final session = await start();
         expect(session.state, CastSessionState.playing);
         expect(receiver.actions, contains('GetPositionInfo'));
+        expect(cast.status.position, const Duration(seconds: 1));
+        expect(cast.status.duration, const Duration(minutes: 10));
+        expect(cast.status.volume, 42);
+        expect(cast.status.volumeSupported, isTrue);
         expect(receiver.transportQueries, greaterThanOrEqualTo(3));
         expect(receiver.soapActions['Play'], contains('AVTransport:2#Play'));
         final body = receiver.bodies['SetAVTransportURI']!;
@@ -193,6 +196,61 @@ void _httpTests() {
         await cast.stop();
         expect(tasks.canDelete(task.id), isTrue);
         await _expectClosed(receiver.media!);
+      },
+    );
+
+    test(
+      'remote URL casting retains a queued task without downloading it',
+      () async {
+        final remote = Uri.parse('https://cdn.example/remote.mp4');
+        final session = await cast.cast(
+          device: device,
+          mediaTaskId: task.id,
+          mediaUrl: remote,
+          title: '远程视频',
+        );
+        expect(session.state, CastSessionState.playing);
+        expect(receiver.media, remote);
+        expect(tasks.canDelete(task.id), isFalse);
+        await cast.stop();
+        expect(tasks.canDelete(task.id), isTrue);
+      },
+    );
+
+    test(
+      'seek and volume commands update the observable session state',
+      () async {
+        await start();
+        await cast.seekBy(const Duration(seconds: 10));
+        expect(receiver.bodies['Seek'], contains('<Target>00:00:11</Target>'));
+        await cast.setVolume(67);
+        expect(
+          receiver.bodies['SetVolume'],
+          contains('<DesiredVolume>67</DesiredVolume>'),
+        );
+        expect(cast.status.volume, 67);
+        expect(cast.active!.state, CastSessionState.playing);
+      },
+    );
+
+    test(
+      'unsupported optional controls preserve the active cast session',
+      () async {
+        await start();
+        receiver.faultAction = 'Seek';
+        receiver.faultCode = 710;
+        await expectLater(
+          cast.seek(const Duration(seconds: 20)),
+          throwsA(isA<DlnaOptionalCommandUnsupportedException>()),
+        );
+        expect(cast.active!.state, CastSessionState.playing);
+        receiver.faultAction = 'SetVolume';
+        receiver.faultCode = 401;
+        await expectLater(
+          cast.setVolume(55),
+          throwsA(isA<DlnaOptionalCommandUnsupportedException>()),
+        );
+        expect(cast.active!.state, CastSessionState.playing);
       },
     );
 
@@ -443,6 +501,8 @@ class _Receiver {
   Uri? media;
   int transportQueries = 0;
   int transitioningQueries = 0;
+  int volume = 42;
+  String? seekTarget;
 
   Uri get descriptionUrl =>
       Uri.parse('http://127.0.0.1:${server.port}/device.xml');
@@ -460,7 +520,7 @@ class _Receiver {
     try {
       if (request.method == 'GET') {
         request.response.write(
-          '<root><URLBase>${descriptionUrl.resolve('/base/')}</URLBase><friendlyName>TV &amp; Box</friendlyName><serviceList><service><serviceType>urn:schemas-upnp-org:service:AVTransport:2</serviceType><controlURL>av</controlURL></service><service><serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType><controlURL>/cm</controlURL></service></serviceList></root>',
+          '<root><URLBase>${descriptionUrl.resolve('/base/')}</URLBase><friendlyName>TV &amp; Box</friendlyName><serviceList><service><serviceType>urn:schemas-upnp-org:service:AVTransport:2</serviceType><controlURL>av</controlURL></service><service><serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType><controlURL>/cm</controlURL></service><service><serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType><controlURL>/render</controlURL></service></serviceList></root>',
         );
         await request.response.close();
         return;
@@ -475,6 +535,10 @@ class _Receiver {
       contentLengths[action] = request.contentLength;
       if (action == 'SetAVTransportURI') {
         media = Uri.parse(_xmlText(body, 'CurrentURI'));
+      }
+      if (action == 'Seek') seekTarget = _xmlText(body, 'Target');
+      if (action == 'SetVolume') {
+        volume = int.parse(_xmlText(body, 'DesiredVolume'));
       }
       if (action == hangAction) return;
       if (action == faultAction) {
@@ -494,10 +558,12 @@ class _Receiver {
                 '<CurrentTransportState>${transportQueries <= transitioningQueries ? 'TRANSITIONING' : state}</CurrentTransportState><CurrentTransportStatus>$status</CurrentTransportStatus><CurrentSpeed>1</CurrentSpeed>';
           case 'GetPositionInfo':
             output =
-                '<TrackURI>${_escape(trackOverride ?? media?.toString() ?? '')}</TrackURI><RelTime>00:00:01</RelTime>';
+                '<TrackURI>${_escape(trackOverride ?? media?.toString() ?? '')}</TrackURI><TrackDuration>00:10:00</TrackDuration><RelTime>00:00:01</RelTime>';
           case 'GetMediaInfo':
             output =
                 '<CurrentURI>${_escape(media?.toString() ?? '')}</CurrentURI>';
+          case 'GetVolume':
+            output = '<CurrentVolume>$volume</CurrentVolume>\n';
         }
         request.response.write(
           '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:${action}Response xmlns:u="urn:schemas-upnp-org:service:AVTransport:2">$output</u:${action}Response></s:Body></s:Envelope>',
