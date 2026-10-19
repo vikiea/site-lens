@@ -942,9 +942,9 @@ class MediaDownloadService {
           throw const FormatException('暂不支持 HLS 字节范围分片');
         }
         if (line.startsWith('#EXT-X-KEY:') || line.startsWith('#EXT-X-MAP:')) {
-          final method = _hlsAttribute(line, 'METHOD');
+          final method = _hlsAttribute(line, 'METHOD')?.trim().toUpperCase();
           final raw = _hlsAttribute(line, 'URI');
-          if (raw != null && (method == null || method != 'NONE')) {
+          if (raw != null && method != 'NONE') {
             final local = await _downloadHlsResource(
               raw,
               playlistUri,
@@ -956,7 +956,7 @@ class MediaDownloadService {
               document: candidate.sourceUrl,
             );
             totalBytes += local.bytes;
-            output.add(line.replaceFirst('URI="$raw"', 'URI="${local.name}"'));
+            output.add(_replaceHlsUri(line, local.name));
           } else {
             output.add(line);
           }
@@ -1090,10 +1090,21 @@ class MediaDownloadService {
     final separator = line.indexOf(':');
     final attributes = separator < 0 ? line : line.substring(separator + 1);
     final match = RegExp(
-      '(?:^|,)\\s*${RegExp.escape(name)}\\s*=\\s*(?:"([^"]*)"|([^,\\s]*))',
+      "(?:^|[,;\\s])\\s*${RegExp.escape(name)}\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^,;\\s]*))",
       caseSensitive: false,
     ).firstMatch(attributes);
-    return match?.group(1) ?? match?.group(2);
+    return match?.group(1) ?? match?.group(2) ?? match?.group(3);
+  }
+
+  String _replaceHlsUri(String line, String localName) {
+    final pattern = RegExp(
+      r'''(\bURI\s*=\s*)(?:"[^"]*"|'[^']*'|[^,;\s]*)''',
+      caseSensitive: false,
+    );
+    return line.replaceFirstMapped(
+      pattern,
+      (match) => '${match.group(1)}"$localName"',
+    );
   }
 
   Future<({String name, int bytes})> _downloadHlsResource(
@@ -1401,7 +1412,9 @@ class HlsPlaylistParser {
       if (line.startsWith('#EXT-X-KEY:')) {
         final method = _attribute(line, 'METHOD');
         final value = _attribute(line, 'URI');
-        if (method != null && method != 'NONE' && value != null) {
+        if (method != null &&
+            method.trim().toUpperCase() != 'NONE' &&
+            value != null) {
           keys.add(_local(base, value));
         }
         continue;
@@ -1422,10 +1435,10 @@ class HlsPlaylistParser {
     final separator = line.indexOf(':');
     final attributes = separator < 0 ? line : line.substring(separator + 1);
     final match = RegExp(
-      '(?:^|,)\\s*${RegExp.escape(name)}\\s*=\\s*(?:"([^"]*)"|([^,\\s]*))',
+      "(?:^|[,;\\s])\\s*${RegExp.escape(name)}\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^,;\\s]*))",
       caseSensitive: false,
     ).firstMatch(attributes);
-    return match?.group(1) ?? match?.group(2);
+    return match?.group(1) ?? match?.group(2) ?? match?.group(3);
   }
 
   Uri _local(Uri base, String value) {

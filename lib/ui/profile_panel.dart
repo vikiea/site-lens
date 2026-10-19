@@ -51,7 +51,12 @@ class ProfilesPanel extends StatelessWidget {
             const SizedBox(height: SiteLensMetrics.itemGap),
           ],
           const SizedBox(height: SiteLensMetrics.itemGap),
-          if (app.profiles.isEmpty)
+          if (!app.persistentStateLoaded)
+            const SizedBox(
+              height: 280,
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (app.profiles.isEmpty)
             SiteLensEmptyState(
               icon: Icons.travel_explore,
               title: '还没有站点档案',

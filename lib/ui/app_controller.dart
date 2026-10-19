@@ -223,6 +223,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   List<Candidate> sites = [];
   List<PublishingSource> sources = [];
   List<SiteProfile> profiles = [];
+  bool _persistentStateLoaded = false;
+
+  /// True after the first persistent-state read has completed. An empty list
+  /// before this point means startup is still hydrating, not that the user has
+  /// no site profiles.
+  bool get persistentStateLoaded => _persistentStateLoaded;
+
   List<ProfilePage> profilePages = [];
   List<ProfileHealth> profileHealth = [];
   List<ProfileScript> profileScriptLinks = [];
@@ -895,6 +902,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       await hosts.applyPreferences(hostPreferences);
     }
     await syncMediaPolicy();
+    _persistentStateLoaded = true;
     notifyListeners();
   }
 

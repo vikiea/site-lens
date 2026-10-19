@@ -229,16 +229,33 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 continue
             }
             if (line.startsWith("#EXT-X-KEY:")) {
-                val method = attribute(line, "METHOD") ?: error("HLS 加密方式缺失")
-                if (method.equals("NONE", ignoreCase = true)) {
+                val method = attribute(line, "METHOD")?.trim()
+                val rawKey = attribute(line, "URI")?.trim()
+                if (method.isNullOrEmpty()) {
+                    // A few providers emit an empty key tag when switching
+                    // back to clear segments, or omit METHOD while retaining
+                    // an AES key URI. Treat the former as a clear reset and
+                    // infer AES-128 for the latter; the key length check below
+                    // still rejects unusable or unsupported key material.
+                    if (rawKey == null) {
+                        keyFile = null
+                        explicitIv = null
+                    } else {
+                        keyFile = localResource(base, rawKey, "HLS 密钥")
+                        explicitIv = attribute(line, "IV")?.let(::parseIv)
+                    }
+                } else if (method.equals("NONE", ignoreCase = true)) {
                     keyFile = null
                     explicitIv = null
                 } else {
                     require(method.equals("AES-128", ignoreCase = true)) {
                         "暂不支持 $method HLS 加密"
                     }
-                    val rawKey = attribute(line, "URI") ?: error("HLS 密钥地址缺失")
-                    keyFile = localResource(base, rawKey, "HLS 密钥")
+                    keyFile = localResource(
+                        base,
+                        rawKey ?: error("HLS 密钥地址缺失"),
+                        "HLS 密钥",
+                    )
                     explicitIv = attribute(line, "IV")?.let(::parseIv)
                 }
                 continue
@@ -276,18 +293,21 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
      * Reads an HLS attribute value in either its quoted or token form.
      *
      * HLS uses unquoted tokens for values such as METHOD=AES-128 and quoted
-     * strings for most URIs.  Some cached playlists mix both forms, so only
-     * accepting the quoted form turns a valid encrypted playlist into the
-     * misleading "加密方式缺失" error.
+     * strings for most URIs. Some cached playlists also contain whitespace,
+     * single quotes, or semicolon-separated attributes, so the parser accepts
+     * those forms before the native muxer validates the resulting files.
      */
     private fun attribute(line: String, name: String): String? {
         val attributes = line.substringAfter(':', "")
         val pattern = Regex(
-            "(?:^|,)\\s*${Regex.escape(name)}\\s*=\\s*(?:\"([^\"]*)\"|([^,\\s]*))",
+            "(?:^|[,;\\s])\\s*${Regex.escape(name)}\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^,;\\s]*))",
             RegexOption.IGNORE_CASE,
         )
         val match = pattern.find(attributes) ?: return null
-        return match.groupValues[1].ifEmpty { match.groupValues[2] }.ifEmpty { null }
+        for (index in 1 until match.groupValues.size) {
+            match.groupValues[index].takeIf { it.isNotEmpty() }?.let { return it }
+        }
+        return null
     }
 
     private fun parseIv(raw: String): ByteArray {

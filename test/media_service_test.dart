@@ -247,7 +247,7 @@ void main() {
         status: 200,
         bytes: utf8.encode(
           '#EXTM3U\n'
-          '#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\n'
+          '#EXT-X-KEY:METHOD=AES-128,URI=key.bin\n'
           '#EXTINF:1,\nseg.ts\n'
           '#EXT-X-ENDLIST\n',
         ),
@@ -281,6 +281,12 @@ void main() {
     final cached = await store.cachedFile(task.id);
     expect(cached, isNotNull);
     expect(await cached!.readAsString(), contains('resource_'));
+    final cachedInput = const HlsPlaylistParser().parse(
+      cached.uri,
+      await cached.readAsString(),
+    );
+    expect(cachedInput.keys, hasLength(1));
+    expect(cachedInput.keys.single.path, endsWith('resource_00000.bin'));
     expect(cached.parent.listSync(), hasLength(3));
     expect(http.calls, hasLength(3));
   });

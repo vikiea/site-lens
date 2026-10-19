@@ -124,6 +124,36 @@ void main() {
   });
 
   testWidgets(
+    'startup loading does not present an empty profile state before hydration',
+    (tester) async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final app = AppController(db);
+      await db.createProfile('已保存站点');
+      addTearDown(() async {
+        await app.shutdown();
+        await db.close();
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ProfilesPanel(app: app, onOpen: (_) {}, onResume: () {}),
+          ),
+        ),
+      );
+
+      expect(find.textContaining('还没有站点档案'), findsNothing);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+      await app.load();
+      await tester.pump();
+
+      expect(find.text('已保存站点'), findsOneWidget);
+      expect(find.textContaining('还没有站点档案'), findsNothing);
+    },
+  );
+
+  testWidgets(
     'scripts tab groups by profile and 未绑定, and recovery toggle works',
     (tester) async {
       final db = AppDatabase(NativeDatabase.memory());
