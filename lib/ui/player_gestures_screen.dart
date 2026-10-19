@@ -26,63 +26,7 @@ class PlayerGesturesScreen extends StatelessWidget {
               children: [
                 ListTile(
                   leading: const Icon(Icons.swipe_vertical_outlined, size: 20),
-                  title: Row(
-                    children: [
-                      const Text('上下滑动'),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: PopupMenuButton<PlayerVerticalGestureMode>(
-                          tooltip: '选择上下滑动操作',
-                          initialValue: app.playerVerticalGesture,
-                          onSelected: (value) => safely(
-                            context,
-                            () => app.setPlayerVerticalGesture(value),
-                          ),
-                          itemBuilder: (_) => [
-                            for (final mode in PlayerVerticalGestureMode.values)
-                              PopupMenuItem(
-                                value: mode,
-                                child: Semantics(
-                                  selected: app.playerVerticalGesture == mode,
-                                  child: Row(
-                                    children: [
-                                      SizedBox(
-                                        width: 28,
-                                        child: app.playerVerticalGesture == mode
-                                            ? const Icon(Icons.check, size: 18)
-                                            : null,
-                                      ),
-                                      Text(mode.label),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                          ],
-                          child: InputDecorator(
-                            decoration: const InputDecoration(
-                              isDense: true,
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 10,
-                              ),
-                            ),
-                            child: Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    app.playerVerticalGesture.label,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                                const Icon(Icons.expand_more, size: 20),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                  title: _VerticalGestureSetting(app: app),
                 ),
                 _GestureDetails(
                   text:
@@ -129,6 +73,61 @@ class PlayerGesturesScreen extends StatelessWidget {
   );
 }
 
+class _VerticalGestureSetting extends StatelessWidget {
+  const _VerticalGestureSetting({required this.app});
+
+  final AppController app;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      const label = '上下滑动';
+      final painter = TextPainter(
+        text: TextSpan(text: label, style: DefaultTextStyle.of(context).style),
+        textDirection: Directionality.of(context),
+        textScaler: MediaQuery.textScalerOf(context),
+        locale: Localizations.maybeLocaleOf(context),
+        maxLines: 1,
+      )..layout();
+      final fitsInline =
+          constraints.maxWidth >=
+          painter.width +
+              SiteLensMetrics.formGap +
+              kMinInteractiveDimension +
+              SiteLensMetrics.formGap * 2;
+      painter.dispose();
+      final selector = SiteLensMenuSelector<PlayerVerticalGestureMode>(
+        label: '选择上下滑动操作',
+        value: app.playerVerticalGesture,
+        onSelected: (value) =>
+            safely(context, () => app.setPlayerVerticalGesture(value)),
+        options: [
+          for (final mode in PlayerVerticalGestureMode.values)
+            SiteLensMenuOption(value: mode, label: mode.label),
+        ],
+      );
+      if (fitsInline) {
+        return Row(
+          children: [
+            const Text(label),
+            const SizedBox(width: SiteLensMetrics.formGap),
+            Flexible(child: selector),
+          ],
+        );
+      }
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(label),
+          const SizedBox(height: SiteLensMetrics.itemGap),
+          selector,
+        ],
+      );
+    },
+  );
+}
+
 class _GestureHelp extends StatelessWidget {
   const _GestureHelp({
     required this.icon,
@@ -148,7 +147,18 @@ class _GestureHelp extends StatelessWidget {
       ListTile(
         leading: Icon(icon, size: 20),
         title: Text(title),
-        trailing: Text(summary, style: Theme.of(context).textTheme.bodySmall),
+        trailing: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.sizeOf(context).width * 0.42,
+          ),
+          child: Text(
+            summary,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.end,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
       ),
       _GestureDetails(text: details),
     ],

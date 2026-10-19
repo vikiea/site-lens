@@ -117,7 +117,8 @@ class MediaLibrary extends ChangeNotifier {
     // Import those files without interpreting download byte counts as MP4 size.
     for (final task in tasks.tasks) {
       if (_items.containsKey(task.id) ||
-          task.localRef?.toLowerCase().endsWith('.mp4') != true) {
+          task.localRef?.toLowerCase().endsWith('.mp4') != true ||
+          !task.localRef!.contains('/media_exports/')) {
         continue;
       }
       File? file;
@@ -242,18 +243,21 @@ class MediaLibrary extends ChangeNotifier {
 
   Future<T> _mutate<T>(
     String taskId,
-    Future<T> Function(MediaArtifact) action,
-  ) async {
-    if (!tasks.canDelete(taskId) || !_busy.add(taskId)) {
+    Future<T> Function(MediaArtifact) action, {
+    bool exclusiveAlreadyHeld = false,
+  }) async {
+    if ((!exclusiveAlreadyHeld && !tasks.canDelete(taskId)) ||
+        (exclusiveAlreadyHeld && !tasks.isExclusive(taskId)) ||
+        !_busy.add(taskId)) {
       throw StateError('媒体正在播放、导出、投屏或管理中，请先停止');
     }
-    tasks.retain(taskId);
+    if (!exclusiveAlreadyHeld) tasks.acquireExclusive(taskId);
     _notify();
     try {
       await _inspections[taskId];
       return await action(_items[taskId] ?? (throw StateError('媒体文件不存在')));
     } finally {
-      tasks.release(taskId);
+      if (!exclusiveAlreadyHeld) tasks.releaseExclusive(taskId);
       _busy.remove(taskId);
       _notify();
     }
@@ -266,16 +270,24 @@ class MediaLibrary extends ChangeNotifier {
     final value = _items[taskId] ?? (throw StateError('媒体文件不存在'));
     final source =
         (await localFile(taskId))?.path ?? value.libraryCopy ?? value.location;
-    final uri = Uri.tryParse(directory);
+    final uri = Uri.tryParse(directory.trim());
+    if (uri == null ||
+        (uri.hasScheme && uri.scheme != 'file' && uri.scheme != 'content') ||
+        (uri.scheme == 'content' && uri.host.isEmpty)) {
+      throw StateError('保存目录无效，请在媒体管理中重新选择 MP4 保存目录');
+    }
     String target;
-    if (uri?.scheme == 'content') {
-      target = await native!.deliverToDirectory(
+    if (uri.scheme == 'content') {
+      final runtime = native ?? (throw StateError('当前平台不支持系统保存目录'));
+      target = await runtime.deliverToDirectory(
         source: source,
-        directory: uri!,
+        directory: uri,
         fileName: value.name,
       );
     } else {
-      final dir = Directory(directory);
+      final dir = uri.scheme == 'file'
+          ? Directory.fromUri(uri)
+          : Directory(directory);
       await dir.create(recursive: true);
       var file = File('${dir.path}${Platform.pathSeparator}${value.name}');
       var suffix = 2;
@@ -400,12 +412,52 @@ class MediaLibrary extends ChangeNotifier {
         );
       });
 
-  Future<void> delete(String taskId) => _mutate(taskId, (value) async {
-    for (final path in {
+  Future<void> delete(
+    String taskId, {
+    bool exclusiveAlreadyHeld = false,
+  }) => _mutate(taskId, (value) async {
+    final ownedPaths = {
       value.location,
       if (value.libraryCopy != null) value.libraryCopy!,
       if (value.materializedCopy != null) value.materializedCopy!,
-    }) {
+    };
+    var cache = await tasks.cachedFile(taskId);
+    var cachePath = cache == null ? null : await cache.resolveSymbolicLinks();
+    // Earlier releases indexed the task's only MP4 as the export itself.
+    // Detach those bytes into task-owned storage before deleting that export.
+    if (cache != null) {
+      final originalCache = cache;
+      for (final path in ownedPaths) {
+        if (Uri.tryParse(path)?.scheme == 'content') continue;
+        final file = File(path);
+        if (await file.exists() &&
+            await file.resolveSymbolicLinks() == cachePath) {
+          final task = tasks.task(taskId)!;
+          final directory = await tasks.cacheDirectory(
+            seriesDirectory: task.seriesDirectoryName,
+          );
+          final copy = File('${directory.path}/${task.cacheKey}.media');
+          if (copy.absolute.path != originalCache.absolute.path) {
+            await originalCache.copy('${copy.path}.part');
+            final temporary = File('${copy.path}.part');
+            if (await temporary.length() != await originalCache.length()) {
+              await temporary.delete();
+              throw StateError('保留媒体任务缓存失败');
+            }
+            cache = await temporary.rename(copy.path);
+            tasks.setLocalRef(taskId, cache.path);
+            cachePath = await cache.resolveSymbolicLinks();
+          }
+          break;
+        }
+      }
+    }
+    for (final path in ownedPaths) {
+      if (Uri.tryParse(path)?.scheme != 'content') {
+        final file = File(path);
+        if (!await file.exists()) continue;
+        if (await file.resolveSymbolicLinks() == cachePath) continue;
+      }
       if (native != null) {
         await native!.delete(path);
       } else {
@@ -413,13 +465,10 @@ class MediaLibrary extends ChangeNotifier {
         if (await file.exists()) await file.delete();
       }
     }
-    if (tasks.task(taskId)?.localRef == value.location) {
-      tasks.setLocalRef(taskId, null);
-    }
     await db.deleteMediaArtifact(taskId);
     _items.remove(taskId);
     _notify();
-  });
+  }, exclusiveAlreadyHeld: exclusiveAlreadyHeld);
 
   @override
   void dispose() {

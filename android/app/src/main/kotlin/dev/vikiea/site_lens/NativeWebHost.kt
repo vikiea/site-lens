@@ -13,6 +13,8 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.Message
 import android.view.MotionEvent
 import android.view.View
@@ -137,12 +139,14 @@ private fun matches(script: ScriptRegistration, url: String): Boolean = try {
 
 class SiteLensWebView(context: Context) : WebView(context) {
     var onTap: (() -> Unit)? = null
+    var unavailable = false
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private var downX = 0f
     private var downY = 0f
     private var downAt = 0L
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (unavailable) return false
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = event.x
@@ -175,8 +179,10 @@ class SiteLensWebView(context: Context) : WebView(context) {
 }
 
 class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngine) : WebHostApi {
+    private val messenger = engine.dartExecutor.binaryMessenger
     private val events = WebHostEvents(engine.dartExecutor.binaryMessenger)
     private val hosts = mutableMapOf<Long, NativeWebHost>()
+    private var disposed = false
     private var nextNotificationId = 1000
     private val inspector = activity.assets.open("flutter_assets/web_assets/page_inspector.js").bufferedReader().use { it.readText() }
     init {
@@ -193,16 +199,19 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
             }
         })
     }
-    private fun host(id: Long): NativeWebHost = hosts[id]?.takeIf { !it.destroyed } ?: throw FlutterError("host_destroyed", "Web host no longer exists", null)
+    private fun host(id: Long): NativeWebHost = hosts[id]?.takeIf { !disposed && it.available } ?: throw FlutterError("host_destroyed", "Web host no longer exists", null)
     private var isForeground = true
     override fun create(hostId: Long, purpose: HostPurpose, preferences: HostPreferences): HostCapabilities {
+        check(!disposed && !activity.isFinishing && !activity.isDestroyed) { "Web host activity is unavailable" }
         // A Flutter integration test can time out after the platform create
         // reply was sent but before Dart records the session. On the next
         // test/engine generation the numeric host id is reused; dispose the
         // orphaned native host instead of making every later test fail with a
         // stale `Host already exists` error.
         hosts.remove(hostId)?.dispose()
-        val host = NativeWebHost(activity, hostId, purpose, events, preferences)
+        val host = NativeWebHost(activity, hostId, purpose, events, preferences) { gone ->
+            if (hosts[hostId] === gone) hosts.remove(hostId)
+        }
         host.media.foregroundState(isForeground)
         hosts[hostId] = host
         return host.capabilities
@@ -220,7 +229,11 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
     }
     override fun setHostActivity(hostId: Long, isCurrent: Boolean, visible: Boolean, foreground: Boolean, allowBackgroundPlayback: Boolean): Boolean =
         host(hostId).media.activity(isCurrent, visible, foreground, allowBackgroundPlayback)
-    fun foreground(value: Boolean) { isForeground = value; hosts.values.forEach { it.media.foregroundState(value) } }
+    fun foreground(value: Boolean) {
+        if (disposed) return
+        isForeground = value
+        hosts.values.toList().filter { it.available }.forEach { it.media.foregroundState(value) }
+    }
     override fun applyPreferences(hostId: Long, preferences: HostPreferences) { host(hostId).applyPreferences(preferences) }
     // `navigate`/`reload` are the navigations the app starts itself, so they are the
     // ones the entry-redirect switch applies to.
@@ -285,7 +298,14 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
             })
         } catch (e: Exception) { callback(Result.failure(e)) }
     }
-    fun dispose() { hosts.values.toList().forEach { it.dispose() }; hosts.clear() }
+    fun dispose() {
+        if (disposed) return
+        disposed = true
+        val previous = hosts.values.toList()
+        hosts.clear()
+        WebHostApi.setUp(messenger, null)
+        previous.forEach { it.dispose() }
+    }
 }
 
 class ScriptBinding(val script: ScriptRegistration, val generation: Long, val token: String, val world: JavaScriptExecutionWorld) {
@@ -321,8 +341,11 @@ private data class NativeFilterRule(
 private const val FILTER_RUNTIME_ASSET = "flutter_assets/web_assets/filter_runtime.js"
 
 @Suppress("SetJavaScriptEnabled")
-class NativeWebHost(private val activity: Activity, val id: Long, val purpose: HostPurpose, private val events: WebHostEvents, initialPreferences: HostPreferences) {
+class NativeWebHost(private val activity: Activity, val id: Long, val purpose: HostPurpose, private val events: WebHostEvents, initialPreferences: HostPreferences, private val onRendererGone: (NativeWebHost) -> Unit = {}) {
     val webView = SiteLensWebView(activity)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val popupProbes = mutableMapOf<WebView, () -> Unit>()
+    val available get() = !destroyed && !rendererGone && !activity.isFinishing && !activity.isDestroyed
 
     /// Policy owned by Dart; the host only enforces it. `applyPreferences` keeps a
     /// live host in step with a switch the user flipped mid-session.
@@ -423,6 +446,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     // that callback can still be associated with the same document load.
     private var pageLoadGeneration = -1L
     private var pageStartedUrl: String? = null
+    @Volatile private var lastKnownUrl: String? = null
     private val profileName = if (purpose == HostPurpose.BROWSING) null else "site-lens-probe-${UUID.randomUUID()}"
 
     fun applyFilter(context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto) {
@@ -629,6 +653,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         if (hasNavigation) {
             navigationListener = object : NavigationListener {
                 override fun onNavigationStarted(navigation: Navigation) {
+                    if (!available) return
                     activeNavigation = navigation; activePage = null
                     // The navigation must address the canonical URL the registration was
                     // fetched for; WebView normalizes `https://host` to `https://host/`
@@ -679,6 +704,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                     else event("started", url = navigation.url)
                 }
                 override fun onNavigationRedirected(navigation: Navigation) {
+                    if (!available) return
                     if (activeNavigation != navigation) return
                     val leased = leasedOrigin
                     val redirected = webOrigin(navigation.url)
@@ -698,6 +724,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                     event("redirected", url = navigation.url)
                 }
                 override fun onNavigationCompleted(navigation: Navigation) {
+                    if (!available) return
                     if (activeNavigation != navigation) return
                     if (navigation.didCommit()) {
                         // The entry has resolved into a document; from here on the
@@ -711,12 +738,13 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                     }
                     if (navigation.didCommitErrorPage()) { revoke(); event("networkError", "WebView committed an error page") }
                 }
-                override fun onPageDeleted(page: Page) { if (page == activePage) { revoke(); event("invalidated") } }
+                override fun onPageDeleted(page: Page) { if (available && page == activePage) { revoke(); event("invalidated") } }
             }
             WebViewCompat.addNavigationListener(webView, navigationListener!!)
         }
         webView.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                if (!available) return null
                 // Keep the top-level document available so a bad or stale
                 // snapshot cannot strand the user on a blank page. Subresources
                 // are synchronously rejected from the in-memory snapshot.
@@ -744,6 +772,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 return super.shouldInterceptRequest(view, request)
             }
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                if (!available) return true
                 if (!request.isForMainFrame) return false
                 return try {
                     if (runCatching { webUri(request.url.toString()) }.isFailure) return true
@@ -773,6 +802,8 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 }
             }
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                if (!available) return
+                lastKnownUrl = url ?: lastKnownUrl
                 runCatching { media.pageStarted() }
                 pageLoadGeneration = generation
                 pageStartedUrl = url
@@ -783,6 +814,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 event("started", url = url)
             }
             override fun onPageFinished(view: WebView, url: String?) {
+                if (!available) return
                 // history.pushState can change view.url before this callback
                 // returns. Match the callback to the most recent page start,
                 // then publish the current URL so Dart sees the SPA episode.
@@ -796,39 +828,46 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                     event("loaded", url = view.url ?: url)
                 }
             }
-            override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) { refreshLayout?.isRefreshing = false; handler.cancel(); revoke(); event("certificateError", "TLS/证书验证失败，不会忽略证书错误；若启用了代理/MITM，请检查代理证书", error.url) }
-            override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) { if (request.isForMainFrame) { refreshLayout?.isRefreshing = false; revoke(); event("networkError", error.description.toString(), request.url.toString()) } }
-            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) { if (request.isForMainFrame) { refreshLayout?.isRefreshing = false; event("httpError", "HTTP ${errorResponse.statusCode}", request.url.toString()) } }
+            override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
+                if (!available) { handler.cancel(); return }
+                refreshLayout?.isRefreshing = false; handler.cancel(); revoke(); event("certificateError", "TLS/证书验证失败，不会忽略证书错误；若启用了代理/MITM，请检查代理证书", error.url)
+            }
+            override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                if (!available) return
+                if (request.isForMainFrame) { refreshLayout?.isRefreshing = false; revoke(); event("networkError", error.description.toString(), request.url.toString()) }
+            }
+            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
+                if (!available) return
+                if (request.isForMainFrame) { refreshLayout?.isRefreshing = false; event("httpError", "HTTP " + errorResponse.statusCode, request.url.toString()) }
+            }
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-                if (rendererGone) return true
+                if (rendererGone || destroyed) return true
                 rendererGone = true
-                refreshLayout?.isRefreshing = false
-                NativeCrashStore.append(
+                webView.unavailable = true
+                generation++
+                runCatching { refreshLayout?.isRefreshing = false }
+                runCatching { NativeCrashStore.append(
                     activity,
                     module = "android.webview.renderer",
                     message = "网页渲染进程已退出",
                     details = buildString {
                         append("didCrash=").append(detail.didCrash()).append('\n')
                         append("rendererPriorityAtExit=").append(detail.rendererPriorityAtExit()).append('\n')
-                        append("url=").append(webView.url ?: "")
+                        append("url=").append(lastKnownUrl ?: "")
                     },
                     contextValue = "host=$id generation=$generation",
-                )
-                // The renderer may reject WebViewCompat cleanup calls after it
-                // has gone away. Never let recovery from a renderer death turn
-                // into an application crash on the UI thread.
-                runCatching { revoke() }
-                event("hostInvalidated", "Web content process terminated; reopen browsing to recover")
-                // WebView forbids synchronously destroying the view from this
-                // callback on some provider versions. Defer disposal until the
-                // renderer callback has returned and make it idempotent.
-                webView.post { if (!destroyed) runCatching { dispose() } }
+                ) }
+                event("hostInvalidated", "Web content process terminated; reopen browsing to recover", lastKnownUrl)
+                // Never call normal media/lease/provider cleanup on a dead view.
+                disposeAfterRendererGone(view)
+                runCatching { onRendererGone(this@NativeWebHost) }
                 return true
             }
         }
         webView.webChromeClient = object : WebChromeClient() {
             override fun onReceivedTitle(view: WebView, title: String?) { event("title", title ?: "") }
             override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message): Boolean {
+                if (!available) return false
                 val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
                 // The popup URL is only known once the transport WebView starts loading, so
                 // hand WebView a throwaway that cannot reach the network. It reports the
@@ -837,29 +876,63 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 probe.settings.javaScriptEnabled = false
                 probe.settings.blockNetworkLoads = true
                 probe.settings.loadsImagesAutomatically = false
+                var probeUrl: String? = null
+                var probeDestroyed = false
+                var probeReported = false
+                val expire = Runnable { popupProbes[probe]?.invoke() }
+                fun disposeProbe() {
+                    if (probeDestroyed) return
+                    probeDestroyed = true
+                    mainHandler.removeCallbacks(expire)
+                    popupProbes.remove(probe)
+                    runCatching { (probe.parent as? ViewGroup)?.removeView(probe) }
+                    runCatching { probe.destroy() }
+                }
+                popupProbes[probe] = ::disposeProbe
+                // The popup is never attached; View.post may wait for attach.
+                mainHandler.postDelayed(expire, 10_000L)
                 probe.webViewClient = object : WebViewClient() {
                     private fun report(url: String?) {
-                        if (!url.isNullOrEmpty() && runCatching { webUri(url) }.isSuccess) event("newWindow", url)
+                        if (probeDestroyed || probeReported || !available) return
+                        probeUrl = url ?: probeUrl
+                        if (url.isNullOrEmpty() || runCatching { webUri(url) }.isFailure) return
+                        probeReported = true
+                        event("newWindow", url)
                         // Never destroy a WebView from inside its own callback.
                         runCatching { probe.stopLoading() }
-                        probe.post { runCatching { probe.destroy() } }
+                        mainHandler.post { disposeProbe() }
                     }
                     override fun shouldOverrideUrlLoading(v: WebView, request: WebResourceRequest): Boolean {
                         if (request.isForMainFrame) report(request.url.toString())
                         return true
                     }
                     override fun onPageStarted(v: WebView, url: String?, favicon: Bitmap?) { report(url) }
+                    override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                        if (probeDestroyed) return true
+                        runCatching { NativeCrashStore.append(
+                            activity,
+                            module = "android.webview.popup_renderer",
+                            message = "弹窗网页渲染进程已退出",
+                            details = "didCrash=" + detail.didCrash() +
+                                " rendererPriorityAtExit=" + detail.rendererPriorityAtExit() +
+                                " url=" + (probeUrl ?: ""),
+                            contextValue = "host=" + id + " generation=" + generation,
+                        ) }
+                        disposeProbe()
+                        return true
+                    }
                 }
                 transport.webView = probe
                 try {
                     resultMsg.sendToTarget()
                 } catch (_: Exception) {
-                    runCatching { probe.destroy() }
+                    disposeProbe()
                     return false
                 }
                 return true
             }
             override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                if (!available) { runCatching { callback.onCustomViewHidden() }; return }
                 if (customView != null) { runCatching { callback.onCustomViewHidden() }; return }
                 (view.parent as? ViewGroup)?.removeView(view)
                 customView = view; customCallback = callback; originalOrientation = activity.requestedOrientation
@@ -882,9 +955,12 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         // may call us during renderer teardown. Host events are diagnostic;
         // losing one is safer than crashing the process.
         runCatching {
+            // Callbacks can run on worker threads and after renderer death.
+            // Read document identity from callbacks, never a WebView getter.
+            if (url != null && kind in setOf("started", "loaded", "committed", "redirected", "sameDocument")) lastKnownUrl = url
             if (kind in setOf("networkError", "certificateError", "httpError")) pageError = detail
             if (!destroyed) {
-                events.onEvent(HostEvent(id, generation, kind, url ?: webView.url ?: "", detail)) { _ -> }
+                events.onEvent(HostEvent(id, generation, kind, url ?: lastKnownUrl ?: "", detail)) { _ -> }
             }
         }.onFailure { error ->
             NativeCrashStore.append(
@@ -896,8 +972,9 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             )
         }
     }
-    fun valid(binding: ScriptBinding): Boolean = !destroyed && accepting && binding.generation == generation && bindings.contains(binding)
+    fun valid(binding: ScriptBinding): Boolean = available && accepting && binding.generation == generation && bindings.contains(binding)
     fun revoke() {
+        if (rendererGone || destroyed) return
         accepting = false; generation++; expectedUrl = null; leasedOrigin = null; pageError = null
         entryFollowing = false; entryHops = 0; entryNavigation = null; entryArmed = false
         historyArmed = false
@@ -913,6 +990,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         installScripts: Boolean = true,
         load: () -> Unit,
     ) {
+        if (!available) return
         revoke(); val ticket = generation
         // Only the navigations the app itself starts may follow the server's own
         // redirect chain (see [entryFollowing]); everything a page starts on its
@@ -927,7 +1005,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             return
         }
         events.getScriptsForNavigation(id, ticket, url) { result ->
-            if (destroyed || generation != ticket) return@getScriptsForNavigation
+            if (!available || generation != ticket) return@getScriptsForNavigation
             if (result.isFailure) { refreshLayout?.isRefreshing = false; event("networkError", result.exceptionOrNull()?.message ?: "Navigation policy rejected"); return@getScriptsForNavigation }
             try {
                 scripts = result.getOrThrow()
@@ -947,6 +1025,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
      * would turn every toolbar back gesture into a false scriptsSuspended error.
      */
     private fun prepareHistoryNavigation(url: String?, load: () -> Unit) {
+        if (!available) return
         revoke(); historyInFlight = true; val ticket = generation
         entryFollowing = false; entryHops = 0; entryNavigation = null
         val targetUrl = url?.takeIf { runCatching { webUri(it) }.isSuccess }
@@ -962,7 +1041,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             return
         }
         events.getScriptsForNavigation(id, ticket, targetUrl) { result ->
-            if (destroyed || generation != ticket) return@getScriptsForNavigation
+            if (!available || generation != ticket) return@getScriptsForNavigation
             if (result.isFailure) {
                 refreshLayout?.isRefreshing = false
                 expectedUrl = null; leasedOrigin = null
@@ -987,6 +1066,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
 
     /** App-owned back/forward with a pre-authorized history target. */
     fun goHistory(delta: Int): Boolean {
+        if (!available) return false
         if (exitFullscreen()) return true
         if (historyInFlight) return true
         val list = webView.copyBackForwardList()
@@ -1048,12 +1128,53 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     private fun hideFullscreen() {
         val view = customView ?: return
         (view.parent as? ViewGroup)?.removeView(view); customView = null
-        runCatching { customCallback?.onCustomViewHidden() }; customCallback = null
+        if (!rendererGone) runCatching { customCallback?.onCustomViewHidden() }
+        customCallback = null
         originalOrientation?.let { runCatching { activity.requestedOrientation = it } }; originalOrientation = null
         event("fullscreen", "exited")
     }
+    private fun clearPopupProbes() {
+        mainHandler.removeCallbacksAndMessages(null)
+        popupProbes.values.toList().forEach { it() }
+        popupProbes.clear()
+    }
+    private fun disposeAfterRendererGone(deadView: WebView) {
+        if (destroyed) return
+        destroyed = true
+        accepting = false
+        webView.onTap = null
+        expectedUrl = null; leasedOrigin = null
+        entryFollowing = false; entryArmed = false; entryNavigation = null
+        historyArmed = false; historyInFlight = false
+        activeNavigation = null; activePage = null; navigationListener = null
+        injections.clear(); bindings.clear(); scripts = emptyList()
+        filterInjection = null
+        runCatching { hideFullscreen() }
+        runCatching { (platformView.parent as? ViewGroup)?.removeView(platformView) }
+        runCatching { (deadView.parent as? ViewGroup)?.removeView(deadView) }
+        runCatching { deadView.destroy() }
+        runCatching { media.rendererGone() }
+        // Let all affected WebViews acknowledge their own renderer callback
+        // before disposing any surviving sibling probes or isolated profile.
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            clearPopupProbes()
+            clearProbeProfile()
+        }
+    }
+    private fun clearProbeProfile() {
+        profileName?.let { name -> runCatching {
+            val profile = ProfileStore.getInstance().getProfile(name)
+            profile?.cookieManager?.removeAllCookies(null)
+            profile?.webStorage?.deleteAllData()
+            ProfileStore.getInstance().deleteProfile(name)
+        } }
+    }
     fun dispose() {
         if (destroyed) return
+        if (rendererGone) { disposeAfterRendererGone(webView); return }
+        webView.unavailable = true
+        webView.onTap = null
+        clearPopupProbes()
         runCatching { media.dispose() }
         runCatching { revoke() }
         runCatching { hideFullscreen() }

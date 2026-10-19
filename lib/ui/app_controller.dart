@@ -655,15 +655,35 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<MediaArtifact> exportMediaTask(
-    MediaTask task,
-  ) => _exportingMedia.putIfAbsent(task.id, () async {
-    mediaTasks.retain(task.id);
+    MediaTask task, {
+    bool deliverToConfiguredDirectory = true,
+  }) async {
+    final artifactFuture = _exportingMedia.putIfAbsent(
+      task.id,
+      () => _prepareMediaArtifact(task),
+    );
+    final artifact = await artifactFuture;
+    if (!deliverToConfiguredDirectory) return artifact;
+    await mediaTasks.withExclusive(task.id, () async {
+      await mediaLibrary.deliver(task.id, mp4ExportDirectory);
+    });
+    return mediaLibrary.item(task.id) ?? artifact;
+  }
+
+  Future<MediaArtifact> _prepareMediaArtifact(MediaTask task) async {
+    var retained = false;
     try {
+      await Future<void>.value();
+      mediaTasks.retain(task.id);
+      retained = true;
       await mediaLibrary.restore();
       var artifact = mediaLibrary.item(task.id);
       if (artifact == null) {
         final file = await mediaTasks.cachedFile(task.id);
-        if (file == null) throw StateError('媒体缓存文件不存在');
+        if (file == null) {
+          mediaTasks.markCacheMissing(task.id);
+          throw StateError('文件缺失，请在媒体任务中重新下载');
+        }
         String output;
         var artifactMime = 'video/mp4';
         var artifactName = mediaExportFileName(task);
@@ -712,18 +732,47 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           mime: artifactMime,
         );
       }
-      await mediaLibrary.deliver(task.id, mp4ExportDirectory);
-      return mediaLibrary.item(task.id) ?? artifact;
+      return artifact;
     } finally {
-      mediaTasks.release(task.id);
+      if (retained) mediaTasks.release(task.id);
       _exportingMedia.remove(task.id);
       notifyMediaChanged();
     }
-  });
+  }
 
-  Future<File?> mediaPlaybackFile(MediaTask task) async =>
-      await mediaLibrary.localFile(task.id) ??
-      await mediaTasks.cachedFile(task.id);
+  Future<void> deleteMediaArtifact(
+    String taskId, {
+    bool deleteTaskCache = false,
+    bool deleteTask = false,
+  }) async {
+    if (deleteTaskCache) {
+      await mediaTasks.withExclusive(taskId, () async {
+        if (mediaLibrary.item(taskId) != null) {
+          await mediaLibrary.delete(taskId, exclusiveAlreadyHeld: true);
+        }
+        await nativeDownloads?.delete(taskId);
+        await mediaTasks.deleteCachedFiles(taskId, exclusiveAlreadyHeld: true);
+        if (deleteTask) {
+          await mediaTasks.delete(taskId, exclusiveAlreadyHeld: true);
+        }
+      });
+    } else {
+      await mediaLibrary.delete(taskId);
+    }
+    notifyMediaChanged();
+  }
+
+  Future<File?> mediaPlaybackFile(MediaTask task) async {
+    final libraryFile = await mediaLibrary.localFile(task.id);
+    if (libraryFile != null) return libraryFile;
+    final cached = await mediaTasks.cachedFile(task.id);
+    if (cached == null && task.localRef != null) {
+      mediaTasks.markCacheMissing(task.id);
+      notifyMediaChanged();
+      throw StateError('文件缺失，请在媒体任务中重新下载');
+    }
+    return cached;
+  }
 
   Future<void> restoreSavedSessions({bool force = false}) async {
     if (_restoredSessions && !force) return;

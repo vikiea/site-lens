@@ -123,3 +123,15 @@ window.__siteLensMediaControl.apply('pause');window.__siteLensMediaControl.apply
 assert.equal(oldContext.state,'suspended','page-paused old context must not restart');
 assert.equal(activeContext.state,'running');
 console.log('Retired WebAudio policy reservation regression PASS.');
+
+// A multi-episode page title describes the active episode only. Explicit row
+// episode metadata must replace it for each separately selected resource.
+document.title = '示例系列 - 第4集';
+dataElements.length = 0;
+dataElements.push(new DataElement({'data-play-src':'/assets/ep7.m3u8','data-episode':'7'}));
+dataElements.push(new DataElement({'data-play-src':'/assets/ep8.m3u8','data-episode':'8'}));
+mutation();
+const episodeCandidates = telemetry.at(-1).candidates.filter(value => value.episodeNumber != null);
+assert.deepEqual(episodeCandidates.map(value => value.title), ['示例系列 - 第7集','示例系列 - 第8集']);
+assert.deepEqual(episodeCandidates.map(value => value.episodeNumber), [7,8]);
+console.log('Explicit episode title priority regression PASS.');

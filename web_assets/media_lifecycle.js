@@ -161,7 +161,8 @@
       const mime = element.getAttribute('type') || '';
       const poster = element.getAttribute('poster') || element.getAttribute('data-poster') || '';
       const episode = element.getAttribute('data-episode') ||
-        element.getAttribute('data-episode-index') || element.getAttribute('data-num') || '';
+        element.getAttribute('data-episode-index') || element.getAttribute('data-num') ||
+        /第\s*(\d+)\s*[集话期]/.exec(element.textContent || '')?.[1] || '';
       for (const name of mediaAttributes) {
         const raw = element.getAttribute(name);
         addCandidate(candidates, seen, raw, mime, undefined, false, undefined, poster, episode);
@@ -183,9 +184,11 @@
     if (episodes.length > 1) {
       const episodeByUrl = new Map();
       episodes.forEach((item, index) => {
-        const number = item.episodeNumber ?? index + 1;
-        if (!/第\s*\d+\s*[集话]/.test(item.title)) item.title = `${item.title} - 第${number}集`;
-        item.episodeNumber = number;
+        const number = item.episodeNumber;
+        if (number != null) {
+          const series = item.title.replace(/\s*[-–—|]?\s*(?:第\s*\d+\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*\d+\b)\s*$/gi, '').trim();
+          item.title = `${series} - 第${number}集`;
+        }
         episodeByUrl.set(item.url, item);
       });
       for (const item of candidates) {

@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../diagnostics/error_log.dart';
 import '../domain/models.dart';
 import '../media/dlna_service.dart';
 import '../media/media_service.dart';
@@ -414,22 +415,19 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   }
 
   Future<NativePlaybackSession> _openPlaylistTask(MediaTask task) async {
-    final retained = _playlistRetained.add(task.id);
-    if (retained) widget.app.mediaTasks.retain(task.id);
+    final shouldRetain = !_playlistRetained.contains(task.id);
+    var retained = false;
     try {
+      if (shouldRetain) {
+        widget.app.mediaTasks.retain(task.id);
+        _playlistRetained.add(task.id);
+        retained = true;
+      }
       final cached = await widget.app.mediaPlaybackFile(task);
       if (cached != null) {
         return await widget.app.nativeMedia.openLocal(task, cached);
       }
-      final candidate = await widget.app.db.mediaCandidate(task.candidateId);
-      if (candidate == null) throw StateError('下一集媒体候选已不存在');
-      return await widget.app.nativeMedia.open(
-        candidate,
-        hostId: task.hostId,
-        generation: task.generation,
-        sourceUrl: task.sourceUrl,
-        sessionId: 'play_${task.id}',
-      );
+      throw StateError('文件缺失，请在媒体任务中重新下载');
     } catch (_) {
       if (retained) {
         widget.app.mediaTasks.release(task.id);
@@ -450,7 +448,9 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
         _session = next;
         _playlistIndex = targetIndex;
       });
-      _showGestureHint(widget.playlist[targetIndex].displayName);
+      _showGestureHint(
+        mediaPlaylistEntryName(widget.playlist, widget.playlist[targetIndex]),
+      );
       _scheduleHide();
     } catch (error) {
       if (mounted) showError(context, error);
@@ -482,7 +482,9 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
                 leading: Icon(
                   selected ? Icons.play_circle_filled : Icons.video_file,
                 ),
-                title: SiteLensLeadingEllipsisText(task.displayName),
+                title: SiteLensLeadingEllipsisText(
+                  mediaPlaylistEntryName(widget.playlist, task),
+                ),
                 trailing: selected ? const Icon(Icons.check) : null,
                 onTap: selected
                     ? () => Navigator.of(sheetContext).pop()
@@ -877,26 +879,7 @@ Future<void> openMediaTaskPlayer(
       );
       return;
     }
-    final candidate = await app.db.mediaCandidate(task.candidateId);
-    if (candidate == null) throw StateError('媒体候选已不存在');
-    final session = await app.nativeMedia.open(
-      candidate,
-      hostId: task.hostId,
-      generation: task.generation,
-      sourceUrl: task.sourceUrl,
-      sessionId: 'play_${task.id}',
-    );
-    if (!context.mounted) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => NativeMediaPlayerScreen(
-          app: app,
-          session: session,
-          playlist: playlist,
-          playlistIndex: playlistIndex < 0 ? 0 : playlistIndex,
-        ),
-      ),
-    );
+    throw StateError('文件缺失，请在媒体任务中重新下载');
   } finally {
     app.mediaTasks.release(task.id);
   }
@@ -987,24 +970,47 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
           await app.mediaLibrary.move(item.taskId, directory);
         }
       case 'delete':
+        var deleteTaskCache = false;
         final confirmed = await showDialog<bool>(
           context: context,
-          builder: (dialogContext) => SiteLensAlertDialog(
-            title: const Text('删除媒体文件'),
-            content: Text('删除“${item.name}”及其应用播放副本？原始下载缓存会保留。'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(dialogContext, false),
-                child: const Text('取消'),
+          builder: (dialogContext) => StatefulBuilder(
+            builder: (context, setDialogState) => SiteLensAlertDialog(
+              title: const Text('删除媒体文件'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('删除“${item.name}”及其应用播放副本？'),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    title: const Text('同时删除媒体任务缓存'),
+                    subtitle: const Text('默认保留，删除后需要重新下载'),
+                    value: deleteTaskCache,
+                    onChanged: (value) =>
+                        setDialogState(() => deleteTaskCache = value == true),
+                  ),
+                ],
               ),
-              FilledButton(
-                onPressed: () => Navigator.pop(dialogContext, true),
-                child: const Text('删除'),
-              ),
-            ],
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(dialogContext, true),
+                  child: const Text('删除'),
+                ),
+              ],
+            ),
           ),
         );
-        if (confirmed == true) await app.mediaLibrary.delete(item.taskId);
+        if (confirmed == true) {
+          await app.deleteMediaArtifact(
+            item.taskId,
+            deleteTaskCache: deleteTaskCache,
+          );
+        }
     }
   }
 
@@ -1233,7 +1239,13 @@ Future<void> showMediaTaskDetails(
   MediaArtifact? artifact,
 }) async {
   final candidate = await app.db.mediaCandidate(task.candidateId);
-  final file = await app.mediaPlaybackFile(task);
+  File? file;
+  String? fileError;
+  try {
+    file = await app.mediaPlaybackFile(task);
+  } catch (error) {
+    fileError = friendlyError(error);
+  }
   final stat = await file?.stat();
   var current = artifact ?? app.mediaLibrary.item(task.id);
   String? metadataError;
@@ -1286,8 +1298,10 @@ Future<void> showMediaTaskDetails(
               if (task.localRef != null)
                 _MediaDetailRow(label: '本地缓存', value: task.localRef!),
             ],
+            if (fileError != null)
+              _MediaDetailRow(label: '文件检查', value: fileError),
             if (metadataError != null)
-              _MediaDetailRow(label: '文件检查', value: metadataError),
+              _MediaDetailRow(label: '元数据检查', value: metadataError),
             if (_taskErrorLabel(task).isNotEmpty)
               _MediaDetailRow(label: '错误原因', value: _taskErrorLabel(task)),
             _MediaDetailRow(label: '来源页面', value: task.sourceUrl.toString()),
@@ -1326,16 +1340,38 @@ Future<void> castMediaTask(
     ),
   );
   if (device == null) return;
-  final hls = file.path.toLowerCase().endsWith('.m3u8');
-  await app.mediaCast.cast(
+  var resolvedFile = file;
+  var hls = file.path.toLowerCase().endsWith('.m3u8');
+  Future<void> prepareMp4() async {
+    await app.exportMediaTask(task, deliverToConfiguredDirectory: false);
+    final exportedFile = await app.mediaLibrary.localFile(task.id);
+    if (exportedFile == null) {
+      throw StateError('该设备不支持 HLS，且本地 MP4 导出失败');
+    }
+    resolvedFile = exportedFile;
+    hls = false;
+  }
+
+  Future<void> startCast() => app.mediaCast.cast(
     device: device,
     mediaTaskId: task.id,
-    mediaUrl: file.uri,
-    localFile: hls ? null : file,
-    localHlsPlaylist: hls ? file : null,
+    mediaUrl: resolvedFile.uri,
+    localFile: hls ? null : resolvedFile,
+    localHlsPlaylist: hls ? resolvedFile : null,
     mime: hls ? 'application/vnd.apple.mpegurl' : 'video/mp4',
     title: task.displayName,
   );
+
+  if (hls && !device.supportsHls) await prepareMp4();
+  try {
+    await startCast();
+  } on DlnaUnsupportedFormatException catch (error) {
+    // Some renderers advertise HLS but reject it at SetURI/Play. Retry exactly
+    // once using the existing local remux, without opening an export picker.
+    if (!hls || !error.requiresMp4) rethrow;
+    await prepareMp4();
+    await startCast();
+  }
   app.notifyMediaChanged();
   if (context.mounted) showShortToast(context, '已连接到 ${device.name}');
 }
@@ -1457,6 +1493,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     _mediaStates = widget.app.nativeMedia.states.listen((_) {
       if (mounted) setState(() {});
     });
+    unawaited(_refreshCachedFiles());
     if (widget.app.nativeDownloads != null) {
       _poller = Timer.periodic(const Duration(seconds: 2), (_) {
         unawaited(_pollNativeTasks());
@@ -1469,6 +1506,16 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     _poller?.cancel();
     _mediaStates?.cancel();
     super.dispose();
+  }
+
+  Future<void> _refreshCachedFiles() async {
+    try {
+      await widget.app.mediaTasks.reconcileCachedFiles();
+      widget.app.notifyMediaChanged();
+      if (mounted) setState(() {});
+    } catch (error, stack) {
+      AppErrorLogger.capture(error, module: 'media.cache', stack: stack);
+    }
   }
 
   Future<void> _pollNativeTasks() async {
@@ -1558,6 +1605,9 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     if (resolved == null) throw StateError('媒体候选已不存在');
     if (task.state == MediaTaskState.paused) {
       await _togglePause(task);
+    } else if (task.errorCode == MediaErrorCode.cacheMissing) {
+      await widget.app.nativeDownloads?.delete(task.id);
+      await widget.app.mediaDownloads.startNative(task, resolved);
     } else if (task.state == MediaTaskState.failed &&
         widget.app.nativeDownloads != null &&
         !resolved.isHls) {
@@ -1896,17 +1946,11 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                                                 ),
                                           );
                                           if (confirmed != true) return;
-                                          await widget.app.mediaLibrary.delete(
-                                            task.id,
-                                          );
                                         }
-                                        final native =
-                                            widget.app.nativeDownloads;
-                                        if (native != null) {
-                                          await native.delete(task.id);
-                                        }
-                                        await widget.app.mediaTasks.delete(
+                                        await widget.app.deleteMediaArtifact(
                                           task.id,
+                                          deleteTaskCache: true,
+                                          deleteTask: true,
                                         );
                                         if (mounted) setState(() {});
                                       }, taskId: task.id),
@@ -2004,7 +2048,10 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   }
 
   String _taskTitle(MediaTask task, MediaCandidate? candidate) {
-    final frozen = task.displayName.trim();
+    final frozen = mediaPlaylistEntryName(
+      widget.app.mediaTasks.tasks,
+      task,
+    ).trim();
     if (frozen.isNotEmpty) return _shortMediaName(frozen);
     final title = candidate?.title.trim();
     if (title != null && title.isNotEmpty) return _shortMediaName(title);

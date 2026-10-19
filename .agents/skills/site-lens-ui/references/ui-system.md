@@ -63,6 +63,14 @@ Use `SiteLensColors.of(context)` for backdrop, panel, navigation, divider, secti
 - Does the same screen read correctly in light mode, dark mode, and a non-default seed preset?
 - Do foldable panels remain shadow-free and visually stable before, during, and after expansion in light mode, dark mode, and a non-default seed preset?
 
+## Compact choice menus
+
+Use `SiteLensMenuSelector<T>` with typed `SiteLensMenuOption<T>` values for an inline choice that opens a menu on one activation. Supply a concise accessible label and exactly one option matching the current value. A null callback or no enabled options disables the trigger; individual options can also be disabled.
+
+- Size the trigger and menu to the longest option in the active typography, locale, direction, and text scale, plus control padding and icon space. Let the trigger shrink within its parent instead of filling the row. Ellipsize its visual value when constrained, preserve the full semantic value, and wrap menu labels within the available viewport. Keep a minimum 48 dp hit height and allow rows to grow with text scale.
+- Use the shared well tint for the trigger and themed opaque overlay surface for the menu, with token radii, borders, and zero elevation. Press, hover, and focus keep the same fill without splash or grey state transitions. Show focus with a primary-color outline on the trigger and menu items; keep disabled colors and selected-item semantics/checkmarks.
+- Preserve Material activation, arrow-key traversal, Escape/outside dismissal, and focus return. Cover one-tap opening, selection, stable width, keyboard focus, disabled states, narrow screens, large text, light/dark appearances, and a non-default preset in targeted widget tests.
+
 ## Lists
 
 - Consecutive semantic rows inside a panel use `SiteLensMetrics.listGap` when they are separate surfaces or tiles. Do not rely on incidental `ListView` spacing or omit the gap on recommendation/result lists.

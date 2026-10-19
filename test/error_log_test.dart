@@ -1,10 +1,53 @@
+import 'dart:convert';
+
 import 'package:drift/native.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/diagnostics/error_log.dart';
 import 'package:site_lens/network/transport.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  test('native reports survive failed ack and import exactly once', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final logger = AppErrorLogger(db);
+    final row = jsonEncode({
+      'reportId': 'exit:123:456:crash',
+      'module': 'android.process_exit',
+      'message': '原生进程退出',
+      'details': 'reason=CRASH_NATIVE',
+    });
+    const channel = MethodChannel('site_lens/diagnostics');
+    var acknowledged = false;
+    var ackCount = 0;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          if (call.method == 'drain') return acknowledged ? <String>[] : [row];
+          if (call.method == 'ack') {
+            ackCount++;
+            expect((call.arguments as Map)['rows'], [row]);
+            if (ackCount == 1) throw PlatformException(code: 'engine_detached');
+            acknowledged = true;
+          }
+          return null;
+        });
+    addTearDown(() async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+      AppErrorLogger.detach(logger);
+      await db.close();
+    });
+
+    await logger.recoverNativeReports();
+    expect(acknowledged, isFalse);
+    await logger.recoverNativeReports();
+
+    expect(acknowledged, isTrue);
+    expect(ackCount, 2);
+    expect(await db.appErrorLogs(), hasLength(1));
+  });
+
   test('error log archive redacts URLs and keeps human guidance', () async {
     final db = AppDatabase(NativeDatabase.memory());
     final logger = AppErrorLogger(db);

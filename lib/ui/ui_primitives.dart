@@ -1,9 +1,260 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import 'app_theme.dart';
 import 'glass_surface.dart';
 
 enum SiteLensNoticeTone { info, warning, error }
+
+@immutable
+class SiteLensMenuOption<T> {
+  const SiteLensMenuOption({
+    required this.value,
+    required this.label,
+    this.enabled = true,
+  });
+
+  final T value;
+  final String label;
+  final bool enabled;
+}
+
+/// A single-tap choice menu sized to its longest label, within parent bounds.
+class SiteLensMenuSelector<T> extends StatefulWidget {
+  const SiteLensMenuSelector({
+    super.key,
+    required this.label,
+    required this.value,
+    required this.options,
+    required this.onSelected,
+  });
+
+  final String label;
+  final T value;
+  final List<SiteLensMenuOption<T>> options;
+  final ValueChanged<T>? onSelected;
+
+  @override
+  State<SiteLensMenuSelector<T>> createState() =>
+      _SiteLensMenuSelectorState<T>();
+}
+
+class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
+  final _focusNode = FocusNode();
+  final _menuController = MenuController();
+  bool _expanded = false;
+
+  bool get _enabled =>
+      widget.onSelected != null &&
+      widget.options.any((option) => option.enabled);
+
+  @override
+  void didUpdateWidget(covariant SiteLensMenuSelector<T> oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_enabled && _menuController.isOpen) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_enabled) _menuController.close();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    assert(
+      widget.options.where((option) => option.value == widget.value).length ==
+          1,
+    );
+    final selected = widget.options.firstWhere(
+      (option) => option.value == widget.value,
+    );
+    final theme = Theme.of(context);
+    final colors = SiteLensColors.of(context);
+    final textStyle = theme.textTheme.bodyMedium ?? const TextStyle();
+    const horizontalPadding = SiteLensMetrics.formGap;
+    const iconSize = SiteLensMetrics.navIconSize;
+    const gap = SiteLensMetrics.itemGap;
+    var labelWidth = 0.0;
+    for (final option in widget.options) {
+      final painter = TextPainter(
+        text: TextSpan(text: option.label, style: textStyle),
+        textDirection: Directionality.of(context),
+        textScaler: MediaQuery.textScalerOf(context),
+        locale: Localizations.maybeLocaleOf(context),
+        maxLines: 1,
+      )..layout();
+      if (painter.width > labelWidth) labelWidth = painter.width;
+      painter.dispose();
+    }
+    final preferredWidth =
+        labelWidth.ceilToDouble() + horizontalPadding * 2 + iconSize + gap;
+    final foreground = WidgetStateProperty.resolveWith<Color>(
+      (states) => states.contains(WidgetState.disabled)
+          ? theme.colorScheme.onSurface.withValues(alpha: 0.38)
+          : theme.colorScheme.onSurface,
+    );
+    final style = ButtonStyle(
+      textStyle: WidgetStatePropertyAll(textStyle),
+      foregroundColor: foreground,
+      iconColor: foreground,
+      iconSize: const WidgetStatePropertyAll(iconSize),
+      overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+      backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
+      elevation: const WidgetStatePropertyAll(0),
+      shadowColor: const WidgetStatePropertyAll(Colors.transparent),
+      surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+      splashFactory: NoSplash.splashFactory,
+      animationDuration: Duration.zero,
+      minimumSize: const WidgetStatePropertyAll(
+        Size(0, kMinInteractiveDimension),
+      ),
+      padding: const WidgetStatePropertyAll(
+        EdgeInsets.symmetric(horizontal: horizontalPadding, vertical: gap),
+      ),
+      visualDensity: VisualDensity.standard,
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      alignment: AlignmentDirectional.centerStart,
+      shape: WidgetStatePropertyAll(
+        RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(SiteLensMetrics.inputRadius),
+        ),
+      ),
+      side: WidgetStateProperty.resolveWith(
+        (states) => BorderSide(
+          color:
+              states.contains(WidgetState.focused) &&
+                  !states.contains(WidgetState.disabled)
+              ? theme.colorScheme.primary
+              : Colors.transparent,
+          width: 1.4,
+        ),
+      ),
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxWidth = constraints.hasBoundedWidth
+            ? constraints.maxWidth
+            : preferredWidth;
+        final width = math.min(preferredWidth, maxWidth);
+        return SizedBox(
+          width: width,
+          child: MenuAnchor(
+            controller: _menuController,
+            childFocusNode: _focusNode,
+            consumeOutsideTap: true,
+            crossAxisUnconstrained: false,
+            onOpen: () => setState(() => _expanded = true),
+            onClose: () => setState(() => _expanded = false),
+            style: MenuStyle(
+              alignment: AlignmentDirectional.bottomStart,
+              backgroundColor: WidgetStatePropertyAll(colors.surfaceOpaque),
+              elevation: const WidgetStatePropertyAll(0),
+              shadowColor: const WidgetStatePropertyAll(Colors.transparent),
+              surfaceTintColor: const WidgetStatePropertyAll(
+                Colors.transparent,
+              ),
+              padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+              minimumSize: const WidgetStatePropertyAll(Size.zero),
+              maximumSize: WidgetStatePropertyAll(
+                Size(preferredWidth, double.infinity),
+              ),
+              visualDensity: VisualDensity.standard,
+              shape: WidgetStatePropertyAll(
+                RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(
+                    SiteLensMetrics.inputRadius,
+                  ),
+                  side: BorderSide(color: colors.panelBorder),
+                ),
+              ),
+            ),
+            menuChildren: [
+              for (final option in widget.options)
+                MenuItemButton(
+                  style: style.copyWith(
+                    backgroundColor: WidgetStatePropertyAll(
+                      option.value == widget.value
+                          ? theme.colorScheme.primary.withValues(alpha: 0.12)
+                          : Colors.transparent,
+                    ),
+                  ),
+                  onPressed: !_enabled || !option.enabled
+                      ? null
+                      : () => widget.onSelected?.call(option.value),
+                  child: Semantics(
+                    selected: option.value == widget.value,
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: iconSize,
+                          child: option.value == widget.value
+                              ? const Icon(Icons.check, size: iconSize)
+                              : null,
+                        ),
+                        const SizedBox(width: gap),
+                        Flexible(child: Text(option.label)),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+            builder: (context, controller, _) => Tooltip(
+              message: widget.label,
+              excludeFromSemantics: true,
+              child: SizedBox(
+                width: width,
+                child: TextButton(
+                  focusNode: _focusNode,
+                  style: style.copyWith(
+                    backgroundColor: WidgetStatePropertyAll(colors.wellTint),
+                    side: WidgetStateProperty.resolveWith(
+                      (states) => BorderSide(
+                        color: states.contains(WidgetState.focused) && _enabled
+                            ? theme.colorScheme.primary
+                            : colors.panelBorder,
+                        width: 1.4,
+                      ),
+                    ),
+                  ),
+                  onPressed: !_enabled
+                      ? null
+                      : () => controller.isOpen
+                            ? controller.close()
+                            : controller.open(),
+                  child: Semantics(
+                    label: widget.label,
+                    value: selected.label,
+                    expanded: _expanded,
+                    excludeSemantics: true,
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            selected.label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: gap),
+                        const Icon(Icons.expand_more, size: iconSize),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
 
 /// Keeps an episode suffix visible by trimming the left side when space is tight.
 class SiteLensLeadingEllipsisText extends StatelessWidget {

@@ -10,6 +10,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.net.wifi.WifiManager
 import android.provider.Settings
 import androidx.core.content.FileProvider
@@ -20,6 +22,8 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
     private companion object {
@@ -32,6 +36,8 @@ class MainActivity : FlutterActivity() {
     private var nativeDownloads: NativeDownloadRuntime? = null
     private var nativeExport: NativeExportRuntime? = null
     private var dlnaMulticastLock: WifiManager.MulticastLock? = null
+    private var diagnosticsExecutor: ExecutorService? = null
+    private var diagnosticsGeneration = 0
 
     private fun postNotification(title: String, body: String) {
         val manager = getSystemService(NotificationManager::class.java)
@@ -91,13 +97,55 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun registerDiagnosticsChannel(flutterEngine: FlutterEngine) {
+        diagnosticsExecutor?.shutdownNow()
+        val executor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "site-lens-diagnostics").apply { isDaemon = true }
+        }
+        diagnosticsExecutor = executor
+        val generation = ++diagnosticsGeneration
+        val mainHandler = Handler(Looper.getMainLooper())
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "site_lens/diagnostics",
         ).setMethodCallHandler { call, result ->
             when (call.method) {
-                "drain" -> result.success(NativeCrashStore.drain(this))
-                else -> result.notImplemented()
+                "ack" -> try {
+                    val rows = call.argument<List<String>>("rows").orEmpty()
+                    executor.execute {
+                        val acknowledged = runCatching { NativeCrashStore.acknowledge(applicationContext, rows) }
+                        mainHandler.post {
+                            if (generation != diagnosticsGeneration) return@post
+                            runCatching { acknowledged.fold(
+                                onSuccess = { result.success(null) },
+                                onFailure = { result.error("diagnostics_unavailable", it.message, null) },
+                            ) }
+                        }
+                    }
+                } catch (error: RuntimeException) {
+                    if (generation == diagnosticsGeneration) runCatching {
+                        result.error("diagnostics_unavailable", error.message, null)
+                    }
+                }
+                "drain" -> try {
+                    executor.execute {
+                        val drained = runCatching {
+                            NativeCrashStore.drainIncludingHistoricalExits(applicationContext)
+                        }
+                        mainHandler.post {
+                            if (generation == diagnosticsGeneration) {
+                                runCatching { drained.fold(
+                                    onSuccess = { rows -> result.success(rows) },
+                                    onFailure = { error -> result.error("diagnostics_unavailable", error.message, null) },
+                                ) }
+                            }
+                        }
+                    }
+                } catch (error: RuntimeException) {
+                    if (generation == diagnosticsGeneration) runCatching {
+                        result.error("diagnostics_unavailable", error.message, null)
+                    }
+                }
+                else -> if (generation == diagnosticsGeneration) runCatching { result.notImplemented() }.let { }
             }
         }
     }
@@ -308,6 +356,9 @@ class MainActivity : FlutterActivity() {
     override fun onPause() { hosts?.foreground(false); super.onPause() }
     override fun onResume() { super.onResume(); hosts?.foreground(true) }
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        diagnosticsGeneration++
+        diagnosticsExecutor?.shutdownNow()
+        diagnosticsExecutor = null
         hosts?.dispose(); hosts = null
         nativeMedia?.dispose(); nativeMedia = null
         nativeDownloads?.let { nativeDownloads = null }

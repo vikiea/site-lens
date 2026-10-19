@@ -330,10 +330,8 @@ class NativeHosts extends WebHostEvents {
         final rawTitle = observedTitle.isEmpty
             ? session.title.trim()
             : observedTitle;
-        final title =
-            episodeNumber != null &&
-                !RegExp(r'第\s*\d+\s*[集话]').hasMatch(rawTitle)
-            ? '$rawTitle - 第$episodeNumber集'
+        final title = episodeNumber != null && episodeNumber > 0
+            ? mediaTitleForEpisode(rawTitle, episodeNumber)
             : rawTitle;
         final candidate = MediaCandidate(
           id: 'dom:${session.id}:${session.generation}:$key',
@@ -620,11 +618,8 @@ class NativeHosts extends WebHostEvents {
         final rawTitle = args['title'] as String? ?? '';
         final episodeNumber = (args['episodeNumber'] as num?)?.toInt();
         final title =
-            episodeNumber != null &&
-                episodeNumber > 0 &&
-                episodeNumber < 100000 &&
-                !RegExp(r'第\s*\d+\s*[集话期]').hasMatch(rawTitle)
-            ? '$rawTitle - 第$episodeNumber集'
+            episodeNumber != null && episodeNumber > 0 && episodeNumber < 100000
+            ? mediaTitleForEpisode(rawTitle, episodeNumber)
             : rawTitle;
         final thumbnailUrl = optionalMediaUri(args['thumbnail'] as String?);
         final rawMime = (args['mime'] as String? ?? '').trim();

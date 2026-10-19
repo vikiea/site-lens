@@ -1402,9 +1402,13 @@ class AppDatabase extends GeneratedDatabase {
     required String message,
     required String details,
     String? context,
+    bool deduplicateContext = false,
   }) async {
     await customStatement(
-      'INSERT INTO app_error_logs(happened_at,level,module,message,details,context) VALUES(?,?,?,?,?,?)',
+      deduplicateContext && context != null
+          ? 'INSERT INTO app_error_logs(happened_at,level,module,message,details,context) '
+                'SELECT ?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM app_error_logs WHERE context=?)'
+          : 'INSERT INTO app_error_logs(happened_at,level,module,message,details,context) VALUES(?,?,?,?,?,?)',
       [
         DateTime.now().toUtc().toIso8601String(),
         level,
@@ -1412,6 +1416,7 @@ class AppDatabase extends GeneratedDatabase {
         message,
         details,
         context,
+        if (deduplicateContext && context != null) context,
       ],
     );
     // Keep the archive useful and bounded on long-lived devices. The newest

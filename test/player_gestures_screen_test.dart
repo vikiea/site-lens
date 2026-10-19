@@ -111,6 +111,36 @@ void main() {
     expect(find.text('完整说明'), findsOneWidget);
   });
 
+  testWidgets('gesture help rows remain bounded at narrow large text', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final db = AppDatabase(NativeDatabase.memory());
+    final app = AppController(db, api: FakeWebHostApi());
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => MediaQuery(
+              data: MediaQuery.of(context)
+                  .copyWith(textScaler: const TextScaler.linear(2.5)),
+              child: PlayerGesturesScreen(app: app),
+            ),
+          ),
+        ),
+      );
+      expect(tester.takeException(), isNull);
+      expect(find.text('显示 / 隐藏控制栏'), findsOneWidget);
+    } finally {
+      await tester.pumpWidget(const SizedBox());
+      await app.shutdown();
+      await db.close();
+    }
+  });
+
   testWidgets('playlist truncates the left side and preserves episode suffix', (
     tester,
   ) async {

@@ -151,6 +151,15 @@ class BrowserMediaController(
     private fun stopService() {
         runCatching { BrowserMediaService.stop(activity, token) }
     }
+    // Renderer death forbids calls into WebView/provider APIs. Drop callbacks
+    // and the OS media owner without trying to pause or remove JS listeners.
+    fun rendererGone() {
+        if (disposed) return
+        disposed = true
+        playing = false
+        injection = null
+        stopService()
+    }
     fun dispose() {
         if (disposed) return
         mute(true); evaluate("pause"); disposed = true

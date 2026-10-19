@@ -63,22 +63,25 @@ class AppErrorLogger {
     String? context,
     String level = 'error',
     StackTrace? stack,
-  }) => recordMessage(
-    message: readableError(error),
-    details: _redact(error.toString()),
-    module: module,
-    context: context,
-    level: level,
-    stack: stack,
-  );
+  }) async {
+    await recordMessage(
+      message: readableError(error),
+      details: _redact(error.toString()),
+      module: module,
+      context: context,
+      level: level,
+      stack: stack,
+    );
+  }
 
-  Future<void> recordMessage({
+  Future<bool> recordMessage({
     required String message,
     required String details,
     required String module,
     String? context,
     String level = 'error',
     StackTrace? stack,
+    bool deduplicateContext = false,
   }) async {
     try {
       await db.appendAppError(
@@ -87,9 +90,12 @@ class AppErrorLogger {
         message: _clip(message, 240),
         details: _clip(_withStack(details, stack), 8000),
         context: context == null ? null : _clip(_redact(context), 300),
+        deduplicateContext: deduplicateContext,
       );
+      return true;
     } catch (_) {
       // Diagnostics must never make a failed operation fail again.
+      return false;
     }
   }
 
@@ -139,19 +145,34 @@ class AppErrorLogger {
     try {
       final rows = await const MethodChannel('site_lens/diagnostics')
           .invokeListMethod<String>('drain');
+      final acknowledged = <String>[];
       for (final row in rows ?? const <String>[]) {
         try {
           final value = jsonDecode(row) as Map<String, dynamic>;
-          await recordMessage(
+          final imported = await recordMessage(
             message: value['message'] as String? ?? '原生异常',
             details: value['details'] as String? ?? row,
             module: value['module'] as String? ?? 'android',
-            context: value['context'] as String?,
+            context: value['reportId'] == null
+                ? value['context'] as String?
+                : 'native-report:${value['reportId']}',
             level: value['level'] as String? ?? 'error',
+            deduplicateContext: value['reportId'] != null,
           );
+          if (imported) acknowledged.add(row);
         } catch (_) {
-          await recordMessage(message: '原生异常', details: row, module: 'android');
+          if (await recordMessage(
+            message: '原生异常',
+            details: row,
+            module: 'android',
+          )) {
+            acknowledged.add(row);
+          }
         }
+      }
+      if (acknowledged.isNotEmpty) {
+        await const MethodChannel('site_lens/diagnostics')
+            .invokeMethod<void>('ack', {'rows': acknowledged});
       }
     } catch (_) {
       // The channel is Android-only and may be unavailable in tests/iOS.

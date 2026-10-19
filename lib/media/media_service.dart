@@ -24,6 +24,7 @@ class MediaErrorCode {
   static const network = 'network';
   static const cancelled = 'cancelled';
   static const relayDenied = 'relay_denied';
+  static const cacheMissing = 'cache_missing';
 }
 
 String? mediaEpisodeLabel(String value) {
@@ -31,8 +32,27 @@ String? mediaEpisodeLabel(String value) {
     r'(?:第\s*(\d+)\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*(\d+)\b)',
     caseSensitive: false,
   ).firstMatch(value);
-  final number = match?.group(1) ?? match?.group(2);
+  final route = RegExp(
+    r'(?:vodplay|play)/[0-9]+-[0-9]+-([0-9]+)(?:[./?#]|$)',
+    caseSensitive: false,
+  ).firstMatch(value);
+  final number = match?.group(1) ?? match?.group(2) ?? route?.group(1);
   return number == null ? null : '第${int.parse(number)}集';
+}
+
+String mediaTitleForEpisode(String title, int episodeNumber) {
+  var value = title.trim().replaceAll(RegExp(r'\s+'), ' ');
+  value = value
+      .replaceAll(
+        RegExp(
+          r'\s*[-–—|]?\s*(?:第\s*\d+\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*\d+\b)\s*$',
+          caseSensitive: false,
+        ),
+        '',
+      )
+      .trim();
+  if (value.isEmpty) value = '媒体';
+  return '$value - 第$episodeNumber集';
 }
 
 String mediaExportFileName(MediaTask task) {
@@ -44,6 +64,20 @@ String mediaExportFileName(MediaTask task) {
       .replaceAll(RegExp(r'[. ]+$'), '');
   final runes = (safe.isEmpty ? task.id : safe).runes.toList();
   return '${String.fromCharCodes(runes.length <= 70 ? runes : runes.skip(runes.length - 70))}.mp4';
+}
+
+String mediaPlaylistEntryName(Iterable<MediaTask> playlist, MediaTask task) {
+  final duplicates = playlist.where(
+    (item) => item.displayName == task.displayName,
+  );
+  if (duplicates.length <= 1) return task.displayName;
+  // Old tasks can share stale episode metadata even though their streams
+  // differ. Preserve their recorded title while giving each resource a stable
+  // visible identity; never invent an episode number from download order.
+  final ordered = duplicates.toList()
+    ..sort((a, b) => a.cacheKey.compareTo(b.cacheKey));
+  final index = ordered.indexWhere((item) => item.id == task.id);
+  return '${task.displayName} · 来源 ${index + 1}';
 }
 
 List<MediaTask> mediaPlaylistForTasks(
@@ -334,6 +368,7 @@ class MediaTaskStore {
   final _tasks = <String, MediaTask>{};
   final _byCacheKey = <String, String>{};
   final _references = <String, int>{};
+  final _exclusive = <String>{};
   final _directoryLocks = <String, Future<void>>{};
   MediaTask? task(String id) => _tasks[id];
   List<MediaTask> get tasks => List.unmodifiable(_tasks.values);
@@ -392,12 +427,12 @@ class MediaTaskStore {
   }
 
   static String? _candidateEpisodeLabel(MediaCandidate candidate) {
-    // A page title can remain constant while the player URL changes per
-    // episode. Prefer the media/source URL marker, then fall back to title.
+    // Prefer a concrete media identity, then the per-resource title (including
+    // explicit DOM episode metadata), then the current document URL.
     for (final value in [
       candidate.mediaUrl.toString(),
-      candidate.sourceUrl.toString(),
       candidate.title,
+      candidate.sourceUrl.toString(),
     ]) {
       final label = mediaEpisodeLabel(value);
       if (label != null) return label;
@@ -418,8 +453,9 @@ class MediaTaskStore {
             'video',
             'media',
           }.contains(task.displayTitle.trim().toLowerCase());
-      final next =
-          candidate == null || (!missingTitle && task.episodeLabel != null)
+      final sameIdentity =
+          candidate != null && task.cacheKey == cacheKey(candidate);
+      final next = !sameIdentity
           ? task
           : task.copyWith(
               displayTitle: missingTitle && candidate.title.trim().isNotEmpty
@@ -440,6 +476,7 @@ class MediaTaskStore {
     _byCacheKey
       ..clear()
       ..addEntries(repaired.map((task) => MapEntry(task.cacheKey, task.id)));
+    await reconcileCachedFiles();
   }
 
   MediaTask transition(
@@ -471,10 +508,14 @@ class MediaTaskStore {
         MediaTaskState.reauthorize,
       },
       MediaTaskState.completed => {
+        MediaTaskState.failed,
         MediaTaskState.playable,
         MediaTaskState.cancelled,
       },
-      MediaTaskState.playable => {MediaTaskState.cancelled},
+      MediaTaskState.playable => {
+        MediaTaskState.cancelled,
+        MediaTaskState.failed,
+      },
       MediaTaskState.reauthorize => {
         MediaTaskState.downloading,
         MediaTaskState.cancelled,
@@ -535,6 +576,9 @@ class MediaTaskStore {
 
   void retain(String taskId) {
     if (!_tasks.containsKey(taskId)) throw StateError('媒体任务不存在');
+    if (_exclusive.contains(taskId)) {
+      throw StateError('媒体任务正在执行文件操作，请稍后重试');
+    }
     _references[taskId] = (_references[taskId] ?? 0) + 1;
   }
 
@@ -547,15 +591,100 @@ class MediaTaskStore {
     }
   }
 
-  bool canDelete(String taskId) => (_references[taskId] ?? 0) == 0;
+  bool canDelete(String taskId) =>
+      (_references[taskId] ?? 0) == 0 && !_exclusive.contains(taskId);
 
-  Future<void> delete(String taskId) async {
-    if (!canDelete(taskId)) throw StateError('媒体任务仍被播放、导出或投屏占用');
+  bool isExclusive(String taskId) => _exclusive.contains(taskId);
+
+  void acquireExclusive(String taskId) {
+    if (!_tasks.containsKey(taskId)) throw StateError('媒体任务不存在');
+    if (!canDelete(taskId) || !_exclusive.add(taskId)) {
+      throw StateError('媒体任务仍被播放、导出、投屏或管理占用');
+    }
+  }
+
+  void releaseExclusive(String taskId) => _exclusive.remove(taskId);
+
+  Future<T> withExclusive<T>(String taskId, Future<T> Function() action) async {
+    acquireExclusive(taskId);
+    try {
+      return await action();
+    } finally {
+      releaseExclusive(taskId);
+    }
+  }
+
+  Future<void> delete(
+    String taskId, {
+    bool exclusiveAlreadyHeld = false,
+  }) async {
+    if (!exclusiveAlreadyHeld) {
+      await withExclusive(
+        taskId,
+        () => delete(taskId, exclusiveAlreadyHeld: true),
+      );
+      return;
+    }
+    if (!isExclusive(taskId)) throw StateError('媒体任务未持有排他操作锁');
     _tasks.remove(taskId);
     _byCacheKey.removeWhere((_, id) => id == taskId);
     // Keep completed task metadata for recovery unless the caller explicitly
     // asks to delete it from the durable store.
     await db?.deleteMediaTask(taskId);
+  }
+
+  Future<void> reconcileCachedFiles() async {
+    for (final task in tasks) {
+      if ((task.state == MediaTaskState.playable ||
+              task.state == MediaTaskState.completed) &&
+          task.localRef != null &&
+          await cachedFile(task.id) == null) {
+        markCacheMissing(task.id);
+      }
+    }
+  }
+
+  MediaTask markCacheMissing(String taskId) {
+    final current = task(taskId) ?? (throw StateError('媒体任务不存在'));
+    if (current.state != MediaTaskState.completed &&
+        current.state != MediaTaskState.playable) {
+      return current;
+    }
+    setLocalRef(taskId, null);
+    updateProgress(taskId, 0, totalBytes: current.totalBytes);
+    return transition(
+      taskId,
+      MediaTaskState.failed,
+      errorCode: MediaErrorCode.cacheMissing,
+      errorReason: '文件缺失，请重新下载',
+    );
+  }
+
+  Future<void> deleteCachedFiles(
+    String taskId, {
+    bool exclusiveAlreadyHeld = false,
+  }) async {
+    if (!exclusiveAlreadyHeld) {
+      await withExclusive(
+        taskId,
+        () => deleteCachedFiles(taskId, exclusiveAlreadyHeld: true),
+      );
+      return;
+    }
+    final current = task(taskId) ?? (throw StateError('媒体任务不存在'));
+    final file = await cachedFile(taskId, validateHls: false);
+    if (file != null) {
+      // Only a task-specific HLS directory may be removed recursively; a
+      // series directory can contain other episodes and must remain intact.
+      if (file.parent.uri.pathSegments.where((v) => v.isNotEmpty).lastOrNull ==
+          '${current.cacheKey}.hls') {
+        await file.parent.delete(recursive: true);
+      } else {
+        await file.delete();
+      }
+    }
+    markCacheMissing(taskId);
+    setLocalRef(taskId, null);
   }
 
   Future<Directory> cacheDirectory({String? seriesDirectory}) async {
@@ -583,7 +712,7 @@ class MediaTaskStore {
 
   Future<Directory> cacheRootDirectory() => cacheDirectory();
 
-  Future<File?> cachedFile(String taskId) async {
+  Future<File?> cachedFile(String taskId, {bool validateHls = true}) async {
     final task = _tasks[taskId];
     final ref = task?.localRef;
     if (ref == null) return null;
@@ -591,7 +720,9 @@ class MediaTaskStore {
     final appRoot = (await _directoryProvider()).absolute.path;
     final exportRoot = Directory('$appRoot/media_exports').absolute.path;
     final file = File(ref).absolute;
-    if (!await file.exists()) return null;
+    if (!await file.exists() || (validateHls && await file.length() <= 0)) {
+      return null;
+    }
     final canonical = await file.resolveSymbolicLinks();
     final roots = [root, exportRoot];
     if (Platform.isAndroid) {
@@ -613,6 +744,14 @@ class MediaTaskStore {
       (allowed) => canonical.startsWith('$allowed${Platform.pathSeparator}'),
     )) {
       throw StateError('缓存引用越界');
+    }
+    if (validateHls && file.path.toLowerCase().endsWith('.m3u8')) {
+      try {
+        final input = await const HlsPlaylistParser().parseFile(file.uri);
+        await validateHlsCacheInput(input);
+      } catch (_) {
+        return null;
+      }
     }
     return file;
   }
@@ -1375,13 +1514,40 @@ class HlsInputValidator {
           canonical != rootPath) {
         throw const FormatException('HLS 输入包含远程地址或越界路径');
       }
-      if (!file.existsSync()) {
+      if (!file.existsSync() || file.lengthSync() <= 0) {
         throw const FormatException('HLS 输入分片缺失');
       }
     }
     return List.unmodifiable(all);
   }
 }
+
+// Keep the isolate boundary limited to strings and lists of strings. Creating
+// the closure inside export() can capture the service and its unsendable Drift
+// database connection; sending Uri-rich domain objects also couples this
+// worker to their isolate transfer behavior.
+Future<void> validateHlsCacheInput(HlsCacheInput input) =>
+    _validateHlsCachePathsInIsolate(
+      playlistPath: input.playlist.toFilePath(),
+      segmentPaths: input.segments.map((value) => value.toFilePath()).toList(),
+      initSegmentPath: input.initSegment?.toFilePath(),
+      keyPaths: input.keys.map((value) => value.toFilePath()).toList(),
+    );
+
+Future<void> _validateHlsCachePathsInIsolate({
+  required String playlistPath,
+  required List<String> segmentPaths,
+  required String? initSegmentPath,
+  required List<String> keyPaths,
+}) => Isolate.run(() {
+  const validator = HlsInputValidator();
+  validator.validate(
+    playlist: Uri.file(playlistPath),
+    segments: segmentPaths.map(Uri.file).toList(),
+    initSegment: initSegmentPath == null ? null : Uri.file(initSegmentPath),
+    keys: keyPaths.map(Uri.file).toList(),
+  );
+});
 
 class HlsCacheInput {
   const HlsCacheInput({
@@ -1533,15 +1699,7 @@ class Mp4ExportService {
         task.state != MediaTaskState.playable) {
       throw StateError('媒体缓存尚未完成');
     }
-    const validator = HlsInputValidator();
-    await Isolate.run(
-      () => validator.validate(
-        playlist: input.playlist,
-        segments: input.segments,
-        initSegment: input.initSegment,
-        keys: input.keys,
-      ),
-    );
+    await validateHlsCacheInput(input);
     final cancel = cancellation ?? Cancellation();
     final report = onProgress ?? (_) {};
     final root = await _directoryProvider();
@@ -1646,8 +1804,22 @@ class Mp4ExportService {
       throw StateError('导出文件尚未校验完成');
     }
     final runtime = native;
-    if (runtime == null) throw StateError(MediaErrorCode.unsupported);
-    await runtime.deliver(source: task.outputPath!, destination: destination);
+    if (runtime == null) throw StateError('当前平台未提供 MP4 转封装服务');
+    if (destination.scheme == 'content' &&
+        destination.pathSegments.contains('tree') &&
+        !destination.pathSegments.contains('document')) {
+      final sourceName =
+          File(task.outputPath!).uri.pathSegments.lastOrNull ?? 'media.mp4';
+      await runtime.deliverToDirectory(
+        source: task.outputPath!,
+        directory: destination,
+        fileName: sourceName.toLowerCase().endsWith('.mp4')
+            ? sourceName
+            : '$sourceName.mp4',
+      );
+    } else {
+      await runtime.deliver(source: task.outputPath!, destination: destination);
+    }
     return task.copyWith(state: ExportState.delivered, progress: 100);
   }
 }
@@ -1718,13 +1890,10 @@ class RelayAuthorizer {
     if (ttl <= Duration.zero || ttl > const Duration(minutes: 15)) {
       throw ArgumentError('中继授权期限无效');
     }
-    final token = sha256
-        .convert(
-          utf8.encode(
-            '$sessionId|$taskId|$deviceId|${DateTime.now().microsecondsSinceEpoch}',
-          ),
-        )
-        .toString();
+    final random = Random.secure();
+    final token = base64UrlEncode(
+      List<int>.generate(32, (_) => random.nextInt(256)),
+    ).replaceAll('=', '');
     return RelayAuthorization(
       token: token,
       sessionId: sessionId,
@@ -1791,7 +1960,9 @@ class CastSessionController {
   CastSession? get active => _active;
 
   CastSession begin({required CastDevice device, required String mediaTaskId}) {
-    if (_active != null && _active!.state != CastSessionState.stopped) {
+    if (_active != null &&
+        _active!.state != CastSessionState.stopped &&
+        _active!.state != CastSessionState.failed) {
       throw StateError('已有投屏会话');
     }
     if (tasks.task(mediaTaskId) == null) throw StateError('媒体任务不存在');
@@ -1814,14 +1985,17 @@ class CastSessionController {
       CastSessionState.discovering => {
         CastSessionState.connecting,
         CastSessionState.failed,
+        CastSessionState.stopped,
       },
       CastSessionState.connecting => {
         CastSessionState.settingMedia,
         CastSessionState.failed,
+        CastSessionState.stopped,
       },
       CastSessionState.settingMedia => {
         CastSessionState.playing,
         CastSessionState.failed,
+        CastSessionState.stopped,
       },
       CastSessionState.playing => {
         CastSessionState.paused,
@@ -1833,8 +2007,8 @@ class CastSessionController {
         CastSessionState.stopped,
         CastSessionState.failed,
       },
-      CastSessionState.stopped ||
-      CastSessionState.failed => <CastSessionState>{},
+      CastSessionState.stopped => <CastSessionState>{},
+      CastSessionState.failed => {CastSessionState.stopped},
     };
     if (!allowed.contains(next) && next != current.state) {
       throw StateError('非法投屏状态迁移 ${current.state.name} -> ${next.name}');
@@ -1849,7 +2023,9 @@ class CastSessionController {
       errorCode: errorCode,
     );
     _active = updated;
-    if (next == CastSessionState.stopped || next == CastSessionState.failed) {
+    if ((next == CastSessionState.stopped || next == CastSessionState.failed) &&
+        current.state != CastSessionState.stopped &&
+        current.state != CastSessionState.failed) {
       tasks.release(current.mediaTaskId);
     }
     return updated;

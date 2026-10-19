@@ -417,14 +417,54 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
 
     private fun deliver(sourcePath: String, destination: Uri) {
         validateLocal(sourcePath)
-        val source = File(sourcePath)
-        val output = when (destination.scheme) {
-            "content" -> context.contentResolver.openOutputStream(destination, "w")
-            "file" -> File(destination.path ?: error("文件目标无效")).outputStream()
-            "" -> File(destination.path ?: error("文件目标无效")).outputStream()
-            else -> null
-        } ?: error("导出目标无效")
-        source.inputStream().use { input -> output.use { input.copyTo(it) } }
+        val source = File(sourcePath).canonicalFile
+        if (destination.scheme == "content" && DocumentsContract.isTreeUri(destination) &&
+            !DocumentsContract.isDocumentUri(context, destination)) {
+            deliverToDirectory(sourcePath, destination, source.name)
+            return
+        }
+        val targetFile = when (destination.scheme) {
+            "file", "", null -> File(destination.path ?: error("文件目标无效")).canonicalFile.also {
+                require(it.isAbsolute && it != source) { "导出目标与源文件相同或无效" }
+                it.parentFile?.mkdirs()
+            }
+            "content" -> null
+            else -> error("导出目标类型不支持，请重新选择 MP4 保存目录")
+        }
+        fun openTargetInput() = if (targetFile != null) targetFile.inputStream()
+            else context.contentResolver.openInputStream(destination) ?: error("导出目标无法读取校验")
+        val expected = MessageDigest.getInstance("SHA-256")
+        var count = 0L
+        val output = if (targetFile != null) targetFile.outputStream()
+            else context.contentResolver.openOutputStream(destination, "wt") ?: error("导出目标不可写，请重新选择 MP4 保存目录")
+        source.inputStream().use { input ->
+            output.use {
+                val buffer = ByteArray(128 * 1024)
+                while (true) {
+                    check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    it.write(buffer, 0, read)
+                    expected.update(buffer, 0, read)
+                    count += read
+                }
+                it.flush()
+            }
+        }
+        require(count > 0L) { "导出文件为空" }
+        val actual = MessageDigest.getInstance("SHA-256")
+        var actualSize = 0L
+        openTargetInput().use { input ->
+            val buffer = ByteArray(128 * 1024)
+            while (true) {
+                check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                val read = input.read(buffer)
+                if (read < 0) break
+                actual.update(buffer, 0, read)
+                actualSize += read
+            }
+        }
+        require(actualSize == count && actual.digest().contentEquals(expected.digest())) { "导出文件校验失败" }
     }
 
     private fun deliverToDirectory(sourcePath: String, directory: Uri, fileName: String): String {

@@ -144,4 +144,37 @@ void main() {
       expect(await output.exists(), isTrue);
     },
   );
+
+  test('deleting a legacy artifact keeps the shared task MP4 cache', () async {
+    tasks.setLocalRef(task.id, output.path);
+    await library.restore();
+
+    await library.delete(task.id);
+
+    expect(library.items, isEmpty);
+    expect(await output.exists(), isFalse);
+    expect(await (await tasks.cachedFile(task.id))!.readAsBytes(), [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+    ]);
+    expect(tasks.task(task.id)!.state, MediaTaskState.playable);
+    final restored = MediaLibrary(db: db, tasks: tasks);
+    addTearDown(restored.dispose);
+    await restored.restore();
+    expect(restored.items, isEmpty);
+  });
+
+  test('invalid configured URI never reports a delivered artifact', () async {
+    final previous = await library.register(task, output.path);
+    await expectLater(
+      library.deliver(task.id, 'https://example.com/Movies'),
+      throwsStateError,
+    );
+    expect(library.item(task.id)!.location, previous.location);
+    expect(await output.length(), 6);
+  });
 }

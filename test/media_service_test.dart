@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:drift/native.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:site_lens/data/database.dart';
 import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/media/dlna_service.dart';
 import 'package:site_lens/media/media_service.dart';
@@ -74,6 +76,38 @@ void main() {
     );
     expect(task.episodeLabel, '第3集');
   });
+
+  test('explicit episode titles replace stale page episode markers', () {
+    expect(mediaTitleForEpisode('母衣半暖默许春朝 - 第4集', 7), '母衣半暖默许春朝 - 第7集');
+  });
+
+  test(
+    'restoring a reused candidate ID keeps the task episode snapshot',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final original = candidate(
+        id: 'reused',
+        title: '系列 - 第7集',
+        url: 'https://cdn.example/episode-7/index.m3u8',
+      );
+      await db.saveMediaCandidate(original);
+      final firstStore = MediaTaskStore(db: db);
+      final task = firstStore.create(original);
+      await db.saveMediaTask(task);
+      final replacement = candidate(
+        id: 'reused',
+        title: '系列 - 第8集',
+        url: 'https://cdn.example/episode-8/index.m3u8',
+      );
+      await db.saveMediaCandidate(replacement);
+      final restored = MediaTaskStore(db: db);
+
+      await restored.restore();
+
+      expect(restored.task(task.id)!.episodeLabel, '第7集');
+    },
+  );
 
   test('media tasks deduplicate observation IDs for the same stream', () {
     final store = MediaTaskStore();
@@ -379,6 +413,83 @@ void main() {
     },
   );
 
+  test('missing playable cache becomes a retryable task failure', () async {
+    final root = await Directory.systemTemp.createTemp('site-lens-missing-');
+    addTearDown(() => root.delete(recursive: true));
+    final store = MediaTaskStore(directoryProvider: () async => root);
+    final task = store.create(candidate());
+    store.transition(task.id, MediaTaskState.downloading);
+    store.transition(task.id, MediaTaskState.playable);
+    store.setLocalRef(task.id, '${root.path}/missing/index.m3u8');
+
+    await store.reconcileCachedFiles();
+
+    final repaired = store.task(task.id)!;
+    expect(repaired.state, MediaTaskState.failed);
+    expect(repaired.errorCode, MediaErrorCode.cacheMissing);
+    expect(repaired.errorReason, '文件缺失，请重新下载');
+    expect(repaired.localRef, isNull);
+  });
+
+  test('zero-byte HLS resources are treated as a missing cache', () async {
+    final root = await Directory.systemTemp.createTemp('site-lens-zero-hls-');
+    addTearDown(() => root.delete(recursive: true));
+    final store = MediaTaskStore(directoryProvider: () async => root);
+    final task = store.create(candidate(url: 'https://cdn.example/live.m3u8'));
+    store.transition(task.id, MediaTaskState.downloading);
+    store.transition(task.id, MediaTaskState.playable);
+    final cache = await store.cacheDirectory(
+      seriesDirectory: task.seriesDirectoryName,
+    );
+    final playlist = File('${cache.path}/index.m3u8')
+      ..writeAsStringSync('#EXTM3U\n#EXTINF:1,\nsegment.ts\n');
+    File('${cache.path}/segment.ts').createSync();
+    store.setLocalRef(task.id, playlist.path);
+
+    await store.reconcileCachedFiles();
+
+    expect(store.task(task.id)!.state, MediaTaskState.failed);
+    expect(store.task(task.id)!.errorCode, MediaErrorCode.cacheMissing);
+  });
+
+  test('exclusive media operations block new playback references', () {
+    final store = MediaTaskStore();
+    final task = store.create(candidate());
+    store.acquireExclusive(task.id);
+    expect(() => store.retain(task.id), throwsStateError);
+    store.releaseExclusive(task.id);
+    store.retain(task.id);
+    expect(() => store.acquireExclusive(task.id), throwsStateError);
+    store.release(task.id);
+  });
+
+  test('deleting one HLS task cache preserves adjacent episodes', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'site-lens-delete-cache-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final store = MediaTaskStore(directoryProvider: () async => root);
+    final task = store.create(candidate(title: '系列 - 第1集'));
+    final directory = await store.cacheDirectory(seriesDirectory: '系列');
+    final cache = Directory('${directory.path}/${task.cacheKey}.hls')
+      ..createSync();
+    final playlist = File('${cache.path}/index.m3u8')
+      ..writeAsStringSync('#EXTM3U\nsegment.ts\n');
+    File('${cache.path}/segment.ts').writeAsBytesSync([1]);
+    final adjacent = File('${directory.path}/other-episode.marker')
+      ..writeAsStringSync('keep');
+    store.transition(task.id, MediaTaskState.downloading);
+    store.transition(task.id, MediaTaskState.playable);
+    store.setLocalRef(task.id, playlist.path);
+
+    await store.deleteCachedFiles(task.id);
+
+    expect(await cache.exists(), isFalse);
+    expect(await adjacent.exists(), isTrue);
+    expect(store.task(task.id)!.state, MediaTaskState.failed);
+    expect(store.task(task.id)!.errorCode, MediaErrorCode.cacheMissing);
+  });
+
   test('HLS parser and validator accept only local complete inputs', () async {
     final root = await Directory.systemTemp.createTemp('site-lens-hls-');
     addTearDown(() => root.delete(recursive: true));
@@ -468,6 +579,52 @@ void main() {
       expect(await File(successful.outputPath!).exists(), isTrue);
       expect(store.task(task.id)?.localRef, isNull);
       expect(progress, containsAllInOrder([0, 50, 100]));
+    },
+  );
+
+  test(
+    'MP4 export keeps a Drift-backed task store out of the isolate message',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-export-drift-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final database = AppDatabase(NativeDatabase.memory());
+      addTearDown(database.close);
+      final playlist = File('${root.path}/index.m3u8')
+        ..writeAsStringSync('#EXTM3U\n#EXTINF:1,\nseg.ts\n');
+      final segment = File('${root.path}/seg.ts')..writeAsBytesSync([1, 2, 3]);
+      final store = MediaTaskStore(
+        db: database,
+        directoryProvider: () async => root,
+      );
+      final media = candidate();
+      await database.saveMediaCandidate(media);
+      final task = store.create(media);
+      store.transition(task.id, MediaTaskState.downloading);
+      store.transition(task.id, MediaTaskState.completed);
+      store.transition(task.id, MediaTaskState.playable);
+      final service = Mp4ExportService(
+        tasks: store,
+        directoryProvider: () async => root,
+        muxer:
+            ({
+              required HlsCacheInput input,
+              required String outputPath,
+              required void Function(int) onProgress,
+              required Cancellation cancellation,
+            }) async {
+              await File(outputPath).writeAsBytes([9, 8, 7]);
+            },
+      );
+
+      final result = await service.export(
+        task.id,
+        HlsCacheInput(playlist: playlist.uri, segments: [segment.uri]),
+      );
+
+      expect(result.state, ExportState.deliverable);
+      expect(await File(result.outputPath!).readAsBytes(), [9, 8, 7]);
     },
   );
 

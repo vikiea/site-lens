@@ -30,6 +30,7 @@ void main() {
         source: MediaCandidateSource.dom,
       );
       final tasks = MediaTaskStore(directoryProvider: () async => root, db: db);
+      await db.saveMediaCandidate(candidate);
       final task = tasks.create(candidate);
       expect(
         tasks.transition(task.id, MediaTaskState.downloading).state,
