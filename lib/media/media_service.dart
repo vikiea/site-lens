@@ -860,6 +860,41 @@ class MediaDownloadService {
   final _stopping = <String>{};
   final _dartTasks = <String>{};
 
+  /// Resume identity keeps content selectors while dropping only credentials
+  /// that are expected to rotate. It is separate from [mediaCandidateGroupKey]
+  /// because a UI-equivalent URL can still identify a different representation.
+  String _resumeContentIdentity(Uri url) {
+    const volatileCredentials = {
+      'auth',
+      'auth_key',
+      'expires',
+      'expire',
+      'exp',
+      'hmac',
+      'sig',
+      'sign',
+      'signature',
+      'token',
+    };
+    final clean = url.removeFragment();
+    final query = clean.queryParametersAll.entries
+        .where(
+          (entry) => !volatileCredentials.contains(entry.key.toLowerCase()),
+        )
+        .expand(
+          (entry) => entry.value.map(
+            (value) =>
+                '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(value)}',
+          ),
+        )
+        .join('&');
+    final base = clean
+        .replace(queryParameters: const <String, String>{})
+        .toString()
+        .replaceFirst(RegExp(r'\?$'), '');
+    return query.isEmpty ? base : '$base?$query';
+  }
+
   Future<void> reconcileNative() async {
     for (final task in tasks.tasks) {
       await refreshTask(task.id);
@@ -1475,8 +1510,13 @@ class MediaDownloadService {
         remote.userInfo.isNotEmpty) {
       throw const FormatException('HLS 分片地址无效');
     }
+    // A completed HLS resource is content, not a UI candidate. Preserve the
+    // full signed resource URL so a new version/signature cannot reuse an old
+    // key or segment merely because its path is the same. The partial file
+    // below keeps a stable resume name, so an interrupted transfer can still
+    // continue across a refreshed signature after validator checks.
     final key = sha256
-        .convert(utf8.encode(mediaCandidateGroupKey(remote)))
+        .convert(utf8.encode(remote.removeFragment().toString()))
         .toString();
     final existing = resources[key];
     if (existing != null) {
@@ -1487,7 +1527,10 @@ class MediaDownloadService {
       resources.remove(key);
     }
     final name = 'resource_$key.bin';
-    final partial = File('${staging.path}/$name.part');
+    final resumeKey = sha256
+        .convert(utf8.encode(_resumeContentIdentity(remote)))
+        .toString();
+    final partial = File('${staging.path}/resume_$resumeKey.part');
     await _downloadFile(
       remote,
       partial,
@@ -1539,6 +1582,7 @@ class MediaDownloadService {
     String text,
   ) async {
     final keys = <String>{};
+    final resumeNames = <String>{};
     for (final raw in text.split(RegExp(r'\r?\n'))) {
       final line = raw.trim();
       final reference =
@@ -1548,11 +1592,16 @@ class MediaDownloadService {
           ? null
           : line;
       if (reference != null) {
+        final remote = playlist.resolve(reference);
+        final resumeKey = sha256
+            .convert(utf8.encode(_resumeContentIdentity(remote)))
+            .toString();
+        resumeNames.add('resume_$resumeKey.part');
         keys.add(
           sha256
               .convert(
                 utf8.encode(
-                  mediaCandidateGroupKey(playlist.resolve(reference)),
+                  playlist.resolve(reference).removeFragment().toString(),
                 ),
               )
               .toString(),
@@ -1570,6 +1619,12 @@ class MediaDownloadService {
         r'^(resource_(?:[0-9a-f]{64}|\d{5})\.bin)(?:$|\.part)',
       ).firstMatch(file.uri.pathSegments.last);
       if (match != null && !names.contains(match.group(1))) {
+        await file.delete();
+      }
+      final resume = RegExp(
+        r'^(resume_[0-9a-f]{64}\.part)(?:$|\.resume\.json(?:\.tmp)?$)',
+      ).firstMatch(file.uri.pathSegments.last);
+      if (resume != null && !resumeNames.contains(resume.group(1))) {
         await file.delete();
       }
     }
@@ -1641,7 +1696,7 @@ class MediaDownloadService {
     required int maxBytes,
   }) async {
     final identity = sha256
-        .convert(utf8.encode(mediaCandidateGroupKey(url)))
+        .convert(utf8.encode(_resumeContentIdentity(url)))
         .toString();
     Object lastError = const SocketException('媒体连接失败');
     var attempt = 0;
@@ -1742,7 +1797,7 @@ class MediaDownloadService {
         rethrow;
       } on SocketException catch (error) {
         lastError = error;
-      } on HandshakeException catch (error) {
+      } on TlsException catch (error) {
         lastError = error;
       } on TimeoutException catch (error) {
         lastError = error;
@@ -1794,9 +1849,11 @@ class MediaDownloadService {
         rethrow;
       } on SocketException catch (error) {
         lastError = error;
-      } on HandshakeException catch (error) {
+      } on TlsException catch (error) {
         lastError = error;
       } on TimeoutException catch (error) {
+        lastError = error;
+      } on HttpException catch (error) {
         lastError = error;
       }
       if (attempt < 2) {

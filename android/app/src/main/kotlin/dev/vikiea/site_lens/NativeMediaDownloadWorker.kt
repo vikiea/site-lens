@@ -36,11 +36,11 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
             }
             val transfer = ResumableMediaTransfer(
                 cancelled = { isObsolete() || SystemClock.elapsedRealtime() >= deadline },
-                connect = { uri ->
+                connectForAttempt = { uri, attempt ->
                     val connectivity = applicationContext.getSystemService(android.net.ConnectivityManager::class.java)
                     val vpn = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
                         ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true
-                    SystemMediaNetwork.openConnection(uri, allowProxyFakeIp = vpn)
+                    SystemMediaNetwork.openConnection(uri, allowProxyFakeIp = vpn, attempt = attempt)
                 },
             )
             ownedTransfer = transfer

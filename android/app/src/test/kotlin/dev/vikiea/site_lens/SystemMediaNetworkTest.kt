@@ -3,6 +3,7 @@ package dev.vikiea.site_lens
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.InetAddress
+import java.net.HttpURLConnection
 import java.net.Proxy
 import java.net.ProxySelector
 import java.net.SocketAddress
@@ -12,6 +13,57 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class SystemMediaNetworkTest {
+    @Test
+    fun proxyWithDirectFallbackDoesNotResolveOriginBeforeTryingProxy() {
+        val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7890))
+        val policy = selector { listOf(proxy, Proxy.NO_PROXY) }
+        val target = URI("https://cdn.example/a")
+        val visited = mutableListOf<Proxy>()
+        var resolutions = 0
+        val connection = object : HttpURLConnection(target.toURL()) {
+            override fun connect() = Unit
+            override fun disconnect() = Unit
+            override fun usingProxy() = true
+        }
+        fun open(attempt: Int) = SystemMediaNetwork.openConnection(
+            target, attempt = attempt, selector = policy,
+            resolve = { resolutions++; arrayOf(InetAddress.getByName("198.18.0.1")) },
+            open = { _, selected -> visited.add(selected); connection },
+        )
+        assertEquals(connection, open(0))
+        assertEquals(0, resolutions)
+        assertEquals(listOf(proxy), visited)
+        // An unsafe DIRECT fallback is skipped without opening a connection.
+        assertEquals(connection, open(1))
+        assertEquals(1, resolutions)
+        assertEquals(listOf(proxy, proxy), visited)
+    }
+
+    @Test
+    fun retryAdvancesPacProxyAndOnlySelectedDirectChecksDns() {
+        val first = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7890))
+        val second = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7891))
+        val policy = selector { listOf(first, second, Proxy.NO_PROXY) }
+        val target = URI("https://cdn.example/a")
+        val visited = mutableListOf<Proxy>()
+        var resolutions = 0
+        for (attempt in 0..2) {
+            SystemMediaNetwork.openConnection(target, attempt = attempt, selector = policy,
+                resolve = { resolutions++; arrayOf(InetAddress.getByName("8.8.8.8")) },
+                open = { _, selected ->
+                    visited.add(selected)
+                    object : HttpURLConnection(target.toURL()) {
+                        override fun connect() = Unit
+                        override fun disconnect() = Unit
+                        override fun usingProxy() = selected != Proxy.NO_PROXY
+                    }
+                },
+            )
+        }
+        assertEquals(listOf(first, second, Proxy.NO_PROXY), visited)
+        assertEquals(1, resolutions)
+    }
+
     @Test
     fun privateAndReservedTargetsAreRejectedBeforeProxySelection() {
         for (host in listOf("localhost", "127.0.0.1", "2130706433", "10.1.2.3", "192.168.1.1",

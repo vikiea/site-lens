@@ -1,5 +1,6 @@
 package dev.vikiea.site_lens
 
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.Inet6Address
@@ -60,16 +61,39 @@ object SystemMediaNetwork {
             }
         }
 
-    fun openConnection(uri: URI, allowProxyFakeIp: Boolean = false): HttpURLConnection {
-        val selected = proxies(uri)
-        if (selected.any { it.type() == Proxy.Type.DIRECT }) {
-            val addresses = InetAddress.getAllByName(uri.host)
-            require(addresses.isNotEmpty() && addresses.all {
-                publicAddress(it) || allowProxyFakeIp && fakeIp(it)
-            }) { "DNS 包含本机/私网媒体地址；请检查系统代理或 VPN 设置" }
+    fun openConnection(
+        uri: URI,
+        allowProxyFakeIp: Boolean = false,
+        attempt: Int = 0,
+        selector: ProxySelector? = ProxySelector.getDefault(),
+        resolve: (String) -> Array<InetAddress> = InetAddress::getAllByName,
+        open: (URI, Proxy) -> HttpURLConnection = { target, proxy -> target.toURL().openConnection(proxy) as HttpURLConnection },
+    ): HttpURLConnection {
+        val selected = proxies(uri, selector)
+        var lastIo: IOException? = null
+        var lastPolicy: IllegalArgumentException? = null
+        // The transfer retry budget advances PAC candidates after a network
+        // failure. Never resolve the origin merely because DIRECT is a later
+        // fallback; check its DNS only when that route is actually selected.
+        for (offset in selected.indices) {
+            val proxy = selected[(attempt + offset) % selected.size]
+            try {
+                if (proxy.type() == Proxy.Type.DIRECT) {
+                    val addresses = resolve(uri.host)
+                    require(addresses.isNotEmpty() && addresses.all {
+                        publicAddress(it) || allowProxyFakeIp && fakeIp(it)
+                    }) { "DNS 包含本机/私网媒体地址；请检查系统代理或 VPN 设置" }
+                }
+                return open(uri, proxy).also {
+                    it.connectTimeout = 15000
+                    it.readTimeout = 20000
+                }
+            } catch (error: IllegalArgumentException) {
+                lastPolicy = error
+            } catch (error: IOException) {
+                lastIo = error
+            }
         }
-        // Let Android's connection route selector attempt every PAC candidate
-        // and report failed proxy endpoints to the system ProxySelector.
-        return uri.toURL().openConnection() as HttpURLConnection
+        throw lastPolicy ?: lastIo ?: IOException("系统代理没有可用路由")
     }
 }

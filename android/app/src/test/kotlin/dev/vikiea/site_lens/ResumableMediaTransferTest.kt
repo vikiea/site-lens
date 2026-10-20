@@ -207,6 +207,43 @@ class ResumableMediaTransferTest {
         assertEquals(4, requests)
     }
 
+    @Test
+    fun redirectRetryAdvancesRouteForTheFailedOrigin() = fixture { root ->
+        val start = URL("https://cdn.example/start").toURI()
+        val redirected = URL("https://other.example/video").toURI()
+        val attempts = mutableListOf<Pair<String, Int>>()
+        val success = FakeConnection(
+            200,
+            mapOf("ETag" to "\"v1\"", "Content-Length" to "2"),
+            ByteArrayInputStream(byteArrayOf(1, 2)),
+        )
+        val transfer = ResumableMediaTransfer(
+            connectForAttempt = { uri, attempt ->
+                attempts += uri.host to attempt
+                when (uri.host) {
+                    "cdn.example" -> FakeConnection(
+                        302,
+                        mapOf("Location" to redirected.toString()),
+                        ByteArrayInputStream(byteArrayOf()),
+                    )
+                    else -> if (attempt == 0) FailingResponseCodeConnection() else success
+                }
+            },
+        )
+        val partial = File(root, "video.part")
+        assertEquals(2L, transfer.transfer(start, start, partial, "test"))
+        assertEquals(
+            listOf(
+                "cdn.example" to 0,
+                "other.example" to 0,
+                "cdn.example" to 0,
+                "other.example" to 1,
+            ),
+            attempts,
+        )
+        assertArrayEquals(byteArrayOf(1, 2), partial.readBytes())
+    }
+
     private fun fixture(run: (File) -> Unit) {
         val root = Files.createTempDirectory("site-lens-native-download-").toFile()
         try {
@@ -228,6 +265,14 @@ class ResumableMediaTransferTest {
             }
             return read
         }
+    }
+
+    private class FailingResponseCodeConnection :
+        HttpURLConnection(URL("https://other.example/video")) {
+        override fun connect() = Unit
+        override fun disconnect() = Unit
+        override fun usingProxy() = false
+        override fun getResponseCode(): Int = throw IOException("route failed")
     }
 
     private class FakeConnection(

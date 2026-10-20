@@ -13,7 +13,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 /** Pure JVM transport, also exercised against an actual local HTTP server. */
 class ResumableMediaTransfer(
     private val cancelled: () -> Boolean = { false },
-    private val connect: (URI) -> HttpURLConnection = { SystemMediaNetwork.openConnection(it) },
+    private val connect: ((URI) -> HttpURLConnection)? = null,
+    private val connectForAttempt: (URI, Int) -> HttpURLConnection = { uri, attempt ->
+        SystemMediaNetwork.openConnection(uri, attempt = attempt)
+    },
     private val validate: (URI) -> Unit = SystemMediaNetwork::validateTarget,
 ) {
     private val aborted = AtomicBoolean(false)
@@ -37,8 +40,10 @@ class ResumableMediaTransfer(
         val identity = MessageDigest.getInstance("SHA-256").digest(stableIdentity(url).toByteArray())
             .joinToString("") { "%02x".format(it) }
         var failure: IOException? = null
+        val routeAttempts = mutableMapOf<String, Int>()
         repeat(4) { attempt ->
             checkActive()
+            var failedUri = url
             try {
                 while (true) {
                     checkActive()
@@ -57,7 +62,10 @@ class ResumableMediaTransfer(
                     try {
                         for (redirect in 0..5) {
                             checkActive(); validate(uri)
-                            val current = connect(uri)
+                            failedUri = uri
+                            val routeKey = uri.toString()
+                            val current = connect?.invoke(uri)
+                                ?: connectForAttempt(uri, routeAttempts[routeKey] ?: 0)
                             connection = current
                             current.instanceFollowRedirects = false
                             current.connectTimeout = 15000
@@ -172,13 +180,13 @@ class ResumableMediaTransfer(
                         }
                         return length
                     } finally {
-                        response?.disconnect(); connection = null
+                        connection?.disconnect(); connection = null
                     }
                 }
-            } catch (error: InterruptedIOException) {
-                checkActive(); failure = error
             } catch (error: IOException) {
                 checkActive(); failure = error
+                val routeKey = failedUri.toString()
+                routeAttempts[routeKey] = (routeAttempts[routeKey] ?: 0) + 1
             } finally {
                 connection?.disconnect(); connection = null
             }
@@ -188,11 +196,12 @@ class ResumableMediaTransfer(
     }
 
     private fun stableIdentity(uri: URI): String {
-        val volatile = setOf("auth", "auth_key", "expires", "expire", "exp", "hmac", "sig", "sign", "signature", "t", "time", "timestamp", "token", "v", "via", "via_bm")
+        val volatile = setOf("auth", "auth_key", "expires", "expire", "exp", "hmac", "sig", "sign", "signature", "token")
         val query = uri.rawQuery?.split('&')?.filter {
             it.substringBefore('=').lowercase() !in volatile
         }?.joinToString("&")
-        return URI(uri.scheme, uri.rawAuthority, uri.path, query, null).toString()
+        val base = uri.toASCIIString().substringBefore('#').substringBefore('?')
+        return base + if (query.isNullOrEmpty()) "" else "?$query"
     }
 }
 

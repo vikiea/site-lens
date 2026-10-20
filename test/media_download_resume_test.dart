@@ -7,6 +7,134 @@ import 'package:site_lens/media/media_service.dart';
 import 'package:site_lens/network/transport.dart';
 
 void main() {
+  test('HLS key versions keep separate cached bytes', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'site-lens-key-version-',
+    );
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async {
+      await server.close(force: true);
+      await root.delete(recursive: true);
+    });
+    final hits = <String>[];
+    server.listen((request) async {
+      hits.add(request.uri.toString());
+      if (request.uri.path.endsWith('.m3u8')) {
+        request.response.write(
+          '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="key.bin?v=1"\n'
+          '#EXTINF:1,\na.ts\n#EXT-X-KEY:METHOD=AES-128,URI="key.bin?v=2"\n'
+          '#EXTINF:1,\nb.ts\n#EXT-X-ENDLIST\n',
+        );
+      } else {
+        final version =
+            int.tryParse(request.uri.queryParameters['v'] ?? '') ?? 3;
+        request.response.add(List<int>.filled(16, version));
+      }
+      await request.response.close();
+    });
+    final candidate = _candidate(
+      Uri.parse('http://127.0.0.1:${server.port}/index.m3u8'),
+    );
+    final store = MediaTaskStore(directoryProvider: () async => root);
+    final task = store.create(candidate);
+    await MediaDownloadService(
+      tasks: store,
+      http: ControlledHttp(allowLocal: true),
+    ).start(task, candidate);
+    final cached = (await store.cachedFile(task.id))!;
+    final input = await const HlsPlaylistParser().parseFile(cached.uri);
+    expect(input.keys, hasLength(2));
+    expect(input.keys[0], isNot(input.keys[1]));
+    expect(
+      await File.fromUri(input.keys[0]).readAsBytes(),
+      List<int>.filled(16, 1),
+    );
+    expect(
+      await File.fromUri(input.keys[1]).readAsBytes(),
+      List<int>.filled(16, 2),
+    );
+    expect(hits.where((url) => url.startsWith('/key.bin')), [
+      '/key.bin?v=1',
+      '/key.bin?v=2',
+    ]);
+  });
+
+  for (final changed in [false, true]) {
+    test(
+      'HLS refreshed signatures ${changed ? "replace changed" : "retain matching"} partial bytes',
+      () async {
+        final root = await Directory.systemTemp.createTemp(
+          'site-lens-signature-resume-',
+        );
+        addTearDown(() => root.delete(recursive: true));
+        final candidate = _candidate(
+          Uri.parse('https://cdn.example/index.m3u8'),
+        );
+        final store = MediaTaskStore(directoryProvider: () async => root);
+        final task = store.create(candidate);
+        final http = _RotatingHlsHttp(changed: changed);
+        final service = MediaDownloadService(tasks: store, http: http);
+        await expectLater(service.start(task, candidate), throwsStateError);
+        expect(store.task(task.id)!.state, MediaTaskState.reauthorize);
+        http.refreshed = true;
+        final result = await service.start(store.task(task.id)!, candidate);
+        expect(result.state, MediaTaskState.playable);
+        final cached = (await store.cachedFile(task.id))!;
+        final input = await const HlsPlaylistParser().parseFile(cached.uri);
+        expect(
+          await File.fromUri(input.segments.single).readAsBytes(),
+          changed ? [8, 9, 10] : [1, 2, 3],
+        );
+        expect(http.offsets, changed ? [0, 2, 0] : [0, 2]);
+      },
+    );
+  }
+
+  test(
+    'HLS content selector change resets even with the same validator',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-content-version-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final candidate = _candidate(Uri.parse('https://cdn.example/index.m3u8'));
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final task = store.create(candidate);
+      final http = _RotatingHlsHttp(changed: false, versionChanged: true);
+      final service = MediaDownloadService(tasks: store, http: http);
+      await expectLater(service.start(task, candidate), throwsStateError);
+      http.refreshed = true;
+      final result = await service.start(store.task(task.id)!, candidate);
+      expect(result.state, MediaTaskState.playable);
+      expect(http.offsets, [0, 0]);
+    },
+  );
+
+  for (final failure in [
+    const TlsException('TLS body interrupted'),
+    const HttpException('Connection closed before full header was received'),
+  ]) {
+    test('HLS retries a transient manifest ${failure.runtimeType}', () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-manifest-retry-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final candidate = _candidate(Uri.parse('https://cdn.example/index.m3u8'));
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final http = _HlsResumeHttp(
+        candidate.mediaUrl,
+        candidate.mediaUrl.resolve('seg.ts'),
+        manifestFailure: failure,
+      );
+      final result = await MediaDownloadService(
+        tasks: store,
+        http: http,
+      ).start(store.create(candidate), candidate);
+      expect(result.state, MediaTaskState.playable);
+      expect(http.manifestCalls, 2);
+    });
+  }
+
   test(
     'streamed transport safely handles 206, ignored Range 200 and 416',
     () async {
@@ -210,12 +338,98 @@ void main() {
   });
 }
 
+MediaCandidate _candidate(Uri playlist) => MediaCandidate(
+  id: 'hls-cache-regression',
+  hostId: 7,
+  generation: 3,
+  sourceUrl: Uri.parse('https://example.com/watch'),
+  mediaUrl: playlist,
+  title: 'HLS cache regression',
+  mime: 'application/vnd.apple.mpegurl',
+  source: MediaCandidateSource.dom,
+);
+
+class _RotatingHlsHttp extends ControlledHttp {
+  _RotatingHlsHttp({required this.changed, this.versionChanged = false});
+  final bool changed;
+  final bool versionChanged;
+  bool refreshed = false;
+  final offsets = <int>[];
+
+  @override
+  Future<FetchResponse> fetch(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    String method = 'GET',
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    String? body,
+    Duration timeout = const Duration(seconds: 15),
+    int maxBytes = 1024 * 1024,
+  }) async => FetchResponse(
+    url: url,
+    status: 200,
+    headers: const {},
+    bytes: utf8.encode(
+      '#EXTM3U\n#EXTINF:1,\nseg.ts?token=${refreshed ? "new" : "old"}'
+      '${versionChanged ? "&v=${refreshed ? 2 : 1}" : ""}\n',
+    ),
+  );
+
+  @override
+  Future<FetchFileResponse> fetchToFile(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    required File destination,
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    int resumeOffset = 0,
+    int maxBytes = 2 * 1024 * 1024 * 1024,
+    Future<void> Function(int, Map<String, String>)? onHeaders,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    offsets.add(resumeOffset);
+    if (!refreshed) {
+      await onHeaders?.call(200, const {'etag': '"one"'});
+      await destination.writeAsBytes([1, 2], flush: true);
+      throw StateError('HTTP 403 authorization expired');
+    }
+    expect(url.queryParameters['token'], 'new');
+    final status = resumeOffset > 0 ? 206 : 200;
+    final responseHeaders = {
+      'etag': changed ? '"two"' : '"one"',
+      if (status == 206) 'content-range': 'bytes 2-2/3',
+    };
+    await onHeaders?.call(status, responseHeaders);
+    final bytes = resumeOffset > 0 ? [3] : [8, 9, 10];
+    await destination.writeAsBytes(
+      bytes,
+      mode: resumeOffset > 0 ? FileMode.append : FileMode.write,
+      flush: true,
+    );
+    return FetchFileResponse(
+      url: url,
+      status: status,
+      headers: responseHeaders,
+      bytesWritten: bytes.length,
+      totalBytes: 3,
+      appended: resumeOffset > 0,
+    );
+  }
+}
+
 class _HlsResumeHttp extends ControlledHttp {
-  _HlsResumeHttp(this.playlist, this.segment);
+  _HlsResumeHttp(this.playlist, this.segment, {this.manifestFailure});
 
   final Uri playlist;
   final Uri segment;
   var segmentCalls = 0;
+  var manifestCalls = 0;
+  final Object? manifestFailure;
 
   @override
   Future<FetchResponse> fetch(
@@ -231,6 +445,7 @@ class _HlsResumeHttp extends ControlledHttp {
     int maxBytes = 1024 * 1024,
   }) async {
     expect(url, playlist);
+    if (++manifestCalls == 1 && manifestFailure != null) throw manifestFailure!;
     return FetchResponse(
       url: playlist,
       status: HttpStatus.ok,
