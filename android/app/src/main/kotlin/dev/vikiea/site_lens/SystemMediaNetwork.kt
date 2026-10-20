@@ -52,14 +52,22 @@ object SystemMediaNetwork {
         return selected
     }
 
-    fun configuration(uri: URI, selector: ProxySelector? = ProxySelector.getDefault()): String =
-        proxies(uri, selector).joinToString("; ") { proxy ->
+    fun configuration(
+        uri: URI,
+        selector: ProxySelector? = ProxySelector.getDefault(),
+        attempt: Int = 0,
+    ): String {
+        val selected = proxies(uri, selector)
+        val start = Math.floorMod(attempt, selected.size)
+        val ordered = selected.drop(start) + selected.take(start)
+        return ordered.joinToString("; ") { proxy ->
             if (proxy.type() == Proxy.Type.DIRECT) "DIRECT" else {
                 val address = proxy.address() as InetSocketAddress
                 val host = address.hostString.let { if (it.contains(':')) "[$it]" else it }
                 "PROXY $host:${address.port}"
             }
         }
+    }
 
     fun openConnection(
         uri: URI,

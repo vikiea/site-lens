@@ -15,6 +15,7 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
@@ -42,6 +43,7 @@ class NativeMediaRuntime(
     private var textureEntry: TextureRegistry.SurfaceTextureEntry? = null
     private var surface: Surface? = null
     private var state: String = "stopped"
+    private var lastError: String? = null
 
     fun attach(channel: MethodChannel) {
         this.channel = channel
@@ -55,9 +57,11 @@ class NativeMediaRuntime(
                 "openLocal" -> openLocal(call, result)
                 "play" -> {
                     requireSession(call)
+                    if (player!!.playbackState == Player.STATE_ENDED) {
+                        player!!.seekToDefaultPosition()
+                    }
                     player!!.play()
-                    state = "playing"
-                    emit("playing")
+                    syncPlaybackState(player!!)
                     result.success(snapshot())
                 }
                 "pause" -> {
@@ -170,6 +174,16 @@ class NativeMediaRuntime(
     }
 
     private fun openLocal(call: MethodCall, result: MethodChannel.Result) {
+        val document = call.argument<String>("uri")
+        if (document != null) {
+            val uri = Uri.parse(document)
+            require(uri.scheme == "content" && !uri.authority.isNullOrBlank()) { "本地媒体地址无效" }
+            context.contentResolver.openFileDescriptor(uri, "r")?.use {
+                require(it.statSize != 0L) { "本地媒体不存在或为空" }
+            } ?: error("无法读取本地媒体文件")
+            start(call, result, uri, "video/mp4", null, null)
+            return
+        }
         val raw = call.argument<String>("path")?.trim() ?: error("缺少本地媒体路径")
         val file = File(raw).canonicalFile
         val roots = listOfNotNull(
@@ -197,8 +211,12 @@ class NativeMediaRuntime(
             ?: "native_${UUID.randomUUID()}"
         candidateId = call.argument<String>("candidateId")
         speed = 1f
+        lastError = null
 
-        val playerBuilder = ExoPlayer.Builder(context)
+        val playerBuilder = ExoPlayer.Builder(
+            context,
+            DefaultRenderersFactory(context).setEnableDecoderFallback(true),
+        )
         val dataSourceFactory: DataSource.Factory
         if (referer != null) {
             val http = DefaultHttpDataSource.Factory()
@@ -227,33 +245,24 @@ class NativeMediaRuntime(
         attachSurface(next)
         next.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
-                when (playbackState) {
-                    Player.STATE_BUFFERING -> {
-                        state = "buffering"
-                        emit("buffering")
-                    }
-                    Player.STATE_READY -> {
-                        state = if (next.isPlaying) "playing" else "paused"
-                        emit(state)
-                    }
-                    Player.STATE_ENDED -> {
-                        state = "completed"
-                        emit("completed")
-                    }
-                }
+                syncPlaybackState(next)
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (state == "completed" || state == "failed" || state == "stopped") return
-                state = if (isPlaying) "playing" else "paused"
-                emit(state)
+                syncPlaybackState(next)
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                syncPlaybackState(next)
             }
 
             override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                if (next !== player) return
                 emit(state)
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                if (next !== player) return
                 state = "failed"
                 val detail = buildString {
                     append(error.errorCodeName).append(':')
@@ -269,6 +278,7 @@ class NativeMediaRuntime(
                     details = detail,
                     contextValue = "session=${sessionId ?: "unknown"}",
                 )
+                lastError = detail
                 emit("failed", detail)
             }
         })
@@ -294,10 +304,28 @@ class NativeMediaRuntime(
         } else {
             next.setMediaItem(item)
         }
+        state = "preparing"
         next.playWhenReady = true
         next.prepare()
-        state = "preparing"
         result.success(snapshot())
+    }
+
+    /**
+     * ExoPlayer reports isPlaying=false while an item is preparing or buffering.
+     * Treating every false callback as user pause makes the Flutter control
+     * immediately switch back to Play and a subsequent tap only repeats
+     * playWhenReady=true. Keep preparation/buffering states until the player is
+     * ready, and only expose paused after an explicit playWhenReady=false.
+     */
+    private fun syncPlaybackState(active: ExoPlayer) {
+        if (active !== player || state == "failed" || state == "stopped") return
+        val nextState = NativePlaybackState.resolve(
+            state, active.playbackState, active.isPlaying, active.playWhenReady,
+        )
+        if (nextState != state) {
+            state = nextState
+            emit(nextState)
+        }
     }
 
     private fun emit(nextState: String, error: String? = null) {
@@ -318,7 +346,7 @@ class NativeMediaRuntime(
             "videoWidth" to (active?.videoSize?.width ?: 0),
             "videoHeight" to (active?.videoSize?.height ?: 0),
             "speed" to speed,
-            "errorCode" to error,
+            "errorCode" to (error ?: lastError),
         )
     }
 

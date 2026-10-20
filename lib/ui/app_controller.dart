@@ -83,8 +83,12 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     mediaDownloads = MediaDownloadService(
       tasks: mediaTasks,
       native: nativeDownloads,
-      http: ControlledHttp(mediaRoute: MediaNetwork().route),
+      http: ControlledHttp(
+        mediaRouteForAttempt: (uri, attempt) =>
+            MediaNetwork().route(uri, attempt: attempt),
+      ),
       authorize: _authorizeMediaDownload,
+      tlsTransfer: Platform.isAndroid ? MediaNetwork().transferFile : null,
     );
     mediaExports = Mp4ExportService(tasks: mediaTasks, native: nativeExports);
     mediaLibrary = MediaLibrary(
@@ -98,6 +102,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     mediaCast = DlnaCastController(
       castSessions,
       onTemporaryTaskFinished: cleanupTemporaryCastTask,
+      onSessionFinished: _releaseCastCopy,
     );
     mediaPlayback = NativePlaybackController();
     hosts.onNewWindow = (hostId, url) {
@@ -935,9 +940,27 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<File?> mediaPlaybackFile(MediaTask task) async {
-    final libraryFile = await mediaLibrary.localFile(task.id);
-    if (libraryFile != null) return libraryFile;
+  Future<void> _releaseCastCopy(String taskId) async {
+    try {
+      await mediaLibrary.releaseMaterializedCopy(taskId);
+    } catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.cleanup',
+        context: 'cast:$taskId',
+        stack: stack,
+      );
+    }
+  }
+
+  Future<File?> mediaPlaybackFile(
+    MediaTask task, {
+    bool preferExported = true,
+  }) async {
+    if (preferExported) {
+      final libraryFile = await mediaLibrary.localFile(task.id);
+      if (libraryFile != null) return libraryFile;
+    }
     final cached = await mediaTasks.cachedFile(task.id);
     if (cached == null && task.localRef != null) {
       mediaTasks.markCacheMissing(task.id);

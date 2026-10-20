@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import java.io.File
+import java.io.FileNotFoundException
 import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.util.concurrent.Executors
@@ -103,7 +104,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 runCatching { delete(source) }
                 target
             }
-            "delete" -> { delete(argument("source")); null }
+            "delete" -> { delete(argument("source"), call.argument<Boolean>("allowMissing") == true); null }
             else -> error("未知媒体操作")
         }
     }
@@ -163,11 +164,16 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
     }
 
     private fun validateLocal(path: String): Boolean {
+        val file = validateLocalPath(path)
+        require(file.isFile && file.length() > 0) { "本地输入不存在或为空" }
+        return true
+    }
+
+    private fun validateLocalPath(path: String): File {
         val file = File(path).canonicalFile
         val roots = listOfNotNull(filesRoot, context.getExternalFilesDir(null)?.canonicalFile)
         require(roots.any { nativeValidatePath(file.path, it.path) }) { "输入路径越界" }
-        require(file.isFile && file.length() > 0) { "本地输入不存在或为空" }
-        return true
+        return file
     }
 
     private fun muxHls(playlistPath: String, outputPath: String, cancelled: AtomicBoolean) {
@@ -558,14 +564,26 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         require(name.isNotBlank() && name != "." && name != ".." && !name.contains("..") && name.length <= 220 && !name.any { it == '/' || it == '\\' || it.code < 32 }) { "媒体文件名无效" }
     }
 
-    private fun delete(source: String) {
+    private fun delete(source: String, allowMissing: Boolean = false) {
         val uri = Uri.parse(source)
         if (uri.scheme == "content") {
-            check(DocumentsContract.deleteDocument(context.contentResolver, uri)) { "无法删除媒体文件" }
+            try {
+                if (!DocumentsContract.deleteDocument(context.contentResolver, uri)) {
+                    val missing = allowMissing && context.contentResolver.query(
+                        uri, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID), null, null, null,
+                    )?.use { !it.moveToFirst() } == true
+                    check(missing) { "无法删除媒体文件" }
+                }
+            } catch (error: FileNotFoundException) {
+                if (!allowMissing) throw error
+            }
         } else {
+            require(uri.scheme == null || uri.scheme == "file") { "仅允许本地媒体文件" }
             val path = if (uri.scheme == "file") uri.path!! else source
-            validateLocal(path)
-            check(File(path).delete()) { "无法删除媒体文件" }
+            val file = validateLocalPath(path)
+            if (allowMissing && !file.exists()) return
+            require(file.isFile) { "本地媒体文件不存在" }
+            check(file.delete()) { "无法删除媒体文件" }
         }
     }
 

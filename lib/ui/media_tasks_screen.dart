@@ -95,6 +95,7 @@ class NativeMediaPlayerScreen extends StatefulWidget {
     this.candidate,
     this.playlist = const [],
     this.playlistIndex = 0,
+    this.preferExported = false,
   });
 
   final AppController app;
@@ -103,6 +104,7 @@ class NativeMediaPlayerScreen extends StatefulWidget {
   final MediaCandidate? candidate;
   final List<MediaTask> playlist;
   final int playlistIndex;
+  final bool preferExported;
 
   @override
   State<NativeMediaPlayerScreen> createState() =>
@@ -430,7 +432,17 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
         _playlistRetained.add(task.id);
         retained = true;
       }
-      final cached = await widget.app.mediaPlaybackFile(task);
+      if (widget.preferExported) {
+        final artifact = widget.app.mediaLibrary.item(task.id);
+        final uri = Uri.tryParse(artifact?.location ?? '');
+        if (uri?.scheme == 'content') {
+          return await widget.app.nativeMedia.openDocument(task, uri!);
+        }
+      }
+      final cached = await widget.app.mediaPlaybackFile(
+        task,
+        preferExported: widget.preferExported,
+      );
       if (cached != null) {
         return await widget.app.nativeMedia.openLocal(task, cached);
       }
@@ -450,7 +462,10 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     if (targetIndex < 0 || targetIndex >= widget.playlist.length) return;
     try {
       final next = await _openPlaylistTask(widget.playlist[targetIndex]);
-      if (!mounted) return;
+      if (!mounted || _closing) {
+        await widget.app.nativeMedia.close(sessionId: next.id);
+        return;
+      }
       setState(() {
         _session = next;
         _playlistIndex = targetIndex;
@@ -898,16 +913,26 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
 Future<void> openMediaTaskPlayer(
   BuildContext context,
   AppController app,
-  MediaTask task,
-) async {
+  MediaTask task, {
+  bool preferExported = false,
+}) async {
   app.mediaTasks.retain(task.id);
   try {
     final playlist = mediaPlaylistForTasks(app.mediaTasks.tasks, task);
     final playlistIndex = playlist.indexWhere((item) => item.id == task.id);
-    final cached = await app.mediaPlaybackFile(task);
-    if (cached != null) {
-      final session = await app.nativeMedia.openLocal(task, cached);
-      if (!context.mounted) return;
+    final artifact = preferExported ? app.mediaLibrary.item(task.id) : null;
+    final document = Uri.tryParse(artifact?.location ?? '');
+    final cached = document?.scheme == 'content'
+        ? null
+        : await app.mediaPlaybackFile(task, preferExported: preferExported);
+    if (cached != null || document?.scheme == 'content') {
+      final session = document?.scheme == 'content'
+          ? await app.nativeMedia.openDocument(task, document!)
+          : await app.nativeMedia.openLocal(task, cached!);
+      if (!context.mounted) {
+        await app.nativeMedia.close(sessionId: session.id);
+        return;
+      }
       await Navigator.of(context).push(
         MaterialPageRoute<void>(
           builder: (_) => NativeMediaPlayerScreen(
@@ -916,6 +941,7 @@ Future<void> openMediaTaskPlayer(
             task: task,
             playlist: playlist,
             playlistIndex: playlistIndex < 0 ? 0 : playlistIndex,
+            preferExported: preferExported,
           ),
         ),
       );
@@ -966,7 +992,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
       case 'details':
         await showMediaTaskDetails(context, app, task, artifact: item);
       case 'play':
-        await openMediaTaskPlayer(context, app, task);
+        await openMediaTaskPlayer(context, app, task, preferExported: true);
       case 'cast':
         await castMediaTask(context, app, task);
       case 'rename':
@@ -1291,12 +1317,14 @@ Future<void> showMediaTaskDetails(
   File? file;
   String? fileError;
   try {
-    file = await app.mediaPlaybackFile(task);
+    if (artifact == null) {
+      file = await app.mediaPlaybackFile(task, preferExported: false);
+    }
   } catch (error) {
     fileError = friendlyError(error);
   }
   final stat = await file?.stat();
-  var current = artifact ?? app.mediaLibrary.item(task.id);
+  var current = artifact;
   String? metadataError;
   if (current != null) {
     try {
@@ -1426,8 +1454,8 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
               ),
               const Divider(height: 1, indent: 18, endIndent: 18),
               SwitchListTile(
-                title: const Text('下载完成自动转 MP4'),
-                subtitle: const Text('仅适用于已缓存的 HLS 视频，失败时保留原始清单'),
+                title: const Text('下载完成自动导出 MP4'),
+                subtitle: const Text('保留原始 HLS，MP4 只保存一份到媒体库或指定目录'),
                 value: app.autoConvertToMp4,
                 onChanged: (value) =>
                     safely(context, () => app.setAutoConvertToMp4(value)),

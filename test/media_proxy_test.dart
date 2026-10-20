@@ -151,6 +151,30 @@ void main() {
     },
   );
 
+  test('media route receives the retry attempt number', () async {
+    final attempts = <int>[];
+    final client = ControlledHttp(
+      resolve: (_) async => [InternetAddress('127.0.0.1')],
+      mediaRouteForAttempt: (uri, attempt) async {
+        attempts.add(attempt);
+        return const MediaNetworkRoute(proxy: 'DIRECT');
+      },
+    );
+    final uri = Uri.parse('https://cdn.example/segment.ts');
+    await expectLater(
+      client.fetch(
+        uri,
+        connect: const {'*'},
+        document: uri,
+        cancel: Cancellation(),
+        mediaRequest: true,
+        routeAttempt: 3,
+      ),
+      throwsA(isA<AddressPolicyException>()),
+    );
+    expect(attempts, [3]);
+  });
+
   test(
     'proxy requests still block private literals and local redirects',
     () async {

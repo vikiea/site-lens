@@ -52,6 +52,22 @@ class MediaArtifact {
     createdAt: createdAt,
   );
 
+  MediaArtifact withCopies({String? libraryCopy, String? materializedCopy}) =>
+      MediaArtifact(
+        taskId: taskId,
+        location: location,
+        libraryCopy: libraryCopy,
+        materializedCopy: materializedCopy,
+        name: name,
+        size: size,
+        mime: mime,
+        durationMs: durationMs,
+        width: width,
+        height: height,
+        thumbnailPath: thumbnailPath,
+        createdAt: createdAt,
+      );
+
   Map<String, Object?> toJson() => {
     'taskId': taskId,
     'location': location,
@@ -209,7 +225,7 @@ class MediaLibrary extends ChangeNotifier {
   Future<File?> localFile(String taskId) async {
     final value = _items[taskId];
     if (value == null) return null;
-    final source = value.libraryCopy ?? value.location;
+    final source = value.location;
     if (Uri.tryParse(source)?.scheme == 'content') {
       if (value.materializedCopy != null) {
         final materialized = File(value.materializedCopy!);
@@ -263,13 +279,15 @@ class MediaLibrary extends ChangeNotifier {
     }
   }
 
-  /// Export creates an additional user-visible copy; the verified private MP4
-  /// remains available for native playback and renderer byte-range requests.
+  /// Delivers the verified MP4 and releases the private staging copy when it
+  /// owns the source. The task's HLS cache remains independent of this file.
   Future<void> deliver(String taskId, String? directory) async {
-    if (directory == null || directory.trim().isEmpty) return;
-    final value = _items[taskId] ?? (throw StateError('媒体文件不存在'));
-    final source =
-        (await localFile(taskId))?.path ?? value.libraryCopy ?? value.location;
+    var value = _items[taskId] ?? (throw StateError('媒体文件不存在'));
+    if (directory == null || directory.trim().isEmpty) {
+      value = await inspect(taskId);
+      await _releaseCopies(value);
+      return;
+    }
     var uri = Uri.tryParse(directory.trim());
     if (uri == null ||
         (uri.hasScheme && uri.scheme != 'file' && uri.scheme != 'content') ||
@@ -287,6 +305,28 @@ class MediaLibrary extends ChangeNotifier {
         '${root.path}${Platform.pathSeparator}${mediaSeriesDirectoryName(batchDirectory)}',
       ).uri;
     }
+    // Finish cleanup from earlier deliveries before replacing either pending
+    // copy reference. Verify the canonical output first so recovery bytes are
+    // never removed when the external destination is missing or inaccessible.
+    value = await inspect(taskId);
+    await _releaseCopies(value);
+    value = _items[taskId]!;
+    final existingTarget = Uri.tryParse(value.location);
+    final alreadyDelivered = uri.scheme == 'content'
+        ? existingTarget?.scheme == 'content' &&
+              value.location.startsWith('${uri.toString()}/document/')
+        : existingTarget?.scheme != 'content' &&
+              File(value.location).parent.absolute.path ==
+                  (uri.scheme == 'file'
+                          ? Directory.fromUri(uri)
+                          : Directory(directory))
+                      .absolute
+                      .path;
+    if (alreadyDelivered) {
+      return;
+    }
+    final source =
+        (await localFile(taskId))?.path ?? (throw StateError('媒体文件不存在'));
     String target;
     if (uri.scheme == 'content') {
       final runtime = native ?? (throw StateError('当前平台不支持系统保存目录'));
@@ -323,12 +363,14 @@ class MediaLibrary extends ChangeNotifier {
       }
       target = file.path;
     }
+    // Persist the verified destination before deleting old bytes. Pending
+    // copies remain indexed if cleanup fails or the app exits in between.
     await _save(
       MediaArtifact(
         taskId: taskId,
         location: target,
-        libraryCopy: source,
-        materializedCopy: value.materializedCopy,
+        libraryCopy: value.location,
+        materializedCopy: _items[taskId]?.materializedCopy,
         name: value.name,
         size: value.size,
         mime: value.mime,
@@ -339,6 +381,60 @@ class MediaLibrary extends ChangeNotifier {
         createdAt: value.createdAt,
       ),
     );
+    await _releaseCopies(_items[taskId]!);
+  }
+
+  Future<void> _releaseCopies(MediaArtifact value) async {
+    var current = value;
+    final cache = await tasks.cachedFile(value.taskId, validateHls: false);
+    final paths = {
+      if (value.libraryCopy != null) value.libraryCopy!,
+      if (value.materializedCopy != null) value.materializedCopy!,
+    }..remove(value.location);
+    for (final path in paths) {
+      // Legacy MP4 tasks can own the same bytes. Their cache is independent
+      // until it is explicitly deleted through the task surface.
+      if (cache?.absolute.path != File(path).absolute.path) {
+        if (native != null) {
+          await native!.delete(path, allowMissing: true);
+        } else {
+          final file = File(path);
+          if (await file.exists()) await file.delete();
+        }
+      }
+      current = current.withCopies(
+        libraryCopy: current.libraryCopy == path ? null : current.libraryCopy,
+        materializedCopy: current.materializedCopy == path
+            ? null
+            : current.materializedCopy,
+      );
+      // Persist each completed deletion. Repeating a deletion after a crash
+      // between the filesystem operation and this write is also safe.
+      await _save(current);
+    }
+    if (current.libraryCopy != null || current.materializedCopy != null) {
+      await _save(current.withCopies());
+    }
+  }
+
+  /// Removes the temporary filesystem copy created only to relay a SAF
+  /// document to a DLNA receiver. The user-owned document remains intact.
+  Future<void> releaseMaterializedCopy(String taskId) async {
+    final value = _items[taskId];
+    final path = value?.materializedCopy;
+    if (value == null || path == null || path == value.location) return;
+    tasks.retain(taskId);
+    try {
+      if (native != null) {
+        await native!.delete(path, allowMissing: true);
+      } else {
+        final file = File(path);
+        if (await file.exists()) await file.delete();
+      }
+      await _save(value.withCopies(libraryCopy: value.libraryCopy));
+    } finally {
+      tasks.release(taskId);
+    }
   }
 
   Future<void> rename(String taskId, String name) => _mutate(taskId, (
@@ -473,7 +569,7 @@ class MediaLibrary extends ChangeNotifier {
         if (await file.resolveSymbolicLinks() == cachePath) continue;
       }
       if (native != null) {
-        await native!.delete(path);
+        await native!.delete(path, allowMissing: true);
       } else {
         final file = File(path);
         if (await file.exists()) await file.delete();

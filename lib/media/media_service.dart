@@ -750,6 +750,8 @@ class MediaTaskStore {
       File('${directory.path}/${current.cacheKey}.part'),
       File('${directory.path}/${current.cacheKey}.part.resume.json'),
       File('${directory.path}/${current.cacheKey}.part.resume.json.tmp'),
+      File('${directory.path}/${current.cacheKey}.part.resume'),
+      File('${directory.path}/${current.cacheKey}.part.resume.tmp'),
       Directory('${directory.path}/${current.cacheKey}.hls.part'),
     ]) {
       if (await partial.exists()) {
@@ -843,10 +845,12 @@ class MediaDownloadService {
     ControlledHttp? http,
     this.native,
     this.authorize,
+    this.tlsTransfer,
   }) : http = http ?? ControlledHttp();
 
   final MediaTaskStore tasks;
   final ControlledHttp http;
+  final Future<void> Function(Uri, Uri, File, int, Cancellation)? tlsTransfer;
 
   /// Optional Android OS-managed backend. The deterministic Dart backend stays
   /// available for tests and platforms without DownloadManager.
@@ -1622,7 +1626,7 @@ class MediaDownloadService {
         await file.delete();
       }
       final resume = RegExp(
-        r'^(resume_[0-9a-f]{64}\.part)(?:$|\.resume\.json(?:\.tmp)?$)',
+        r'^(resume_[0-9a-f]{64}\.part)(?:$|\.resume(?:\.json)?(?:\.tmp)?$)',
       ).firstMatch(file.uri.pathSegments.last);
       if (resume != null && !resumeNames.contains(resume.group(1))) {
         await file.delete();
@@ -1649,6 +1653,10 @@ class MediaDownloadService {
     if (await metadata.exists()) await metadata.delete();
     final temporary = File('${metadata.path}.tmp');
     if (await temporary.exists()) await temporary.delete();
+    for (final suffix in ['.resume', '.resume.tmp']) {
+      final nativeState = File('${partial.path}$suffix');
+      if (await nativeState.exists()) await nativeState.delete();
+    }
   }
 
   Future<Map<String, dynamic>> _resumeState(File partial) async {
@@ -1695,6 +1703,12 @@ class MediaDownloadService {
     required Uri document,
     required int maxBytes,
   }) async {
+    final nativeResume = File('${partial.path}.resume');
+    if (tlsTransfer != null && await nativeResume.exists()) {
+      await tlsTransfer!(url, document, partial, maxBytes, cancel);
+      cancel.check();
+      return;
+    }
     final identity = sha256
         .convert(utf8.encode(_resumeContentIdentity(url)))
         .toString();
@@ -1721,6 +1735,7 @@ class MediaDownloadService {
           mediaRequest: true,
           resumeOffset: offset,
           maxBytes: maxBytes,
+          routeAttempt: attempt,
           headers: {
             if (offset > 0) 'Range': 'bytes=$offset-',
             if (offset > 0 && validator != null) 'If-Range': validator,
@@ -1797,6 +1812,8 @@ class MediaDownloadService {
         rethrow;
       } on SocketException catch (error) {
         lastError = error;
+      } on HandshakeException catch (error) {
+        lastError = error;
       } on TlsException catch (error) {
         lastError = error;
       } on TimeoutException catch (error) {
@@ -1811,6 +1828,18 @@ class MediaDownloadService {
         );
         attempt++;
       } else {
+        if (lastError is TlsException && tlsTransfer != null) {
+          // Dart and Android keep different validator sidecars. Transfer
+          // ownership to Android before its first write so a later retry
+          // cannot join native bytes using an older Dart validator.
+          for (final suffix in ['.resume.json', '.resume.json.tmp']) {
+            final state = File('${partial.path}$suffix');
+            if (await state.exists()) await state.delete();
+          }
+          await tlsTransfer!(url, document, partial, maxBytes, cancel);
+          cancel.check();
+          return;
+        }
         throw lastError;
       }
     }
@@ -1840,6 +1869,7 @@ class MediaDownloadService {
           headers: headers,
           mediaRequest: true,
           maxBytes: maxBytes,
+          routeAttempt: attempt,
         );
         if (!_retryableMediaStatus(response.status) || attempt == 2) {
           return response;
@@ -1848,6 +1878,8 @@ class MediaDownloadService {
       } on Cancelled {
         rethrow;
       } on SocketException catch (error) {
+        lastError = error;
+      } on HandshakeException catch (error) {
         lastError = error;
       } on TlsException catch (error) {
         lastError = error;

@@ -217,6 +217,30 @@ void _httpTests() {
       },
     );
 
+    test('relay cleanup finishes before Stop releases the task', () async {
+      final cleanupStarted = Completer<void>();
+      final cleanupDone = Completer<void>();
+      cast.dispose();
+      cast = DlnaCastController(
+        CastSessionController(tasks: tasks),
+        onSessionFinished: (taskId) async {
+          expect(taskId, task.id);
+          expect(tasks.canDelete(taskId), isFalse);
+          cleanupStarted.complete();
+          await cleanupDone.future;
+        },
+        monitorInterval: const Duration(hours: 1),
+      );
+      await start();
+      final stopped = cast.stop();
+      await cleanupStarted.future;
+      expect(tasks.canDelete(task.id), isFalse);
+      await _expectClosed(receiver.media!);
+      cleanupDone.complete();
+      await stopped;
+      expect(tasks.canDelete(task.id), isTrue);
+    });
+
     test(
       'seek and volume commands update the observable session state',
       () async {

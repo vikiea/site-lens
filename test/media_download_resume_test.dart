@@ -136,6 +136,33 @@ void main() {
   }
 
   test(
+    'HLS TLS fallback uses native transport after bounded Dart attempts',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-tls-fallback-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final candidate = _candidate(Uri.parse('https://cdn.example/index.m3u8'));
+      final tasks = MediaTaskStore(directoryProvider: () async => root);
+      final http = _FailingTlsHttp();
+      var nativeCalls = 0;
+      final result = await MediaDownloadService(
+        tasks: tasks,
+        http: http,
+        tlsTransfer: (url, document, destination, maxBytes, cancel) async {
+          nativeCalls++;
+          expect(url.path, '/segment.ts');
+          expect(document, candidate.sourceUrl);
+          await destination.writeAsBytes([4, 5, 6], flush: true);
+        },
+      ).start(tasks.create(candidate), candidate);
+      expect(result.state, MediaTaskState.playable);
+      expect(http.attempts, [0, 1, 2, 3]);
+      expect(nativeCalls, 1);
+    },
+  );
+
+  test(
     'streamed transport safely handles 206, ignored Range 200 and 416',
     () async {
       final root = await Directory.systemTemp.createTemp('site-lens-range-');
@@ -338,6 +365,49 @@ void main() {
   });
 }
 
+class _FailingTlsHttp extends ControlledHttp {
+  final attempts = <int>[];
+
+  @override
+  Future<FetchResponse> fetch(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    String method = 'GET',
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    String? body,
+    Duration timeout = const Duration(seconds: 15),
+    int maxBytes = 1024 * 1024,
+    int routeAttempt = 0,
+  }) async => FetchResponse(
+    url: url,
+    status: 200,
+    bytes: utf8.encode('#EXTM3U\n#EXTINF:1,\nsegment.ts\n'),
+    headers: const {},
+  );
+
+  @override
+  Future<FetchFileResponse> fetchToFile(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    required File destination,
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    int resumeOffset = 0,
+    int maxBytes = 2 * 1024 * 1024 * 1024,
+    Future<void> Function(int, Map<String, String>)? onHeaders,
+    Duration timeout = const Duration(seconds: 15),
+    int routeAttempt = 0,
+  }) async {
+    attempts.add(routeAttempt);
+    throw const HandshakeException('Connection terminated during handshake');
+  }
+}
+
 MediaCandidate _candidate(Uri playlist) => MediaCandidate(
   id: 'hls-cache-regression',
   hostId: 7,
@@ -368,6 +438,7 @@ class _RotatingHlsHttp extends ControlledHttp {
     String? body,
     Duration timeout = const Duration(seconds: 15),
     int maxBytes = 1024 * 1024,
+    int routeAttempt = 0,
   }) async => FetchResponse(
     url: url,
     status: 200,
@@ -391,6 +462,7 @@ class _RotatingHlsHttp extends ControlledHttp {
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int, Map<String, String>)? onHeaders,
     Duration timeout = const Duration(seconds: 15),
+    int routeAttempt = 0,
   }) async {
     offsets.add(resumeOffset);
     if (!refreshed) {
@@ -443,6 +515,7 @@ class _HlsResumeHttp extends ControlledHttp {
     String? body,
     Duration timeout = const Duration(seconds: 15),
     int maxBytes = 1024 * 1024,
+    int routeAttempt = 0,
   }) async {
     expect(url, playlist);
     if (++manifestCalls == 1 && manifestFailure != null) throw manifestFailure!;
@@ -467,6 +540,7 @@ class _HlsResumeHttp extends ControlledHttp {
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int status, Map<String, String> headers)? onHeaders,
     Duration timeout = const Duration(seconds: 15),
+    int routeAttempt = 0,
   }) async {
     expect(url, segment);
     segmentCalls++;
@@ -538,6 +612,7 @@ class _BoundedHlsResumeHttp extends ControlledHttp {
     String? body,
     Duration timeout = const Duration(seconds: 15),
     int maxBytes = 1024 * 1024,
+    int routeAttempt = 0,
   }) async {
     expect(url, playlist);
     return FetchResponse(
@@ -561,6 +636,7 @@ class _BoundedHlsResumeHttp extends ControlledHttp {
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int status, Map<String, String> headers)? onHeaders,
     Duration timeout = const Duration(seconds: 15),
+    int routeAttempt = 0,
   }) async {
     expect(url, segment);
     segmentCalls++;
@@ -624,6 +700,7 @@ class _Invalid416HlsHttp extends ControlledHttp {
     String? body,
     Duration timeout = const Duration(seconds: 15),
     int maxBytes = 1024 * 1024,
+    int routeAttempt = 0,
   }) async {
     expect(url, playlist);
     return FetchResponse(
@@ -647,6 +724,7 @@ class _Invalid416HlsHttp extends ControlledHttp {
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int status, Map<String, String> headers)? onHeaders,
     Duration timeout = const Duration(seconds: 15),
+    int routeAttempt = 0,
   }) async {
     expect(url, segment);
     segmentCalls++;

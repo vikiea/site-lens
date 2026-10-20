@@ -78,6 +78,9 @@ class NativeExportRuntime {
     'fileName': fileName,
   }))!;
 
-  Future<void> delete(String source) =>
-      _channel.invokeMethod<void>('delete', {'source': source});
+  Future<void> delete(String source, {bool allowMissing = false}) =>
+      _channel.invokeMethod<void>('delete', {
+        'source': source,
+        'allowMissing': allowMissing,
+      });
 }

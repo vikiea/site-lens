@@ -1068,6 +1068,7 @@ class _StatusHttp extends ControlledHttp {
     String? body,
     Duration timeout = const Duration(seconds: 15),
     int maxBytes = 1024 * 1024,
+    int routeAttempt = 0,
   }) async => FetchResponse(
     url: url,
     status: statusCode,
@@ -1088,6 +1089,7 @@ class _StatusHttp extends ControlledHttp {
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int status, Map<String, String> headers)? onHeaders,
     Duration timeout = const Duration(seconds: 15),
+    int routeAttempt = 0,
   }) async => FetchFileResponse(
     url: url,
     status: statusCode,
@@ -1115,6 +1117,7 @@ class _MapHttp extends ControlledHttp {
     String? body,
     Duration timeout = const Duration(seconds: 15),
     int maxBytes = 1024 * 1024,
+    int routeAttempt = 0,
   }) async {
     calls.add(url.toString());
     final response = responses[url.toString()];
@@ -1135,6 +1138,7 @@ class _MapHttp extends ControlledHttp {
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int status, Map<String, String> headers)? onHeaders,
     Duration timeout = const Duration(seconds: 15),
+    int routeAttempt = 0,
   }) async {
     calls.add(url.toString());
     final response = responses[url.toString()];
@@ -1175,6 +1179,7 @@ class _InterruptingHttp extends ControlledHttp {
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int status, Map<String, String> headers)? onHeaders,
     Duration timeout = const Duration(seconds: 15),
+    int routeAttempt = 0,
   }) async {
     calls++;
     offsets.add(resumeOffset);

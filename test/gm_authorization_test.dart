@@ -51,6 +51,7 @@ class CancelAwareHttp extends ControlledHttp {
     String? body,
     Duration timeout = const Duration(seconds: 15),
     int maxBytes = 1024 * 1024,
+    int routeAttempt = 0,
   }) async {
     cancel.check();
     started++;

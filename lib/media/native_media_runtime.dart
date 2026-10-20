@@ -98,10 +98,25 @@ class NativeMediaRuntime {
       throw StateError('本地缓存不存在');
     }
     final raw = await _invokeMap('openLocal', {
-      'sessionId': 'play_${task.id}',
+      'sessionId': 'play_${task.id}_${DateTime.now().microsecondsSinceEpoch}',
       'candidateId': task.candidateId,
       'path': file.path,
       'mime': inferMediaMime(file.uri),
+      'title': task.displayName,
+    });
+    return _decode(raw ?? const <String, Object?>{});
+  }
+
+  /// SAF files are read through their granted URI, without a second MP4 copy.
+  Future<NativePlaybackSession> openDocument(MediaTask task, Uri uri) async {
+    if (uri.scheme != 'content' || uri.host.isEmpty) {
+      throw const FormatException('本地媒体地址无效');
+    }
+    final raw = await _invokeMap('openLocal', {
+      'sessionId': 'play_${task.id}_${DateTime.now().microsecondsSinceEpoch}',
+      'candidateId': task.candidateId,
+      'uri': uri.toString(),
+      'mime': 'video/mp4',
       'title': task.displayName,
     });
     return _decode(raw ?? const <String, Object?>{});

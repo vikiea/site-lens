@@ -25,6 +25,7 @@ class ResourceHttp extends ControlledHttp {
     String? body,
     Duration timeout = const Duration(seconds: 15),
     int maxBytes = 1024 * 1024,
+    int routeAttempt = 0,
   }) async {
     calls.add(url);
     return FetchResponse(

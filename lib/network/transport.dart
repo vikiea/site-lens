@@ -355,26 +355,33 @@ class ControlledHttp {
     this.resolve = InternetAddress.lookup,
     this.allowLocal = false,
     this.mediaRoute,
+    this.mediaRouteForAttempt,
   });
   final bool allowLocal;
   final Future<List<InternetAddress>> Function(String) resolve;
   final Future<MediaNetworkRoute> Function(Uri)? mediaRoute;
+  final Future<MediaNetworkRoute> Function(Uri, int)? mediaRouteForAttempt;
 
   Future<MediaNetworkRoute> _configureRoute(
     HttpClient client,
     Uri uri,
     bool mediaRequest,
     Cancellation cancel,
+    int routeAttempt,
   ) async {
-    final route = mediaRequest && mediaRoute != null
-        ? await mediaRoute!(uri)
+    final route =
+        mediaRequest && (mediaRouteForAttempt != null || mediaRoute != null)
+        ? await (mediaRouteForAttempt?.call(uri, routeAttempt) ??
+              mediaRoute!(uri))
         : const MediaNetworkRoute();
     cancel.check();
     client.findProxy = (_) => route.proxy;
     client.connectionFactory = (target, host, port) {
       // HttpClient owns CONNECT and verified TLS inside a proxy tunnel.
       // Resolve the proxy only: origin DNS may intentionally return Fake-IP.
-      if (host != null && mediaRequest && mediaRoute != null) {
+      if (host != null &&
+          mediaRequest &&
+          (mediaRoute != null || mediaRouteForAttempt != null)) {
         return Socket.startConnect(host, port!).then((task) {
           cancel.onCancel(task.cancel);
           if (cancel.cancelled) task.cancel();
@@ -405,6 +412,7 @@ class ControlledHttp {
     String? body,
     Duration timeout = const Duration(seconds: 15),
     int maxBytes = 1024 * 1024,
+    int routeAttempt = 0,
   }) async {
     final client = HttpClient()
       ..connectionTimeout = timeout
@@ -429,6 +437,7 @@ class ControlledHttp {
       mediaRequest,
       body,
       maxBytes,
+      routeAttempt,
     );
     try {
       return await task.timeout(timeout);
@@ -456,6 +465,7 @@ class ControlledHttp {
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int status, Map<String, String> headers)? onHeaders,
     Duration timeout = const Duration(seconds: 15),
+    int routeAttempt = 0,
   }) async {
     if (resumeOffset < 0) throw RangeError('续传偏移无效');
     final client = HttpClient()
@@ -484,6 +494,7 @@ class ControlledHttp {
       maxBytes,
       onHeaders,
       timeout,
+      routeAttempt,
     );
     try {
       return await task;
@@ -506,6 +517,7 @@ class ControlledHttp {
     bool mediaRequest,
     String? body,
     int maxBytes,
+    int routeAttempt,
   ) async {
     if (![
       'GET',
@@ -522,7 +534,13 @@ class ControlledHttp {
     for (var redirects = 0; redirects <= 5; redirects++) {
       cancel.check();
       if (!allowLocal) NetworkPolicy.validateTarget(uri, connect, document);
-      final route = await _configureRoute(client, uri, mediaRequest, cancel);
+      final route = await _configureRoute(
+        client,
+        uri,
+        mediaRequest,
+        cancel,
+        routeAttempt,
+      );
       final request = await client.openUrl(method, uri);
       request.followRedirects = false;
       headers.forEach(request.headers.set);
@@ -604,12 +622,19 @@ class ControlledHttp {
     int maxBytes,
     Future<void> Function(int status, Map<String, String> headers)? onHeaders,
     Duration timeout,
+    int routeAttempt,
   ) async {
     _validateHeaders(headers);
     for (var redirects = 0; redirects <= 5; redirects++) {
       cancel.check();
       if (!allowLocal) NetworkPolicy.validateTarget(uri, connect, document);
-      final route = await _configureRoute(client, uri, mediaRequest, cancel);
+      final route = await _configureRoute(
+        client,
+        uri,
+        mediaRequest,
+        cancel,
+        routeAttempt,
+      );
       final request = await client.openUrl('GET', uri).timeout(timeout);
       request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
       request.followRedirects = false;

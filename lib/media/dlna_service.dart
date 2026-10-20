@@ -700,6 +700,7 @@ class DlnaCastController extends ChangeNotifier {
   DlnaCastController(
     this.sessions, {
     this.onTemporaryTaskFinished,
+    this.onSessionFinished,
     this.commandTimeout = const Duration(seconds: 5),
     this.confirmationTimeout = const Duration(seconds: 12),
     this.pollInterval = const Duration(milliseconds: 500),
@@ -709,6 +710,7 @@ class DlnaCastController extends ChangeNotifier {
 
   final CastSessionController sessions;
   final Future<void> Function(String taskId)? onTemporaryTaskFinished;
+  final Future<void> Function(String taskId)? onSessionFinished;
   final Duration commandTimeout;
   final Duration confirmationTimeout;
   final Duration pollInterval;
@@ -1307,6 +1309,14 @@ class DlnaCastController extends ChangeNotifier {
     soap?.close();
     await relay?.close();
     await hlsRelay?.close();
+    final session = sessions.active;
+    final cleanup = onSessionFinished;
+    if (session != null &&
+        session.state != CastSessionState.stopped &&
+        session.state != CastSessionState.failed &&
+        cleanup != null) {
+      await cleanup(session.mediaTaskId);
+    }
   }
 
   String _castError(Object error) {

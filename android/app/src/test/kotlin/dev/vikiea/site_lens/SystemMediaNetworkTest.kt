@@ -95,6 +95,22 @@ class SystemMediaNetworkTest {
     }
 
     @Test
+    fun configurationRotatesProxyOrderForRetryAttempts() {
+        val first = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7890))
+        val second = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7891))
+        val policy = selector { listOf(first, second) }
+        val target = URI("https://cdn.example/a")
+        assertEquals(
+            "PROXY 127.0.0.1:7890; PROXY 127.0.0.1:7891",
+            SystemMediaNetwork.configuration(target, policy, attempt = 0),
+        )
+        assertEquals(
+            "PROXY 127.0.0.1:7891; PROXY 127.0.0.1:7890",
+            SystemMediaNetwork.configuration(target, policy, attempt = 1),
+        )
+    }
+
+    @Test
     fun ipv6ProxyUsesBracketedHost() {
         val policy = selector { listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("::1", 7890))) }
         assertEquals("PROXY [::1]:7890", SystemMediaNetwork.configuration(URI("https://cdn.example/a"), policy))

@@ -99,8 +99,8 @@ dependencies {
     // MediaPlayer cannot reliably decode HLS playlists emitted by modern
     // WebView pages. Media3 supplies a maintained HLS renderer and buffering
     // stack for the native texture player.
-    implementation("androidx.media3:media3-exoplayer:1.5.1")
-    implementation("androidx.media3:media3-exoplayer-hls:1.5.1")
+    implementation("androidx.media3:media3-exoplayer:1.11.1")
+    implementation("androidx.media3:media3-exoplayer-hls:1.11.1")
 }
 
 // Formal release builds must never silently fall back to a debug certificate.
