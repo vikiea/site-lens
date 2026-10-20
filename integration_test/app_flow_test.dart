@@ -140,9 +140,13 @@ void main() {
       await pumpUntil(tester, find.widgetWithText(FilledButton, '检测'));
       await tester.tap(find.widgetWithText(FilledButton, '检测'));
       try {
-        await pumpUntil(
+        await waitForCondition(
           tester,
-          find.text('127.0.0.2'),
+          () =>
+              !controller.refreshing &&
+              !controller.probes.running &&
+              controller.probes.recommendations.isNotEmpty,
+          'completed discovery with a verified landing',
           timeout: const Duration(seconds: 35),
         );
       } catch (error) {
@@ -154,9 +158,10 @@ void main() {
       }
       expect((await db.candidates()).single.url.host, '127.0.0.2');
       expect((await db.profilePages()).single.error, isNull);
-      expect(find.text('127.0.0.2'), findsWidgets);
+      expect(controller.probes.recommendations.single.verified, isTrue);
+      await pumpUntil(tester, find.widgetWithText(FilledButton, '进入站点'));
 
-      await tester.tap(find.text('127.0.0.2').first);
+      await tester.tap(find.widgetWithText(FilledButton, '进入站点'));
       await waitForCondition(
         tester,
         () => controller.hosts.sessions.values
@@ -312,11 +317,11 @@ void main() {
       // Both the site panel and the profile detail carry a "切回" float; wait
       // for the detail route to finish popping before tapping a single one.
       await tester.pumpAndSettle();
-      await pumpUntil(tester, find.textContaining('切回 127.0.0.2'));
+      await pumpUntil(tester, find.textContaining('切回 闭环站点'));
       // Exactly one quick-entry float must remain once the detail route is
       // gone; assert that instead of silently tapping `.first`.
-      expect(find.textContaining('切回 127.0.0.2'), findsOneWidget);
-      await tester.tap(find.textContaining('切回 127.0.0.2'));
+      expect(find.textContaining('切回 闭环站点'), findsOneWidget);
+      await tester.tap(find.textContaining('切回 闭环站点'));
       await pumpUntil(tester, find.byType(AndroidView));
       expect(controller.activeBrowser, isNotNull);
     } finally {

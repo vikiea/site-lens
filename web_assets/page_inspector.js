@@ -83,6 +83,7 @@
     const anchors = root
       ? [...(root.matches('a[href]') ? [root] : []), ...root.querySelectorAll('a[href]')]
       : [];
+    const rootText = compact(root && root.textContent || '');
     const ready = document.readyState !== 'loading' && visible(root) &&
       ((root.textContent || '').trim().length >= 16 || !!root.querySelector('a[href],video,audio,img,article')) &&
       (selector !== '@latest-addresses' || anchors.length > 0);
@@ -149,7 +150,13 @@
           : '';
         const nearby = visibleText(parentText);
         let score = 0;
-        if (positive.test(label)) score += 4;
+        if (positive.test(label)) {
+          score += 4;
+          // A clearly labelled link inside the already identified latest
+          // address region is a strong candidate even when its path is not
+          // the domain root (for example, "可用入口" -> /site).
+          if (regionSignal.test(rootText)) score += 2;
+        }
         if (positive.test(nearby)) score += 2;
         if (domainLabel(label)) score += 5;
         if (label.includes(target.hostname)) score += 2;

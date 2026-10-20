@@ -2758,14 +2758,14 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   @override
   void didPushNext() {
     _covered = true;
-    widget.app.browserVisible = false;
+    _setBrowserVisible(false);
     unawaited(_leaveFullscreen());
   }
 
   @override
   void didPopNext() {
     _covered = false;
-    widget.app.browserVisible = true;
+    _setBrowserVisible(true);
     _scheduleExitAfterAllTabsClosed();
   }
 
@@ -2803,6 +2803,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   bool _hasHadTabs = false;
   bool _exiting = false;
   bool _surfaceReady = false;
+  int? _browserSurfaceLease;
   bool _appChangeInFlight = false;
   ModalRoute<dynamic>? _tabSwitcherRoute;
   late bool _autoHideEnabled;
@@ -2827,9 +2828,8 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
       if (!mounted) return;
       // Mark the route as a WebView route before creating the native view so
       // Android keeps Flutter glass on the 0.1.3-safe tier during composition.
-      widget.app.browserSurfaceActive = true;
+      _browserSurfaceLease = widget.app.claimBrowserSurface(visible: !_covered);
       if (mounted) setState(() => _surfaceReady = true);
-      widget.app.browserVisible = true;
       unawaited(_start());
     });
   }
@@ -2849,7 +2849,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
       }
       if (host != null && !host!.disposed && _tab?.failure == null) {
         error = null;
-        widget.app.browserVisible = !_covered;
+        _setBrowserVisible(!_covered);
       }
       if (_manualFullscreenHostId != null &&
           (host == null ||
@@ -2952,7 +2952,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
         await widget.app.openBrowser(widget.site);
       }
       if (!mounted) return;
-      widget.app.browserVisible = !_covered;
+      _setBrowserVisible(!_covered);
       setState(() => error = null);
     } catch (e) {
       if (mounted && identical(widget.app.activeBrowser, selected)) {
@@ -2966,14 +2966,19 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     browserRouteObserver.unsubscribe(this);
     widget.app.removeListener(_appChanged);
     widget.app.hosts.changed.removeListener(_changed);
-    widget.app.browserVisible = false;
-    widget.app.browserSurfaceActive = false;
+    final lease = _browserSurfaceLease;
+    if (lease != null) widget.app.releaseBrowserSurface(lease);
     _hideTimer?.cancel();
     _handleLongPressTimer?.cancel();
     unawaited(_leaveFullscreen(updateState: false));
     // Tabs are owned by AppController so the home floating entry can restore
     // the same native WebView without recreating it.
     super.dispose();
+  }
+
+  void _setBrowserVisible(bool visible) {
+    final lease = _browserSurfaceLease;
+    if (lease != null) widget.app.setBrowserSurfaceVisible(lease, visible);
   }
 
   /// Moves the floating controls by [details.delta], in the fraction space the
@@ -3373,7 +3378,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     await safely(context, () async {
       await widget.app.ensureTabLoaded(tab);
       if (!mounted) return;
-      widget.app.browserVisible = !_covered;
+      _setBrowserVisible(!_covered);
       setState(() => error = null);
     });
   }

@@ -7,6 +7,7 @@ import 'package:site_lens/browser/browser_session_store.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/ui/app_controller.dart';
+import 'package:site_lens/ui/navigation_observer.dart';
 import 'package:site_lens/ui/screens.dart';
 import 'package:site_lens/web_host/native_hosts.dart';
 import 'package:site_lens/web_host/web_host.g.dart';
@@ -361,6 +362,131 @@ void main() {
       await tester.runAsync(app.shutdown);
     },
   );
+
+  testWidgets('replacing a browser surface keeps the newest route visible', (
+    tester,
+  ) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    late final AppController app;
+    late final ActiveBrowserSession first;
+    late final ActiveBrowserSession second;
+    await tester.runAsync(() async {
+      app = AppController(db, api: FakeWebHostApi());
+      await app.load();
+      first = await app.openUrl(Uri.parse('https://first.example/'));
+      second = await app.openUrl(Uri.parse('https://second.example/'));
+      await app.activateTab(first);
+    });
+    addTearDown(() async {
+      await app.shutdown();
+      await db.close();
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: KeyedSubtree(
+          key: const ValueKey('first-browser-route'),
+          child: BrowserScreen(app: app, site: first.site),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(app.browserSurfaceActive, isTrue);
+
+    await tester.runAsync(() => app.activateTab(second));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: KeyedSubtree(
+          key: const ValueKey('second-browser-route'),
+          child: BrowserScreen(app: app, site: second.site),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(app.browserSurfaceActive, isTrue);
+    expect(app.browserVisible, isTrue);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    expect(app.browserSurfaceActive, isFalse);
+    expect(app.browserVisible, isFalse);
+  });
+
+  testWidgets(
+    'covered browser routes cannot overwrite the top route visibility',
+    (tester) async {
+      final db = AppDatabase(NativeDatabase.memory());
+      late final AppController app;
+      late final ActiveBrowserSession first;
+      late final ActiveBrowserSession second;
+      final navigatorKey = GlobalKey<NavigatorState>();
+      await tester.runAsync(() async {
+        app = AppController(db, api: FakeWebHostApi());
+        await app.load();
+        first = await app.openUrl(Uri.parse('https://first.example/'));
+        second = await app.openUrl(Uri.parse('https://second.example/'));
+        await app.activateTab(first);
+      });
+      addTearDown(() async {
+        await app.shutdown();
+        await db.close();
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: navigatorKey,
+          navigatorObservers: [browserRouteObserver],
+          home: BrowserScreen(app: app, site: first.site),
+        ),
+      );
+      await tester.pump();
+      await tester.runAsync(() => app.activateTab(second));
+      final route = MaterialPageRoute<void>(
+        builder: (_) => BrowserScreen(app: app, site: second.site),
+      );
+      unawaited(navigatorKey.currentState!.push<void>(route));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byType(BrowserScreen, skipOffstage: false), findsNWidgets(2));
+
+      var notifications = 0;
+      void observed() => notifications++;
+      app.addListener(observed);
+      app.notifyListeners();
+      await tester.pump();
+      expect(notifications, lessThanOrEqualTo(2));
+      expect(app.browserSurfaceActive, isTrue);
+      expect(app.browserVisible, isTrue);
+
+      unawaited(
+        navigatorKey.currentState!.push<void>(
+          MaterialPageRoute<void>(
+            builder: (_) => const Scaffold(body: Text('covering route')),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(app.browserSurfaceActive, isTrue);
+      expect(app.browserVisible, isFalse);
+
+      navigatorKey.currentState!.pop();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(app.browserSurfaceActive, isTrue);
+      expect(app.browserVisible, isTrue);
+      navigatorKey.currentState!.removeRoute(route);
+      await tester.pump();
+      expect(app.browserSurfaceActive, isTrue);
+      expect(app.browserVisible, isTrue);
+      app.removeListener(observed);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+    },
+  );
+
   testWidgets(
     'first entry failure retries even before any tab metadata exists',
     (tester) async {

@@ -145,13 +145,16 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   bool _disposed = false;
   bool _browserVisible = false;
   bool _browserSurfaceActive = false;
+  bool _browserStateNotificationScheduled = false;
+  int _browserSurfaceLease = 0;
+  final _browserSurfaces = <int, bool>{};
   bool _foreground = true;
   bool mediaSupported = false;
   bool get browserVisible => _browserVisible;
   set browserVisible(bool value) {
     if (_browserVisible == value) return;
     _browserVisible = value;
-    if (!_disposed) notifyListeners();
+    _scheduleBrowserStateNotification();
   }
 
   /// True while a browsing route still owns a mounted native WebView surface.
@@ -161,7 +164,46 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   set browserSurfaceActive(bool value) {
     if (_browserSurfaceActive == value) return;
     _browserSurfaceActive = value;
-    if (!_disposed) notifyListeners();
+    _scheduleBrowserStateNotification();
+  }
+
+  /// Claims ownership of the native WebView surface for one mounted browser
+  /// route. A stale route can finish disposing after its replacement has
+  /// mounted; its release must not hide the replacement surface.
+  int claimBrowserSurface({bool visible = true}) {
+    final lease = ++_browserSurfaceLease;
+    _browserSurfaces[lease] = visible;
+    browserSurfaceActive = true;
+    browserVisible = visible;
+    return lease;
+  }
+
+  /// Saves each route's visibility, but only the newest mounted route can
+  /// change global playback policy. Covered routes still receive app events.
+  void setBrowserSurfaceVisible(int lease, bool visible) {
+    if (!_browserSurfaces.containsKey(lease)) return;
+    _browserSurfaces[lease] = visible;
+    if (lease == _browserSurfaces.keys.last) browserVisible = visible;
+  }
+
+  /// Releases a mounted route and restores the previous route's state, if any.
+  /// State fields update immediately, while the listener notification is
+  /// deferred until synchronous work ends so widget disposal cannot rebuild a
+  /// locked tree, including when no further frame has been scheduled.
+  void releaseBrowserSurface(int lease) {
+    if (_browserSurfaces.remove(lease) == null) return;
+    browserVisible = _browserSurfaces.values.lastOrNull ?? false;
+    browserSurfaceActive = _browserSurfaces.isNotEmpty;
+  }
+
+  void _scheduleBrowserStateNotification() {
+    if (_disposed) return;
+    if (_browserStateNotificationScheduled) return;
+    _browserStateNotificationScheduled = true;
+    scheduleMicrotask(() {
+      _browserStateNotificationScheduled = false;
+      if (!_disposed) notifyListeners();
+    });
   }
 
   @override
