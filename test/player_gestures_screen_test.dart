@@ -63,6 +63,18 @@ void main() {
       final label = tester.getRect(find.text('上下滑动'));
       final choice = tester.getRect(find.text('亮度 / 音量'));
       expect((label.center.dy - choice.center.dy).abs(), lessThan(2));
+      final selector = tester.getRect(
+        find.byType(SiteLensMenuSelector<PlayerVerticalGestureMode>),
+      );
+      final otherSummary = tester.getRect(find.text('快进 / 快退'));
+      expect(selector.right, closeTo(otherSummary.right, 1));
+      final trigger = tester.widget<TextButton>(
+        find.descendant(
+          of: find.byTooltip('选择上下滑动操作'),
+          matching: find.byType(TextButton),
+        ),
+      );
+      expect(trigger.style!.textStyle!.resolve({})!.fontSize, 12.5);
       await tester.tap(find.byTooltip('选择上下滑动操作'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('上一集 / 下一集'));

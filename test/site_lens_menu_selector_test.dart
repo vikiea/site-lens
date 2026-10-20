@@ -82,7 +82,7 @@ void main() {
     );
     await tester.tap(_trigger);
     await tester.pump();
-    expect(find.byType(MenuItemButton), findsNWidgets(3));
+    expect(find.byType(MenuItemButton), findsNWidgets(2));
     rebuild(() => enabled = false);
     await tester.pumpAndSettle();
     expect(find.byType(MenuItemButton), findsNothing);
@@ -100,7 +100,9 @@ void main() {
 
     await tester.tap(_trigger);
     await tester.pump();
-    expect(find.byType(MenuItemButton), findsNWidgets(3));
+    expect(find.byType(MenuItemButton), findsNWidgets(2));
+    expect(find.text('亮度 / 音量'), findsOneWidget);
+    expect(_item('亮度 / 音量'), findsNothing);
     for (final item in find.byType(MenuItemButton).evaluate()) {
       expect(
         tester.getSize(find.byWidget(item.widget)).height,
@@ -144,7 +146,7 @@ void main() {
       final painter = TextPainter(
         text: TextSpan(
           text: '上一集 / 下一集',
-          style: Theme.of(context).textTheme.bodyMedium,
+          style: Theme.of(context).textTheme.bodySmall,
         ),
         textDirection: TextDirection.ltr,
       )..layout();
@@ -163,6 +165,14 @@ void main() {
       expect(value, 1);
       expect(tester.getSize(_trigger).width, before.width);
       expect(find.text('上一集 / 下一集'), findsOneWidget);
+      await tester.tap(_trigger);
+      await tester.pump();
+      expect(_item('上一集 / 下一集'), findsNothing);
+      expect(_item('亮度 / 音量'), findsOneWidget);
+      final triggerRect = tester.getRect(_trigger);
+      final menuRect = tester.getRect(_item('亮度 / 音量'));
+      expect(menuRect.right, closeTo(triggerRect.right, 1));
+      expect(menuRect.top, closeTo(triggerRect.bottom, 1));
     },
   );
 
@@ -188,17 +198,15 @@ void main() {
       );
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pump();
-      expect(find.byType(MenuItemButton), findsNWidgets(3));
+      expect(find.byType(MenuItemButton), findsNWidgets(2));
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pump();
       expect(
-        (_buttonMaterial(tester, _item('亮度 / 音量')).shape! as OutlinedBorder)
+        (_buttonMaterial(tester, _item('上一集 / 下一集')).shape! as OutlinedBorder)
             .side
             .color,
         theme.colorScheme.primary,
       );
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
-      await tester.pump();
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pump();
       expect(selection, 1);
@@ -206,7 +214,7 @@ void main() {
       expect(trigger.focusNode!.hasFocus, isTrue);
       await tester.sendKeyEvent(LogicalKeyboardKey.space);
       await tester.pump();
-      expect(find.byType(MenuItemButton), findsNWidgets(3));
+      expect(find.byType(MenuItemButton), findsNWidgets(2));
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pump();
       expect(find.byType(MenuItemButton), findsNothing);
@@ -233,7 +241,7 @@ void main() {
     await tester.tap(_item('不可用操作'));
     await tester.pump();
     expect(selection, isNull);
-    expect(find.byType(MenuItemButton), findsNWidgets(3));
+    expect(find.byType(MenuItemButton), findsNWidgets(2));
     await tester.tapAt(const Offset(700, 500));
     await tester.pump();
     expect(find.byType(MenuItemButton), findsNothing);
@@ -271,10 +279,7 @@ void main() {
         await tester.tap(_trigger);
         await tester.pump();
         expect(tester.getSemantics(_trigger), isSemantics(isExpanded: true));
-        expect(
-          tester.getSemantics(_item('亮度 / 音量')),
-          isSemantics(label: '亮度 / 音量', isSelected: true),
-        );
+        expect(_item('亮度 / 音量'), findsNothing);
         expect(
           tester.getSemantics(_item('不可用操作')),
           isSemantics(label: '不可用操作', hasEnabledState: true, isEnabled: false),
@@ -314,7 +319,10 @@ void main() {
           );
           expect(
             trigger.style!.backgroundColor!.resolve({state}),
-            colors.wellTint,
+            Color.alphaBlend(
+              theme.colorScheme.primary.withValues(alpha: 0.08),
+              colors.surfaceOpaque.withValues(alpha: 1),
+            ),
           );
         }
         expect(trigger.style!.splashFactory, NoSplash.splashFactory);
@@ -333,7 +341,7 @@ void main() {
         final anchor = tester.widget<MenuAnchor>(find.byType(MenuAnchor));
         expect(
           anchor.style!.backgroundColor!.resolve({}),
-          colors.surfaceOpaque,
+          trigger.style!.backgroundColor!.resolve({}),
         );
         expect(anchor.style!.elevation!.resolve({}), 0);
         for (final button in tester.widgetList<MenuItemButton>(

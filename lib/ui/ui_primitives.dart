@@ -47,7 +47,9 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
 
   bool get _enabled =>
       widget.onSelected != null &&
-      widget.options.any((option) => option.enabled);
+      widget.options.any(
+        (option) => option.enabled && option.value != widget.value,
+      );
 
   @override
   void didUpdateWidget(covariant SiteLensMenuSelector<T> oldWidget) {
@@ -76,7 +78,11 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
     );
     final theme = Theme.of(context);
     final colors = SiteLensColors.of(context);
-    final textStyle = theme.textTheme.bodyMedium ?? const TextStyle();
+    final textStyle = theme.textTheme.bodySmall ?? const TextStyle();
+    final fill = Color.alphaBlend(
+      theme.colorScheme.primary.withValues(alpha: 0.08),
+      colors.surfaceOpaque.withValues(alpha: 1),
+    );
     const horizontalPadding = SiteLensMetrics.formGap;
     const iconSize = SiteLensMetrics.navIconSize;
     const gap = SiteLensMetrics.itemGap;
@@ -153,22 +159,20 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
             onClose: () => setState(() => _expanded = false),
             style: MenuStyle(
               alignment: AlignmentDirectional.bottomStart,
-              backgroundColor: WidgetStatePropertyAll(colors.surfaceOpaque),
+              backgroundColor: WidgetStatePropertyAll(fill),
               elevation: const WidgetStatePropertyAll(0),
               shadowColor: const WidgetStatePropertyAll(Colors.transparent),
               surfaceTintColor: const WidgetStatePropertyAll(
                 Colors.transparent,
               ),
               padding: const WidgetStatePropertyAll(EdgeInsets.zero),
-              minimumSize: const WidgetStatePropertyAll(Size.zero),
-              maximumSize: WidgetStatePropertyAll(
-                Size(preferredWidth, double.infinity),
-              ),
+              minimumSize: WidgetStatePropertyAll(Size(width, 0)),
+              maximumSize: WidgetStatePropertyAll(Size(width, double.infinity)),
               visualDensity: VisualDensity.standard,
               shape: WidgetStatePropertyAll(
                 RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(
-                    SiteLensMetrics.inputRadius,
+                  borderRadius: const BorderRadius.vertical(
+                    bottom: Radius.circular(SiteLensMetrics.inputRadius),
                   ),
                   side: BorderSide(color: colors.panelBorder),
                 ),
@@ -176,33 +180,14 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
             ),
             menuChildren: [
               for (final option in widget.options)
-                MenuItemButton(
-                  style: style.copyWith(
-                    backgroundColor: WidgetStatePropertyAll(
-                      option.value == widget.value
-                          ? theme.colorScheme.primary.withValues(alpha: 0.12)
-                          : Colors.transparent,
-                    ),
+                if (option.value != widget.value)
+                  MenuItemButton(
+                    style: style,
+                    onPressed: !_enabled || !option.enabled
+                        ? null
+                        : () => widget.onSelected?.call(option.value),
+                    child: Semantics(child: Text(option.label)),
                   ),
-                  onPressed: !_enabled || !option.enabled
-                      ? null
-                      : () => widget.onSelected?.call(option.value),
-                  child: Semantics(
-                    selected: option.value == widget.value,
-                    child: Row(
-                      children: [
-                        SizedBox(
-                          width: iconSize,
-                          child: option.value == widget.value
-                              ? const Icon(Icons.check, size: iconSize)
-                              : null,
-                        ),
-                        const SizedBox(width: gap),
-                        Flexible(child: Text(option.label)),
-                      ],
-                    ),
-                  ),
-                ),
             ],
             builder: (context, controller, _) => Tooltip(
               message: widget.label,
@@ -212,7 +197,19 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
                 child: TextButton(
                   focusNode: _focusNode,
                   style: style.copyWith(
-                    backgroundColor: WidgetStatePropertyAll(colors.wellTint),
+                    backgroundColor: WidgetStatePropertyAll(fill),
+                    shape: WidgetStatePropertyAll(
+                      RoundedRectangleBorder(
+                        borderRadius: BorderRadius.vertical(
+                          top: const Radius.circular(
+                            SiteLensMetrics.inputRadius,
+                          ),
+                          bottom: Radius.circular(
+                            _expanded ? 0 : SiteLensMetrics.inputRadius,
+                          ),
+                        ),
+                      ),
+                    ),
                     side: WidgetStateProperty.resolveWith(
                       (states) => BorderSide(
                         color: states.contains(WidgetState.focused) && _enabled
@@ -242,7 +239,10 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
                           ),
                         ),
                         const SizedBox(width: gap),
-                        const Icon(Icons.expand_more, size: iconSize),
+                        Icon(
+                          _expanded ? Icons.expand_less : Icons.expand_more,
+                          size: iconSize,
+                        ),
                       ],
                     ),
                   ),

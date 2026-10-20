@@ -111,7 +111,12 @@ class _VerticalGestureSetting extends StatelessWidget {
           children: [
             const Text(label),
             const SizedBox(width: SiteLensMetrics.formGap),
-            Flexible(child: selector),
+            Expanded(
+              child: Align(
+                alignment: AlignmentDirectional.centerEnd,
+                child: selector,
+              ),
+            ),
           ],
         );
       }
@@ -121,7 +126,7 @@ class _VerticalGestureSetting extends StatelessWidget {
         children: [
           const Text(label),
           const SizedBox(height: SiteLensMetrics.itemGap),
-          selector,
+          Align(alignment: AlignmentDirectional.centerEnd, child: selector),
         ],
       );
     },
