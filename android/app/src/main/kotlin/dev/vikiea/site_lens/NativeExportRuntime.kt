@@ -112,11 +112,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
 
     private fun fail(call: MethodCall, result: MethodChannel.Result, error: Exception) {
         NativeCrashStore.append(context, module = "media.export", message = error.message ?: "媒体操作失败", details = error.stackTraceToString(), contextValue = "method=${call.method}")
-        val code = when (error) {
-            is SecurityException -> "media_permission"
-            is FileNotFoundException -> "media_file_missing"
-            else -> "media_export"
-        }
+        val code = MediaFileErrors.code(error) ?: "media_export"
         result.error(code, error.message ?: "媒体操作失败", null)
     }
 
@@ -483,8 +479,8 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         sourceStream(sourcePath).close()
         require(directory.scheme == "content") { "系统目录无效" }
         validateName(fileName)
-        require(context.contentResolver.persistedUriPermissions.any { it.uri == directory && it.isWritePermission && it.isReadPermission }) {
-            "保存目录权限已失效，请在媒体管理中重新选择 MP4 保存目录"
+        if (!context.contentResolver.persistedUriPermissions.any { it.uri == directory && it.isWritePermission && it.isReadPermission }) {
+            throw SecurityException("保存目录权限已失效，请在媒体管理中重新选择 MP4 保存目录")
         }
         var treeDocument = DocumentsContract.buildDocumentUriUsingTree(
             directory,
@@ -580,8 +576,8 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                     )?.use { !it.moveToFirst() } == true
                     check(missing) { "无法删除媒体文件" }
                 }
-            } catch (error: FileNotFoundException) {
-                if (!allowMissing) throw error
+            } catch (error: Exception) {
+                if (!allowMissing || MediaFileErrors.code(error) != "media_file_missing") throw error
             }
         } else {
             require(uri.scheme == null || uri.scheme == "file") { "仅允许本地媒体文件" }

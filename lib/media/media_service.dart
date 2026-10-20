@@ -696,9 +696,19 @@ class MediaTaskStore {
     for (final task in tasks) {
       if ((task.state == MediaTaskState.playable ||
               task.state == MediaTaskState.completed) &&
-          task.localRef != null &&
-          await cachedFile(task.id) == null) {
-        markCacheMissing(task.id);
+          task.localRef != null) {
+        final file = await cachedFile(task.id);
+        if (!identical(this.task(task.id), task)) continue;
+        if (file == null) {
+          markCacheMissing(task.id);
+        } else {
+          final bytes = await cachedBytes(task.id);
+          if (!identical(this.task(task.id), task)) continue;
+          if (bytes != null &&
+              (task.bytesDownloaded != bytes || task.totalBytes != bytes)) {
+            updateProgress(task.id, bytes, totalBytes: bytes);
+          }
+        }
       }
     }
   }
@@ -806,6 +816,50 @@ class MediaTaskStore {
   }
 
   Future<Directory> cacheRootDirectory() => cacheDirectory();
+
+  /// Returns the bytes occupied by the complete local media cache. For HLS,
+  /// the playlist itself is only a manifest, so include its selected playlist,
+  /// segments, init segment and encryption keys instead of reporting the
+  /// manifest's few kilobytes.
+  Future<int?> cachedBytes(String taskId) async {
+    final playlist = await cachedFile(taskId, validateHls: false);
+    if (playlist == null) return null;
+    final files = <String, File>{playlist.path: playlist};
+    if (playlist.path.toLowerCase().endsWith('.m3u8')) {
+      final input = await const HlsPlaylistParser().parseFile(playlist.uri);
+      await validateHlsCacheInput(input);
+      final key = task(taskId)?.cacheKey;
+      final folderName = playlist.parent.uri.pathSegments
+          .where((value) => value.isNotEmpty)
+          .lastOrNull;
+      if (key != null && folderName == '$key.hls') {
+        var total = 0;
+        await for (final entity in playlist.parent.list(
+          recursive: true,
+          followLinks: false,
+        )) {
+          if (entity is File) total += await entity.length();
+        }
+        return total > 0 ? total : null;
+      }
+      for (final uri in [
+        input.playlist,
+        ...input.segments,
+        if (input.initSegment != null) input.initSegment!,
+        ...input.initSegments,
+        ...input.keys,
+      ]) {
+        final file = File(uri.toFilePath());
+        files[file.path] = file;
+      }
+    }
+    var total = 0;
+    for (final file in files.values) {
+      if (!await file.exists()) return null;
+      total += await file.length();
+    }
+    return total > 0 ? total : null;
+  }
 
   Future<File?> cachedFile(String taskId, {bool validateHls = true}) async {
     final task = _tasks[taskId];
@@ -1412,7 +1466,16 @@ class MediaDownloadService {
       if (_stopping.contains(task.id)) throw const Cancelled();
       await staging.rename(finalDirectory.path);
       final finalFile = File('${finalDirectory.path}/index.m3u8');
-      current = tasks.updateProgress(task.id, totalBytes);
+      tasks.setLocalRef(task.id, finalFile.path);
+      final cachedBytes = await tasks.cachedBytes(task.id);
+      if (cachedBytes == null) throw StateError('HLS 缓存文件不完整');
+      cancel.check();
+      if (_stopping.contains(task.id)) throw const Cancelled();
+      current = tasks.updateProgress(
+        task.id,
+        cachedBytes,
+        totalBytes: cachedBytes,
+      );
       current = tasks.transition(task.id, MediaTaskState.completed);
       current = tasks.transition(task.id, MediaTaskState.playable);
       final completed = tasks.setLocalRef(task.id, finalFile.path);
@@ -1960,6 +2023,7 @@ class HlsInputValidator {
     required Uri playlist,
     required List<Uri> segments,
     Uri? initSegment,
+    List<Uri> initSegments = const [],
     List<Uri> keys = const [],
   }) {
     if (playlist.scheme != 'file' || playlist.path.isEmpty) {
@@ -1969,7 +2033,13 @@ class HlsInputValidator {
     final rootPath = root.existsSync()
         ? root.resolveSymbolicLinksSync()
         : root.path;
-    final all = <Uri>[playlist, ...segments, ?initSegment, ...keys];
+    final all = <Uri>[
+      playlist,
+      ...segments,
+      ?initSegment,
+      ...initSegments,
+      ...keys,
+    ];
     for (final uri in all) {
       if (uri.scheme != 'file') {
         throw const FormatException('HLS 输入包含远程地址或越界路径');
@@ -2002,6 +2072,9 @@ Future<void> validateHlsCacheInput(HlsCacheInput input) =>
       playlistPath: input.playlist.toFilePath(),
       segmentPaths: input.segments.map((value) => value.toFilePath()).toList(),
       initSegmentPath: input.initSegment?.toFilePath(),
+      initSegmentPaths: input.initSegments
+          .map((value) => value.toFilePath())
+          .toList(),
       keyPaths: input.keys.map((value) => value.toFilePath()).toList(),
     );
 
@@ -2009,6 +2082,7 @@ Future<void> _validateHlsCachePathsInIsolate({
   required String playlistPath,
   required List<String> segmentPaths,
   required String? initSegmentPath,
+  required List<String> initSegmentPaths,
   required List<String> keyPaths,
 }) => Isolate.run(() {
   const validator = HlsInputValidator();
@@ -2016,6 +2090,7 @@ Future<void> _validateHlsCachePathsInIsolate({
     playlist: Uri.file(playlistPath),
     segments: segmentPaths.map(Uri.file).toList(),
     initSegment: initSegmentPath == null ? null : Uri.file(initSegmentPath),
+    initSegments: initSegmentPaths.map(Uri.file).toList(),
     keys: keyPaths.map(Uri.file).toList(),
   );
 });
@@ -2025,12 +2100,14 @@ class HlsCacheInput {
     required this.playlist,
     required this.segments,
     this.initSegment,
+    this.initSegments = const [],
     this.keys = const [],
   });
 
   final Uri playlist;
   final List<Uri> segments;
   final Uri? initSegment;
+  final List<Uri> initSegments;
   final List<Uri> keys;
 }
 
@@ -2085,13 +2162,17 @@ class HlsPlaylistParser {
     final base = File(playlist.toFilePath()).parent.uri;
     final segments = <Uri>[];
     final keys = <Uri>[];
+    final inits = <Uri>[];
     Uri? init;
     for (final raw in text.split(RegExp(r'\r?\n'))) {
       final line = raw.trim();
       if (line.isEmpty || line.startsWith('#EXTM3U')) continue;
       if (line.startsWith('#EXT-X-MAP:')) {
         final value = _attribute(line, 'URI');
-        if (value != null) init = _local(base, value);
+        if (value != null) {
+          init = _local(base, value);
+          inits.add(init);
+        }
         continue;
       }
       if (line.startsWith('#EXT-X-KEY:')) {
@@ -2112,6 +2193,7 @@ class HlsPlaylistParser {
       playlist: playlist,
       segments: List.unmodifiable(segments),
       initSegment: init,
+      initSegments: List.unmodifiable(inits),
       keys: List.unmodifiable(keys),
     );
   }

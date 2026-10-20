@@ -401,6 +401,49 @@ void main() {
     expect(http.calls, hasLength(3));
   });
 
+  test('cachedBytes sums HLS resources instead of only the manifest', () async {
+    final root = await Directory.systemTemp.createTemp('site-lens-hls-size-');
+    addTearDown(() => root.delete(recursive: true));
+    final store = MediaTaskStore(directoryProvider: () async => root);
+    final task = store.create(
+      candidate(
+        url: 'https://cdn.example/size/index.m3u8',
+        mime: 'application/vnd.apple.mpegurl',
+      ),
+    );
+    store.transition(task.id, MediaTaskState.downloading);
+    store.transition(task.id, MediaTaskState.completed);
+    store.transition(task.id, MediaTaskState.playable);
+    final directory = await store.cacheDirectory();
+    final cache = Directory('${directory.path}/${task.cacheKey}.hls')
+      ..createSync(recursive: true);
+    final segment = File('${cache.path}/segment.ts')
+      ..writeAsBytesSync(List.filled(97, 1));
+    final init1 = File('${cache.path}/init-1.mp4')
+      ..writeAsBytesSync(List.filled(17, 2));
+    final init = File('${cache.path}/init-2.mp4')
+      ..writeAsBytesSync(List.filled(31, 2));
+    final playlist = File('${cache.path}/index.m3u8')
+      ..writeAsStringSync(
+        '#EXTM3U\n#EXT-X-MAP:URI="init-1.mp4"\n#EXTINF:1,\nsegment.ts\n'
+        '#EXT-X-MAP:URI="init-2.mp4"\n#EXTINF:1,\nsegment.ts\n',
+      );
+    store.setLocalRef(task.id, playlist.path);
+
+    expect(
+      await store.cachedBytes(task.id),
+      playlist.lengthSync() +
+          segment.lengthSync() +
+          init1.lengthSync() +
+          init.lengthSync(),
+    );
+    final input = await const HlsPlaylistParser().parseFile(playlist.uri);
+    expect(input.initSegments, hasLength(2));
+    await init1.delete();
+    await expectLater(validateHlsCacheInput(input), throwsFormatException);
+    expect(await store.cachedFile(task.id), isNull);
+  });
+
   test(
     'direct media download resumes from bytes flushed before a reset',
     () async {

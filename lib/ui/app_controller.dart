@@ -836,6 +836,16 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       retained = true;
       await mediaLibrary.restore();
       var artifact = mediaLibrary.item(task.id);
+      if (artifact != null) {
+        try {
+          artifact = await mediaLibrary.inspect(task.id);
+        } catch (error) {
+          if (!isMissingMediaArtifactError(error)) rethrow;
+          artifact = await mediaLibrary.recoverMissingArtifact(task.id);
+          // If no private copy survived, the task's HLS cache remains
+          // independent and can be exported again.
+        }
+      }
       if (artifact == null) {
         final file = await mediaTasks.cachedFile(task.id);
         if (file == null) {

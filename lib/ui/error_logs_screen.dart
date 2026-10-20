@@ -20,7 +20,11 @@ class _ErrorLogsScreenState extends State<ErrorLogsScreen> {
   late Future<List<AppErrorLog>> _logs = widget.app.db.appErrorLogs();
 
   void _reload() {
-    setState(() => _logs = widget.app.db.appErrorLogs());
+    if (!mounted) return;
+    final next = widget.app.db.appErrorLogs();
+    setState(() {
+      _logs = next;
+    });
   }
 
   Future<void> _clear() async {

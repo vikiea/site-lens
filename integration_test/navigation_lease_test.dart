@@ -1,6 +1,7 @@
 import 'native_test_support.dart';
 
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
@@ -577,9 +578,12 @@ GM_registerMenuCommand('Entry redirect menu', () => {
         // script is needed to start it, and nothing waits on the bridge while
         // the document it lives in goes away.
         request.response.write(
-          '<!doctype html><html><body><main id="main">'
+          '<!doctype html><html><head><meta name="viewport" content="width=device-width"></head><body><main id="main">'
           '<h1>Page started</h1>'
-          '<script>setTimeout(() => { location.href = "/cross"; }, 1500);'
+          '<button id="next" onclick="location.href=\'/cross\'">Open page redirect</button><p id="bounds"></p>'
+          '<script>window.addEventListener("load", () => {'
+          'const r = document.querySelector("#next").getBoundingClientRect();'
+          'document.querySelector("#bounds").textContent = JSON.stringify([r.left+r.width/2, r.top+r.height/2, innerWidth]);});'
           '</script></main></body></html>',
         );
       } else {
@@ -649,6 +653,19 @@ document.querySelector('main').insertAdjacentHTML('beforeend', '<p id="lease-pag
     // ...and then the page walked into the same cross-origin redirect the entry
     // is allowed to follow. The switch covers only what the app starts, so this
     // must still fail closed.
+    final bounds = await inspectUntil(
+      tester,
+      controller,
+      session,
+      '#bounds',
+      (snapshot) => snapshot.text.startsWith('['),
+    );
+    final point = (jsonDecode(bounds.text) as List).cast<num>();
+    final view = find.byType(AndroidView);
+    final scale = tester.getSize(view).width / point[2];
+    await tester.tapAt(
+      tester.getTopLeft(view) + Offset(point[0] * scale, point[1] * scale),
+    );
     await waitForCondition(
       tester,
       () => session.errorKind == 'scriptsSuspended',

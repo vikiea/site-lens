@@ -49,7 +49,8 @@ DATABASE_FILES = (
 
 
 def env() -> dict[str, str]:
-    value = os.environ.copy()
+    from bootstrap_dev import project_environment
+    value = project_environment()
     flutter = Path.home() / ".local/share/flutter/bin"
     if flutter.is_dir():
         value["PATH"] = f"{flutter}:{value.get('PATH', '')}"
@@ -63,6 +64,14 @@ def env() -> dict[str, str]:
 
 ENV = env()
 ADB = shutil.which("adb", path=ENV["PATH"]) or "adb"
+
+
+def test_defines() -> list[str]:
+    values = [NETWORK_DEFINE]
+    sites = ENV.get('SITE_LENS_TEST_SITES', '').strip()
+    if sites:
+        values.append(f'--dart-define=SITE_LENS_TEST_SITES={sites}')
+    return values
 
 # Set from --restart-adb: kill and restart the local adb server on every
 # reconnect, the workaround for this device answering `No route to host`.
@@ -458,9 +467,13 @@ def main() -> int:
             'integration_test/host_contract_test.dart',
             'integration_test/modernization_test.dart',
             'integration_test/script_import_test.dart',
+            'integration_test/media_tasks_test.dart',
+            'integration_test/configured_sites_test.dart',
+            'integration_test/navigation_lease_test.dart',
         ],
         default='integration_test/acceptance_suite_test.dart',
     )
+    parser.add_argument('--test-name', help='Optional Flutter test-name regex for a targeted device regression')
     args = parser.parse_args()
 
     global RESTART_ADB
@@ -503,7 +516,8 @@ def main() -> int:
                     args.integration_target,
                     "-d",
                     args.device,
-                    NETWORK_DEFINE,
+                    *test_defines(),
+                    *(['--name', args.test_name] if args.test_name else []),
                 ],
                 args.device,
                 timeout=1800,

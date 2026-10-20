@@ -46,7 +46,25 @@ ENV_FILE_NAME = ".env.local"
 MAKE_ENV_KEYS = (
     "FLUTTER_ROOT", "FLUTTER_BIN_DIR", "ANDROID_HOME", "ANDROID_SDK_ROOT",
     "JAVA_HOME", "EMULATOR_AVD", "AVD_NAME", "AVD_IMAGE", "SITE_LENS_SIGNING_PROPERTIES",
+    "SITE_LENS_TEST_SITES",
 )
+
+
+def _validate_test_sites(value: str, location: str) -> None:
+    for address in value.split(','):
+        target = urlparse(address.strip())
+        if (
+            target.scheme != 'https'
+            or not target.hostname
+            or target.username
+            or target.password
+            or target.query
+            or target.fragment
+        ):
+            raise BootstrapError(
+                'SITE_LENS_TEST_SITES requires comma-separated HTTPS URLs '
+                f'without credentials, queries or fragments at {location}'
+            )
 
 
 class BootstrapError(RuntimeError):
@@ -120,7 +138,9 @@ def parse_env_file(path: Path) -> dict[str, str]:
             value = value.split(" #", 1)[0].rstrip()
         if "$" in value or "`" in value or "\\" in value:
             raise BootstrapError(f"shell expansion and escape syntax are unsupported at {location}; use literal paths")
-        if value and key not in {"EMULATOR_AVD", "AVD_NAME", "AVD_IMAGE"}:
+        if key == "SITE_LENS_TEST_SITES" and value:
+            _validate_test_sites(value, location)
+        elif value and key not in {"EMULATOR_AVD", "AVD_NAME", "AVD_IMAGE"}:
             value = str(Path(value).expanduser())
             if not Path(value).is_absolute():
                 raise BootstrapError(f"{key} must be an absolute path or start with ~ at {location}")
@@ -143,12 +163,14 @@ def file_defaults(env: Mapping[str, str]) -> dict[str, str]:
 
 def project_environment(env: Mapping[str, str] | None = None) -> dict[str, str]:
     if env is None:
-        return {**file_defaults(os.environ), **os.environ}
-    # Explicit mappings are complete snapshots, useful for callers/tests; only
-    # load a project file when the snapshot names one explicitly.
-    if "SITE_LENS_ENV_FILE" in env:
-        return {**file_defaults(env), **env}
-    return dict(env)
+        merged = {**file_defaults(os.environ), **os.environ}
+    elif "SITE_LENS_ENV_FILE" in env:
+        merged = {**file_defaults(env), **env}
+    else:
+        merged = dict(env)
+    if merged.get('SITE_LENS_TEST_SITES', '').strip():
+        _validate_test_sites(merged['SITE_LENS_TEST_SITES'], 'merged environment')
+    return merged
 
 
 def env_value(path: Path, key: str) -> str:

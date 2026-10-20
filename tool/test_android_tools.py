@@ -11,6 +11,13 @@ import run_android_acceptance as acceptance
 from android_media_actions import MediaActionDriver
 
 class AndroidToolsTests(unittest.TestCase):
+    def test_configured_sites_only_enter_integration_defines(self):
+        with patch.dict(acceptance.ENV, {'SITE_LENS_TEST_SITES': 'https://test.example/'}):
+            self.assertIn('--dart-define=SITE_LENS_TEST_SITES=https://test.example/',
+                          acceptance.test_defines())
+        with patch.dict(acceptance.ENV, {'SITE_LENS_TEST_SITES': ''}):
+            self.assertEqual(acceptance.test_defines(), [acceptance.NETWORK_DEFINE])
+
     def test_restore_footer_only_installs_and_starts_debug(self):
         with patch.object(acceptance, 'adb') as adb, patch.object(acceptance, 'install') as install, \
              patch.object(acceptance, 'ensure_debug_install', return_value=False), \

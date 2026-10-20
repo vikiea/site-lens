@@ -173,7 +173,10 @@ GM_registerMenuCommand('菜单条目', () => {});
 
       // Drag it to the upper-left of the page: it must move, must not open the
       // bar on the way, and must remember where it was left.
-      await tester.drag(handle, const Offset(-120, -260));
+      final drag = await tester.startGesture(tester.getCenter(handle));
+      await tester.pump(const Duration(milliseconds: 400));
+      await drag.moveBy(const Offset(-120, -260));
+      await drag.up();
       await tester.pump(const Duration(milliseconds: 400));
       expect(
         menuButton.evaluate(),

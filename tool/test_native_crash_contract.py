@@ -79,6 +79,19 @@ class NativeCrashContractTests(unittest.TestCase):
         revoked = block(self.host, "fun revoke()")
         self.assertIn("clearHistoryNavigation()", revoked)
 
+    def test_page_navigation_waits_for_old_injections_to_be_removed(self):
+        body = block(self.host, "fun prepareNavigation(")
+        page = block(body, "if (!installScripts)")
+        self.assertIn("mainHandler.post", page)
+        self.assertIn("!available || generation != ticket", page)
+        self.assertLess(page.index("mainHandler.post"), page.index("load()"))
+
+    def test_entry_redirect_lease_keeps_navigation_identity(self):
+        body = block(self.host, "override fun onNavigationStarted")
+        self.assertIn("entryNavigation === navigation", body)
+        self.assertIn("entryHops < MAX_ENTRY_REDIRECTS", body)
+        self.assertIn("!entryRedirectLease", body)
+
     def test_fullscreen_has_one_registry_owner_and_rejects_stale_disable(self):
         registry = block(self.host, "class NativeWebHostRegistry")
         self.assertIn("fullscreenOwner", registry)

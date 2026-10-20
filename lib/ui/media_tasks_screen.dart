@@ -83,6 +83,27 @@ String _shortMediaName(String value) {
   return '${String.fromCharCodes(runes.take(8))}…${String.fromCharCodes(runes.skip(runes.length - 5))}';
 }
 
+String readableMediaLocation(String value) {
+  final raw = value.trim();
+  final uri = Uri.tryParse(raw);
+  if (uri?.scheme == 'content') {
+    final segments = uri!.pathSegments;
+    final decoded = segments.isEmpty ? raw : segments.last;
+    final separator = decoded.indexOf(':');
+    if (separator > 0) {
+      final volume = decoded.substring(0, separator);
+      final path = decoded.substring(separator + 1).replaceAll('\\', '/');
+      final label = volume == 'primary' ? '内部存储' : volume;
+      return path.isEmpty ? label : '$label/$path';
+    }
+    return decoded;
+  }
+  final path = uri?.scheme == 'file' ? uri!.toFilePath() : raw;
+  return path
+      .replaceFirst(RegExp(r'^/storage/emulated/0(?=/|$)'), '内部存储')
+      .replaceFirst(RegExp(r'^/sdcard(?=/|$)'), '内部存储');
+}
+
 /// In-app surface for the native Media3 texture. The route keeps the texture
 /// and controls visible until the user leaves it, including while a stream is
 /// buffering or reports a decoder error.
@@ -1324,6 +1345,12 @@ Future<void> showMediaTaskDetails(
     fileError = friendlyError(error);
   }
   final stat = await file?.stat();
+  int? cacheSize;
+  try {
+    if (artifact == null) cacheSize = await app.mediaTasks.cachedBytes(task.id);
+  } catch (error) {
+    fileError ??= friendlyError(error);
+  }
   var current = artifact;
   String? metadataError;
   if (current != null) {
@@ -1360,7 +1387,10 @@ Future<void> showMediaTaskDetails(
                   label: '分辨率',
                   value: '${current.width} × ${current.height}',
                 ),
-              _MediaDetailRow(label: '保存位置', value: current.location),
+              _MediaDetailRow(
+                label: '保存位置',
+                value: readableMediaLocation(current.location),
+              ),
             ] else ...[
               _MediaDetailRow(
                 label: '状态',
@@ -1368,12 +1398,17 @@ Future<void> showMediaTaskDetails(
               ),
               _MediaDetailRow(
                 label: '缓存大小',
-                value: formatBytes(stat?.size ?? task.bytesDownloaded),
+                value: formatBytes(
+                  cacheSize ?? stat?.size ?? task.bytesDownloaded,
+                ),
               ),
               if (candidate != null)
                 _MediaDetailRow(label: '来源格式', value: candidate.effectiveMime),
               if (task.localRef != null)
-                _MediaDetailRow(label: '本地缓存', value: task.localRef!),
+                _MediaDetailRow(
+                  label: '本地缓存',
+                  value: readableMediaLocation(task.localRef!),
+                ),
             ],
             if (fileError != null)
               _MediaDetailRow(label: '文件检查', value: fileError),
@@ -1381,7 +1416,10 @@ Future<void> showMediaTaskDetails(
               _MediaDetailRow(label: '元数据检查', value: metadataError),
             if (_taskErrorLabel(task).isNotEmpty)
               _MediaDetailRow(label: '错误原因', value: _taskErrorLabel(task)),
-            _MediaDetailRow(label: '文件夹', value: task.storageDirectoryName),
+            _MediaDetailRow(
+              label: '文件夹',
+              value: readableMediaLocation(task.storageDirectoryName),
+            ),
             _MediaDetailRow(label: '来源页面', value: task.sourceUrl.toString()),
           ],
         ),
@@ -1420,11 +1458,7 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
   String _directoryLabel() {
     final value = app.mp4ExportDirectory?.trim();
     if (value == null || value.isEmpty) return '未配置，保存在应用媒体库';
-    final uri = Uri.tryParse(value);
-    if (uri?.scheme == 'content') return '已配置系统目录';
-    final path = value.replaceAll('\\', '/').replaceAll(RegExp(r'/+$'), '');
-    final name = path.split('/').last;
-    return name.isEmpty ? value : name;
+    return readableMediaLocation(value);
   }
 
   @override

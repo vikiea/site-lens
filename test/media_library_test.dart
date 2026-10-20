@@ -56,6 +56,16 @@ class _MetadataFallbackRuntime extends NativeExportRuntime {
   }
 }
 
+class _MissingArtifactRuntime extends NativeExportRuntime {
+  @override
+  Future<Map<String, Object?>> inspect(String source) =>
+      Future.error(PlatformException(code: 'media_file_missing'));
+
+  @override
+  Future<Map<String, Object?>> stat(String source) =>
+      Future.error(PlatformException(code: 'media_file_missing'));
+}
+
 void main() {
   late Directory root;
   late AppDatabase db;
@@ -199,6 +209,45 @@ void main() {
       expect(library.item(task.id)!.libraryCopy, isNull);
       expect(await directory.list().length, 1);
       expect(library.item(task.id)!.location, location);
+    },
+  );
+
+  test(
+    'batched delivery is idempotent after the batch folder is applied',
+    () async {
+      final batchedCandidate = MediaCandidate(
+        id: 'episode-batched',
+        hostId: 1,
+        generation: 1,
+        sourceUrl: Uri.parse('https://example.com/watch/batched'),
+        mediaUrl: Uri.parse('https://cdn.example/episode-batched/index.m3u8'),
+        title: '批量系列 - 第2集',
+        mime: 'application/vnd.apple.mpegurl',
+        source: MediaCandidateSource.dom,
+      );
+      await db.saveMediaCandidate(batchedCandidate);
+      final batched = tasks.create(batchedCandidate, batchDirectory: '批次目录');
+      final batchedSource = File('${root.path}/batched-source.mp4')
+        ..writeAsBytesSync([7, 8, 9]);
+      await library.register(batched, batchedSource.path);
+      final directory = Directory('${root.path}/batched-output');
+
+      await library.deliver(batched.id, directory.path);
+      final first = library.item(batched.id)!;
+      await library.deliver(batched.id, directory.path);
+
+      expect(library.item(batched.id)!.location, first.location);
+      expect(
+        first.location,
+        contains('${Platform.pathSeparator}批次目录${Platform.pathSeparator}'),
+      );
+      expect(
+        await directory
+            .list(recursive: true)
+            .where((entity) => entity is File)
+            .length,
+        1,
+      );
     },
   );
 
@@ -363,6 +412,53 @@ void main() {
         ),
       );
       expect(library.item(task.id)!.location, value.location);
+    },
+  );
+
+  test('missing exported document remains indexed for recovery', () async {
+    final runtime = _MissingArtifactRuntime();
+    library.dispose();
+    library = MediaLibrary(db: db, tasks: tasks, native: runtime);
+    final value = MediaArtifact(
+      taskId: task.id,
+      location: 'content://provider/tree/primary%3ADownload/document/missing',
+      name: mediaExportFileName(task),
+      size: 600,
+      createdAt: DateTime.now().toUtc(),
+    );
+    await db.saveMediaArtifact(task.id, value.toJson());
+    await library.restore();
+
+    await expectLater(
+      library.inspect(task.id),
+      throwsA(isA<PlatformException>()),
+    );
+    expect(library.item(task.id), isNotNull);
+    expect(await db.mediaArtifacts(), hasLength(1));
+  });
+
+  test(
+    'missing artifact recovers a surviving private copy without deleting HLS',
+    () async {
+      final value = MediaArtifact(
+        taskId: task.id,
+        location: '${root.path}/missing.mp4',
+        libraryCopy: output.path,
+        name: mediaExportFileName(task),
+        size: 6,
+        createdAt: DateTime.now().toUtc(),
+      );
+      await db.saveMediaArtifact(task.id, value.toJson());
+      await library.restore();
+      await expectLater(
+        library.inspect(task.id),
+        throwsA(isA<FileSystemException>()),
+      );
+      final recovered = await library.recoverMissingArtifact(task.id);
+      expect(recovered!.location, output.path);
+      expect(recovered.libraryCopy, isNull);
+      expect(await output.readAsBytes(), [1, 2, 3, 4, 5, 6]);
+      expect(tasks.task(task.id), isNotNull);
     },
   );
 

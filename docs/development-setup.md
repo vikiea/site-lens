@@ -127,4 +127,13 @@ The runner still executes all local checks. It records the Android stage as pass
 
 `make acceptance` is the canonical Android device flow. It handles the debug package identity, database backup and restore, the combined integration suite, media/system controls, and restoration of the normal debug APK. Do not substitute an ad hoc `flutter test` on a device containing user data.
 
+For optional real-site acceptance, set `SITE_LENS_TEST_SITES` in `.env.local`
+to comma-separated HTTPS entry URLs without credentials, query strings or
+fragments. Run `python3 tool/run_android_acceptance.py DEVICE --single-suite
+--integration-target integration_test/configured_sites_test.dart`. The target
+uses the same backup/restore procedure on emulators and physical devices.
+These values are passed to the debug integration APK only; they are not
+embedded into normal or release APKs. Real-site reachability is recorded
+separately from synthetic playback/export assertions.
+
 `make build-release` additionally requires the formal signing properties outside the repository. `make doctor` reports missing signing configuration as a warning because it does not affect debug checks or local widget tests.

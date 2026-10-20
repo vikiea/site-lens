@@ -17,22 +17,23 @@ import 'ui/screens.dart';
 import 'ui/update_notice.dart';
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  FlutterError.onError = (details) {
-    FlutterError.presentError(details);
-    AppErrorLogger.capture(
-      details.exception,
-      module: 'flutter',
-      context: details.library,
-      stack: details.stack,
-    );
-  };
-  PlatformDispatcher.instance.onError = (error, stack) {
-    AppErrorLogger.capture(error, module: 'platform', stack: stack);
-    return true;
-  };
   await runZonedGuarded(
     () async {
+      // Framework initialization, error callbacks and runApp share this zone.
+      WidgetsFlutterBinding.ensureInitialized();
+      FlutterError.onError = (details) {
+        FlutterError.presentError(details);
+        AppErrorLogger.capture(
+          details.exception,
+          module: 'flutter',
+          context: details.library,
+          stack: details.stack,
+        );
+      };
+      PlatformDispatcher.instance.onError = (error, stack) {
+        AppErrorLogger.capture(error, module: 'platform', stack: stack);
+        return true;
+      };
       try {
         final database = await AppDatabase.open();
         final logger = AppErrorLogger(database);

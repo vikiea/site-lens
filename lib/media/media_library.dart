@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:path/path.dart' as p;
 
 import '../data/database.dart';
 import '../diagnostics/error_log.dart';
@@ -98,6 +100,12 @@ class MediaArtifact {
     thumbnailPath: json['thumbnailPath'] as String?,
     createdAt: DateTime.parse(json['createdAt'] as String),
   );
+}
+
+bool isMissingMediaArtifactError(Object error) {
+  if (error is PlatformException) return error.code == 'media_file_missing';
+  return error is FileSystemException &&
+      {2, 20}.contains(error.osError?.errorCode);
 }
 
 /// Owns exported files separately from their original download/cache tasks.
@@ -198,9 +206,15 @@ class MediaLibrary extends ChangeNotifier {
         final value = _items[taskId] ?? (throw StateError('媒体文件不存在'));
         late final Map<String, Object?> metadata;
         if (native == null) {
-          metadata = <String, Object?>{
-            'size': (await File(value.location).stat()).size,
-          };
+          final file = File(value.location);
+          if (!await file.exists()) {
+            throw FileSystemException(
+              '媒体文件不存在',
+              value.location,
+              const OSError('No such file', 2),
+            );
+          }
+          metadata = <String, Object?>{'size': (await file.stat()).size};
         } else {
           try {
             metadata = await native!.inspect(value.location);
@@ -239,6 +253,33 @@ class MediaLibrary extends ChangeNotifier {
       }
     },
   );
+
+  /// Recovers an exported artifact when its SAF document disappeared but an
+  /// app-private staging copy still exists. Returns null when regeneration
+  /// from the task's HLS cache is required.
+  Future<MediaArtifact?> recoverMissingArtifact(String taskId) async {
+    final value = _items[taskId];
+    if (value == null) return null;
+    for (final path in [value.libraryCopy, value.materializedCopy]) {
+      if (path == null || path == value.location) continue;
+      final candidate = value
+          .withLocation(path)
+          .withCopies(
+            libraryCopy: value.libraryCopy == path ? null : value.libraryCopy,
+            materializedCopy: value.materializedCopy == path
+                ? null
+                : value.materializedCopy,
+          );
+      try {
+        await _verifyReadable(candidate);
+        await _save(candidate);
+        return candidate;
+      } catch (_) {
+        // Try the next private copy before falling back to HLS regeneration.
+      }
+    }
+    return null;
+  }
 
   static int? _positiveInt(Object? raw) {
     final value = (raw as num?)?.toInt();
@@ -329,15 +370,19 @@ class MediaLibrary extends ChangeNotifier {
       throw StateError('保存目录无效，请在媒体管理中重新选择 MP4 保存目录');
     }
     final batchDirectory = tasks.task(taskId)?.batchDirectory;
+    Directory? targetDirectory;
+    if (uri.scheme != 'content') {
+      targetDirectory = uri.scheme == 'file'
+          ? Directory.fromUri(uri)
+          : Directory(directory);
+    }
     if (batchDirectory != null &&
         batchDirectory.trim().isNotEmpty &&
         uri.scheme != 'content') {
-      final root = uri.scheme == 'file'
-          ? Directory.fromUri(uri)
-          : Directory(directory);
-      uri = Directory(
-        '${root.path}${Platform.pathSeparator}${mediaSeriesDirectoryName(batchDirectory)}',
-      ).uri;
+      targetDirectory = Directory(
+        p.join(targetDirectory!.path, mediaSeriesDirectoryName(batchDirectory)),
+      );
+      uri = targetDirectory.uri;
     }
     // Finish cleanup from earlier deliveries before replacing either pending
     // copy reference. Verify the canonical output first so recovery bytes are
@@ -350,12 +395,8 @@ class MediaLibrary extends ChangeNotifier {
         ? existingTarget?.scheme == 'content' &&
               value.location.startsWith('${uri.toString()}/document/')
         : existingTarget?.scheme != 'content' &&
-              File(value.location).parent.absolute.path ==
-                  (uri.scheme == 'file'
-                          ? Directory.fromUri(uri)
-                          : Directory(directory))
-                      .absolute
-                      .path;
+              p.normalize(File(value.location).parent.absolute.path) ==
+                  p.normalize(targetDirectory!.absolute.path);
     if (alreadyDelivered) {
       return;
     }
@@ -373,15 +414,16 @@ class MediaLibrary extends ChangeNotifier {
             : mediaSeriesDirectoryName(batchDirectory),
       );
     } else {
-      final dir = uri.scheme == 'file'
-          ? Directory.fromUri(uri)
-          : Directory(directory);
+      final dir = targetDirectory!;
       await dir.create(recursive: true);
-      var file = File('${dir.path}${Platform.pathSeparator}${value.name}');
+      var file = File(p.join(dir.path, value.name));
       var suffix = 2;
       while (await file.exists()) {
         file = File(
-          '${dir.path}${Platform.pathSeparator}${value.name.replaceFirst(RegExp(r'\.mp4$', caseSensitive: false), '')} ($suffix).mp4',
+          p.join(
+            dir.path,
+            '${value.name.replaceFirst(RegExp(r'\.mp4$', caseSensitive: false), '')} ($suffix).mp4',
+          ),
         );
         suffix++;
       }

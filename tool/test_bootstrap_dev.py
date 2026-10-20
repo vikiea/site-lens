@@ -73,6 +73,17 @@ class BootstrapTests(unittest.TestCase):
             with self.assertRaises(b.BootstrapError):
                 b.parse_env_file(path)
 
+    def test_real_test_sites_are_literal_https_values(self):
+        path = self.root / 'sites.env'
+        path.write_text('SITE_LENS_TEST_SITES=https://one.example/,https://two.example/entry/\n')
+        self.assertEqual(b.parse_env_file(path)['SITE_LENS_TEST_SITES'],
+                         'https://one.example/,https://two.example/entry/')
+        for site in ('http://example.org', 'https://user:password@example.org',
+                     'https://example.org/?token=secret', 'https://example.org/#fragment'):
+            path.write_text('SITE_LENS_TEST_SITES=' + site + '\n')
+            with self.assertRaises(b.BootstrapError):
+                b.parse_env_file(path)
+
     def test_env_file_invalid_key_is_rejected(self):
         env_file = self.root / ".env.local"
         env_file.write_text("bad-key=/tmp/sdk\n")
@@ -91,6 +102,10 @@ class BootstrapTests(unittest.TestCase):
         }
         tools = b.resolve_tools(env)
         self.assertEqual(Path(tools.flutter).parent.resolve(), process_sdk.resolve())
+
+    def test_process_test_sites_are_validated_after_file_merge(self):
+        with self.assertRaises(b.BootstrapError):
+            b.project_environment({'SITE_LENS_TEST_SITES': 'https://example.org/?token=secret'})
 
     def test_direct_resolution_reads_project_env_file(self):
         file_sdk = self.sdk("file")

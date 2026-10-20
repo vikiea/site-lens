@@ -769,6 +769,9 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                     if (entryFollowing && entryArmed && leased) {
                         entryNavigation = navigation; entryArmed = false
                     }
+                    val entryRedirectLease = entryFollowing &&
+                        entryNavigation === navigation && !navigation.isHistory &&
+                        entryHops < MAX_ENTRY_REDIRECTS
                     // The toolbar arms a single, known history target after its
                     // scripts have been prepared. Consume that lease exactly at
                     // the matching navigation start; arbitrary page history is
@@ -784,7 +787,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                     // isolated world can navigate the frame from document start,
                     // which is before the commit that closes the entry window.
                     if ((navigation.isSameDocument || navigation.isHistory || !leased) &&
-                        !sameDocumentLease && !sameOriginRedirect && !appHistoryLease) {
+                        !sameDocumentLease && !sameOriginRedirect && !appHistoryLease && !entryRedirectLease) {
                         revoke(); event("scriptsSuspended", "无法确认新文档或历史恢复，特权脚本关闭直至显式刷新")
                     }
                     expectedUrl = if (sameOriginRedirect) navigation.url else null
@@ -1158,8 +1161,14 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         entryFollowing = followEntryRedirects; entryHops = 0; entryNavigation = null
         entryArmed = followEntryRedirects
         if (!installScripts) {
-            expectedUrl = url; leasedOrigin = webOrigin(url)
-            load()
+            // revoke() defers provider removals until the current callback
+            // returns. Start the next document after that queue entry, or it
+            // can run the previous document-start script before removal.
+            mainHandler.post {
+                if (!available || generation != ticket) return@post
+                expectedUrl = url; leasedOrigin = webOrigin(url)
+                load()
+            }
             return
         }
         events.getScriptsForNavigation(id, ticket, url) { result ->
@@ -1336,9 +1345,6 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     }
     private fun clearProbeProfile() {
         profileName?.let { name -> runCatching {
-            val profile = ProfileStore.getInstance().getProfile(name)
-            profile?.cookieManager?.removeAllCookies(null)
-            profile?.webStorage?.deleteAllData()
             ProfileStore.getInstance().deleteProfile(name)
         } }
     }
@@ -1357,13 +1363,11 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         runCatching { (platformView.parent as? ViewGroup)?.removeView(platformView) }
         runCatching { webView.destroy() }
         if (profileName != null) {
-            // ProfileStore deletion of a loaded profile may be rejected. Clear the
-            // isolated cookie/storage; never touch the default browsing profile.
-            try {
-                val profile = ProfileStore.getInstance().getProfile(profileName)
-                profile?.cookieManager?.removeAllCookies(null)
-                profile?.webStorage?.deleteAllData()
-                ProfileStore.getInstance().deleteProfile(profileName) } catch (_: IllegalStateException) { /* Removed on next process start; see sweep below. */ }
+            // ProfileStore owns profile data cleanup. Deleting the profile
+            // directly avoids touching a loaded CookieManager/WebStorage after
+            // the WebView has been destroyed; loaded profiles are deferred to
+            // the next process sweep when the provider rejects deletion.
+            mainHandler.post { clearProbeProfile() }
         }
     }
 }

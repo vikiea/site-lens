@@ -115,7 +115,7 @@ class NativeMediaRuntime(
                 details = error.stackTraceToString(),
                 contextValue = "method=${call.method}",
             )
-            result.error("native_media", error.message ?: "原生播放失败", null)
+            result.error(MediaFileErrors.code(error) ?: "native_media", error.message ?: "原生播放失败", null)
         }
     }
 

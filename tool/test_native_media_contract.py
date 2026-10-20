@@ -74,6 +74,31 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn('private fun commitLegacyCopy', DOWNLOAD_RUNTIME)
         self.assertIn('if (staged.exists()) runCatching { staged.delete() }', DOWNLOAD_RUNTIME)
 
+    def test_missing_saf_documents_map_to_a_specific_media_error(self):
+        errors = (ANDROID / "MediaFileErrors.kt").read_text()
+        self.assertIn('"media_file_missing"', errors)
+        self.assertIn('"missing file"', errors)
+        self.assertIn("SecurityException", errors)
+
+    def test_profile_cleanup_deletes_profile_without_loaded_provider_access(self):
+        host = (ANDROID / "NativeWebHost.kt").read_text()
+        start = host.index("private fun clearProbeProfile")
+        end = host.index("fun dispose()", start)
+        body = host[start:end]
+        self.assertIn("deleteProfile(name)", body)
+        self.assertNotIn("getProfile", body)
+        self.assertNotIn("cookieManager", body)
+        self.assertNotIn("webStorage", body)
+
+    def test_profile_cleanup_runs_after_webview_teardown(self):
+        host = (ANDROID / "NativeWebHost.kt").read_text()
+        normal = host[host.index("fun dispose()", host.index("class NativeWebHost(")):]
+        normal = normal[:normal.index("\n    }\n}")]
+        self.assertLess(normal.index("webView.destroy()"), normal.index("mainHandler.post { clearProbeProfile() }"))
+        dead = host[host.index("private fun disposeAfterRendererGone"):]
+        dead = dead[:dead.index("private fun clearProbeProfile")]
+        self.assertLess(dead.index("deadView.destroy()"), dead.index("clearProbeProfile()"))
+
 
 if __name__ == "__main__":
     unittest.main()

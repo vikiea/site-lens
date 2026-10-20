@@ -11,6 +11,19 @@ void main() {
     expect(formatBytes(-1), '未知大小');
   });
 
+  test('media locations decode SAF document ids for people', () {
+    expect(
+      readableMediaLocation(
+        'content://com.android.externalstorage.documents/tree/primary%3ADownload%2Fsite-lens',
+      ),
+      '内部存储/Download/site-lens',
+    );
+    expect(
+      readableMediaLocation('/storage/emulated/0/Download/site-lens/剧集.mp4'),
+      '内部存储/Download/site-lens/剧集.mp4',
+    );
+  });
+
   test('media duration formatting uses readable elapsed time', () {
     expect(formatMediaDuration(0), '--:--');
     expect(formatMediaDuration(65_000), '01:05');
