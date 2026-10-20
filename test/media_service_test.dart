@@ -160,6 +160,179 @@ void main() {
     expect(store.tasks, hasLength(1));
   });
 
+  test('separate stores converge on one durable cache-key row', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final source = candidate(id: 'concurrent-observation');
+    await db.saveMediaCandidate(source);
+    final firstStore = MediaTaskStore(db: db);
+    final secondStore = MediaTaskStore(db: db);
+
+    final first = firstStore.create(source);
+    await firstStore.flush(first.id);
+    firstStore.transition(first.id, MediaTaskState.downloading);
+    firstStore.updateProgress(first.id, 42, totalBytes: 100);
+    await firstStore.flush(first.id);
+
+    final second = secondStore.create(source);
+    await secondStore.flush(second.id);
+
+    expect(second.id, first.id);
+    final persisted = (await db.mediaTasks()).single;
+    expect(persisted.state, MediaTaskState.downloading);
+    expect(persisted.bytesDownloaded, 42);
+  });
+
+  test(
+    'database upsert returns the existing id on a legacy cache conflict',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final source = candidate(id: 'legacy-cache-conflict');
+      await db.saveMediaCandidate(source);
+      final store = MediaTaskStore(db: db);
+      final first = store.create(source);
+      store.transition(first.id, MediaTaskState.downloading);
+      store.updateProgress(first.id, 42, totalBytes: 100);
+      await store.flush(first.id);
+
+      final foreignId = first.copyWith(
+        id: 'legacy-racing-task',
+        state: MediaTaskState.queued,
+        bytesDownloaded: 0,
+        totalBytes: null,
+      );
+      expect(await db.saveMediaTask(foreignId), first.id);
+      final persisted = (await db.mediaTasks()).single;
+      expect(persisted.id, first.id);
+      expect(persisted.state, MediaTaskState.downloading);
+      expect(persisted.bytesDownloaded, 42);
+
+      final stale = MediaTask(
+        id: first.id,
+        candidateId: first.candidateId,
+        hostId: first.hostId,
+        generation: first.generation,
+        sourceUrl: first.sourceUrl,
+        cacheKey: first.cacheKey,
+        state: MediaTaskState.failed,
+        updatedAt: first.updatedAt.subtract(const Duration(minutes: 1)),
+        displayTitle: first.displayTitle,
+        bytesDownloaded: 42,
+        totalBytes: 100,
+      );
+      await db.saveMediaTask(stale);
+      expect((await db.mediaTasks()).single.state, MediaTaskState.downloading);
+    },
+  );
+
+  test(
+    'legacy cache conflicts alias the in-memory task to the durable row',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final source = candidate(id: 'legacy-alias');
+      await db.saveMediaCandidate(source);
+      final seed = MediaTaskStore()
+          .create(source)
+          .copyWith(
+            id: 'legacy-task-id',
+            state: MediaTaskState.downloading,
+            bytesDownloaded: 42,
+            totalBytes: 100,
+          );
+      await db.saveMediaTask(seed);
+
+      final store = MediaTaskStore(db: db);
+      final racing = store.create(source);
+      await store.flush(racing.id);
+
+      expect(store.task(racing.id)?.id, 'legacy-task-id');
+      expect(store.task(racing.id)?.bytesDownloaded, 42);
+      store.updateProgress(racing.id, 77, totalBytes: 100);
+      await store.flush(racing.id);
+      expect((await db.mediaTasks()).single.bytesDownloaded, 77);
+    },
+  );
+
+  test('retrying a failed stream reuses its durable task row', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final store = MediaTaskStore(db: db);
+    final original = candidate(id: 'failed-observation');
+    await db.saveMediaCandidate(original);
+    final first = store.create(original);
+    await store.flush(first.id);
+    store.transition(first.id, MediaTaskState.failed, errorReason: '网络失败');
+    await store.flush(first.id);
+
+    final replacement = candidate(id: 'retry-observation');
+    await db.saveMediaCandidate(replacement);
+    final retry = store.create(replacement);
+    await store.flush(retry.id);
+
+    expect(retry.id, first.id);
+    expect(retry.state, MediaTaskState.queued);
+    expect(retry.candidateId, 'retry-observation');
+    expect((await db.mediaTasks()), hasLength(1));
+    expect((await db.mediaTasks()).single.state, MediaTaskState.queued);
+  });
+
+  test(
+    'direct retry states persist their transition back to downloading',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final source = candidate(id: 'direct-retry-state');
+      await db.saveMediaCandidate(source);
+      final store = MediaTaskStore(db: db);
+      final task = store.create(source);
+      await store.flush(task.id);
+
+      for (final retryState in [
+        MediaTaskState.failed,
+        MediaTaskState.cancelled,
+        MediaTaskState.reauthorize,
+      ]) {
+        if (store.task(task.id)!.state != MediaTaskState.downloading) {
+          store.transition(task.id, MediaTaskState.downloading);
+          await store.flush(task.id);
+        }
+        store.transition(task.id, retryState);
+        await store.flush(task.id);
+        store.transition(task.id, MediaTaskState.downloading);
+        await store.flush(task.id);
+        expect(
+          (await db.mediaTasks()).single.state,
+          MediaTaskState.downloading,
+        );
+      }
+    },
+  );
+
+  test('reauthorization accepts a rotated token for the same stream', () {
+    final store = MediaTaskStore();
+    final original = candidate(
+      id: 'reauthorize-token-old',
+      url: 'https://cdn.example/live/index.m3u8?token=old&v=720',
+      mime: 'application/vnd.apple.mpegurl',
+    );
+    final task = store.create(original);
+    store.transition(task.id, MediaTaskState.downloading);
+    store.transition(task.id, MediaTaskState.reauthorize);
+
+    final refreshed = candidate(
+      id: 'reauthorize-token-new',
+      url: 'https://cdn.example/live/index.m3u8?token=new&v=720',
+      mime: 'application/vnd.apple.mpegurl',
+    );
+    final retry = store.create(refreshed);
+
+    expect(retry.id, task.id);
+    expect(retry.candidateId, refreshed.id);
+    expect(retry.cacheKey, task.cacheKey);
+  });
+
   test('explicit reauthorization rebinds a new observation without losing partial progress', () {
     final store = MediaTaskStore();
     final first = candidate(id: 'old-observation');
@@ -194,6 +367,22 @@ void main() {
       storageDirectory: task.storageDirectoryName,
     );
     expect(directory.path, endsWith('/media_cache/批量下载一'));
+  });
+
+  test('batch directory survives media task persistence and restore', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final source = candidate(id: 'batch-persisted', title: '系列 - 第1集');
+    await db.saveMediaCandidate(source);
+    final first = MediaTaskStore(db: db);
+    final task = first.create(source, batchDirectory: '批次目录');
+    await first.flush(task.id);
+
+    final restored = MediaTaskStore(db: db);
+    await restored.restore();
+
+    expect(restored.task(task.id)?.batchDirectory, '批次目录');
+    expect(restored.task(task.id)?.storageDirectoryName, '批次目录');
   });
 
   test('media playlist groups one series and sorts episodes', () {
@@ -285,8 +474,8 @@ void main() {
       elements: [
         {'url': 'https://cdn.example/video.mp4', 'mime': 'video/mp4'},
         {'url': 'https://cdn.example/video.mp4#fragment'},
-        {'url': 'https://cdn.example/live/index.m3u8?token=one'},
-        {'url': 'https://cdn.example/live/index.m3u8?token=two'},
+        {'url': 'https://cdn.example/live/index.m3u8?signature=one'},
+        {'url': 'https://cdn.example/live/index.m3u8?signature=two'},
         {'url': 'blob:https://example.com/id'},
         {'url': 'file:///private/video.mp4'},
       ],
@@ -301,10 +490,10 @@ void main() {
   test('signed HLS observations share one session group', () {
     expect(
       mediaCandidateGroupKey(
-        Uri.parse('https://cdn.example/live/index.m3u8?token=one'),
+        Uri.parse('https://cdn.example/live/index.m3u8?signature=one'),
       ),
       mediaCandidateGroupKey(
-        Uri.parse('https://cdn.example/live/index.m3u8?token=two'),
+        Uri.parse('https://cdn.example/live/index.m3u8?signature=two'),
       ),
     );
   });
@@ -323,7 +512,7 @@ void main() {
 
   test('titled HLS observations collapse to one display candidate', () {
     final first = candidate(
-      url: 'https://cdn.example/live/index.m3u8?token=one',
+      url: 'https://cdn.example/live/index.m3u8?signature=one',
       mime: 'application/vnd.apple.mpegurl',
     );
     final second = MediaCandidate(
@@ -331,7 +520,7 @@ void main() {
       hostId: first.hostId,
       generation: first.generation,
       sourceUrl: first.sourceUrl,
-      mediaUrl: Uri.parse('https://cdn.example/live/index.m3u8?token=two'),
+      mediaUrl: Uri.parse('https://cdn.example/live/index.m3u8?signature=two'),
       title: first.title,
       mime: first.mime,
       source: first.source,
@@ -340,6 +529,96 @@ void main() {
       mediaCandidateDisplayGroupKey(first),
       mediaCandidateDisplayGroupKey(second),
     );
+  });
+
+  test('same media URL stays one candidate even when page titles differ', () {
+    final first = candidate(
+      url: 'https://cdn.example/live/index.m3u8?signature=one',
+      mime: 'application/vnd.apple.mpegurl',
+    );
+    final second = MediaCandidate(
+      id: 'candidate-title-2',
+      hostId: first.hostId,
+      generation: first.generation,
+      sourceUrl: first.sourceUrl,
+      mediaUrl: Uri.parse('https://cdn.example/live/index.m3u8?signature=two'),
+      title: '另一个页面标题',
+      mime: first.mime,
+      source: first.source,
+    );
+    expect(
+      mediaCandidateDisplayGroupKey(first),
+      mediaCandidateDisplayGroupKey(second),
+    );
+  });
+
+  test(
+    'display identity collapses auth rotation but task identity keeps token',
+    () {
+      final first = candidate(
+        url: 'https://cdn.example/live/index.m3u8?token=one&v=720',
+        mime: 'application/vnd.apple.mpegurl',
+      );
+      final refreshed = MediaCandidate(
+        id: 'candidate-token-2',
+        hostId: first.hostId,
+        generation: first.generation,
+        sourceUrl: first.sourceUrl,
+        mediaUrl: Uri.parse(
+          'https://cdn.example/live/index.m3u8?token=two&v=720',
+        ),
+        title: first.title,
+        mime: first.mime,
+        source: first.source,
+      );
+      expect(
+        mediaCandidateDisplayGroupKey(first),
+        mediaCandidateDisplayGroupKey(refreshed),
+      );
+      expect(
+        mediaCandidateGroupKey(first.mediaUrl),
+        isNot(mediaCandidateGroupKey(refreshed.mediaUrl)),
+      );
+    },
+  );
+
+  test('HLS selection parameters remain part of the candidate identity', () {
+    final base = Uri.parse(
+      'https://cdn.example/live/index.m3u8?signature=one&v=720',
+    );
+    final signedAgain = Uri.parse(
+      'https://cdn.example/live/index.m3u8?signature=two&v=720',
+    );
+    final differentSelection = Uri.parse(
+      'https://cdn.example/live/index.m3u8?signature=three&v=1080',
+    );
+    expect(mediaCandidateGroupKey(base), mediaCandidateGroupKey(signedAgain));
+    expect(
+      mediaCandidateGroupKey(
+        Uri.parse('https://cdn.example/live/index.m3u8?token=one&v=720'),
+      ),
+      isNot(
+        mediaCandidateGroupKey(
+          Uri.parse('https://cdn.example/live/index.m3u8?token=two&v=720'),
+        ),
+      ),
+    );
+    expect(
+      mediaCandidateGroupKey(base),
+      isNot(mediaCandidateGroupKey(differentSelection)),
+    );
+  });
+
+  test('playlist boundary hints identify the first and last episode', () {
+    expect(
+      mediaPlaylistBoundaryHint(index: 0, length: 3, offset: -1),
+      '已经是第一集',
+    );
+    expect(
+      mediaPlaylistBoundaryHint(index: 2, length: 3, offset: 1),
+      '已经是最后一集',
+    );
+    expect(mediaPlaylistBoundaryHint(index: 1, length: 3, offset: -1), isNull);
   });
 
   test('HLS downloads a local playlist, segments and encryption key', () async {

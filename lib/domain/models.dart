@@ -642,10 +642,41 @@ String mediaCandidateKey(Uri url) {
     't',
     'time',
     'timestamp',
-    'token',
-    'v',
     'via',
     'via_bm',
+  };
+  final retained = <String, String>{};
+  for (final entry in clean.queryParameters.entries) {
+    if (!volatile.contains(entry.key.toLowerCase())) {
+      retained[entry.key] = entry.value;
+    }
+  }
+  return clean.replace(queryParameters: retained).toString();
+}
+
+/// Identity used only while refreshing an expired authorization URL for an
+/// existing task. Content selection parameters remain part of this key;
+/// `token` is ignored only because the reauthorization flow already requires
+/// the same page, host, generation and media candidate context.
+String mediaCandidateAuthorizationKey(Uri url) {
+  final clean = url.removeFragment();
+  if (clean.queryParameters.isEmpty) return clean.toString();
+  const volatile = {
+    'auth',
+    'auth_key',
+    'expires',
+    'expire',
+    'exp',
+    'hmac',
+    'sig',
+    'sign',
+    'signature',
+    't',
+    'time',
+    'timestamp',
+    'via',
+    'via_bm',
+    'token',
   };
   final retained = <String, String>{};
   for (final entry in clean.queryParameters.entries) {
@@ -662,10 +693,6 @@ String mediaCandidateKey(Uri url) {
 /// the chosen candidate for authorization.
 String mediaCandidateGroupKey(Uri url) {
   final clean = url.removeFragment();
-  final path = clean.path.toLowerCase();
-  if (path.endsWith('.m3u8') || path.endsWith('.m3u')) {
-    return clean.replace(query: '').toString();
-  }
   return mediaCandidateKey(clean);
 }
 
@@ -795,17 +822,13 @@ Uri? optionalMediaUri(String? raw) {
 }
 
 /// A display/session identity for one media stream. Pages commonly report the
-/// same HLS playlist from several video elements with different signed URLs.
-/// The selected candidate still keeps its complete URL for playback.
+/// same media URL from several video elements while rotating a short-lived
+/// token or signature. Keep content-selection parameters such as quality and
+/// audio in the key, but collapse authorization rotation for the candidate
+/// picker. The selected candidate still keeps its complete URL for playback;
+/// task/cache identity continues to use [mediaCandidateGroupKey].
 String mediaCandidateDisplayGroupKey(MediaCandidate candidate) {
-  final title = candidate.title
-      .trim()
-      .replaceAll(RegExp(r'\s+'), ' ')
-      .toLowerCase();
-  if (candidate.isHls && title.isNotEmpty) {
-    return 'hls-title:${candidate.sourceUrl.origin.toLowerCase()}:$title:${candidate.effectiveMime}';
-  }
-  return mediaCandidateGroupKey(candidate.mediaUrl);
+  return mediaCandidateAuthorizationKey(candidate.mediaUrl);
 }
 
 enum MediaTaskState {
@@ -891,6 +914,7 @@ class MediaTask {
       : mediaSeriesDirectoryName(batchDirectory!);
 
   MediaTask copyWith({
+    String? id,
     String? candidateId,
     MediaTaskState? state,
     String? displayTitle,
@@ -902,7 +926,7 @@ class MediaTask {
     Object? errorReason = _unset,
     Object? localRef = _unset,
   }) => MediaTask(
-    id: id,
+    id: id ?? this.id,
     candidateId: candidateId ?? this.candidateId,
     hostId: hostId,
     generation: generation,

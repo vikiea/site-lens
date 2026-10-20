@@ -348,6 +348,26 @@ class DlnaSoapException extends StateError {
   final String? description;
 }
 
+class DlnaTransportException extends StateError {
+  DlnaTransportException({
+    required this.action,
+    required this.reason,
+    required this.cause,
+  }) : super('DLNA $action 网络请求失败：$reason');
+
+  final String action;
+  final String reason;
+  final Object cause;
+}
+
+class DlnaRelayException extends StateError {
+  DlnaRelayException({required this.stage, required this.cause})
+    : super('DLNA $stage失败：投屏文件不存在、为空或不可读取');
+
+  final String stage;
+  final Object cause;
+}
+
 /// An optional renderer command is unavailable. The active cast session stays
 /// intact so the caller can keep playback running and disable only that
 /// control.
@@ -552,6 +572,18 @@ class DlnaSoapClient {
     } on TimeoutException {
       pending?.abort();
       throw TimeoutException('DLNA $action 超时', timeout);
+    } on IOException catch (error) {
+      final reason = switch (error) {
+        HandshakeException() => 'TLS 握手失败',
+        SocketException() => '连接被拒绝或已断开',
+        HttpException() => 'HTTP 连接失败',
+        _ => '网络连接失败',
+      };
+      throw DlnaTransportException(
+        action: action,
+        reason: reason,
+        cause: error,
+      );
     }
   }
 
@@ -1321,8 +1353,19 @@ class DlnaCastController extends ChangeNotifier {
 
   String _castError(Object error) {
     if (error is TimeoutException) return '电视响应超时，请检查连接后重新投屏';
+    if (error is DlnaTransportException) return error.message;
+    if (error is DlnaRelayException) return error.message;
     if (error is SocketException || error is HttpException) {
       return '投屏连接中断，请检查电视与手机的局域网连接';
+    }
+    if (error is PlatformException) {
+      final detail = [
+        error.code,
+        error.message,
+      ].whereType<String>().where((value) => value.trim().isNotEmpty).join('：');
+      return detail.isEmpty
+          ? '局域网投屏组件不可用，请检查 Wi-Fi 后重试'
+          : '局域网投屏组件不可用（$detail）';
     }
     return error is StateError ? error.message : '投屏失败，请检查接收设备';
   }
@@ -1355,7 +1398,10 @@ class DlnaCastController extends ChangeNotifier {
     }
     if (error is TimeoutException ||
         error is SocketException ||
-        error is HttpException) {
+        error is HttpException ||
+        error is PlatformException ||
+        error is DlnaTransportException ||
+        error is FileSystemException) {
       return StateError(_castError(error));
     }
     return error;
@@ -1433,15 +1479,26 @@ class MediaRelayServer {
     Uri? receiver,
     String mime = 'video/mp4',
   }) async {
-    final root = (allowedRoot ?? file.parent).resolveSymbolicLinksSync();
-    final canonical = file.resolveSymbolicLinksSync();
-    if (!canonical.startsWith('$root${Platform.pathSeparator}') ||
-        !await file.exists() ||
-        await file.length() <= 0) {
-      throw StateError('投屏媒体不存在、为空或超出授权目录');
+    late final String root;
+    late final String canonical;
+    try {
+      root = (allowedRoot ?? file.parent).resolveSymbolicLinksSync();
+      canonical = file.resolveSymbolicLinksSync();
+      if (!canonical.startsWith('$root${Platform.pathSeparator}') ||
+          !await file.exists() ||
+          await file.length() <= 0) {
+        throw StateError('媒体文件校验失败');
+      }
+    } on FileSystemException catch (error) {
+      throw DlnaRelayException(stage: '媒体文件中继', cause: error);
     }
     final host = advertisedHost ?? await _relayHost(receiver);
-    final server = await HttpServer.bind(InternetAddress(host), 0);
+    late final HttpServer server;
+    try {
+      server = await HttpServer.bind(InternetAddress(host), 0);
+    } on IOException catch (error) {
+      throw DlnaRelayException(stage: '媒体中继监听', cause: error);
+    }
     final relay = MediaRelayServer._(
       server,
       authorization,
@@ -1612,14 +1669,25 @@ class HlsRelayServer {
     Uri? receiver,
     String mime = 'application/vnd.apple.mpegurl',
   }) async {
-    final root = (allowedRoot ?? playlist.parent).resolveSymbolicLinksSync();
-    final canonicalPlaylist = playlist.resolveSymbolicLinksSync();
-    if (!canonicalPlaylist.startsWith('$root${Platform.pathSeparator}') ||
-        !await playlist.exists()) {
-      throw StateError('HLS 清单不存在或超出授权目录');
+    late final String root;
+    late final String canonicalPlaylist;
+    try {
+      root = (allowedRoot ?? playlist.parent).resolveSymbolicLinksSync();
+      canonicalPlaylist = playlist.resolveSymbolicLinksSync();
+      if (!canonicalPlaylist.startsWith('$root${Platform.pathSeparator}') ||
+          !await playlist.exists()) {
+        throw StateError('HLS 清单校验失败');
+      }
+    } on FileSystemException catch (error) {
+      throw DlnaRelayException(stage: 'HLS 中继', cause: error);
     }
     final host = advertisedHost ?? await _relayHost(receiver);
-    final server = await HttpServer.bind(InternetAddress(host), 0);
+    late final HttpServer server;
+    try {
+      server = await HttpServer.bind(InternetAddress(host), 0);
+    } on IOException catch (error) {
+      throw DlnaRelayException(stage: 'HLS 中继监听', cause: error);
+    }
     final relay = HlsRelayServer._(
       server,
       authorization,

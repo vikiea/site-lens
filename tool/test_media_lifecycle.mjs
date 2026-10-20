@@ -154,6 +154,23 @@ await waitForReport();
 assert.equal(outbound.filter(value => value.kind === 'state').at(-1).playing, true);
 console.log('Large candidate set keeps state telemetry and chunks candidates under the native limit PASS.');
 
+nodes[0].paused = true;
+nodes[0].ended = false;
+nodes[0].currentSrc = 'https://example.test/placeholder.m3u8?token=placeholder';
+nodes[0].src = nodes[0].currentSrc;
+const playingNode = new Media();
+await playingNode.play();
+nodes.push(playingNode);
+dataElements.length = 0;
+performanceEntries.length = 0;
+dataElements.push(new DataElement({'data-play-src': '/assets/placeholder.m3u8?token=placeholder'}));
+performanceEntries.push({name: 'https://cdn.example.test/real.m3u8?token=real', initiatorType: 'fetch'});
+mutation();
+await waitForReport();
+const fallbackCandidates = outbound.filter(value => value.kind === 'candidates').at(-1).candidates;
+assert.ok(fallbackCandidates.some(value => value.url.includes('/real.m3u8')));
+console.log('Resource timing recovers a real media URL when the page only exposes a placeholder PASS.');
+
 handlers.get('pagehide')?.({});
 assert.notEqual(outbound.at(-1)?.kind, 'gone');
 console.log('Frame lifecycle retirement avoids a pagehide bridge post PASS.');

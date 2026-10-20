@@ -92,7 +92,7 @@ const _v5Tables = <String>[
       'id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL REFERENCES media_candidates(id) ON DELETE CASCADE, '
       'host_id INTEGER NOT NULL, generation INTEGER NOT NULL, source_url TEXT NOT NULL, '
       'cache_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL, updated_at TEXT NOT NULL, '
-      'display_title TEXT NOT NULL DEFAULT \'\', episode_label TEXT, '
+      'display_title TEXT NOT NULL DEFAULT \'\', batch_directory TEXT, episode_label TEXT, '
       'bytes_downloaded INTEGER NOT NULL DEFAULT 0, total_bytes INTEGER, error_code TEXT, error_reason TEXT, local_ref TEXT)',
   'CREATE TABLE IF NOT EXISTS script_approvals ('
       'script_id TEXT PRIMARY KEY REFERENCES scripts(id) ON DELETE CASCADE, '
@@ -121,6 +121,8 @@ const _v9MediaArtifactsTable =
     'CREATE TABLE IF NOT EXISTS media_artifacts('
     'task_id TEXT PRIMARY KEY REFERENCES media_tasks(id) ON DELETE CASCADE, '
     'metadata TEXT NOT NULL)';
+const _v10TaskBatchDirectoryColumn =
+    'ALTER TABLE media_tasks ADD COLUMN batch_directory TEXT';
 
 // Drift's SQL API keeps the small schema explicit and permits in-memory tests.
 // No browser cookie or password is copied into this database.
@@ -141,7 +143,7 @@ class AppDatabase extends GeneratedDatabase {
   static void Function(String step)? migrationDebugHook;
 
   @override
-  int get schemaVersion => 9;
+  int get schemaVersion => 10;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -177,6 +179,9 @@ class AppDatabase extends GeneratedDatabase {
       if (from < 7) await _migrateV6toV7();
       if (from < 8) await _migrateV7toV8();
       if (from < 9) await customStatement(_v9MediaArtifactsTable);
+      if (from < 10 && !await _columnExists('media_tasks', 'batch_directory')) {
+        await customStatement(_v10TaskBatchDirectoryColumn);
+      }
     },
     beforeOpen: (_) async {
       await customStatement('PRAGMA foreign_keys = ON');
@@ -1299,8 +1304,8 @@ class AppDatabase extends GeneratedDatabase {
               previous.sourceUrl.removeFragment() !=
                   candidate.sourceUrl.removeFragment() ||
               previous.source != candidate.source ||
-              mediaCandidateKey(previous.mediaUrl) !=
-                  mediaCandidateKey(candidate.mediaUrl) ||
+              mediaCandidateAuthorizationKey(previous.mediaUrl) !=
+                  mediaCandidateAuthorizationKey(candidate.mediaUrl) ||
               (candidate.createdAt != null &&
                   previous.createdAt != null &&
                   candidate.createdAt!.isBefore(previous.createdAt!)))) {
@@ -1347,27 +1352,52 @@ class AppDatabase extends GeneratedDatabase {
     );
   }
 
-  Future<void> saveMediaTask(MediaTask task) => customStatement(
-    'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,state,updated_at,display_title,episode_label,bytes_downloaded,total_bytes,error_code,error_reason,local_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
-    'ON CONFLICT(id) DO UPDATE SET candidate_id=excluded.candidate_id,state=excluded.state,updated_at=excluded.updated_at,display_title=excluded.display_title,episode_label=excluded.episode_label,bytes_downloaded=excluded.bytes_downloaded,total_bytes=excluded.total_bytes,error_code=excluded.error_code,error_reason=excluded.error_reason,local_ref=excluded.local_ref',
-    [
-      task.id,
-      task.candidateId,
-      task.hostId,
-      task.generation,
-      task.sourceUrl.toString(),
-      task.cacheKey,
-      task.state.name,
-      task.updatedAt.toUtc().toIso8601String(),
-      task.displayTitle,
-      task.episodeLabel,
-      task.bytesDownloaded,
-      task.totalBytes,
-      task.errorCode,
-      task.errorReason,
-      task.localRef,
-    ],
-  );
+  Future<String> saveMediaTask(MediaTask task) => transaction(() async {
+    const update =
+        'candidate_id=excluded.candidate_id,state=excluded.state,updated_at=excluded.updated_at,display_title=excluded.display_title,batch_directory=excluded.batch_directory,episode_label=excluded.episode_label,bytes_downloaded=excluded.bytes_downloaded,total_bytes=excluded.total_bytes,error_code=excluded.error_code,error_reason=excluded.error_reason,local_ref=excluded.local_ref';
+    await customStatement(
+      'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,state,updated_at,display_title,batch_directory,episode_label,bytes_downloaded,total_bytes,error_code,error_reason,local_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
+      'ON CONFLICT(id) DO UPDATE SET $update '
+      'WHERE NOT ('
+      '(excluded.updated_at < media_tasks.updated_at) OR '
+      '(media_tasks.bytes_downloaded > excluded.bytes_downloaded) OR '
+      '(media_tasks.total_bytes IS NOT NULL AND excluded.total_bytes IS NULL) OR '
+      '(media_tasks.local_ref IS NOT NULL AND excluded.local_ref IS NULL) OR '
+      '(media_tasks.state IN (\'downloading\',\'paused\',\'playable\',\'completed\') AND excluded.state=\'queued\') OR '
+      '(media_tasks.state IN (\'playable\',\'completed\') AND excluded.state IN (\'downloading\',\'paused\'))'
+      ') '
+      // A duplicate cache identity must reuse the durable row intact. A
+      // racing store may contain an older queued snapshot and must never
+      // overwrite progress from the store that already owns this cache.
+      'ON CONFLICT(cache_key) DO NOTHING',
+      [
+        task.id,
+        task.candidateId,
+        task.hostId,
+        task.generation,
+        task.sourceUrl.toString(),
+        task.cacheKey,
+        task.state.name,
+        task.updatedAt.toUtc().toIso8601String(),
+        task.displayTitle,
+        task.batchDirectory,
+        task.episodeLabel,
+        task.bytesDownloaded,
+        task.totalBytes,
+        task.errorCode,
+        task.errorReason,
+        task.localRef,
+      ],
+    );
+    final row = await customSelect(
+      'SELECT id FROM media_tasks WHERE cache_key=?',
+      variables: [Variable.withString(task.cacheKey)],
+    ).getSingle();
+    return row.read<String>('id');
+  });
+
+  Future<MediaTask?> mediaTaskByCacheKey(String key) async =>
+      (await mediaTasks()).where((task) => task.cacheKey == key).firstOrNull;
 
   Future<List<MediaTask>> mediaTasks() async =>
       (await customSelect('SELECT * FROM media_tasks ORDER BY updated_at DESC')
@@ -1383,6 +1413,7 @@ class AppDatabase extends GeneratedDatabase {
               state: MediaTaskState.values.byName(row.read<String>('state')),
               updatedAt: DateTime.parse(row.read<String>('updated_at')),
               displayTitle: row.read<String>('display_title'),
+              batchDirectory: row.readNullable<String>('batch_directory'),
               episodeLabel: row.readNullable<String>('episode_label'),
               bytesDownloaded: row.read<int>('bytes_downloaded'),
               totalBytes: row.readNullable<int>('total_bytes'),

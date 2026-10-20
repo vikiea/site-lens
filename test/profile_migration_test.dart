@@ -10,6 +10,7 @@ import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/network/transport.dart';
 import 'package:site_lens/scripts/script_service.dart';
 import 'package:site_lens/scripts/metadata.dart';
+import 'package:site_lens/media/media_service.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 /// Synthetic public v1 fixture used to exercise the migration contract.
@@ -59,6 +60,61 @@ Future<File> _v4ContractFixture(Directory dir) async {
       "UPDATE scripts SET network_mode='public', approval_reason='fixture', approved_at='2026-10-17T00:00:00Z', public_confirmed=1 WHERE id='legacy'",
     );
     raw.userVersion = 4;
+  } finally {
+    raw.close();
+  }
+  return file;
+}
+
+Future<File> _v9MediaTaskFixture(Directory dir) async {
+  final file = File('${dir.path}/v9-media-task.sqlite');
+  final seed = AppDatabase(NativeDatabase(file));
+  await seed.customSelect('SELECT 1').get();
+  await seed.saveMediaCandidate(
+    MediaCandidate(
+      id: 'legacy-media-candidate',
+      hostId: 3,
+      generation: 5,
+      sourceUrl: Uri.parse('https://example.com/watch'),
+      mediaUrl: Uri.parse('https://cdn.example/episode-1.m3u8'),
+      title: '旧媒体 - 第1集',
+      mime: 'application/vnd.apple.mpegurl',
+      source: MediaCandidateSource.dom,
+    ),
+  );
+  await seed.close();
+
+  final raw = sqlite3.open(file.path);
+  try {
+    raw.execute('PRAGMA foreign_keys = OFF');
+    raw.execute('DROP TABLE media_tasks');
+    raw.execute(
+      'CREATE TABLE media_tasks('
+      'id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL REFERENCES media_candidates(id) ON DELETE CASCADE, '
+      'host_id INTEGER NOT NULL, generation INTEGER NOT NULL, source_url TEXT NOT NULL, '
+      'cache_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL, updated_at TEXT NOT NULL, '
+      'display_title TEXT NOT NULL DEFAULT \'\', episode_label TEXT, '
+      'bytes_downloaded INTEGER NOT NULL DEFAULT 0, total_bytes INTEGER, error_code TEXT, '
+      'error_reason TEXT, local_ref TEXT)',
+    );
+    raw.execute(
+      'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,state,updated_at,display_title,episode_label,bytes_downloaded) '
+      'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+      [
+        'legacy-media-task',
+        'legacy-media-candidate',
+        3,
+        5,
+        'https://example.com/watch',
+        List.filled(64, 'a').join(),
+        'queued',
+        '2026-10-20T00:00:00Z',
+        '旧媒体 - 第1集',
+        '第1集',
+        0,
+      ],
+    );
+    raw.userVersion = 9;
   } finally {
     raw.close();
   }
@@ -134,7 +190,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 9);
+      expect(raw.userVersion, 10);
       expect(raw.select('SELECT COUNT(*) AS c FROM probes').single['c'], 281);
 
       final scripts = await db.scripts();
@@ -370,7 +426,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 9);
+      expect(raw.userVersion, 10);
       expect(
         raw.select(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='filter_snapshots'",
@@ -419,6 +475,56 @@ void main() {
       expect(
         raw.select('PRAGMA table_info(scripts)').map((row) => row['name']),
         contains('network_mode'),
+      );
+    },
+  );
+
+  test('v9 -> v10 adds batch_directory without losing media tasks', () async {
+    final file = await _v9MediaTaskFixture(dir);
+    final db = AppDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+    await db.customSelect('SELECT 1').get();
+
+    final raw = sqlite3.open(file.path);
+    addTearDown(raw.close);
+    expect(raw.userVersion, 10);
+    expect(
+      raw.select('PRAGMA table_info(media_tasks)').map((row) => row['name']),
+      contains('batch_directory'),
+    );
+
+    final store = MediaTaskStore(db: db);
+    await store.restore();
+    final task = store.task('legacy-media-task')!;
+    expect(task.batchDirectory, isNull);
+    await db.saveMediaTask(task.copyWith(batchDirectory: '批次目录'));
+    expect((await db.mediaTasks()).single.batchDirectory, '批次目录');
+  });
+
+  test(
+    'v9 -> v10 migration is reentrant when the column already exists',
+    () async {
+      final file = File('${dir.path}/v9-column-present.sqlite');
+      final seed = AppDatabase(NativeDatabase(file));
+      await seed.customSelect('SELECT 1').get();
+      await seed.close();
+
+      final before = sqlite3.open(file.path);
+      before.userVersion = 9;
+      before.close();
+
+      final db = AppDatabase(NativeDatabase(file));
+      addTearDown(db.close);
+      await db.customSelect('SELECT 1').get();
+
+      final raw = sqlite3.open(file.path);
+      addTearDown(raw.close);
+      expect(raw.userVersion, 10);
+      expect(
+        raw
+            .select('PRAGMA table_info(media_tasks)')
+            .where((row) => row['name'] == 'batch_directory'),
+        hasLength(1),
       );
     },
   );

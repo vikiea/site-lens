@@ -3898,12 +3898,22 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
             for (final candidate in candidates)
               ListTile(
                 leading: const Icon(Icons.play_circle_outline),
-                title: Text(
-                  candidate.title.isEmpty
+                title: Semantics(
+                  label: candidate.title.isEmpty
                       ? candidate.mediaUrl.host
                       : candidate.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                  child: SizedBox(
+                    height: 24,
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      physics: const BouncingScrollPhysics(),
+                      child: Text(
+                        candidate.title.isEmpty
+                            ? candidate.mediaUrl.host
+                            : candidate.title,
+                      ),
+                    ),
+                  ),
                 ),
                 subtitle: Text(
                   '${candidate.effectiveMime.isEmpty ? '未知格式' : candidate.effectiveMime} · ${_mediaCandidateSourceLabel(candidate.source)}',

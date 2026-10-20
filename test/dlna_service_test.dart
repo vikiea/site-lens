@@ -84,6 +84,53 @@ void main() {
     expect(error.requiresMp4, isTrue);
     expect(error.message, contains('先转为 MP4'));
   });
+
+  test(
+    'SOAP transport failures retain the action and connection stage',
+    () async {
+      final probe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final port = probe.port;
+      await probe.close();
+      final soap = DlnaSoapClient(
+        Uri.parse('http://127.0.0.1:$port/av'),
+        timeout: const Duration(milliseconds: 250),
+      );
+      addTearDown(soap.close);
+
+      await expectLater(
+        soap.play(),
+        throwsA(
+          isA<DlnaTransportException>()
+              .having((error) => error.action, 'action', 'Play')
+              .having((error) => error.message, 'message', contains('网络')),
+        ),
+      );
+    },
+  );
+
+  test('missing relay files report a readable DLNA stage', () async {
+    final root = await Directory.systemTemp.createTemp('dlna-missing-');
+    addTearDown(() => root.delete(recursive: true));
+    final missing = File('${root.path}/missing.mp4');
+    await expectLater(
+      MediaRelayServer.start(
+        authorization: const RelayAuthorizer().issue(
+          sessionId: 's',
+          taskId: 't',
+          deviceId: 'd',
+        ),
+        file: missing,
+        advertisedHost: '127.0.0.1',
+      ),
+      throwsA(
+        isA<DlnaRelayException>().having(
+          (error) => error.message,
+          'message',
+          contains('媒体文件中继'),
+        ),
+      ),
+    );
+  });
 }
 
 void _httpTests() {

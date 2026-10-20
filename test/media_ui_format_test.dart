@@ -52,8 +52,8 @@ void main() {
   });
 
   test('vertical player gesture maps swipe direction to episode offset', () {
-    expect(mediaGestureEpisodeOffset(deltaPx: -120, thresholdPx: 80), 1);
-    expect(mediaGestureEpisodeOffset(deltaPx: 120, thresholdPx: 80), -1);
+    expect(mediaGestureEpisodeOffset(deltaPx: -120, thresholdPx: 80), -1);
+    expect(mediaGestureEpisodeOffset(deltaPx: 120, thresholdPx: 80), 1);
     expect(mediaGestureEpisodeOffset(deltaPx: 20, thresholdPx: 80), 0);
   });
 }

@@ -142,7 +142,7 @@
     return Number.isFinite(value) && value > 0 && value < 100000 ? value : null;
   }
   function candidateKey(url) {
-    const volatile = /^(?:auth|auth_key|expires?|exp|hmac|sig(?:nature)?|sign|t|time|timestamp|token|v|via|via_bm)$/i;
+    const volatile = /^(?:auth|auth_key|expires?|exp|hmac|sig(?:nature)?|sign|t|time|timestamp|via|via_bm)$/i;
     for (const key of Array.from(url.searchParams.keys())) {
       if (volatile.test(key)) url.searchParams.delete(key);
     }
@@ -220,7 +220,23 @@
         addCandidate(episodes, episodeSeen, raw, mime, undefined, false, undefined, poster, episode);
       }
     });
-    if (typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
+    // Resource timing is a fallback until a media element has confirmed real
+    // playback. A placeholder or not-yet-loaded currentSrc must not hide the
+    // manifest that the page actually fetched; the identity map removes exact
+    // repeats and known signature changes.
+    const hasConfirmedPlayback = Array.from(nodes).some(node => {
+      const raw = node.currentSrc || node.src || '';
+      return Boolean(raw) && looksMedia(raw, node.type || '') &&
+        !node.paused && !node.ended;
+    });
+    const hasUnresolvedMediaElement = Array.from(nodes).some(node => {
+      const raw = node.currentSrc || node.src || '';
+      return Boolean(raw) && looksMedia(raw, node.type || '') &&
+        (node.readyState === 0 || /placeholder|loading|blank/i.test(raw) ||
+          (node.paused && !node.ended));
+    });
+    if ((!hasConfirmedPlayback || hasUnresolvedMediaElement) &&
+        typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
       for (const entry of performance.getEntriesByType('resource').slice(-256)) {
         if (isTransportResource(entry.name)) continue;
         addCandidate(candidates, seen, entry.name, entry.initiatorType || '');

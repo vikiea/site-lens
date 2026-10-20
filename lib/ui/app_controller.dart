@@ -736,8 +736,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       )) {
         if (candidate.sourceUrl.removeFragment() !=
                 task.sourceUrl.removeFragment() ||
-            mediaCandidateKey(candidate.mediaUrl) !=
-                mediaCandidateKey(stored.mediaUrl)) {
+            mediaCandidateAuthorizationKey(candidate.mediaUrl) !=
+                mediaCandidateAuthorizationKey(stored.mediaUrl)) {
           continue;
         }
         final authorized = hosts.authorizeMediaCandidate(
@@ -745,7 +745,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           candidate.id,
         );
         await db.saveMediaCandidate(authorized);
-        mediaTasks.rebindCandidate(task.id, authorized);
+        mediaTasks.rebindCandidate(
+          task.id,
+          authorized,
+          allowAuthorizationRefresh: true,
+        );
         return authorized;
       }
       throw StateError('媒体资源已变化，请返回播放页重新选择媒体');
@@ -783,8 +787,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final current = hosts.authorizeMediaCandidate(task.hostId, candidate.id);
     if (current.generation != task.generation ||
         current.sourceUrl.removeFragment() != task.sourceUrl.removeFragment() ||
-        mediaCandidateKey(current.mediaUrl) !=
-            mediaCandidateKey(candidate.mediaUrl)) {
+        mediaCandidateAuthorizationKey(current.mediaUrl) !=
+            mediaCandidateAuthorizationKey(candidate.mediaUrl)) {
       throw StateError('媒体资源已变化，请返回播放页重新选择媒体');
     }
     return current;
@@ -2259,6 +2263,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final flush = browserTabs.isNotEmpty || (_restorationValid && !_restoring)
         ? _persistSessions()
         : _sessionWrites;
+    final mediaFlush = mediaTasks.flushAll();
     WidgetsBinding.instance.removeObserver(this);
     _disposed = true;
     hosts.changed.removeListener(_hostMetadataChanged);
@@ -2277,6 +2282,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           );
     _shutdownFuture = Future.wait<void>([
       flush,
+      mediaFlush,
       close,
       nativeMedia.dispose(),
       stopCast,

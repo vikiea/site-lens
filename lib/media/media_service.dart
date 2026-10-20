@@ -80,6 +80,18 @@ String mediaPlaylistEntryName(Iterable<MediaTask> playlist, MediaTask task) {
   return '${task.displayName} · 来源 ${index + 1}';
 }
 
+String? mediaPlaylistBoundaryHint({
+  required int index,
+  required int length,
+  required int offset,
+}) {
+  if (length <= 0 || offset == 0) return null;
+  final target = index + offset;
+  if (target < 0) return '已经是第一集';
+  if (target >= length) return '已经是最后一集';
+  return null;
+}
+
 List<MediaTask> mediaPlaylistForTasks(
   Iterable<MediaTask> tasks,
   MediaTask current,
@@ -371,52 +383,121 @@ class MediaTaskStore {
   final _exclusive = <String>{};
   final _directoryLocks = <String, Future<void>>{};
   final _writes = <String, Future<void>>{};
+  final _writeFailures = <String, (Object, StackTrace)>{};
+  final _aliases = <String, String>{};
+  final _authorizationKeys = <String, String>{};
+
+  String _resolveId(String id) {
+    var current = id;
+    final seen = <String>{};
+    while (true) {
+      final next = _aliases[current];
+      if (next == null || !seen.add(current)) break;
+      current = next;
+    }
+    return current;
+  }
+
+  /// Returns the durable row identity after a cache-key race has been
+  /// reconciled. Callers that keep task-scoped queues must use this identity.
+  String resolveTaskId(String id) => _resolveId(id);
 
   void _saveTask(MediaTask task) {
     if (db == null) return;
     final previous = _writes[task.id] ?? Future<void>.value();
-    final write = previous.then((_) => db!.saveMediaTask(task));
-    _writes[task.id] = write;
-    // Observe errors even while the caller is updating progress synchronously.
-    unawaited(
-      write.catchError((Object error, StackTrace stack) {
+    var failureId = task.id;
+    final write = previous.then<void>((_) async {
+      final canonicalId = await db!.saveMediaTask(task);
+      if (canonicalId == task.id) return;
+      final current = _tasks[task.id];
+      final persisted = await db!.mediaTaskByCacheKey(task.cacheKey);
+      if (current == null && persisted == null) return;
+      _aliases[task.id] = canonicalId;
+      failureId = canonicalId;
+      final oldTail = _writes.remove(task.id);
+      if (oldTail != null) _writes[canonicalId] = oldTail;
+      final references = _references.remove(task.id);
+      if (references != null) {
+        _references[canonicalId] = (_references[canonicalId] ?? 0) + references;
+      }
+      if (_exclusive.remove(task.id)) _exclusive.add(canonicalId);
+      final failure = _writeFailures[task.id];
+      if (failure != null) {
+        _writeFailures[canonicalId] = failure;
+      }
+      _writeFailures.remove(task.id);
+      _tasks.remove(task.id);
+      final authorizationKey = _authorizationKeys.remove(task.id);
+      if (authorizationKey != null) {
+        _authorizationKeys[canonicalId] = authorizationKey;
+      }
+      _tasks[canonicalId] = (persisted ?? current!).copyWith(id: canonicalId);
+      _byCacheKey[task.cacheKey] = canonicalId;
+    });
+    // Keep a settled queue tail so later writes can recover. Critical callers
+    // still see the latest failure through flush(), instead of treating an
+    // in-memory progress update as durably saved.
+    _writes[task.id] = write.then<void>(
+      (_) {
+        _writeFailures.remove(failureId);
+      },
+      onError: (Object error, StackTrace stack) {
+        _writeFailures[failureId] = (error, stack);
         AppErrorLogger.capture(error, module: 'media.store', stack: stack);
-      }),
+      },
     );
   }
 
   Future<void> flush(String taskId) async {
-    await _writes[taskId];
+    var resolved = _resolveId(taskId);
+    await (_writes[resolved] ?? _writes[taskId]);
+    resolved = _resolveId(taskId);
+    final failure = _writeFailures[resolved] ?? _writeFailures[taskId];
+    if (failure != null) Error.throwWithStackTrace(failure.$1, failure.$2);
   }
 
-  MediaTask? task(String id) => _tasks[id];
+  Future<void> flushAll() async {
+    for (final id in _writes.keys.toList()) {
+      await flush(id);
+    }
+  }
+
+  MediaTask? task(String id) => _tasks[_resolveId(id)];
   List<MediaTask> get tasks => List.unmodifiable(_tasks.values);
 
   MediaTask? taskForCandidate(MediaCandidate candidate) {
     final id = _byCacheKey[cacheKey(candidate)];
-    return id == null ? null : _tasks[id];
+    return id == null ? null : task(id);
   }
 
-  MediaTask rebindCandidate(String taskId, MediaCandidate candidate) {
+  MediaTask rebindCandidate(
+    String taskId,
+    MediaCandidate candidate, {
+    bool allowAuthorizationRefresh = false,
+  }) {
     const validator = MediaCandidateValidator();
     validator.validate(candidate);
-    final current = _tasks[taskId] ?? (throw StateError('媒体任务不存在'));
+    final canonicalId = _resolveId(taskId);
+    final current = task(canonicalId) ?? (throw StateError('媒体任务不存在'));
     if (candidate.id == current.candidateId) return current;
     if (current.state == MediaTaskState.downloading ||
         current.state == MediaTaskState.playable ||
         current.state == MediaTaskState.completed ||
-        !canDelete(taskId)) {
+        !canDelete(canonicalId)) {
       throw StateError('媒体任务正在使用，请稍后重新选择媒体');
     }
     if (candidate.hostId != current.hostId ||
         candidate.generation != current.generation ||
         candidate.sourceUrl.removeFragment() !=
             current.sourceUrl.removeFragment() ||
-        cacheKey(candidate) != current.cacheKey) {
+        !allowAuthorizationRefresh && cacheKey(candidate) != current.cacheKey) {
       throw StateError(MediaErrorCode.staleGeneration);
     }
     final next = current.copyWith(candidateId: candidate.id);
-    _tasks[taskId] = next;
+    _tasks[canonicalId] = next;
+    _authorizationKeys[canonicalId] = mediaCandidateAuthorizationKey(
+      candidate.mediaUrl,
+    );
     _saveTask(next);
     return next;
   }
@@ -443,18 +524,57 @@ class MediaTaskStore {
     const validator = MediaCandidateValidator();
     validator.validate(candidate);
     final key = cacheKey(candidate, quality: quality, audio: audio);
-    final existingId = _byCacheKey[key];
-    final existing = existingId == null ? null : _tasks[existingId];
+    var existingId = _byCacheKey[key];
+    var existing = existingId == null ? null : _tasks[existingId];
+    if (existing == null) {
+      final authorizationKey = mediaCandidateAuthorizationKey(
+        candidate.mediaUrl,
+      );
+      existing = _tasks.values
+          .where(
+            (task) =>
+                task.state == MediaTaskState.reauthorize &&
+                task.hostId == candidate.hostId &&
+                task.generation == candidate.generation &&
+                task.sourceUrl.removeFragment() ==
+                    candidate.sourceUrl.removeFragment() &&
+                _authorizationKeys[task.id] == authorizationKey,
+          )
+          .firstOrNull;
+      existingId = existing?.id;
+    }
     if (existing?.state == MediaTaskState.reauthorize) {
-      return rebindCandidate(existing!.id, candidate);
+      return rebindCandidate(
+        existing!.id,
+        candidate,
+        allowAuthorizationRefresh: true,
+      );
     }
-    if (existing != null &&
-        existing.state != MediaTaskState.cancelled &&
-        existing.state != MediaTaskState.failed) {
-      return existing;
+    if (existing != null) {
+      if (existing.state != MediaTaskState.cancelled &&
+          existing.state != MediaTaskState.failed) {
+        return existing;
+      }
+      if (!canDelete(existing.id)) throw StateError('媒体任务仍在使用，请稍后重试');
+      final rebound = existing.candidateId == candidate.id
+          ? existing
+          : rebindCandidate(existing.id, candidate);
+      final retry = rebound.copyWith(
+        state: MediaTaskState.queued,
+        errorCode: null,
+        errorReason: null,
+        batchDirectory: batchDirectory == null
+            ? rebound.batchDirectory
+            : _normalizeBatchDirectory(batchDirectory),
+      );
+      _tasks[retry.id] = retry;
+      _saveTask(retry);
+      return retry;
     }
-    final id =
-        'media_${DateTime.now().microsecondsSinceEpoch}_${Random().nextInt(1 << 20)}';
+    // The cache identity is already unique for one host/generation/media
+    // selection. Deriving the row identity from it makes two stores racing to
+    // enqueue the same candidate converge on one SQLite row as well.
+    final id = 'media_$key';
     final task = MediaTask(
       id: id,
       candidateId: candidate.id,
@@ -469,6 +589,7 @@ class MediaTaskStore {
       episodeLabel: _candidateEpisodeLabel(candidate),
     );
     _tasks[id] = task;
+    _authorizationKeys[id] = mediaCandidateAuthorizationKey(candidate.mediaUrl);
     _byCacheKey[key] = id;
     _saveTask(task);
     return task;
@@ -499,6 +620,7 @@ class MediaTaskStore {
     final persisted = await db?.mediaTasks();
     if (persisted == null) return;
     final repaired = <MediaTask>[];
+    final authorizationKeys = <String, String>{};
     for (final task in persisted) {
       final candidate = await db!.mediaCandidate(task.candidateId);
       final missingTitle =
@@ -520,6 +642,9 @@ class MediaTaskStore {
                   task.episodeLabel ?? _candidateEpisodeLabel(candidate),
             );
       repaired.add(next);
+      authorizationKeys[next.id] = mediaCandidateAuthorizationKey(
+        candidate?.mediaUrl ?? task.sourceUrl,
+      );
       if (next.displayTitle != task.displayTitle ||
           next.episodeLabel != task.episodeLabel) {
         await db!.saveMediaTask(next);
@@ -528,6 +653,10 @@ class MediaTaskStore {
     _tasks
       ..clear()
       ..addEntries(repaired.map((task) => MapEntry(task.id, task)));
+    _aliases.clear();
+    _authorizationKeys
+      ..clear()
+      ..addAll(authorizationKeys);
     _byCacheKey
       ..clear()
       ..addEntries(repaired.map((task) => MapEntry(task.cacheKey, task.id)));
@@ -540,7 +669,8 @@ class MediaTaskStore {
     Object? errorCode = _unset,
     Object? errorReason = _unset,
   }) {
-    final task = _tasks[id];
+    final canonicalId = _resolveId(id);
+    final task = _tasks[canonicalId];
     if (task == null) throw StateError('媒体任务不存在');
     final allowed = switch (task.state) {
       MediaTaskState.queued => {
@@ -597,7 +727,7 @@ class MediaTaskStore {
           ? task.errorReason
           : errorReason as String?,
     );
-    _tasks[id] = next;
+    _tasks[canonicalId] = next;
     _saveTask(next);
     return next;
   }
@@ -605,7 +735,8 @@ class MediaTaskStore {
   static const _unset = Object();
 
   MediaTask updateProgress(String id, int bytesDownloaded, {int? totalBytes}) {
-    final task = _tasks[id];
+    final canonicalId = _resolveId(id);
+    final task = _tasks[canonicalId];
     if (task == null) throw StateError('媒体任务不存在');
     if (bytesDownloaded < 0 ||
         totalBytes != null && totalBytes < bytesDownloaded) {
@@ -619,50 +750,55 @@ class MediaTaskStore {
               ? task.totalBytes
               : null),
     );
-    _tasks[id] = next;
+    _tasks[canonicalId] = next;
     _saveTask(next);
     return next;
   }
 
   MediaTask setLocalRef(String id, String? localRef) {
-    final task = _tasks[id];
+    final canonicalId = _resolveId(id);
+    final task = _tasks[canonicalId];
     if (task == null) throw StateError('媒体任务不存在');
     final next = task.copyWith(localRef: localRef);
-    _tasks[id] = next;
+    _tasks[canonicalId] = next;
     _saveTask(next);
     return next;
   }
 
   void retain(String taskId) {
-    if (!_tasks.containsKey(taskId)) throw StateError('媒体任务不存在');
-    if (_exclusive.contains(taskId)) {
+    final canonicalId = _resolveId(taskId);
+    if (!_tasks.containsKey(canonicalId)) throw StateError('媒体任务不存在');
+    if (_exclusive.contains(canonicalId)) {
       throw StateError('媒体任务正在执行文件操作，请稍后重试');
     }
-    _references[taskId] = (_references[taskId] ?? 0) + 1;
+    _references[canonicalId] = (_references[canonicalId] ?? 0) + 1;
   }
 
   void release(String taskId) {
-    final count = _references[taskId] ?? 0;
+    final canonicalId = _resolveId(taskId);
+    final count = _references[canonicalId] ?? 0;
     if (count <= 1) {
-      _references.remove(taskId);
+      _references.remove(canonicalId);
     } else {
-      _references[taskId] = count - 1;
+      _references[canonicalId] = count - 1;
     }
   }
 
   bool canDelete(String taskId) =>
-      (_references[taskId] ?? 0) == 0 && !_exclusive.contains(taskId);
+      (_references[_resolveId(taskId)] ?? 0) == 0 &&
+      !_exclusive.contains(_resolveId(taskId));
 
-  bool isExclusive(String taskId) => _exclusive.contains(taskId);
+  bool isExclusive(String taskId) => _exclusive.contains(_resolveId(taskId));
 
   void acquireExclusive(String taskId) {
-    if (!_tasks.containsKey(taskId)) throw StateError('媒体任务不存在');
-    if (!canDelete(taskId) || !_exclusive.add(taskId)) {
+    final canonicalId = _resolveId(taskId);
+    if (!_tasks.containsKey(canonicalId)) throw StateError('媒体任务不存在');
+    if (!canDelete(canonicalId) || !_exclusive.add(canonicalId)) {
       throw StateError('媒体任务仍被播放、导出、投屏或管理占用');
     }
   }
 
-  void releaseExclusive(String taskId) => _exclusive.remove(taskId);
+  void releaseExclusive(String taskId) => _exclusive.remove(_resolveId(taskId));
 
   Future<T> withExclusive<T>(String taskId, Future<T> Function() action) async {
     acquireExclusive(taskId);
@@ -686,10 +822,14 @@ class MediaTaskStore {
     }
     if (!isExclusive(taskId)) throw StateError('媒体任务未持有排他操作锁');
     await flush(taskId);
-    await db?.deleteMediaTask(taskId);
-    _tasks.remove(taskId);
-    _writes.remove(taskId);
-    _byCacheKey.removeWhere((_, id) => id == taskId);
+    final canonicalId = _resolveId(taskId);
+    await db?.deleteMediaTask(canonicalId);
+    _tasks.remove(canonicalId);
+    _authorizationKeys.remove(canonicalId);
+    _writes.remove(canonicalId);
+    _writeFailures.remove(canonicalId);
+    _aliases.removeWhere((key, value) => key == taskId || value == canonicalId);
+    _byCacheKey.removeWhere((_, id) => id == canonicalId);
   }
 
   Future<void> reconcileCachedFiles() async {
@@ -862,7 +1002,7 @@ class MediaTaskStore {
   }
 
   Future<File?> cachedFile(String taskId, {bool validateHls = true}) async {
-    final task = _tasks[taskId];
+    final task = this.task(taskId);
     final ref = task?.localRef;
     if (ref == null) return null;
     final root = (await cacheRootDirectory()).absolute.path;
@@ -948,6 +1088,11 @@ class MediaDownloadService {
       'sig',
       'sign',
       'signature',
+      't',
+      'time',
+      'timestamp',
+      'via',
+      'via_bm',
       'token',
     };
     final clean = url.removeFragment();
@@ -977,24 +1122,28 @@ class MediaDownloadService {
 
   /// Refresh only the backend owning this task. Missing native rows must never
   /// overwrite a Dart HLS download or a completed local cache.
-  Future<MediaTask> refreshTask(String taskId) => _control(taskId, () async {
-    var current = tasks.task(taskId) ?? (throw StateError('媒体任务不存在'));
-    if (_active.containsKey(taskId) || _dartTasks.contains(taskId)) {
-      return current;
-    }
-    final candidate = await tasks.db?.mediaCandidate(current.candidateId);
-    if (candidate?.isHls == true) {
-      if (current.state == MediaTaskState.downloading) {
-        return tasks.transition(taskId, MediaTaskState.paused);
+  Future<MediaTask> refreshTask(String taskId) async {
+    final result = await _control(taskId, (id) async {
+      var current = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
+      if (_active.containsKey(id) || _dartTasks.contains(id)) {
+        return current;
       }
-      return current;
-    }
-    if (native == null) return current;
-    final status = await native!.status(taskId);
-    current = tasks.task(taskId) ?? (throw StateError('媒体任务不存在'));
-    if (status['state'] == 'missing') return current;
-    return _applyNativeStatus(current, status);
-  });
+      final candidate = await tasks.db?.mediaCandidate(current.candidateId);
+      if (candidate?.isHls == true) {
+        if (current.state == MediaTaskState.downloading) {
+          return tasks.transition(id, MediaTaskState.paused);
+        }
+        return current;
+      }
+      if (native == null) return current;
+      final status = await native!.status(id);
+      current = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
+      if (status['state'] == 'missing') return current;
+      return _applyNativeStatus(current, status);
+    });
+    await tasks.flush(result.id);
+    return tasks.task(result.id) ?? result;
+  }
 
   MediaTask _applyNativeStatus(MediaTask task, Map<String, Object?> status) {
     var current = tasks.task(task.id) ?? (throw StateError('媒体任务不存在'));
@@ -1054,16 +1203,17 @@ class MediaDownloadService {
     return current;
   }
 
-  Future<T> _control<T>(String taskId, Future<T> Function() action) {
-    final previous = _controls[taskId] ?? Future<void>.value();
-    final result = previous.then((_) => action());
+  Future<T> _control<T>(String taskId, Future<T> Function(String id) action) {
+    final id = tasks.resolveTaskId(taskId);
+    final previous = _controls[id] ?? Future<void>.value();
+    final result = previous.then((_) => action(id));
     final completed = result.then<void>(
       (_) {},
       onError: (Object _, StackTrace _) {},
     );
-    _controls[taskId] = completed;
+    _controls[id] = completed;
     completed.then((_) {
-      if (identical(_controls[taskId], completed)) _controls.remove(taskId);
+      if (identical(_controls[id], completed)) _controls.remove(id);
     });
     return result;
   }
@@ -1074,22 +1224,23 @@ class MediaDownloadService {
   Future<MediaTask> pauseNative(String taskId) => pause(taskId);
 
   Future<MediaTask> _stop(String taskId, {required bool cancelled}) {
+    final id = tasks.resolveTaskId(taskId);
     // Mark synchronously so a start queued during this operation cannot race it.
-    _stopping.add(taskId);
-    _active[taskId]?.cancel();
-    final current = tasks.task(taskId);
+    _stopping.add(id);
+    _active[id]?.cancel();
+    final current = tasks.task(id);
     final nativeStop =
         current != null &&
-            !_dartTasks.contains(taskId) &&
+            !_dartTasks.contains(id) &&
             current.state != MediaTaskState.completed &&
             current.state != MediaTaskState.playable
         ? cancelled
-              ? native?.cancel(taskId)
-              : native?.pause(taskId)
+              ? native?.cancel(id)
+              : native?.pause(id)
         : null;
-    return _control(taskId, () async {
+    return _control(id, (id) async {
       try {
-        final running = _running[taskId];
+        final running = _running[id];
         if (nativeStop != null) await nativeStop;
         if (running != null) {
           try {
@@ -1098,20 +1249,26 @@ class MediaDownloadService {
             /* keep the resumable partial */
           }
         }
-        final latest = tasks.task(taskId) ?? (throw StateError('媒体任务不存在'));
+        final latest = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
         if (latest.state == MediaTaskState.playable ||
             latest.state == MediaTaskState.completed) {
+          await tasks.flush(id);
           return latest;
         }
         if (cancelled && latest.state != MediaTaskState.cancelled) {
-          return tasks.transition(taskId, MediaTaskState.cancelled);
+          final result = tasks.transition(id, MediaTaskState.cancelled);
+          await tasks.flush(id);
+          return result;
         }
         if (!cancelled && latest.state == MediaTaskState.downloading) {
-          return tasks.transition(taskId, MediaTaskState.paused);
+          final result = tasks.transition(id, MediaTaskState.paused);
+          await tasks.flush(id);
+          return result;
         }
+        await tasks.flush(id);
         return latest;
       } finally {
-        _stopping.remove(taskId);
+        _stopping.remove(id);
       }
     });
   }
@@ -1124,53 +1281,53 @@ class MediaDownloadService {
     bool deleteTask = true,
     Future<void> Function()? beforeDelete,
   }) async {
-    if (!tasks.canDelete(taskId)) {
+    final id = tasks.resolveTaskId(taskId);
+    if (!tasks.canDelete(id)) {
       throw StateError('媒体正在播放、导出或投屏，请先停止');
     }
-    _stopping.add(taskId);
-    _active[taskId]?.cancel();
-    final nativeCancel = !_dartTasks.contains(taskId)
-        ? native?.cancel(taskId)
-        : null;
+    _stopping.add(id);
+    _active[id]?.cancel();
+    final nativeCancel = !_dartTasks.contains(id) ? native?.cancel(id) : null;
     try {
-      await _control(taskId, () async {
+      await _control(id, (id) async {
         // Acquire the file-operation lock before touching transport. A
         // retained playback/export/cast reference therefore fails closed and
         // cannot be interrupted by a rejected delete request.
-        await tasks.withExclusive(taskId, () async {
+        await tasks.withExclusive(id, () async {
           if (nativeCancel != null) await nativeCancel;
           try {
-            await _running[taskId];
+            await _running[id];
           } catch (_) {
             // The partial file remains resumable after a transport failure.
           }
-          final current = tasks.task(taskId);
+          final current = tasks.task(id);
           if (current == null) return;
-          if (nativeCancel == null && !_dartTasks.contains(taskId)) {
-            await native?.cancel(taskId);
+          if (nativeCancel == null && !_dartTasks.contains(id)) {
+            await native?.cancel(id);
           }
           try {
             if (beforeDelete != null) await beforeDelete();
           } catch (_) {
-            final latest = tasks.task(taskId);
+            final latest = tasks.task(id);
             if (latest != null && latest.state == MediaTaskState.downloading) {
-              tasks.transition(taskId, MediaTaskState.cancelled);
+              tasks.transition(id, MediaTaskState.cancelled);
             }
             rethrow;
           }
-          await native?.delete(taskId);
-          await tasks.deleteCachedFiles(taskId, exclusiveAlreadyHeld: true);
+          await native?.delete(id);
+          await tasks.deleteCachedFiles(id, exclusiveAlreadyHeld: true);
           if (deleteTask) {
-            await tasks.delete(taskId, exclusiveAlreadyHeld: true);
-          } else if (tasks.task(taskId)?.state == MediaTaskState.downloading ||
-              tasks.task(taskId)?.state == MediaTaskState.paused) {
-            tasks.transition(taskId, MediaTaskState.cancelled);
+            await tasks.delete(id, exclusiveAlreadyHeld: true);
+          } else if (tasks.task(id)?.state == MediaTaskState.downloading ||
+              tasks.task(id)?.state == MediaTaskState.paused) {
+            tasks.transition(id, MediaTaskState.cancelled);
+            await tasks.flush(id);
           }
         });
-        _dartTasks.remove(taskId);
+        _dartTasks.remove(id);
       });
     } finally {
-      _stopping.remove(taskId);
+      _stopping.remove(id);
     }
   }
 
@@ -1182,24 +1339,46 @@ class MediaDownloadService {
 
   Future<MediaTask> _launch(
     MediaTask task,
-    Future<MediaTask> Function() action,
+    Future<MediaTask> Function(String id) action,
   ) {
-    if (_stopping.contains(task.id) || tasks.isExclusive(task.id)) {
+    final requestedId = tasks.resolveTaskId(task.id);
+    if (_stopping.contains(requestedId) || tasks.isExclusive(requestedId)) {
       return Future.error(StateError('媒体任务正在停止或管理文件，请稍后重试'));
     }
-    final pending = _running[task.id];
+    final pending = _running[requestedId] ?? _running[task.id];
     if (pending != null) return pending;
-    if (_controls.containsKey(task.id)) {
+    if (_controls.containsKey(requestedId)) {
       return Future.error(StateError('媒体任务正在停止或管理文件，请稍后重试'));
     }
-    final result = Future<MediaTask>.sync(action);
-    _running[task.id] = result;
+    late final Future<MediaTask> result;
+    result = Future<MediaTask>(() async {
+      await tasks.flush(task.id);
+      final id = tasks.resolveTaskId(task.id);
+      if (id != requestedId) _running[id] = result;
+      try {
+        final value = await action(id);
+        await tasks.flush(id);
+        return tasks.task(id) ?? value;
+      } catch (error) {
+        await tasks.flush(id);
+        rethrow;
+      } finally {
+        if (id != requestedId && identical(_running[id], result)) {
+          _running.remove(id);
+        }
+      }
+    });
+    _running[requestedId] = result;
     result.then<void>(
       (_) {
-        if (identical(_running[task.id], result)) _running.remove(task.id);
+        if (identical(_running[requestedId], result)) {
+          _running.remove(requestedId);
+        }
       },
       onError: (Object _, StackTrace _) {
-        if (identical(_running[task.id], result)) _running.remove(task.id);
+        if (identical(_running[requestedId], result)) {
+          _running.remove(requestedId);
+        }
       },
     );
     return result;
@@ -1209,9 +1388,9 @@ class MediaDownloadService {
     if (native == null || candidate.isHls) return start(task, candidate);
     return _launch(
       task,
-      () => _control(task.id, () async {
-        if (_stopping.contains(task.id)) throw const Cancelled();
-        var current = tasks.task(task.id) ?? (throw StateError('媒体任务不存在'));
+      (id) => _control(id, (id) async {
+        if (_stopping.contains(id)) throw const Cancelled();
+        var current = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
         final authorized = authorize == null
             ? candidate
             : authorize!(current, candidate);
@@ -1220,7 +1399,7 @@ class MediaDownloadService {
             current.state == MediaTaskState.completed) {
           return current;
         }
-        current = tasks.transition(task.id, MediaTaskState.downloading);
+        current = tasks.transition(id, MediaTaskState.downloading);
         try {
           final status = await native!.start(
             current,
@@ -1230,7 +1409,7 @@ class MediaDownloadService {
           );
           return _applyNativeStatus(current, status);
         } catch (error, stack) {
-          _fail(task.id, error, stack, 'startNative');
+          _fail(id, error, stack, 'startNative');
           rethrow;
         }
       }),
@@ -1275,36 +1454,36 @@ class MediaDownloadService {
     int maxBytes = 2 * 1024 * 1024 * 1024,
   }) => _launch(
     task,
-    () => _control(task.id, () async {
-      if (_stopping.contains(task.id)) throw const Cancelled();
-      final currentTask = tasks.task(task.id) ?? (throw StateError('媒体任务不存在'));
+    (id) => _control(id, (id) async {
+      if (_stopping.contains(id)) throw const Cancelled();
+      final currentTask = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
       final authorized = authorize == null
           ? candidate
           : authorize!(currentTask, candidate);
       _validateTaskCandidate(currentTask, authorized);
-      _dartTasks.add(task.id);
+      _dartTasks.add(id);
       final cancel = Cancellation();
-      _active[task.id] = cancel;
+      _active[id] = cancel;
       try {
-        final previous = tasks.task(task.id) ?? (throw StateError('媒体任务不存在'));
+        final previous = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
         if (previous.state == MediaTaskState.playable ||
             previous.state == MediaTaskState.completed) {
           return previous;
         }
         if (authorized.isHls) {
           return await _startHls(
-            task,
+            currentTask,
             authorized,
             cancel: cancel,
             maxBytes: maxBytes,
           );
         }
-        var current = tasks.task(task.id) ?? (throw StateError('媒体任务不存在'));
+        var current = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
         if (current.state == MediaTaskState.completed ||
             current.state == MediaTaskState.playable) {
           return current;
         }
-        current = tasks.transition(task.id, MediaTaskState.downloading);
+        current = tasks.transition(id, MediaTaskState.downloading);
         final directory = await tasks.cacheDirectory(
           storageDirectory: task.storageDirectoryName,
         );
@@ -1321,24 +1500,24 @@ class MediaDownloadService {
         if (size == 0) throw StateError('媒体响应为空');
         final destination = File('${directory.path}/${task.cacheKey}.media');
         if (await destination.exists()) await destination.delete();
-        if (_stopping.contains(task.id)) throw const Cancelled();
+        if (_stopping.contains(id)) throw const Cancelled();
         final finalFile = await base.rename(destination.path);
         await _deleteResumeState(base);
-        current = tasks.updateProgress(task.id, size, totalBytes: size);
-        tasks.setLocalRef(task.id, finalFile.path);
-        current = tasks.transition(task.id, MediaTaskState.completed);
-        return tasks.transition(task.id, MediaTaskState.playable);
+        current = tasks.updateProgress(id, size, totalBytes: size);
+        tasks.setLocalRef(id, finalFile.path);
+        current = tasks.transition(id, MediaTaskState.completed);
+        return tasks.transition(id, MediaTaskState.playable);
       } on Cancelled {
-        if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
-          tasks.transition(task.id, MediaTaskState.paused);
+        if (tasks.task(id)?.state == MediaTaskState.downloading) {
+          tasks.transition(id, MediaTaskState.paused);
         }
-        return tasks.task(task.id)!;
+        return tasks.task(id)!;
       } catch (error, stack) {
-        _fail(task.id, error, stack, 'download');
+        _fail(id, error, stack, 'download');
         rethrow;
       } finally {
-        if (identical(_active[task.id], cancel)) _active.remove(task.id);
-        _dartTasks.remove(task.id);
+        if (identical(_active[id], cancel)) _active.remove(id);
+        _dartTasks.remove(id);
       }
     }),
   );

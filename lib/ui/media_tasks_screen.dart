@@ -44,7 +44,8 @@ int mediaGestureEpisodeOffset({
   required double thresholdPx,
 }) {
   if (thresholdPx <= 0 || deltaPx.abs() < thresholdPx) return 0;
-  return deltaPx < 0 ? 1 : -1;
+  // [deltaPx] is startY - currentY: positive means an upward swipe.
+  return deltaPx < 0 ? -1 : 1;
 }
 
 String _mediaTaskStateLabel(MediaTaskState state) => switch (state) {
@@ -286,12 +287,18 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     _verticalDelta = distance;
     if (widget.app.playerVerticalGesture ==
         PlayerVerticalGestureMode.episodeSwitch) {
+      final offset = distance < 0 ? -1 : 1;
+      final boundary = mediaPlaylistBoundaryHint(
+        index: _playlistIndex,
+        length: widget.playlist.length,
+        offset: offset,
+      );
       _showGestureHint(
         distance.abs() < 24
             ? '上下滑动切换集数'
-            : distance < 0
-            ? '上一集'
-            : '下一集',
+            : widget.playlist.isEmpty
+            ? '当前没有可切换的集数'
+            : boundary ?? (distance < 0 ? '上一集' : '下一集'),
       );
       return;
     }
@@ -479,8 +486,16 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
 
   Future<void> _switchPlaylist(int offset) async {
     if (!_canControl || widget.playlist.isEmpty) return;
+    final boundary = mediaPlaylistBoundaryHint(
+      index: _playlistIndex,
+      length: widget.playlist.length,
+      offset: offset,
+    );
+    if (boundary != null) {
+      _showGestureHint(boundary);
+      return;
+    }
     final targetIndex = _playlistIndex + offset;
-    if (targetIndex < 0 || targetIndex >= widget.playlist.length) return;
     try {
       final next = await _openPlaylistTask(widget.playlist[targetIndex]);
       if (!mounted || _closing) {

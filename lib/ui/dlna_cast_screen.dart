@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../domain/models.dart';
+import '../diagnostics/error_log.dart';
 import '../media/dlna_service.dart';
 import 'app_controller.dart';
 import 'app_theme.dart';
@@ -88,7 +90,13 @@ class _DlnaCastScreenState extends State<DlnaCastScreen> {
       if (devices.isEmpty) {
         setState(() => _error = '局域网内没有发现可用的 DLNA 接收端');
       }
-    } catch (error) {
+    } catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.dlna',
+        context: 'discover',
+        stack: stack,
+      );
       if (mounted) setState(() => _error = friendlyError(error));
     } finally {
       if (mounted) setState(() => _searching = false);
@@ -156,7 +164,21 @@ class _DlnaCastScreenState extends State<DlnaCastScreen> {
       }
       widget.app.mediaTasks.retain(task.id);
       retained = true;
-      final source = await _resolveSource(task);
+      late final ({
+        Uri url,
+        String mime,
+        String title,
+        File? localFile,
+        File? hls,
+      })
+      source;
+      try {
+        source = await _resolveSource(task);
+      } on PlatformException catch (error) {
+        throw StateError(
+          '读取投屏媒体失败（${error.code}）：${error.message ?? '系统媒体文件不可用'}',
+        );
+      }
       if (!mounted) return;
       await _castSource(device, task, source);
       final castSessionId = cast.active?.id;
@@ -181,7 +203,13 @@ class _DlnaCastScreenState extends State<DlnaCastScreen> {
         }
       }
       if (mounted) showShortToast(context, '已连接到 ${device.name}');
-    } catch (error) {
+    } catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.dlna',
+        context: 'start',
+        stack: stack,
+      );
       if (mounted) setState(() => _error = friendlyError(error));
     } finally {
       if (retained) widget.app.mediaTasks.release(task!.id);
@@ -213,10 +241,16 @@ class _DlnaCastScreenState extends State<DlnaCastScreen> {
       if (source.hls == null || !error.requiresMp4) rethrow;
       // Keep the beta5 behavior: prepare a private playback MP4 only for
       // this cast attempt and never open the configured export directory.
-      await widget.app.exportMediaTask(
-        task,
-        deliverToConfiguredDirectory: false,
-      );
+      try {
+        await widget.app.exportMediaTask(
+          task,
+          deliverToConfiguredDirectory: false,
+        );
+      } on PlatformException catch (error) {
+        throw StateError(
+          '投屏前转换 MP4 失败（${error.code}）：${error.message ?? '导出组件不可用'}',
+        );
+      }
       final exported = await widget.app.mediaLibrary.localFile(task.id);
       if (exported == null) {
         throw StateError('该设备不支持 HLS，且本地 MP4 导出失败');
@@ -243,7 +277,13 @@ class _DlnaCastScreenState extends State<DlnaCastScreen> {
       return await action();
     } on DlnaOptionalCommandUnsupportedException catch (error) {
       if (mounted) showShortToast(context, error.message);
-    } catch (error) {
+    } catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.dlna',
+        context: 'command',
+        stack: stack,
+      );
       if (mounted) setState(() => _error = friendlyError(error));
     } finally {
       if (mounted) setState(() => _commandBusy = false);
