@@ -142,7 +142,7 @@
     return Number.isFinite(value) && value > 0 && value < 100000 ? value : null;
   }
   function candidateKey(url) {
-    const volatile = /^(?:auth|auth_key|expires?|exp|hmac|sig(?:nature)?|sign|t|time|timestamp|via|via_bm)$/i;
+    const volatile = /^(?:auth|auth_key|expires?|exp|hmac|sig(?:nature)?|sign|t|time|timestamp|token|via|via_bm)$/i;
     for (const key of Array.from(url.searchParams.keys())) {
       if (volatile.test(key)) url.searchParams.delete(key);
     }
@@ -229,13 +229,12 @@
       return Boolean(raw) && looksMedia(raw, node.type || '') &&
         !node.paused && !node.ended;
     });
-    const hasUnresolvedMediaElement = Array.from(nodes).some(node => {
+    const hasMeaningfulMediaElement = Array.from(nodes).some(node => {
       const raw = node.currentSrc || node.src || '';
-      return Boolean(raw) && looksMedia(raw, node.type || '') &&
-        (node.readyState === 0 || /placeholder|loading|blank/i.test(raw) ||
-          (node.paused && !node.ended));
+      return /^https?:/i.test(raw) && looksMedia(raw, node.type || '') &&
+        !/placeholder|loading|blank/i.test(raw);
     });
-    if ((!hasConfirmedPlayback || hasUnresolvedMediaElement) &&
+    if ((!hasConfirmedPlayback && !hasMeaningfulMediaElement) &&
         typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
       for (const entry of performance.getEntriesByType('resource').slice(-256)) {
         if (isTransportResource(entry.name)) continue;
@@ -340,7 +339,8 @@
     });
     const targetIndex = index < 0
       ? (direction > 0 ? 0 : lastCandidateList.length - 1)
-      : (index + direction + lastCandidateList.length) % lastCandidateList.length;
+      : index + direction;
+    if (targetIndex < 0 || targetIndex >= lastCandidateList.length) return false;
     const target = lastCandidateList[targetIndex];
     if (!target || target.url === current) return false;
     try {

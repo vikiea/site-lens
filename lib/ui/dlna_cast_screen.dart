@@ -238,7 +238,28 @@ class _DlnaCastScreenState extends State<DlnaCastScreen> {
         title: source.title,
       );
     } on DlnaUnsupportedFormatException catch (error) {
-      if (source.hls == null || !error.requiresMp4) rethrow;
+      final remoteIsHls =
+          source.mime.toLowerCase().contains('mpegurl') ||
+          source.url.path.toLowerCase().endsWith('.m3u8') ||
+          source.url.path.toLowerCase().endsWith('.m3u');
+      if (!error.requiresMp4 || (source.hls == null && !remoteIsHls)) rethrow;
+      var localHls = source.hls;
+      if (localHls == null) {
+        final candidate =
+            widget.candidate ??
+            await widget.app.db.mediaCandidate(task.candidateId);
+        if (candidate == null || !candidate.isHls) {
+          throw StateError('接收设备不支持 HLS，且当前媒体没有可转换的本地缓存');
+        }
+        await widget.app.mediaDownloads.start(task, candidate);
+        localHls = await widget.app.mediaPlaybackFile(
+          task,
+          preferExported: false,
+        );
+      }
+      if (localHls == null || !localHls.path.toLowerCase().endsWith('.m3u8')) {
+        throw StateError('接收设备不支持 HLS，且媒体缓存未准备完成');
+      }
       // Keep the beta5 behavior: prepare a private playback MP4 only for
       // this cast attempt and never open the configured export directory.
       try {

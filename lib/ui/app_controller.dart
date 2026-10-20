@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:path_provider/path_provider.dart';
 
@@ -9,6 +8,7 @@ import '../backup/backup_service.dart';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
@@ -972,7 +972,21 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     bool preferExported = true,
   }) async {
     if (preferExported) {
-      final libraryFile = await mediaLibrary.localFile(task.id);
+      File? libraryFile;
+      try {
+        libraryFile = await mediaLibrary.localFile(task.id);
+      } on PlatformException catch (error, stack) {
+        // A SAF export can disappear or be temporarily unavailable while the
+        // original HLS cache is still valid. Keep playback and DLNA usable by
+        // falling through to that cache; the diagnostic remains available in
+        // the error log for the media page.
+        AppErrorLogger.capture(
+          error,
+          module: 'media.playback',
+          context: 'export-fallback:${task.id}',
+          stack: stack,
+        );
+      }
       if (libraryFile != null) return libraryFile;
     }
     final cached = await mediaTasks.cachedFile(task.id);

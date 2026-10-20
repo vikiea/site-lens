@@ -1355,40 +1355,48 @@ class AppDatabase extends GeneratedDatabase {
   Future<String> saveMediaTask(MediaTask task) => transaction(() async {
     const update =
         'candidate_id=excluded.candidate_id,state=excluded.state,updated_at=excluded.updated_at,display_title=excluded.display_title,batch_directory=excluded.batch_directory,episode_label=excluded.episode_label,bytes_downloaded=excluded.bytes_downloaded,total_bytes=excluded.total_bytes,error_code=excluded.error_code,error_reason=excluded.error_reason,local_ref=excluded.local_ref';
-    await customStatement(
-      'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,state,updated_at,display_title,batch_directory,episode_label,bytes_downloaded,total_bytes,error_code,error_reason,local_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
-      'ON CONFLICT(id) DO UPDATE SET $update '
-      'WHERE NOT ('
-      '(excluded.updated_at < media_tasks.updated_at) OR '
-      '(media_tasks.bytes_downloaded > excluded.bytes_downloaded) OR '
-      '(media_tasks.total_bytes IS NOT NULL AND excluded.total_bytes IS NULL) OR '
-      '(media_tasks.local_ref IS NOT NULL AND excluded.local_ref IS NULL) OR '
-      '(media_tasks.state IN (\'downloading\',\'paused\',\'playable\',\'completed\') AND excluded.state=\'queued\') OR '
-      '(media_tasks.state IN (\'playable\',\'completed\') AND excluded.state IN (\'downloading\',\'paused\'))'
-      ') '
-      // A duplicate cache identity must reuse the durable row intact. A
-      // racing store may contain an older queued snapshot and must never
-      // overwrite progress from the store that already owns this cache.
-      'ON CONFLICT(cache_key) DO NOTHING',
-      [
-        task.id,
-        task.candidateId,
-        task.hostId,
-        task.generation,
-        task.sourceUrl.toString(),
-        task.cacheKey,
-        task.state.name,
-        task.updatedAt.toUtc().toIso8601String(),
-        task.displayTitle,
-        task.batchDirectory,
-        task.episodeLabel,
-        task.bytesDownloaded,
-        task.totalBytes,
-        task.errorCode,
-        task.errorReason,
-        task.localRef,
-      ],
-    );
+    try {
+      await customStatement(
+        'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,state,updated_at,display_title,batch_directory,episode_label,bytes_downloaded,total_bytes,error_code,error_reason,local_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
+        'ON CONFLICT(id) DO UPDATE SET $update '
+        'WHERE NOT ('
+        '(excluded.updated_at < media_tasks.updated_at) OR '
+        '(media_tasks.bytes_downloaded > excluded.bytes_downloaded) OR '
+        '(media_tasks.total_bytes IS NOT NULL AND excluded.total_bytes IS NULL) OR '
+        '(media_tasks.local_ref IS NOT NULL AND excluded.local_ref IS NULL) OR '
+        '(media_tasks.state IN (\'downloading\',\'paused\',\'playable\',\'completed\') AND excluded.state=\'queued\') OR '
+        '(media_tasks.state IN (\'playable\',\'completed\') AND excluded.state IN (\'downloading\',\'paused\'))'
+        ') '
+        // A duplicate cache identity must reuse the durable row intact. A
+        // racing store may contain an older queued snapshot and must never
+        // overwrite progress from the store that already owns this cache.
+        'ON CONFLICT(cache_key) DO NOTHING',
+        [
+          task.id,
+          task.candidateId,
+          task.hostId,
+          task.generation,
+          task.sourceUrl.toString(),
+          task.cacheKey,
+          task.state.name,
+          task.updatedAt.toUtc().toIso8601String(),
+          task.displayTitle,
+          task.batchDirectory,
+          task.episodeLabel,
+          task.bytesDownloaded,
+          task.totalBytes,
+          task.errorCode,
+          task.errorReason,
+          task.localRef,
+        ],
+      );
+    } catch (error) {
+      // Older SQLite builds can still surface a cache-key violation when the
+      // id conflict handler itself attempts an update. The durable row is the
+      // authority; let the caller reconcile to it instead of surfacing a
+      // batch-wide failure.
+      if (!error.toString().contains('media_tasks.cache_key')) rethrow;
+    }
     final row = await customSelect(
       'SELECT id FROM media_tasks WHERE cache_key=?',
       variables: [Variable.withString(task.cacheKey)],

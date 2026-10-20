@@ -158,9 +158,7 @@ nodes[0].paused = true;
 nodes[0].ended = false;
 nodes[0].currentSrc = 'https://example.test/placeholder.m3u8?token=placeholder';
 nodes[0].src = nodes[0].currentSrc;
-const playingNode = new Media();
-await playingNode.play();
-nodes.push(playingNode);
+nodes.length = 1;
 dataElements.length = 0;
 performanceEntries.length = 0;
 dataElements.push(new DataElement({'data-play-src': '/assets/placeholder.m3u8?token=placeholder'}));
@@ -170,6 +168,25 @@ await waitForReport();
 const fallbackCandidates = outbound.filter(value => value.kind === 'candidates').at(-1).candidates;
 assert.ok(fallbackCandidates.some(value => value.url.includes('/real.m3u8')));
 console.log('Resource timing recovers a real media URL when the page only exposes a placeholder PASS.');
+
+// A real media element can expose the page URL while Resource Timing exposes
+// the redirected CDN URL. Once the element has a meaningful HTTP media URL,
+// timing entries must stay a fallback instead of creating a duplicate item.
+nodes.forEach(node => { node.isConnected = false; });
+nodes.length = 0;
+dataElements.length = 0;
+performanceEntries.length = 0;
+const redirected = new Media();
+redirected.currentSrc = 'https://example.test/play/series/1.m3u8';
+redirected.src = redirected.currentSrc;
+nodes.push(redirected);
+performanceEntries.push({name: 'https://cdn.example.test/video/series-1.m3u8?token=rotated', initiatorType: 'fetch'});
+mutation();
+await waitForReport();
+const redirectedCandidates = outbound.filter(value => value.kind === 'candidates').at(-1).candidates;
+assert.equal(redirectedCandidates.length, 1);
+assert.ok(redirectedCandidates[0].url.includes('/play/series/1.m3u8'));
+console.log('Meaningful media element suppresses redirected Resource Timing duplicates PASS.');
 
 handlers.get('pagehide')?.({});
 assert.notEqual(outbound.at(-1)?.kind, 'gone');
