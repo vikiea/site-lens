@@ -1074,14 +1074,21 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final records = browserTabs.map((t) => t.toRecord()).toList();
     final selected = activeBrowser?.id;
     final restore = settings.restoreBrowserSessions;
-    final save = _sessionWrites.catchError((Object _) {}).then((_) async {
+    Future<void> write() async {
       if (restore) {
         await sessionStore.save(records, selected);
       } else {
         await sessionStore.clear();
       }
-    });
-    _sessionWrites = save;
+    }
+
+    final save = _sessionWrites.then<void>((_) => write());
+    // Return the real result to this caller, but keep a settled queue tail so
+    // one handled failure cannot poison a later snapshot or shutdown.
+    _sessionWrites = save.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
     return save;
   }
 
@@ -2124,9 +2131,21 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           ? null
           : browserTabs[index.clamp(0, browserTabs.length - 1)];
     }
+    final host = tab.loadedHost;
+    // Rebuild the browser route before destroying the native host. This is the
+    // first half of the platform-view teardown handshake.
+    notifyListeners();
     // Commit the user's close independently of whether the next page loads.
-    await _persistSessions();
-    if (tab.loadedHost != null) await hosts.destroy(tab.loadedHost!);
+    try {
+      await _persistSessions();
+    } catch (e) {
+      if (!_disposed) {
+        error = '标签记录保存失败：${friendlyError(e)}';
+        notifyListeners();
+      }
+    } finally {
+      if (host != null) await hosts.destroy(host);
+    }
     if (browserVisible && activeBrowser != null) {
       try {
         await ensureTabLoaded(activeBrowser!);
@@ -2146,6 +2165,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final open = browserTabs.toList();
     browserTabs.clear();
     activeBrowser = null;
+    // Publish the removal so Flutter can release each platform-view element.
+    // The native host waits for that release before destroying its WebView.
     notifyListeners();
     for (final tab in open) {
       if (tab.loadedHost != null) await hosts.destroy(tab.loadedHost!);
@@ -2250,14 +2271,19 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final close = closeAllTabs(persist: false);
     final stopCast = castSessions.active == null
         ? Future<void>.value()
-        : mediaCast.stop().then<void>((_) {}).catchError((Object _) {});
+        : mediaCast.stop().then<void>(
+            (_) {},
+            onError: (Object _, StackTrace _) {},
+          );
     _shutdownFuture = Future.wait<void>([
       flush,
       close,
       nativeMedia.dispose(),
       stopCast,
-    ]).whenComplete(settingsRepository.dispose);
-    unawaited(_shutdownFuture!.catchError((Object _) {}));
+    ]).then<void>((_) {}).whenComplete(settingsRepository.dispose);
+    unawaited(
+      _shutdownFuture!.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+    );
     mediaLibrary.removeListener(notifyMediaChanged);
     mediaLibrary.dispose();
     AppErrorLogger.detach(errorLogger);

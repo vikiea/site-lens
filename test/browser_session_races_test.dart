@@ -27,6 +27,20 @@ class DelayedRead extends BrowserSessionStore {
   }
 }
 
+class FailSave extends BrowserSessionStore {
+  FailSave(super.db);
+  bool failNext = false;
+
+  @override
+  Future<void> save(List<SavedBrowserTab> tabs, String? activeId) {
+    if (failNext) {
+      failNext = false;
+      throw StateError('保存失败');
+    }
+    return super.save(tabs, activeId);
+  }
+}
+
 class FailCreate extends FakeWebHostApi {
   FailCreate(this.at);
   final int at;
@@ -285,6 +299,52 @@ void main() {
       expect(find.byType(CircularProgressIndicator), findsNothing);
     },
   );
+
+  test('closing a tab publishes removal before destroying its host', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final api = FakeWebHostApi();
+    final app = AppController(db, api: api);
+    addTearDown(() async {
+      await app.shutdown();
+      await db.close();
+    });
+    await app.load();
+    final tab = await app.openUrl(Uri.parse('https://teardown.example/'));
+
+    var removalWasPublishedBeforeDestroy = false;
+    app.addListener(() {
+      if (!app.browserTabs.contains(tab)) {
+        removalWasPublishedBeforeDestroy |= api.destroyed.isEmpty;
+      }
+    });
+
+    await app.closeTab(tab);
+    expect(removalWasPublishedBeforeDestroy, isTrue);
+    expect(api.destroyed, contains(tab.host.id));
+  });
+
+  test(
+    'session persistence failure still destroys the closed tab host',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final api = FakeWebHostApi();
+      final store = FailSave(db);
+      final app = AppController(db, api: api, sessionStore: store);
+      addTearDown(() async {
+        await app.shutdown();
+        await db.close();
+      });
+      await app.load();
+      final tab = await app.openUrl(Uri.parse('https://save-failure.example/'));
+      store.failNext = true;
+
+      await app.closeTab(tab);
+
+      expect(api.destroyed, contains(tab.host.id));
+      expect(app.error, contains('标签记录保存失败'));
+    },
+  );
+
   testWidgets('late startup error cannot cover a healthy selected tab', (
     tester,
   ) async {

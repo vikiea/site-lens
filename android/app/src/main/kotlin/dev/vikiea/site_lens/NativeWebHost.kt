@@ -186,6 +186,7 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
     private val messenger = engine.dartExecutor.binaryMessenger
     private val events = WebHostEvents(engine.dartExecutor.binaryMessenger)
     private val hosts = mutableMapOf<Long, NativeWebHost>()
+    private val retiringHosts = mutableSetOf<NativeWebHost>()
     private val browserUi = MethodChannel(messenger, "site_lens/browser_ui")
     private var fullscreenOwner: NativeWebHost? = null
     private var disposed = false
@@ -223,10 +224,10 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
             override fun create(context: android.content.Context, viewId: Int, args: Any?): PlatformView {
                 val id = ((args as? Map<*, *>)?.get("hostId") as? Number)?.toLong() ?: -1
                 val host = host(id)
-                (host.platformView.parent as? ViewGroup)?.removeView(host.platformView)
+                host.acquirePlatformView(viewId)
                 return object : PlatformView {
                     override fun getView(): View = host.platformView
-                    override fun dispose() { (host.platformView.parent as? ViewGroup)?.removeView(host.platformView) }
+                    override fun dispose() { host.releasePlatformView(viewId) }
                 }
             }
         })
@@ -242,10 +243,13 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
         // stale `Host already exists` error.
         hosts.remove(hostId)?.let {
             releaseFullscreen(it)
-            it.dispose()
+            retiringHosts.add(it)
+            it.dispose(force = true)
         }
         val host = NativeWebHost(activity, hostId, purpose, events, preferences, onFullscreenChanged = { changed, active ->
             onHostFullscreenChanged(changed, active)
+        }, onDisposed = { retired ->
+            retiringHosts.remove(retired)
         }) { gone ->
             releaseFullscreen(gone)
             if (hosts[hostId] === gone) hosts.remove(hostId)
@@ -283,6 +287,7 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
     override fun destroy(hostId: Long) {
         hosts.remove(hostId)?.let {
             releaseFullscreen(it)
+            retiringHosts.add(it)
             it.dispose()
         }
     }
@@ -380,13 +385,16 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
     fun dispose() {
         if (disposed) return
         disposed = true
-        val previous = hosts.values.toList()
+        // Closing hosts have already left the public registry but can still
+        // await a Flutter platform-view release when the engine goes away.
+        val previous = (hosts.values + retiringHosts).distinct()
         hosts.clear()
+        retiringHosts.clear()
         fullscreenOwner = null
         applyFullscreenWindow(false)
         WebHostApi.setUp(messenger, null)
         browserUi.setMethodCallHandler(null)
-        previous.forEach { it.dispose() }
+        previous.forEach { it.dispose(force = true) }
     }
 }
 
@@ -423,11 +431,26 @@ private data class NativeFilterRule(
 private const val FILTER_RUNTIME_ASSET = "flutter_assets/web_assets/filter_runtime.js"
 
 @Suppress("SetJavaScriptEnabled")
-class NativeWebHost(private val activity: Activity, val id: Long, val purpose: HostPurpose, private val events: WebHostEvents, initialPreferences: HostPreferences, private val onFullscreenChanged: (NativeWebHost, Boolean) -> Unit = { _, _ -> }, private val onRendererGone: (NativeWebHost) -> Unit = {}) {
+class NativeWebHost(private val activity: Activity, val id: Long, val purpose: HostPurpose, private val events: WebHostEvents, initialPreferences: HostPreferences, private val onFullscreenChanged: (NativeWebHost, Boolean) -> Unit = { _, _ -> }, private val onDisposed: (NativeWebHost) -> Unit = {}, private val onRendererGone: (NativeWebHost) -> Unit = {}) {
     val webView = SiteLensWebView(activity)
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val viewLifetime = WebViewLifetime(
+        post = { task -> mainHandler.post { task() } },
+        destroy = { finishDispose() },
+    )
     private val popupProbes = mutableMapOf<WebView, () -> Unit>()
-    val available get() = !destroyed && !rendererGone && !activity.isFinishing && !activity.isDestroyed
+    val available get() = !viewLifetime.closing && !destroyed && !rendererGone && !activity.isFinishing && !activity.isDestroyed
+
+    fun acquirePlatformView(viewId: Int) {
+        viewLifetime.acquire(viewId)
+        (platformView.parent as? ViewGroup)?.removeView(platformView)
+    }
+
+    fun releasePlatformView(viewId: Int) {
+        if (viewLifetime.release(viewId)) {
+            (platformView.parent as? ViewGroup)?.removeView(platformView)
+        }
+    }
 
     /// Policy owned by Dart; the host only enforces it. `applyPreferences` keeps a
     /// live host in step with a switch the user flipped mid-session.
@@ -481,6 +504,13 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     val bindings = mutableListOf<ScriptBinding>()
     private val injections = mutableListOf<ScriptHandler>()
     private var filterInjection: ScriptHandler? = null
+    private val retiredInjections = mutableListOf<ScriptHandler>()
+    private val retiredBindings = mutableListOf<ScriptBinding>()
+    private var bridgeCleanupScheduled = false
+    private val bridgeCleanup = Runnable {
+        bridgeCleanupScheduled = false
+        flushRetiredBridges()
+    }
     @Volatile private var filterState = NativeFilterState()
     private var filterBlockedCount = 0
     private var filterAllowedCount = 0
@@ -631,7 +661,10 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         val host = url.host?.lowercase() ?: return true
         if (state.exceptions.any { host == it || host.endsWith(".$it") }) return true
         if (state.blockedDomains.any { host == it || host.endsWith(".$it") }) return false
-        val document = webView.url?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        // shouldInterceptRequest may run off the WebView thread. Use the
+        // volatile callback snapshot instead of reading a WebView property
+        // from the request worker.
+        val document = lastKnownUrl?.let { runCatching { Uri.parse(it) }.getOrNull() }
         val resourceType = requestResourceType(request)
         val thirdParty = document?.host?.lowercase()?.let { documentHost ->
             host != documentHost && !host.endsWith(".$documentHost") && !documentHost.endsWith(".$host")
@@ -1120,7 +1153,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     }
 
     fun revoke() {
-        if (rendererGone || destroyed) return
+        if (!available) return
         accepting = false; generation++; expectedUrl = null; leasedOrigin = null; pageError = null
         entryFollowing = false; entryHops = 0; entryNavigation = null; entryArmed = false
         clearHistoryNavigation()
@@ -1129,21 +1162,30 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         // navigation callback. Snapshot the old bridge and detach it after the
         // callback returns; generation/token checks already fail closed while
         // the old bridge is waiting for removal.
-        val oldInjections = injections.toList()
-        val oldFilterInjection = filterInjection
-        val oldBindings = bindings.toList()
+        retiredInjections.addAll(injections)
+        filterInjection?.let { retiredInjections.add(it) }
+        retiredBindings.addAll(bindings)
         injections.clear()
         filterInjection = null
         bindings.clear()
-        mainHandler.post {
-            if (destroyed || rendererGone) return@post
-            oldInjections.forEach { runCatching { it.remove() } }
-            runCatching { oldFilterInjection?.remove() }
-            oldBindings.forEach {
-                runCatching { WebViewCompat.removeWebMessageListener(webView, it.world, "lensBridge") }
-            }
+        if (!bridgeCleanupScheduled && (retiredInjections.isNotEmpty() || retiredBindings.isNotEmpty())) {
+            bridgeCleanupScheduled = true
+            mainHandler.post(bridgeCleanup)
         }
         event("invalidated")
+    }
+
+    private fun flushRetiredBridges() {
+        mainHandler.removeCallbacks(bridgeCleanup)
+        bridgeCleanupScheduled = false
+        val oldInjections = retiredInjections.toList()
+        val oldBindings = retiredBindings.toList()
+        retiredInjections.clear(); retiredBindings.clear()
+        if (!available) return
+        oldInjections.forEach { runCatching { it.remove() } }
+        oldBindings.forEach {
+            runCatching { WebViewCompat.removeWebMessageListener(webView, it.world, "lensBridge") }
+        }
     }
     fun prepareNavigation(
         url: String,
@@ -1251,6 +1293,9 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         return true
     }
     private fun install(url: String) {
+        // Called after the navigation-policy reply, outside provider callbacks.
+        // Finish the previous generation's removals before installing another.
+        flushRetiredBridges()
         expectedUrl = url; leasedOrigin = webOrigin(url); accepting = true
         if (purpose != HostPurpose.BROWSING) return
         for (script in scripts) {
@@ -1322,6 +1367,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     }
     private fun disposeAfterRendererGone(deadView: WebView) {
         if (destroyed) return
+        viewLifetime.rendererGone()
         destroyed = true
         accepting = false
         webView.onTap = null
@@ -1330,6 +1376,8 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         clearHistoryNavigation()
         activeNavigation = null; activePage = null; navigationListener = null
         injections.clear(); bindings.clear(); scripts = emptyList()
+        retiredInjections.clear(); retiredBindings.clear()
+        bridgeCleanupScheduled = false
         filterInjection = null
         runCatching { forceClearFullscreen() }
         runCatching { (platformView.parent as? ViewGroup)?.removeView(platformView) }
@@ -1342,6 +1390,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             clearPopupProbes()
             clearProbeProfile()
         }
+        onDisposed(this)
     }
     private fun clearProbeProfile() {
         profileName?.let { name -> runCatching {
@@ -1349,15 +1398,40 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         } }
     }
     fun dispose() {
+        dispose(force = false)
+    }
+
+    fun dispose(force: Boolean) {
         if (destroyed) return
         if (rendererGone) { disposeAfterRendererGone(webView); return }
-        webView.unavailable = true
-        webView.onTap = null
+        if (!viewLifetime.closing) {
+            // Invalidate the document while the host is still available; the
+            // actual provider removal remains deferred until the view release.
+            runCatching { revoke() }
+            mainHandler.removeCallbacks(bridgeCleanup)
+            bridgeCleanupScheduled = false
+            webView.unavailable = true
+            webView.onTap = null
+            runCatching { clearPopupProbes() }
+            runCatching { media.dispose() }
+            runCatching { webView.stopLoading() }
+        }
+        // Flutter may still own the AndroidView. Revoke authority immediately,
+        // but keep the provider alive until its platform-view dispose callback.
+        if (force) runCatching { (platformView.parent as? ViewGroup)?.removeView(platformView) }
+        viewLifetime.close(force)
+    }
+
+    private fun finishDispose() {
+        if (destroyed) return
+        if (rendererGone) { disposeAfterRendererGone(webView); return }
+        destroyed = true
         clearPopupProbes()
         runCatching { media.dispose() }
-        runCatching { revoke() }
+        injections.clear(); bindings.clear(); scripts = emptyList()
+        retiredInjections.clear(); retiredBindings.clear()
+        filterInjection = null
         runCatching { forceClearFullscreen() }
-        destroyed = true
         navigationListener?.let { runCatching { WebViewCompat.removeNavigationListener(webView, it) } }; navigationListener = null
         runCatching { webView.stopLoading() }
         runCatching { (platformView.parent as? ViewGroup)?.removeView(platformView) }
@@ -1369,5 +1443,6 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             // the next process sweep when the provider rejects deletion.
             mainHandler.post { clearProbeProfile() }
         }
+        onDisposed(this)
     }
 }
