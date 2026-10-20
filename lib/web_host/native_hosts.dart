@@ -542,8 +542,17 @@ class NativeHosts extends WebHostEvents {
         }
       }
 
+      // Menu bookkeeping and OS clipboard writes do not read page content.
+      // Keeping the generation/source lease check above is sufficient and
+      // avoids a document-inspection race while a large script is reloading.
       final skipDocumentInspection =
-          op == 'registerMenu' || op == 'unregisterMenu';
+          op == 'registerMenu' ||
+          op == 'unregisterMenu' ||
+          op == 'setClipboard' ||
+          op == 'getValue' ||
+          op == 'setValue' ||
+          op == 'deleteValue' ||
+          op == 'listValues';
       await ensureActive(inspectDocument: !skipDocumentInspection);
       Object? value;
       if (op == 'setClipboard') {
