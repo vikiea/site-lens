@@ -115,11 +115,63 @@ void main() {
     },
   );
 
+  test('media candidate persistence refreshes a signed URL but rejects identity changes', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final original = candidate(
+      id: 'rotating',
+      url: 'https://cdn.example/live/index.m3u8?token=old',
+      mime: 'application/vnd.apple.mpegurl',
+      title: '系列 - 第7集',
+    );
+    await db.saveMediaCandidate(original);
+    await db.saveMediaCandidate(
+      candidate(
+        id: 'rotating',
+        url: 'https://cdn.example/live/index.m3u8?token=new',
+        mime: original.mime,
+        title: original.title,
+      ),
+    );
+    expect(
+      (await db.mediaCandidate('rotating'))!.mediaUrl.queryParameters['token'],
+      'new',
+    );
+
+    await db.saveMediaCandidate(
+      candidate(
+        id: 'rotating',
+        url: 'https://cdn.example/other/index.m3u8?token=wrong',
+        mime: original.mime,
+        title: original.title,
+      ),
+    );
+    expect(
+      (await db.mediaCandidate('rotating'))!.mediaUrl.path,
+      '/live/index.m3u8',
+    );
+  });
+
   test('media tasks deduplicate observation IDs for the same stream', () {
     final store = MediaTaskStore();
     final first = store.create(candidate(id: 'observation-1'));
     final second = store.create(candidate(id: 'observation-2'));
     expect(second.id, first.id);
+    expect(store.tasks, hasLength(1));
+  });
+
+  test('explicit reauthorization rebinds a new observation without losing partial progress', () {
+    final store = MediaTaskStore();
+    final first = candidate(id: 'old-observation');
+    final task = store.create(first);
+    store.transition(task.id, MediaTaskState.downloading);
+    store.updateProgress(task.id, 256);
+    store.transition(task.id, MediaTaskState.reauthorize);
+    final replacement = store.create(candidate(id: 'new-observation'));
+    expect(replacement.id, task.id);
+    expect(replacement.candidateId, 'new-observation');
+    expect(replacement.bytesDownloaded, 256);
+    expect(replacement.cacheKey, task.cacheKey);
     expect(store.tasks, hasLength(1));
   });
 
@@ -504,6 +556,31 @@ void main() {
       MediaTaskState.downloading,
     );
   });
+
+  test(
+    'HLS 403 moves the task to reauthorize with actionable context',
+    () async {
+      final root = await Directory.systemTemp.createTemp('site-lens-hls-403-');
+      addTearDown(() => root.delete(recursive: true));
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final media = candidate(
+        url: 'https://cdn.example/live/index.m3u8?token=expired',
+        mime: 'application/vnd.apple.mpegurl',
+      );
+      final task = store.create(media);
+      await expectLater(
+        MediaDownloadService(
+          tasks: store,
+          http: _StatusHttp(403),
+        ).start(task, media),
+        throwsA(isA<StateError>()),
+      );
+      final failed = store.task(task.id)!;
+      expect(failed.state, MediaTaskState.reauthorize);
+      expect(failed.errorCode, MediaErrorCode.authorizationRequired);
+      expect(failed.errorReason, contains('返回播放页'));
+    },
+  );
 
   test(
     'media task store protects active references and restores state',

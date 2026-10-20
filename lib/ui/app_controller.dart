@@ -37,6 +37,7 @@ import '../media/media_library.dart';
 import '../media/dlna_service.dart';
 import '../media/native_download_runtime.dart';
 import '../media/native_export_runtime.dart';
+import '../media/media_network.dart';
 import '../media/native_media_runtime.dart';
 import 'glass_quality_cache.dart';
 import 'ui_util.dart';
@@ -82,6 +83,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     mediaDownloads = MediaDownloadService(
       tasks: mediaTasks,
       native: nativeDownloads,
+      http: ControlledHttp(mediaRoute: MediaNetwork().route),
+      authorize: _authorizeMediaDownload,
     );
     mediaExports = Mp4ExportService(tasks: mediaTasks, native: nativeExports);
     mediaLibrary = MediaLibrary(
@@ -668,6 +671,77 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> setPlayerVerticalGesture(PlayerVerticalGestureMode value) =>
       updateSettings({'playerVerticalGesture': value.name});
+
+  /// Retry with current document authorization instead of a captured row's URL.
+  Future<MediaCandidate> mediaCandidateForRetry(MediaTask task) async {
+    final session = hosts.sessions[task.hostId];
+    final stored = await db.mediaCandidate(task.candidateId);
+    if (session != null &&
+        !session.disposed &&
+        session.generation == task.generation &&
+        session.url.isNotEmpty &&
+        Uri.parse(session.url).removeFragment() ==
+            task.sourceUrl.removeFragment() &&
+        stored != null) {
+      for (final candidate in hosts.mediaCandidatesForHost(
+        task.hostId,
+        generation: task.generation,
+      )) {
+        if (candidate.sourceUrl.removeFragment() !=
+                task.sourceUrl.removeFragment() ||
+            mediaCandidateKey(candidate.mediaUrl) !=
+                mediaCandidateKey(stored.mediaUrl)) {
+          continue;
+        }
+        final authorized = hosts.authorizeMediaCandidate(
+          task.hostId,
+          candidate.id,
+        );
+        await db.saveMediaCandidate(authorized);
+        mediaTasks.rebindCandidate(task.id, authorized);
+        return authorized;
+      }
+      throw StateError('媒体资源已变化，请返回播放页重新选择媒体');
+    }
+    if (task.state == MediaTaskState.reauthorize) {
+      throw StateError('下载地址已失效或被拒绝，请返回播放页刷新并重新选择媒体后下载');
+    }
+    if (stored == null) {
+      throw StateError('媒体候选已不存在，请返回播放页重新选择媒体');
+    }
+    return stored;
+  }
+
+  MediaCandidate _authorizeMediaDownload(
+    MediaTask task,
+    MediaCandidate candidate,
+  ) {
+    final requiresLiveAuthorization =
+        task.state == MediaTaskState.reauthorize ||
+        task.errorCode == MediaErrorCode.authorizationRequired;
+    if (!requiresLiveAuthorization) return candidate;
+    if (candidate.id != task.candidateId) {
+      throw StateError(MediaErrorCode.staleGeneration);
+    }
+    final session = hosts.sessions[task.hostId];
+    if (session == null || session.disposed) {
+      throw StateError('下载地址已失效，请返回播放页重新选择媒体');
+    }
+    if (session.generation != task.generation ||
+        session.url.isEmpty ||
+        Uri.parse(session.url).removeFragment() !=
+            task.sourceUrl.removeFragment()) {
+      throw StateError('页面已更新，请返回播放页重新选择媒体');
+    }
+    final current = hosts.authorizeMediaCandidate(task.hostId, candidate.id);
+    if (current.generation != task.generation ||
+        current.sourceUrl.removeFragment() != task.sourceUrl.removeFragment() ||
+        mediaCandidateKey(current.mediaUrl) !=
+            mediaCandidateKey(candidate.mediaUrl)) {
+      throw StateError('媒体资源已变化，请返回播放页重新选择媒体');
+    }
+    return current;
+  }
 
   /// Refreshes surfaces that derive their content from the durable media task
   /// store after a foreground export completes.

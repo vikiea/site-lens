@@ -226,6 +226,8 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun registerNativeDownloadChannel(flutterEngine: FlutterEngine) {
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/media_network")
+            .setMethodCallHandler(MediaNetworkRuntime(this))
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/native_download")
         nativeDownloads = NativeDownloadRuntime(this).also { channel.setMethodCallHandler(it) }
     }

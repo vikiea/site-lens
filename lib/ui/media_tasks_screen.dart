@@ -1549,24 +1549,18 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   }
 
   Future<void> _togglePause(MediaTask task) async {
-    final candidate = await widget.app.db.mediaCandidate(task.candidateId);
-    if (candidate == null) throw StateError('媒体候选已不存在');
     if (task.state == MediaTaskState.downloading) {
       await widget.app.mediaDownloads.pause(task.id);
     } else if (task.state == MediaTaskState.paused) {
+      final candidate = await widget.app.mediaCandidateForRetry(task);
       await widget.app.mediaDownloads.resumeNative(task.id, candidate);
     }
     if (mounted) setState(() {});
   }
 
-  Future<void> _retry(
-    MediaTask task,
-    MediaCandidate? candidate, {
-    bool notify = true,
-  }) async {
-    final resolved =
-        candidate ?? await widget.app.db.mediaCandidate(task.candidateId);
-    if (resolved == null) throw StateError('媒体候选已不存在');
+  Future<void> _retry(MediaTask task, {bool notify = true}) async {
+    final resolved = await widget.app.mediaCandidateForRetry(task);
+    final currentTask = widget.app.mediaTasks.task(task.id) ?? task;
     if (task.state == MediaTaskState.paused) {
       await _togglePause(task);
     } else if (task.errorCode == MediaErrorCode.cacheMissing) {
@@ -1580,7 +1574,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         !resolved.isHls) {
       await widget.app.mediaDownloads.resumeNative(task.id, resolved);
     } else {
-      await widget.app.mediaDownloads.startNative(task, resolved);
+      await widget.app.mediaDownloads.startNative(currentTask, resolved);
     }
     if (mounted && notify) {
       showShortToast(context, '已开始续传');
@@ -1618,6 +1612,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           MediaTaskState.failed,
           MediaTaskState.cancelled,
           MediaTaskState.paused,
+          MediaTaskState.reauthorize,
         }.contains(task.state),
         _MediaBatchAction.refresh || _MediaBatchAction.delete => true,
       };
@@ -1668,7 +1663,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         try {
           switch (action) {
             case _MediaBatchAction.retry:
-              await _retry(task, null, notify: false);
+              await _retry(task, notify: false);
             case _MediaBatchAction.refresh:
               await _refreshNative(task);
             case _MediaBatchAction.export:
@@ -1983,10 +1978,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                                     );
                                   case 'retry':
                                     unawaited(
-                                      _run(
-                                        () => _retry(task, snapshot.data),
-                                        taskId: task.id,
-                                      ),
+                                      _run(() => _retry(task), taskId: task.id),
                                     );
                                   case 'delete':
                                     unawaited(
@@ -2077,10 +2069,15 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                                     child: Text('继续下载'),
                                   ),
                                 if (task.state == MediaTaskState.failed ||
-                                    task.state == MediaTaskState.cancelled)
-                                  const PopupMenuItem(
+                                    task.state == MediaTaskState.cancelled ||
+                                    task.state == MediaTaskState.reauthorize)
+                                  PopupMenuItem(
                                     value: 'retry',
-                                    child: Text('重试下载'),
+                                    child: Text(
+                                      task.state == MediaTaskState.reauthorize
+                                          ? '刷新授权后重试'
+                                          : '重试下载',
+                                    ),
                                   ),
                                 if (task.state == MediaTaskState.downloading ||
                                     task.state == MediaTaskState.paused)

@@ -3929,7 +3929,8 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
         final existing = widget.app.mediaTasks.taskForCandidate(authorized);
         if (existing != null &&
             existing.state != MediaTaskState.failed &&
-            existing.state != MediaTaskState.cancelled) {
+            existing.state != MediaTaskState.cancelled &&
+            existing.state != MediaTaskState.reauthorize) {
           skipped++;
           continue;
         }

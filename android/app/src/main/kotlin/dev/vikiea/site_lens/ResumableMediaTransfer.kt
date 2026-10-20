@@ -5,7 +5,6 @@ import java.io.IOException
 import java.io.InterruptedIOException
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
-import java.net.Proxy
 import java.net.URI
 import java.security.MessageDigest
 import java.util.Properties
@@ -14,12 +13,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /** Pure JVM transport, also exercised against an actual local HTTP server. */
 class ResumableMediaTransfer(
     private val cancelled: () -> Boolean = { false },
-    private val connect: (URI) -> HttpURLConnection = {
-        it.toURL().openConnection(Proxy.NO_PROXY) as HttpURLConnection
-    },
-    private val validate: (URI) -> Unit = { uri ->
-        require(uri.scheme in listOf("http", "https") && !uri.host.isNullOrBlank() && uri.userInfo == null)
-    },
+    private val connect: (URI) -> HttpURLConnection = { SystemMediaNetwork.openConnection(it) },
+    private val validate: (URI) -> Unit = SystemMediaNetwork::validateTarget,
 ) {
     private val aborted = AtomicBoolean(false)
     @Volatile private var connection: HttpURLConnection? = null
@@ -35,10 +30,11 @@ class ResumableMediaTransfer(
 
     fun transfer(url: URI, source: URI, partial: File, userAgent: String,
         maxBytes: Long = 2L * 1024 * 1024 * 1024,
+        requestCookies: (URI) -> String? = { null },
         onProgress: (Long, Long?) -> Unit = { _, _ -> },
     ): Long {
         val metadataFile = File(partial.path + ".resume")
-        val identity = MessageDigest.getInstance("SHA-256").digest(url.toString().toByteArray())
+        val identity = MessageDigest.getInstance("SHA-256").digest(stableIdentity(url).toByteArray())
             .joinToString("") { "%02x".format(it) }
         var failure: IOException? = null
         repeat(4) { attempt ->
@@ -71,11 +67,14 @@ class ResumableMediaTransfer(
                             current.setRequestProperty("Accept", "*/*")
                             current.setRequestProperty("Referer", source.toString())
                             current.setRequestProperty("Origin", "${source.scheme}://${source.rawAuthority}")
+                            requestCookies(uri)?.takeIf { it.isNotBlank() }?.let {
+                                current.setRequestProperty("Cookie", it)
+                            }
                             if (offset > 0) {
                                 current.setRequestProperty("Range", "bytes=$offset-")
                                 current.setRequestProperty("If-Range", validator)
                             }
-                            // Cookies are never read, accepted or carried over redirects.
+                            // Cookie selection is recalculated for every redirect target.
                             val status = current.responseCode
                             if (status in listOf(301, 302, 303, 307, 308)) {
                                 check(redirect < 5) { "重定向过多" }
@@ -186,6 +185,14 @@ class ResumableMediaTransfer(
             if (attempt < 3) Thread.sleep(100L shl attempt)
         }
         throw failure ?: IOException("媒体连接失败")
+    }
+
+    private fun stableIdentity(uri: URI): String {
+        val volatile = setOf("auth", "auth_key", "expires", "expire", "exp", "hmac", "sig", "sign", "signature", "t", "time", "timestamp", "token", "v", "via", "via_bm")
+        val query = uri.rawQuery?.split('&')?.filter {
+            it.substringBefore('=').lowercase() !in volatile
+        }?.joinToString("&")
+        return URI(uri.scheme, uri.rawAuthority, uri.path, query, null).toString()
     }
 }
 

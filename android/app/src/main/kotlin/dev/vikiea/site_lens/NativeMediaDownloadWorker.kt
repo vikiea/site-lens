@@ -11,6 +11,7 @@ import java.io.IOException
 import java.io.InterruptedIOException
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
+import android.webkit.CookieManager
 
 /** Bounded native work slices. WorkManager reschedules interrupted work with
  * the same durable partial; no Flutter engine or Activity is needed. */
@@ -35,18 +36,30 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
             }
             val transfer = ResumableMediaTransfer(
                 cancelled = { isObsolete() || SystemClock.elapsedRealtime() >= deadline },
+                connect = { uri ->
+                    val connectivity = applicationContext.getSystemService(android.net.ConnectivityManager::class.java)
+                    val vpn = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
+                        ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true
+                    SystemMediaNetwork.openConnection(uri, allowProxyFakeIp = vpn)
+                },
             )
             ownedTransfer = transfer
             transfers[taskId] = transfer
             try {
                 partial.parentFile?.mkdirs()
                 var lastProgress = 0L
+                val initialUrl = validateUrl(record.url)
+                val sourceUrl = validateUrl(record.sourceUrl.ifBlank { record.url })
                 transfer.transfer(
-                    validateUrl(record.url),
-                    validateUrl(record.sourceUrl.ifBlank { record.url }),
+                    initialUrl,
+                    sourceUrl,
                     partial,
-                    "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
-                        + "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+                    android.webkit.WebSettings.getDefaultUserAgent(applicationContext),
+                    requestCookies = { uri ->
+                        runCatching {
+                            CookieManager.getInstance().getCookie(uri.toString())
+                        }.getOrNull()
+                    },
                     onProgress = { bytes, total ->
                         val now = SystemClock.elapsedRealtime()
                         if (now - lastProgress >= 1000) {
@@ -136,8 +149,7 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
 
         fun validateUrl(raw: String): URI {
             val uri = URI(raw.trim())
-            require(uri.scheme?.lowercase() in setOf("http", "https") &&
-                !uri.host.isNullOrBlank() && uri.userInfo == null) { "媒体地址无效" }
+            SystemMediaNetwork.validateTarget(uri)
             return uri
         }
     }

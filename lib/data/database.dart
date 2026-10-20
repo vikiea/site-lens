@@ -1288,22 +1288,42 @@ class AppDatabase extends GeneratedDatabase {
     return result;
   }
 
-  Future<void> saveMediaCandidate(MediaCandidate candidate) => customStatement(
-    'INSERT INTO media_candidates(id,host_id,generation,source_url,media_url,title,mime,source,thumbnail_url,duration_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) '
-    'ON CONFLICT(id) DO UPDATE SET title=excluded.title,mime=excluded.mime,thumbnail_url=excluded.thumbnail_url,duration_ms=excluded.duration_ms',
-    [
-      candidate.id,
-      candidate.hostId,
-      candidate.generation,
-      candidate.sourceUrl.toString(),
-      candidate.mediaUrl.toString(),
-      candidate.title,
-      candidate.mime,
-      candidate.source.name,
-      candidate.thumbnailUrl?.toString(),
-      candidate.durationMs,
-      (candidate.createdAt ?? DateTime.now()).toUtc().toIso8601String(),
-    ],
+  Future<void> saveMediaCandidate(MediaCandidate candidate) => transaction(
+    () async {
+      final previous = await mediaCandidate(candidate.id);
+      // IDs survive signature rotation. Keep the document and concrete resource
+      // fixed so reusing an ID for another episode cannot retarget an old task.
+      if (previous != null &&
+          (previous.hostId != candidate.hostId ||
+              previous.generation != candidate.generation ||
+              previous.sourceUrl.removeFragment() !=
+                  candidate.sourceUrl.removeFragment() ||
+              previous.source != candidate.source ||
+              mediaCandidateKey(previous.mediaUrl) !=
+                  mediaCandidateKey(candidate.mediaUrl) ||
+              (candidate.createdAt != null &&
+                  previous.createdAt != null &&
+                  candidate.createdAt!.isBefore(previous.createdAt!)))) {
+        return;
+      }
+      await customStatement(
+        'INSERT INTO media_candidates(id,host_id,generation,source_url,media_url,title,mime,source,thumbnail_url,duration_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) '
+        'ON CONFLICT(id) DO UPDATE SET media_url=excluded.media_url,title=excluded.title,mime=excluded.mime,thumbnail_url=excluded.thumbnail_url,duration_ms=excluded.duration_ms,created_at=excluded.created_at',
+        [
+          candidate.id,
+          candidate.hostId,
+          candidate.generation,
+          candidate.sourceUrl.toString(),
+          candidate.mediaUrl.toString(),
+          candidate.title,
+          candidate.mime,
+          candidate.source.name,
+          candidate.thumbnailUrl?.toString(),
+          candidate.durationMs,
+          (candidate.createdAt ?? DateTime.now()).toUtc().toIso8601String(),
+        ],
+      );
+    },
   );
 
   Future<MediaCandidate?> mediaCandidate(String id) async {
@@ -1329,7 +1349,7 @@ class AppDatabase extends GeneratedDatabase {
 
   Future<void> saveMediaTask(MediaTask task) => customStatement(
     'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,state,updated_at,display_title,episode_label,bytes_downloaded,total_bytes,error_code,error_reason,local_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
-    'ON CONFLICT(id) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at,display_title=excluded.display_title,episode_label=excluded.episode_label,bytes_downloaded=excluded.bytes_downloaded,total_bytes=excluded.total_bytes,error_code=excluded.error_code,error_reason=excluded.error_reason,local_ref=excluded.local_ref',
+    'ON CONFLICT(id) DO UPDATE SET candidate_id=excluded.candidate_id,state=excluded.state,updated_at=excluded.updated_at,display_title=excluded.display_title,episode_label=excluded.episode_label,bytes_downloaded=excluded.bytes_downloaded,total_bytes=excluded.total_bytes,error_code=excluded.error_code,error_reason=excluded.error_reason,local_ref=excluded.local_ref',
     [
       task.id,
       task.candidateId,

@@ -397,6 +397,30 @@ class MediaTaskStore {
     return id == null ? null : _tasks[id];
   }
 
+  MediaTask rebindCandidate(String taskId, MediaCandidate candidate) {
+    const validator = MediaCandidateValidator();
+    validator.validate(candidate);
+    final current = _tasks[taskId] ?? (throw StateError('媒体任务不存在'));
+    if (candidate.id == current.candidateId) return current;
+    if (current.state == MediaTaskState.downloading ||
+        current.state == MediaTaskState.playable ||
+        current.state == MediaTaskState.completed ||
+        !canDelete(taskId)) {
+      throw StateError('媒体任务正在使用，请稍后重新选择媒体');
+    }
+    if (candidate.hostId != current.hostId ||
+        candidate.generation != current.generation ||
+        candidate.sourceUrl.removeFragment() !=
+            current.sourceUrl.removeFragment() ||
+        cacheKey(candidate) != current.cacheKey) {
+      throw StateError(MediaErrorCode.staleGeneration);
+    }
+    final next = current.copyWith(candidateId: candidate.id);
+    _tasks[taskId] = next;
+    _saveTask(next);
+    return next;
+  }
+
   String cacheKey(
     MediaCandidate candidate, {
     String quality = '',
@@ -421,6 +445,9 @@ class MediaTaskStore {
     final key = cacheKey(candidate, quality: quality, audio: audio);
     final existingId = _byCacheKey[key];
     final existing = existingId == null ? null : _tasks[existingId];
+    if (existing?.state == MediaTaskState.reauthorize) {
+      return rebindCandidate(existing!.id, candidate);
+    }
     if (existing != null &&
         existing.state != MediaTaskState.cancelled &&
         existing.state != MediaTaskState.failed) {
@@ -811,8 +838,12 @@ class MediaTaskStore {
 /// implementation can replace this transport while keeping the same task
 /// states and cache keys.
 class MediaDownloadService {
-  MediaDownloadService({required this.tasks, ControlledHttp? http, this.native})
-    : http = http ?? ControlledHttp();
+  MediaDownloadService({
+    required this.tasks,
+    ControlledHttp? http,
+    this.native,
+    this.authorize,
+  }) : http = http ?? ControlledHttp();
 
   final MediaTaskStore tasks;
   final ControlledHttp http;
@@ -820,6 +851,8 @@ class MediaDownloadService {
   /// Optional Android OS-managed backend. The deterministic Dart backend stays
   /// available for tests and platforms without DownloadManager.
   final NativeDownloadRuntime? native;
+  final MediaCandidate Function(MediaTask task, MediaCandidate candidate)?
+  authorize;
   Future<void> Function(MediaTask task)? onCompleted;
   final _active = <String, Cancellation>{};
   final _running = <String, Future<MediaTask>>{};
@@ -934,10 +967,21 @@ class MediaDownloadService {
   Future<MediaTask> _stop(String taskId, {required bool cancelled}) {
     // Mark synchronously so a start queued during this operation cannot race it.
     _stopping.add(taskId);
+    _active[taskId]?.cancel();
+    final current = tasks.task(taskId);
+    final nativeStop =
+        current != null &&
+            !_dartTasks.contains(taskId) &&
+            current.state != MediaTaskState.completed &&
+            current.state != MediaTaskState.playable
+        ? cancelled
+              ? native?.cancel(taskId)
+              : native?.pause(taskId)
+        : null;
     return _control(taskId, () async {
       try {
         final running = _running[taskId];
-        _active[taskId]?.cancel();
+        if (nativeStop != null) await nativeStop;
         if (running != null) {
           try {
             await running;
@@ -945,16 +989,7 @@ class MediaDownloadService {
             /* keep the resumable partial */
           }
         }
-        final current = tasks.task(taskId) ?? (throw StateError('媒体任务不存在'));
-        final candidate = await tasks.db?.mediaCandidate(current.candidateId);
-        if (!_dartTasks.contains(taskId) && candidate?.isHls != true) {
-          if (cancelled) {
-            await native?.cancel(taskId);
-          } else {
-            await native?.pause(taskId);
-          }
-        }
-        final latest = tasks.task(taskId)!;
+        final latest = tasks.task(taskId) ?? (throw StateError('媒体任务不存在'));
         if (latest.state == MediaTaskState.playable ||
             latest.state == MediaTaskState.completed) {
           return latest;
@@ -980,14 +1015,21 @@ class MediaDownloadService {
     bool deleteTask = true,
     Future<void> Function()? beforeDelete,
   }) async {
+    if (!tasks.canDelete(taskId)) {
+      throw StateError('媒体正在播放、导出或投屏，请先停止');
+    }
     _stopping.add(taskId);
+    _active[taskId]?.cancel();
+    final nativeCancel = !_dartTasks.contains(taskId)
+        ? native?.cancel(taskId)
+        : null;
     try {
       await _control(taskId, () async {
         // Acquire the file-operation lock before touching transport. A
         // retained playback/export/cast reference therefore fails closed and
         // cannot be interrupted by a rejected delete request.
         await tasks.withExclusive(taskId, () async {
-          _active[taskId]?.cancel();
+          if (nativeCancel != null) await nativeCancel;
           try {
             await _running[taskId];
           } catch (_) {
@@ -995,7 +1037,9 @@ class MediaDownloadService {
           }
           final current = tasks.task(taskId);
           if (current == null) return;
-          await native?.cancel(taskId);
+          if (nativeCancel == null && !_dartTasks.contains(taskId)) {
+            await native?.cancel(taskId);
+          }
           try {
             if (beforeDelete != null) await beforeDelete();
           } catch (_) {
@@ -1057,8 +1101,12 @@ class MediaDownloadService {
     return _launch(
       task,
       () => _control(task.id, () async {
-        _validateTaskCandidate(task, candidate);
+        if (_stopping.contains(task.id)) throw const Cancelled();
         var current = tasks.task(task.id) ?? (throw StateError('媒体任务不存在'));
+        final authorized = authorize == null
+            ? candidate
+            : authorize!(current, candidate);
+        _validateTaskCandidate(current, authorized);
         if (current.state == MediaTaskState.playable ||
             current.state == MediaTaskState.completed) {
           return current;
@@ -1067,7 +1115,7 @@ class MediaDownloadService {
         try {
           final status = await native!.start(
             current,
-            candidate,
+            authorized,
             title: current.displayName,
             storageDirectory: current.storageDirectoryName,
           );
@@ -1116,67 +1164,75 @@ class MediaDownloadService {
     MediaTask task,
     MediaCandidate candidate, {
     int maxBytes = 2 * 1024 * 1024 * 1024,
-  }) => _launch(task, () async {
-    _validateTaskCandidate(task, candidate);
-    _dartTasks.add(task.id);
-    final cancel = Cancellation();
-    _active[task.id] = cancel;
-    try {
-      final previous = tasks.task(task.id) ?? (throw StateError('媒体任务不存在'));
-      if (previous.state == MediaTaskState.playable ||
-          previous.state == MediaTaskState.completed) {
-        return previous;
-      }
-      if (candidate.isHls) {
-        return await _startHls(
-          task,
-          candidate,
-          cancel: cancel,
+  }) => _launch(
+    task,
+    () => _control(task.id, () async {
+      if (_stopping.contains(task.id)) throw const Cancelled();
+      final currentTask = tasks.task(task.id) ?? (throw StateError('媒体任务不存在'));
+      final authorized = authorize == null
+          ? candidate
+          : authorize!(currentTask, candidate);
+      _validateTaskCandidate(currentTask, authorized);
+      _dartTasks.add(task.id);
+      final cancel = Cancellation();
+      _active[task.id] = cancel;
+      try {
+        final previous = tasks.task(task.id) ?? (throw StateError('媒体任务不存在'));
+        if (previous.state == MediaTaskState.playable ||
+            previous.state == MediaTaskState.completed) {
+          return previous;
+        }
+        if (authorized.isHls) {
+          return await _startHls(
+            task,
+            authorized,
+            cancel: cancel,
+            maxBytes: maxBytes,
+          );
+        }
+        var current = tasks.task(task.id) ?? (throw StateError('媒体任务不存在'));
+        if (current.state == MediaTaskState.completed ||
+            current.state == MediaTaskState.playable) {
+          return current;
+        }
+        current = tasks.transition(task.id, MediaTaskState.downloading);
+        final directory = await tasks.cacheDirectory(
+          storageDirectory: task.storageDirectoryName,
+        );
+        final base = File('${directory.path}/${task.cacheKey}.part');
+        await _downloadFile(
+          authorized.mediaUrl,
+          base,
+          cancel,
+          document: authorized.sourceUrl,
           maxBytes: maxBytes,
         );
+        cancel.check();
+        final size = await base.length();
+        if (size == 0) throw StateError('媒体响应为空');
+        final destination = File('${directory.path}/${task.cacheKey}.media');
+        if (await destination.exists()) await destination.delete();
+        if (_stopping.contains(task.id)) throw const Cancelled();
+        final finalFile = await base.rename(destination.path);
+        await _deleteResumeState(base);
+        current = tasks.updateProgress(task.id, size, totalBytes: size);
+        tasks.setLocalRef(task.id, finalFile.path);
+        current = tasks.transition(task.id, MediaTaskState.completed);
+        return tasks.transition(task.id, MediaTaskState.playable);
+      } on Cancelled {
+        if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
+          tasks.transition(task.id, MediaTaskState.paused);
+        }
+        return tasks.task(task.id)!;
+      } catch (error, stack) {
+        _fail(task.id, error, stack, 'download');
+        rethrow;
+      } finally {
+        if (identical(_active[task.id], cancel)) _active.remove(task.id);
+        _dartTasks.remove(task.id);
       }
-      var current = tasks.task(task.id) ?? (throw StateError('媒体任务不存在'));
-      if (current.state == MediaTaskState.completed ||
-          current.state == MediaTaskState.playable) {
-        return current;
-      }
-      current = tasks.transition(task.id, MediaTaskState.downloading);
-      final directory = await tasks.cacheDirectory(
-        storageDirectory: task.storageDirectoryName,
-      );
-      final base = File('${directory.path}/${task.cacheKey}.part');
-      await _downloadFile(
-        candidate.mediaUrl,
-        base,
-        cancel,
-        document: candidate.sourceUrl,
-        maxBytes: maxBytes,
-      );
-      cancel.check();
-      final size = await base.length();
-      if (size == 0) throw StateError('媒体响应为空');
-      final destination = File('${directory.path}/${task.cacheKey}.media');
-      if (await destination.exists()) await destination.delete();
-      if (_stopping.contains(task.id)) throw const Cancelled();
-      final finalFile = await base.rename(destination.path);
-      await _deleteResumeState(base);
-      current = tasks.updateProgress(task.id, size, totalBytes: size);
-      tasks.setLocalRef(task.id, finalFile.path);
-      current = tasks.transition(task.id, MediaTaskState.completed);
-      return tasks.transition(task.id, MediaTaskState.playable);
-    } on Cancelled {
-      if (tasks.task(task.id)?.state == MediaTaskState.downloading) {
-        tasks.transition(task.id, MediaTaskState.paused);
-      }
-      return tasks.task(task.id)!;
-    } catch (error, stack) {
-      _fail(task.id, error, stack, 'download');
-      rethrow;
-    } finally {
-      if (identical(_active[task.id], cancel)) _active.remove(task.id);
-      _dartTasks.remove(task.id);
-    }
-  });
+    }),
+  );
 
   /// Downloads an HLS playlist and its referenced local resources. Android's
   /// DownloadManager can fetch a single URL, but a `.m3u8` is only an index;
@@ -1345,6 +1401,11 @@ class MediaDownloadService {
       maxBytes: 16 * 1024 * 1024,
     );
     if (response.status < 200 || response.status >= 300) {
+      if (response.status == 401 || response.status == 403) {
+        throw StateError(
+          'HLS 清单 HTTP ${response.status}：下载地址已失效或被服务器拒绝，请返回播放页刷新并重新选择媒体；如网页通过代理播放，请保持相同代理后重试',
+        );
+      }
       throw StateError('HLS 清单 HTTP ${response.status}');
     }
     return (url: response.url, text: utf8.decode(response.bytes));
@@ -1414,7 +1475,7 @@ class MediaDownloadService {
       throw const FormatException('HLS 分片地址无效');
     }
     final key = sha256
-        .convert(utf8.encode(remote.removeFragment().toString()))
+        .convert(utf8.encode(mediaCandidateGroupKey(remote)))
         .toString();
     final existing = resources[key];
     if (existing != null) {
@@ -1451,9 +1512,19 @@ class MediaDownloadService {
     if (!await file.exists()) return <String, String>{};
     try {
       final raw = jsonDecode(await file.readAsString());
-      if (raw is! Map) return <String, String>{};
+      if (raw is! Map || raw['version'] != 2 || raw['resources'] is! Map) {
+        await for (final entity in staging.list()) {
+          if (entity is File &&
+              RegExp(r'^resource_[0-9a-f]{64}\.bin(?:\.part)?$')
+                  .hasMatch(entity.uri.pathSegments.last)) {
+            await entity.delete();
+          }
+        }
+        return <String, String>{};
+      }
+      final entries = raw['resources'] as Map;
       final result = <String, String>{};
-      for (final entry in raw.entries) {
+      for (final entry in entries.entries) {
         final key = entry.key.toString();
         final name = entry.value.toString();
         if (key.isNotEmpty &&
@@ -1474,7 +1545,10 @@ class MediaDownloadService {
   ) async {
     final file = File('${staging.path}/resources.json');
     final temporary = File('${file.path}.tmp');
-    await temporary.writeAsString(jsonEncode(resources), flush: true);
+    await temporary.writeAsString(
+      jsonEncode({'version': 2, 'resources': resources}),
+      flush: true,
+    );
     await temporary.rename(file.path);
   }
 
@@ -1529,7 +1603,9 @@ class MediaDownloadService {
     required Uri document,
     required int maxBytes,
   }) async {
-    final identity = sha256.convert(utf8.encode(url.toString())).toString();
+    final identity = sha256
+        .convert(utf8.encode(mediaCandidateGroupKey(url)))
+        .toString();
     Object lastError = const SocketException('媒体连接失败');
     var attempt = 0;
     while (true) {

@@ -212,6 +212,7 @@ class NetworkPolicy {
     String? proxyHost,
     int? proxyPort, {
     bool allowLocal = false,
+    bool allowProxyFakeIp = false,
     Cancellation? cancel,
     Future<List<InternetAddress>> Function(String) resolve =
         InternetAddress.lookup,
@@ -221,7 +222,10 @@ class NetworkPolicy {
     final addresses = await resolve(uri.host)
         .timeout(const Duration(seconds: 5));
     if (addresses.isEmpty ||
-        (!allowLocal && addresses.any((a) => !publicAddress(a)))) {
+        (!allowLocal &&
+            addresses.any(
+              (a) => !publicAddress(a) && !(allowProxyFakeIp && proxyFakeIp(a)),
+            ))) {
       throw AddressPolicyException(blockedAddressReason(addresses));
     }
     cancel?.check();
@@ -230,7 +234,12 @@ class NetworkPolicy {
     // current carrier, so retain every public answer and fail over at the TCP
     // (and TLS) connection boundary instead of pinning one address forever.
     final candidates = addresses
-        .where((address) => allowLocal || publicAddress(address))
+        .where(
+          (address) =>
+              allowLocal ||
+              publicAddress(address) ||
+              (allowProxyFakeIp && proxyFakeIp(address)),
+        )
         .toList(growable: false);
     if (candidates.isEmpty) {
       throw AddressPolicyException(blockedAddressReason(addresses));
@@ -322,13 +331,69 @@ class FetchFileResponse {
   final bool appended;
 }
 
+/// Routing for an explicitly selected media download only. Probes and GM
+/// requests keep their direct-only policy, even when sharing the same client.
+class MediaNetworkRoute {
+  const MediaNetworkRoute({
+    this.proxy = 'DIRECT',
+    this.allowProxyFakeIp = false,
+    this.userAgent = defaultUserAgent,
+    this.cookie,
+  });
+
+  static const defaultUserAgent =
+      'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
+  final String proxy;
+  final bool allowProxyFakeIp;
+  final String userAgent;
+  final String? cookie;
+}
+
 class ControlledHttp {
   ControlledHttp({
     this.resolve = InternetAddress.lookup,
     this.allowLocal = false,
+    this.mediaRoute,
   });
   final bool allowLocal;
   final Future<List<InternetAddress>> Function(String) resolve;
+  final Future<MediaNetworkRoute> Function(Uri)? mediaRoute;
+
+  Future<MediaNetworkRoute> _configureRoute(
+    HttpClient client,
+    Uri uri,
+    bool mediaRequest,
+    Cancellation cancel,
+  ) async {
+    final route = mediaRequest && mediaRoute != null
+        ? await mediaRoute!(uri)
+        : const MediaNetworkRoute();
+    cancel.check();
+    client.findProxy = (_) => route.proxy;
+    client.connectionFactory = (target, host, port) {
+      // HttpClient owns CONNECT and verified TLS inside a proxy tunnel.
+      // Resolve the proxy only: origin DNS may intentionally return Fake-IP.
+      if (host != null && mediaRequest && mediaRoute != null) {
+        return Socket.startConnect(host, port!).then((task) {
+          cancel.onCancel(task.cancel);
+          if (cancel.cancelled) task.cancel();
+          return task;
+        });
+      }
+      return NetworkPolicy.connect(
+        target,
+        host,
+        port,
+        cancel: cancel,
+        resolve: resolve,
+        allowLocal: allowLocal,
+        allowProxyFakeIp: mediaRequest && route.allowProxyFakeIp,
+      );
+    };
+    return route;
+  }
+
   Future<FetchResponse> fetch(
     Uri url, {
     required Set<String> connect,
@@ -457,6 +522,7 @@ class ControlledHttp {
     for (var redirects = 0; redirects <= 5; redirects++) {
       cancel.check();
       if (!allowLocal) NetworkPolicy.validateTarget(uri, connect, document);
+      final route = await _configureRoute(client, uri, mediaRequest, cancel);
       final request = await client.openUrl(method, uri);
       request.followRedirects = false;
       headers.forEach(request.headers.set);
@@ -464,15 +530,14 @@ class ControlledHttp {
         // Media CDN edges often apply the same hotlink checks as the page's
         // <video> element.  These values are derived from the authorized
         // document; callers cannot inject arbitrary Referer/Origin headers.
-        request.headers.set(
-          HttpHeaders.userAgentHeader,
-          'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
-          '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
-        );
+        request.headers.set(HttpHeaders.userAgentHeader, route.userAgent);
         request.headers.set(HttpHeaders.acceptHeader, '*/*');
         request.headers.set(HttpHeaders.refererHeader, document.toString());
         if (document.scheme == 'http' || document.scheme == 'https') {
           request.headers.set('origin', document.origin);
+        }
+        if (route.cookie != null && route.cookie!.isNotEmpty) {
+          request.headers.set(HttpHeaders.cookieHeader, route.cookie!);
         }
       }
       if (body != null) request.write(body);
@@ -544,20 +609,20 @@ class ControlledHttp {
     for (var redirects = 0; redirects <= 5; redirects++) {
       cancel.check();
       if (!allowLocal) NetworkPolicy.validateTarget(uri, connect, document);
+      final route = await _configureRoute(client, uri, mediaRequest, cancel);
       final request = await client.openUrl('GET', uri).timeout(timeout);
       request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
       request.followRedirects = false;
       headers.forEach(request.headers.set);
       if (mediaRequest) {
-        request.headers.set(
-          HttpHeaders.userAgentHeader,
-          'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
-          '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
-        );
+        request.headers.set(HttpHeaders.userAgentHeader, route.userAgent);
         request.headers.set(HttpHeaders.acceptHeader, '*/*');
         request.headers.set(HttpHeaders.refererHeader, document.toString());
         if (document.scheme == 'http' || document.scheme == 'https') {
           request.headers.set('origin', document.origin);
+        }
+        if (route.cookie != null && route.cookie!.isNotEmpty) {
+          request.headers.set(HttpHeaders.cookieHeader, route.cookie!);
         }
       }
       final response = await request.close().timeout(timeout);

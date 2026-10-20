@@ -891,6 +891,7 @@ class MediaTask {
       : mediaSeriesDirectoryName(batchDirectory!);
 
   MediaTask copyWith({
+    String? candidateId,
     MediaTaskState? state,
     String? displayTitle,
     Object? batchDirectory = _unset,
@@ -902,7 +903,7 @@ class MediaTask {
     Object? localRef = _unset,
   }) => MediaTask(
     id: id,
-    candidateId: candidateId,
+    candidateId: candidateId ?? this.candidateId,
     hostId: hostId,
     generation: generation,
     sourceUrl: sourceUrl,

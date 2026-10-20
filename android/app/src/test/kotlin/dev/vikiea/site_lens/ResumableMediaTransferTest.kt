@@ -17,6 +17,28 @@ import org.junit.Test
 
 class ResumableMediaTransferTest {
     @Test
+    fun redirectsRecomputeCookiesInsteadOfForwardingThem() = fixture { root ->
+        val first = FakeConnection(302, mapOf("Location" to "https://other.example/video"), ByteArrayInputStream(byteArrayOf()))
+        val second = FakeConnection(200, mapOf("Content-Length" to "2"), ByteArrayInputStream(byteArrayOf(1, 2)))
+        val responses = ArrayDeque(listOf(first, second))
+        val lookedUp = mutableListOf<String>()
+        val url = URL("https://cdn.example/video").toURI()
+        val partial = File(root, "video.part")
+        ResumableMediaTransfer(connect = { responses.removeFirst() }).transfer(
+            url, URL("https://site.example/watch").toURI(), partial, "test",
+            requestCookies = { uri ->
+                lookedUp.add(uri.host)
+                if (uri.host == "cdn.example") "cdn=secret" else null
+            },
+        )
+        assertEquals(listOf("cdn.example", "other.example"), lookedUp)
+        assertEquals("cdn=secret", first.properties["Cookie"])
+        assertNull(second.properties["Cookie"])
+        assertArrayEquals(byteArrayOf(1, 2), partial.readBytes())
+        assertEquals(false, File(partial.path + ".resume").readText().contains("secret"))
+    }
+
+    @Test
     fun interruptedBodyResumesWithRangeAndIfRange() = fixture { root ->
         val first = FakeConnection(
             200,
