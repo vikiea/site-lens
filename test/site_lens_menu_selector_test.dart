@@ -308,6 +308,7 @@ void main() {
         await tester.pumpWidget(_harness(theme: theme, onSelected: (_) {}));
         final trigger = tester.widget<TextButton>(_trigger);
         final colors = SiteLensColors.of(tester.element(_trigger));
+        expect(trigger.style!.side!.resolve({})!.color, Colors.transparent);
         for (final state in [
           WidgetState.pressed,
           WidgetState.focused,
@@ -319,10 +320,7 @@ void main() {
           );
           expect(
             trigger.style!.backgroundColor!.resolve({state}),
-            Color.alphaBlend(
-              theme.colorScheme.primary.withValues(alpha: 0.08),
-              colors.surfaceOpaque.withValues(alpha: 1),
-            ),
+            colors.glassSurface,
           );
         }
         expect(trigger.style!.splashFactory, NoSplash.splashFactory);
@@ -339,6 +337,13 @@ void main() {
         await press.up();
         await tester.pump();
         final anchor = tester.widget<MenuAnchor>(find.byType(MenuAnchor));
+        expect(anchor.style!.shape!.resolve({})!.side, BorderSide.none);
+        expect(
+          (_buttonMaterial(tester, _trigger).shape! as OutlinedBorder)
+              .side
+              .color,
+          Colors.transparent,
+        );
         expect(
           anchor.style!.backgroundColor!.resolve({}),
           trigger.style!.backgroundColor!.resolve({}),
@@ -353,7 +358,7 @@ void main() {
           );
           expect(
             button.style!.side!.resolve({WidgetState.focused})!.color,
-            theme.colorScheme.primary,
+            Colors.transparent,
           );
           expect(button.style!.animationDuration, Duration.zero);
           expect(button.style!.splashFactory, NoSplash.splashFactory);

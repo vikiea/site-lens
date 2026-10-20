@@ -52,6 +52,14 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
       );
 
   @override
+  void initState() {
+    super.initState();
+    FocusManager.instance.addHighlightModeListener(_highlightModeChanged);
+  }
+
+  void _highlightModeChanged(FocusHighlightMode _) => setState(() {});
+
+  @override
   void didUpdateWidget(covariant SiteLensMenuSelector<T> oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!_enabled && _menuController.isOpen) {
@@ -63,6 +71,7 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
 
   @override
   void dispose() {
+    FocusManager.instance.removeHighlightModeListener(_highlightModeChanged);
     _focusNode.dispose();
     super.dispose();
   }
@@ -79,10 +88,12 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
     final theme = Theme.of(context);
     final colors = SiteLensColors.of(context);
     final textStyle = theme.textTheme.bodySmall ?? const TextStyle();
-    final fill = Color.alphaBlend(
-      theme.colorScheme.primary.withValues(alpha: 0.08),
-      colors.surfaceOpaque.withValues(alpha: 1),
-    );
+    // Keep the menu close to the surrounding glass surface. A neutral fill
+    // keeps the selector visually grouped with the gesture row instead of
+    // making it read like a separate primary-colored control.
+    final fill = colors.glassSurface.withValues(alpha: 1);
+    final showFocusOutline =
+        FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
     const horizontalPadding = SiteLensMetrics.formGap;
     const iconSize = SiteLensMetrics.navIconSize;
     const gap = SiteLensMetrics.itemGap;
@@ -134,7 +145,8 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
       side: WidgetStateProperty.resolveWith(
         (states) => BorderSide(
           color:
-              states.contains(WidgetState.focused) &&
+              showFocusOutline &&
+                  states.contains(WidgetState.focused) &&
                   !states.contains(WidgetState.disabled)
               ? theme.colorScheme.primary
               : Colors.transparent,
@@ -174,7 +186,7 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
                   borderRadius: const BorderRadius.vertical(
                     bottom: Radius.circular(SiteLensMetrics.inputRadius),
                   ),
-                  side: BorderSide(color: colors.panelBorder),
+                  side: BorderSide.none,
                 ),
               ),
             ),
@@ -212,9 +224,12 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
                     ),
                     side: WidgetStateProperty.resolveWith(
                       (states) => BorderSide(
-                        color: states.contains(WidgetState.focused) && _enabled
+                        color:
+                            showFocusOutline &&
+                                states.contains(WidgetState.focused) &&
+                                _enabled
                             ? theme.colorScheme.primary
-                            : colors.panelBorder,
+                            : Colors.transparent,
                         width: 1.4,
                       ),
                     ),
