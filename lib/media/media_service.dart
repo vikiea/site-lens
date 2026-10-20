@@ -746,6 +746,22 @@ class MediaTaskStore {
     final directory = await cacheDirectory(
       storageDirectory: current.storageDirectoryName,
     );
+    // A missing or stale localRef must not turn task deletion into a metadata
+    // only operation. Recover the deterministic Dart cache names from the
+    // task key so an orphaned complete HLS directory or direct media file is
+    // removed as well. The HLS directory is task-scoped, while the parent may
+    // contain adjacent episodes and is therefore retained.
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(current.cacheKey)) {
+      throw StateError('媒体缓存身份无效');
+    }
+    for (final orphan in [
+      Directory('${directory.path}/${current.cacheKey}.hls'),
+      File('${directory.path}/${current.cacheKey}.media'),
+    ]) {
+      if (await orphan.exists()) {
+        await orphan.delete(recursive: orphan is Directory);
+      }
+    }
     for (final partial in [
       File('${directory.path}/${current.cacheKey}.part'),
       File('${directory.path}/${current.cacheKey}.part.resume.json'),

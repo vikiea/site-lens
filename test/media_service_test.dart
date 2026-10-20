@@ -680,6 +680,35 @@ void main() {
     expect(store.task(task.id)!.errorCode, MediaErrorCode.cacheMissing);
   });
 
+  test('deleting a task with a missing localRef removes deterministic orphan caches', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'site-lens-delete-orphan-cache-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final store = MediaTaskStore(directoryProvider: () async => root);
+    final task = store.create(candidate(title: '系列 - 第2集'));
+    final directory = await store.cacheDirectory(
+      storageDirectory: task.storageDirectoryName,
+    );
+    final orphanHls = Directory('${directory.path}/${task.cacheKey}.hls')
+      ..createSync();
+    File('${orphanHls.path}/segment.ts').writeAsBytesSync([1, 2]);
+    final orphanMedia = File('${directory.path}/${task.cacheKey}.media')
+      ..writeAsBytesSync([3, 4]);
+    final adjacent = File('${directory.path}/other-episode.marker')
+      ..writeAsStringSync('keep');
+    store.transition(task.id, MediaTaskState.downloading);
+    store.transition(task.id, MediaTaskState.playable);
+    store.setLocalRef(task.id, null);
+
+    await MediaDownloadService(tasks: store).delete(task.id);
+
+    expect(await orphanHls.exists(), isFalse);
+    expect(await orphanMedia.exists(), isFalse);
+    expect(await adjacent.exists(), isTrue);
+    expect(store.task(task.id), isNull);
+  });
+
   test('HLS parser and validator accept only local complete inputs', () async {
     final root = await Directory.systemTemp.createTemp('site-lens-hls-');
     addTearDown(() => root.delete(recursive: true));

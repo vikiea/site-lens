@@ -59,6 +59,12 @@ String readableError(Object error) {
   if (lower.contains('timeoutexception') || lower.contains('timed out')) {
     return '操作超时，请稍后重试';
   }
+  if (lower.contains('media_permission')) {
+    return '媒体目录访问权限已失效，请重新选择保存目录';
+  }
+  if (lower.contains('media_file_missing')) {
+    return '媒体文件不存在或已被系统移除';
+  }
   if (lower.contains('platformexception') ||
       lower.contains('channel-error') ||
       lower.contains('missingpluginexception')) {

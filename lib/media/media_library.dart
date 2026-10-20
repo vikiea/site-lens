@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../data/database.dart';
+import '../diagnostics/error_log.dart';
 import '../domain/models.dart';
 import 'media_service.dart';
 import 'native_export_runtime.dart';
@@ -190,37 +191,70 @@ class MediaLibrary extends ChangeNotifier {
     return inspect(task.id);
   }
 
-  Future<MediaArtifact> inspect(String taskId) =>
-      _inspections.putIfAbsent(taskId, () async {
-        try {
-          final value = _items[taskId] ?? (throw StateError('媒体文件不存在'));
-          final metadata = native == null
-              ? <String, Object?>{
-                  'size': (await File(value.location).stat()).size,
-                }
-              : await native!.inspect(value.location);
-          if (!identical(_items[taskId], value)) return _items[taskId] ?? value;
-          final next = MediaArtifact(
-            taskId: taskId,
-            location: value.location,
-            libraryCopy: value.libraryCopy,
-            materializedCopy: value.materializedCopy,
-            name: value.name,
-            size: (metadata['size'] as num?)?.toInt() ?? value.size,
-            mime: metadata['mime'] as String? ?? value.mime,
-            durationMs: (metadata['durationMs'] as num?)?.toInt(),
-            width: (metadata['width'] as num?)?.toInt(),
-            height: (metadata['height'] as num?)?.toInt(),
-            thumbnailPath:
-                metadata['thumbnailPath'] as String? ?? value.thumbnailPath,
-            createdAt: value.createdAt,
-          );
-          await _save(next);
-          return next;
-        } finally {
-          _inspections.remove(taskId);
+  Future<MediaArtifact> inspect(String taskId) => _inspections.putIfAbsent(
+    taskId,
+    () async {
+      try {
+        final value = _items[taskId] ?? (throw StateError('媒体文件不存在'));
+        late final Map<String, Object?> metadata;
+        if (native == null) {
+          metadata = <String, Object?>{
+            'size': (await File(value.location).stat()).size,
+          };
+        } else {
+          try {
+            metadata = await native!.inspect(value.location);
+          } catch (error, stack) {
+            // Codec metadata is best effort. A readable SAF document must
+            // remain exportable when the device retriever is unavailable.
+            AppErrorLogger.capture(
+              error,
+              module: 'media.metadata',
+              context: 'stat-fallback:$taskId',
+              stack: stack,
+            );
+            metadata = await native!.stat(value.location);
+          }
         }
-      });
+        if (!identical(_items[taskId], value)) return _items[taskId] ?? value;
+        final next = MediaArtifact(
+          taskId: taskId,
+          location: value.location,
+          libraryCopy: value.libraryCopy,
+          materializedCopy: value.materializedCopy,
+          name: value.name,
+          size: _positiveInt(metadata['size']) ?? value.size,
+          mime: metadata['mime'] as String? ?? value.mime,
+          durationMs: _positiveInt(metadata['durationMs']) ?? value.durationMs,
+          width: _positiveInt(metadata['width']) ?? value.width,
+          height: _positiveInt(metadata['height']) ?? value.height,
+          thumbnailPath:
+              metadata['thumbnailPath'] as String? ?? value.thumbnailPath,
+          createdAt: value.createdAt,
+        );
+        await _save(next);
+        return next;
+      } finally {
+        _inspections.remove(taskId);
+      }
+    },
+  );
+
+  static int? _positiveInt(Object? raw) {
+    final value = (raw as num?)?.toInt();
+    return value != null && value > 0 ? value : null;
+  }
+
+  Future<void> _verifyReadable(MediaArtifact value) async {
+    if (native != null) {
+      await native!.stat(value.location);
+      return;
+    }
+    final file = File(value.location);
+    if (!await file.exists() || await file.length() <= 0) {
+      throw StateError('媒体文件不存在或为空');
+    }
+  }
 
   Future<File?> localFile(String taskId) async {
     final value = _items[taskId];
@@ -284,7 +318,7 @@ class MediaLibrary extends ChangeNotifier {
   Future<void> deliver(String taskId, String? directory) async {
     var value = _items[taskId] ?? (throw StateError('媒体文件不存在'));
     if (directory == null || directory.trim().isEmpty) {
-      value = await inspect(taskId);
+      await _verifyReadable(value);
       await _releaseCopies(value);
       return;
     }
@@ -308,7 +342,7 @@ class MediaLibrary extends ChangeNotifier {
     // Finish cleanup from earlier deliveries before replacing either pending
     // copy reference. Verify the canonical output first so recovery bytes are
     // never removed when the external destination is missing or inaccessible.
-    value = await inspect(taskId);
+    await _verifyReadable(value);
     await _releaseCopies(value);
     value = _items[taskId]!;
     final existingTarget = Uri.tryParse(value.location);

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
 import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/network/transport.dart';
 
@@ -18,6 +19,14 @@ void main() {
     expect(
       readableError(Exception('request failed')),
       isNot(contains('Exception')),
+    );
+    expect(
+      readableError(PlatformException(code: 'media_permission')),
+      '媒体目录访问权限已失效，请重新选择保存目录',
+    );
+    expect(
+      readableError(PlatformException(code: 'media_file_missing')),
+      '媒体文件不存在或已被系统移除',
     );
   });
 

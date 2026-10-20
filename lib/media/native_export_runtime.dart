@@ -59,6 +59,10 @@ class NativeExportRuntime {
   Future<Map<String, Object?>> inspect(String source) async => (await _channel
       .invokeMapMethod<String, Object?>('inspect', {'source': source}))!;
 
+  /// Checks readable bytes independently of optional codec metadata.
+  Future<Map<String, Object?>> stat(String source) async => (await _channel
+      .invokeMapMethod<String, Object?>('stat', {'source': source}))!;
+
   Future<String> materialize(String source) async =>
       (await _channel.invokeMethod<String>('materialize', {'source': source}))!;
 

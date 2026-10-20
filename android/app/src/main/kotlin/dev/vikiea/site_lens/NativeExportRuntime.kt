@@ -61,7 +61,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             try { pickDirectory(result) } catch (error: Exception) { fail(call, result, error) }
             return
         }
-        val supported = setOf("validateLocalInput", "muxHls", "validateOutput", "deliver", "deliverToDirectory", "inspect", "materialize", "rename", "move", "delete")
+        val supported = setOf("validateLocalInput", "muxHls", "validateOutput", "deliver", "deliverToDirectory", "stat", "inspect", "materialize", "rename", "move", "delete")
         if (call.method !in supported) { result.notImplemented(); return }
         val jobId = call.argument<String>("jobId") ?: "job-${System.nanoTime()}"
         val cancellation = AtomicBoolean(false)
@@ -95,6 +95,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             "validateOutput" -> validateOutput(argument("path"))
             "deliver" -> { deliver(argument("source"), Uri.parse(argument("destination"))); null }
             "deliverToDirectory" -> deliverToDirectory(argument("source"), Uri.parse(argument("directory")), argument("fileName"), call.argument<String>("subdirectory"))
+            "stat" -> stat(argument("source"))
             "inspect" -> inspect(argument("source"))
             "materialize" -> materialize(argument("source"))
             "rename" -> rename(argument("source"), argument("fileName"))
@@ -111,7 +112,12 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
 
     private fun fail(call: MethodCall, result: MethodChannel.Result, error: Exception) {
         NativeCrashStore.append(context, module = "media.export", message = error.message ?: "媒体操作失败", details = error.stackTraceToString(), contextValue = "method=${call.method}")
-        result.error("media_export", error.message ?: "媒体操作失败", null)
+        val code = when (error) {
+            is SecurityException -> "media_permission"
+            is FileNotFoundException -> "media_file_missing"
+            else -> "media_export"
+        }
+        result.error(code, error.message ?: "媒体操作失败", null)
     }
 
     fun dispose() {
@@ -620,45 +626,99 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         } finally { if (temporary.exists()) temporary.delete() }
     }
 
-    private fun inspect(source: String): Map<String, Any?> {
+    /** Readability is required for delivery; thumbnails and codecs are not. */
+    private fun stat(source: String): Map<String, Any?> {
         val uri = Uri.parse(source)
-        var size: Long
-        var modified: Long
-        val retriever = MediaMetadataRetriever()
-        try {
-            if (uri.scheme == "content") {
-                sourceStream(source).close()
-                size = -1L
-                modified = 0L
+        if (uri.scheme == "content") {
+            var size = -1L
+            var modified = 0L
+            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { asset ->
+                size = asset.length
+                require(asset.createInputStream().use { it.read() } >= 0) { "媒体文件为空" }
+            } ?: throw FileNotFoundException("媒体文件不存在")
+            runCatching {
                 context.contentResolver.query(uri, arrayOf(DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_LAST_MODIFIED), null, null, null)?.use {
                     if (it.moveToFirst()) {
                         if (!it.isNull(0)) size = it.getLong(0)
                         if (!it.isNull(1)) modified = it.getLong(1)
                     }
                 }
-                retriever.setDataSource(context, uri)
-            } else {
-                val path = if (uri.scheme == "file") uri.path!! else source
-                validateLocal(path)
-                val file = File(path)
-                size = file.length()
-                modified = file.lastModified()
-                retriever.setDataSource(path)
             }
-            val duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
-            val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
-            val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
-            val key = MessageDigest.getInstance("SHA-256").digest("$source:$size:$modified".toByteArray()).joinToString("") { "%02x".format(it) }
+            return mapOf("size" to size, "modifiedMs" to modified)
+        }
+        require(uri.scheme == null || uri.scheme == "file") { "仅允许本地媒体文件" }
+        val path = if (uri.scheme == "file") uri.path ?: error("媒体路径无效") else source
+        val file = validateLocalPath(path)
+        if (!file.isFile) throw FileNotFoundException("媒体文件不存在")
+        require(file.length() > 0L) { "媒体文件为空" }
+        file.inputStream().use { require(it.read() >= 0) { "媒体文件为空" } }
+        return mapOf("size" to file.length(), "modifiedMs" to file.lastModified())
+    }
+
+    private fun inspect(source: String): Map<String, Any?> {
+        val metadata = stat(source).toMutableMap()
+        val uri = Uri.parse(source)
+        val path = if (uri.scheme == "file") uri.path!! else source
+        var asset: android.content.res.AssetFileDescriptor? = null
+        val reader = MediaMetadataRetriever()
+        try {
+            if (uri.scheme == "content") {
+                asset = context.contentResolver.openAssetFileDescriptor(uri, "r")
+                    ?: throw FileNotFoundException("媒体文件不存在")
+                if (asset!!.length >= 0) reader.setDataSource(asset!!.fileDescriptor, asset!!.startOffset, asset!!.length)
+                else reader.setDataSource(asset!!.fileDescriptor)
+            } else reader.setDataSource(path)
+            fun metadataValue(key: Int) = runCatching { reader.extractMetadata(key) }.getOrNull()
+            metadata["durationMs"] = metadataValue(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+            metadata["width"] = metadataValue(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
+            metadata["height"] = metadataValue(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+            metadata["mime"] = metadataValue(MediaMetadataRetriever.METADATA_KEY_MIMETYPE)
+            val key = MessageDigest.getInstance("SHA-256").digest("$source:${metadata["size"]}:${metadata["modifiedMs"]}".toByteArray()).joinToString("") { "%02x".format(it) }
             val thumbnail = File(File(filesRoot, "media_thumbnails").apply { mkdirs() }, "$key.jpg")
             if (!thumbnail.isFile) runCatching {
-                val frame = if (Build.VERSION.SDK_INT >= 27) retriever.getScaledFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 320, 180) else retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                val frame = if (Build.VERSION.SDK_INT >= 27) reader.getScaledFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 320, 180) else reader.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 frame?.let { bitmap ->
                     val scaled = Bitmap.createScaledBitmap(bitmap, 320, 180, true)
                     try { thumbnail.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, 80, it) } }
                     finally { if (scaled !== bitmap) scaled.recycle(); bitmap.recycle() }
                 }
             }
-            return mapOf("size" to size, "modifiedMs" to modified, "mime" to (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE) ?: "video/mp4"), "durationMs" to duration, "width" to width, "height" to height, "thumbnailPath" to thumbnail.takeIf { it.isFile && it.length() > 0L }?.path)
-        } finally { retriever.release() }
+            metadata["thumbnailPath"] = thumbnail.takeIf { it.isFile && it.length() > 0L }?.path
+        } catch (_: Exception) {
+            // A provider/codec failure does not make readable bytes invalid.
+        } finally {
+            runCatching { reader.release() }
+            runCatching { asset?.close() }
+        }
+        if (metadata["durationMs"] == null || metadata["width"] == null || metadata["mime"] == null) {
+            var extractor: MediaExtractor? = null
+            var extractorAsset: android.content.res.AssetFileDescriptor? = null
+            try {
+                val reader = MediaExtractor()
+                extractor = reader
+                if (uri.scheme == "content") {
+                    extractorAsset = context.contentResolver.openAssetFileDescriptor(uri, "r")
+                        ?: throw FileNotFoundException("媒体文件不存在")
+                    if (extractorAsset!!.length >= 0) reader.setDataSource(extractorAsset!!.fileDescriptor, extractorAsset!!.startOffset, extractorAsset!!.length)
+                    else reader.setDataSource(extractorAsset!!.fileDescriptor)
+                } else reader.setDataSource(path)
+                var duration = 0L
+                for (index in 0 until reader.trackCount) {
+                    val format = reader.getTrackFormat(index)
+                    if (format.containsKey(MediaFormat.KEY_DURATION)) duration = maxOf(duration, format.getLong(MediaFormat.KEY_DURATION))
+                    if (format.getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true) {
+                        if (metadata["width"] == null && format.containsKey(MediaFormat.KEY_WIDTH)) metadata["width"] = format.getInteger(MediaFormat.KEY_WIDTH)
+                        if (metadata["height"] == null && format.containsKey(MediaFormat.KEY_HEIGHT)) metadata["height"] = format.getInteger(MediaFormat.KEY_HEIGHT)
+                    }
+                }
+                if (metadata["durationMs"] == null && duration > 0) metadata["durationMs"] = duration / 1000
+            } catch (_: Exception) {
+                // Preserve basic file facts and the caller's known metadata.
+            } finally {
+                runCatching { extractor?.release() }
+                runCatching { extractorAsset?.close() }
+            }
+        }
+        return metadata
     }
 }

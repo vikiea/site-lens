@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:drift/native.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/domain/models.dart';
@@ -18,6 +19,9 @@ class _CleanupRuntime extends NativeExportRuntime {
   };
 
   @override
+  Future<Map<String, Object?>> stat(String source) => inspect(source);
+
+  @override
   Future<void> delete(String source, {bool allowMissing = false}) async {
     if (source == failOnce) {
       failOnce = null;
@@ -30,6 +34,25 @@ class _CleanupRuntime extends NativeExportRuntime {
       await file.delete();
     }
     deleted.add(source);
+  }
+}
+
+class _MetadataFallbackRuntime extends NativeExportRuntime {
+  bool readable = true;
+
+  @override
+  Future<Map<String, Object?>> inspect(String source) async {
+    throw PlatformException(code: 'media_export', message: 'codec unavailable');
+  }
+
+  @override
+  Future<Map<String, Object?>> stat(String source) async {
+    if (!readable) throw PlatformException(code: 'media_permission');
+    return {
+      'size': source.startsWith('content://')
+          ? -1
+          : await File(source).length(),
+    };
   }
 }
 
@@ -273,6 +296,75 @@ void main() {
     await library.delete(task.id);
     expect(await output.exists(), isFalse);
   });
+
+  test(
+    'codec metadata failure preserves known metadata and exportability',
+    () async {
+      final runtime = _MetadataFallbackRuntime();
+      library.dispose();
+      library = MediaLibrary(db: db, tasks: tasks, native: runtime);
+      final value = MediaArtifact(
+        taskId: task.id,
+        location: output.path,
+        name: mediaExportFileName(task),
+        size: 6,
+        durationMs: 227000,
+        width: 1280,
+        height: 720,
+        createdAt: DateTime.now().toUtc(),
+      );
+      await db.saveMediaArtifact(task.id, value.toJson());
+      await library.restore();
+
+      final item = await library.inspect(task.id);
+      await library.deliver(task.id, null);
+
+      expect(item.size, 6);
+      expect(item.mime, 'video/mp4');
+      expect(item.durationMs, 227000);
+      expect(item.width, 1280);
+      expect(item.height, 720);
+      expect(await output.readAsBytes(), [1, 2, 3, 4, 5, 6]);
+    },
+  );
+
+  test(
+    'SAF metadata fallback preserves facts but permissions remain required',
+    () async {
+      final runtime = _MetadataFallbackRuntime();
+      library.dispose();
+      library = MediaLibrary(db: db, tasks: tasks, native: runtime);
+      final value = MediaArtifact(
+        taskId: task.id,
+        location: 'content://provider/tree/root/document/video',
+        name: mediaExportFileName(task),
+        size: 600,
+        durationMs: 227000,
+        createdAt: DateTime.now().toUtc(),
+      );
+      await db.saveMediaArtifact(task.id, value.toJson());
+      await library.restore();
+
+      final item = await library.inspect(task.id);
+      await library.deliver(task.id, 'content://provider/tree/root');
+      expect(item.size, 600);
+      expect(item.durationMs, 227000);
+      expect(library.item(task.id)!.location, value.location);
+
+      runtime.readable = false;
+      await expectLater(
+        library.deliver(task.id, null),
+        throwsA(
+          isA<PlatformException>().having(
+            (e) => e.code,
+            'code',
+            'media_permission',
+          ),
+        ),
+      );
+      expect(library.item(task.id)!.location, value.location);
+    },
+  );
 
   test(
     'legacy empty titles are backfilled before importing an existing MP4',
