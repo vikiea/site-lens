@@ -1287,6 +1287,7 @@ class MediaDownloadService {
       }
 
       final resources = await _readHlsResources(staging);
+      await _pruneHlsResources(staging, resources, playlistUri, playlistText);
       var downloadedBytes = 0;
       for (final name in resources.values) {
         final file = File('${staging.path}/$name');
@@ -1512,17 +1513,9 @@ class MediaDownloadService {
     if (!await file.exists()) return <String, String>{};
     try {
       final raw = jsonDecode(await file.readAsString());
-      if (raw is! Map || raw['version'] != 2 || raw['resources'] is! Map) {
-        await for (final entity in staging.list()) {
-          if (entity is File &&
-              RegExp(r'^resource_[0-9a-f]{64}\.bin(?:\.part)?$')
-                  .hasMatch(entity.uri.pathSegments.last)) {
-            await entity.delete();
-          }
-        }
-        return <String, String>{};
-      }
-      final entries = raw['resources'] as Map;
+      if (raw is! Map) return <String, String>{};
+      final entries = raw['version'] == 2 ? raw['resources'] : raw;
+      if (entries is! Map) return <String, String>{};
       final result = <String, String>{};
       for (final entry in entries.entries) {
         final key = entry.key.toString();
@@ -1537,6 +1530,50 @@ class MediaDownloadService {
     } catch (_) {
       return <String, String>{};
     }
+  }
+
+  Future<void> _pruneHlsResources(
+    Directory staging,
+    Map<String, String> resources,
+    Uri playlist,
+    String text,
+  ) async {
+    final keys = <String>{};
+    for (final raw in text.split(RegExp(r'\r?\n'))) {
+      final line = raw.trim();
+      final reference =
+          line.startsWith('#EXT-X-KEY:') || line.startsWith('#EXT-X-MAP:')
+          ? _hlsAttribute(line, 'URI')
+          : line.isEmpty || line.startsWith('#')
+          ? null
+          : line;
+      if (reference != null) {
+        keys.add(
+          sha256
+              .convert(
+                utf8.encode(
+                  mediaCandidateGroupKey(playlist.resolve(reference)),
+                ),
+              )
+              .toString(),
+        );
+      }
+    }
+    resources.removeWhere((key, _) => !keys.contains(key));
+    final names = {
+      for (final key in keys) 'resource_$key.bin',
+      ...resources.values,
+    };
+    await for (final file in staging.list()) {
+      if (file is! File) continue;
+      final match = RegExp(
+        r'^(resource_(?:[0-9a-f]{64}|\d{5})\.bin)(?:$|\.part)',
+      ).firstMatch(file.uri.pathSegments.last);
+      if (match != null && !names.contains(match.group(1))) {
+        await file.delete();
+      }
+    }
+    await _writeHlsResources(staging, resources);
   }
 
   Future<void> _writeHlsResources(
