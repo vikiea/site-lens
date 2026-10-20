@@ -6,6 +6,101 @@ import 'package:site_lens/ui/glass_surface.dart';
 import 'package:site_lens/ui/ui_primitives.dart';
 
 void main() {
+  testWidgets('page shell omits empty chrome and preserves back and actions', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => SiteLensPageScaffold(
+            title: '根页面',
+            body: TextButton(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const SiteLensPageScaffold(
+                    title: '子页面',
+                    body: Text('子页面内容'),
+                  ),
+                ),
+              ),
+              child: const Text('打开'),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(find.byType(AppBar), findsNothing);
+    await tester.tap(find.text('打开'));
+    await tester.pumpAndSettle();
+    expect(find.byType(BackButton), findsOneWidget);
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    expect(find.byType(AppBar), findsNothing);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SiteLensPageScaffold(
+          title: '操作页',
+          actions: [IconButton(onPressed: () {}, icon: const Icon(Icons.add))],
+          body: const SizedBox(),
+        ),
+      ),
+    );
+    expect(find.byType(AppBar), findsOneWidget);
+    expect(find.byIcon(Icons.add), findsOneWidget);
+  });
+
+  testWidgets(
+    'refresh action rotates until complete and honors reduced motion',
+    (tester) async {
+      Widget button({required bool refreshing, bool reducedMotion = false}) =>
+          MaterialApp(
+            home: MediaQuery(
+              data: MediaQueryData(disableAnimations: reducedMotion),
+              child: SiteLensRefreshButton(
+                tooltip: '刷新规则',
+                refreshing: refreshing,
+                onPressed: () {},
+              ),
+            ),
+          );
+      await tester.pumpWidget(button(refreshing: false));
+      expect(
+        tester.widget<IconButton>(find.byType(IconButton)).onPressed,
+        isNotNull,
+      );
+      await tester.pumpWidget(button(refreshing: true));
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.byTooltip('刷新规则，刷新中'), findsOneWidget);
+      expect(
+        tester.widget<IconButton>(find.byType(IconButton)).onPressed,
+        isNull,
+      );
+      expect(
+        tester
+            .widget<RotationTransition>(find.byType(RotationTransition))
+            .turns
+            .value,
+        greaterThan(0),
+      );
+      await tester.pumpWidget(button(refreshing: true, reducedMotion: true));
+      expect(
+        tester
+            .widget<RotationTransition>(find.byType(RotationTransition))
+            .turns
+            .value,
+        0,
+      );
+      await tester.pumpWidget(button(refreshing: false));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('刷新规则'), findsOneWidget);
+      expect(
+        tester.widget<IconButton>(find.byType(IconButton)).onPressed,
+        isNotNull,
+      );
+    },
+  );
+
   testWidgets('bottom navigation keeps one shared chrome surface', (
     tester,
   ) async {

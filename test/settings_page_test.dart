@@ -89,7 +89,7 @@ void main() {
     expect(find.textContaining('只影响面板背景填充'), findsNothing);
     expect(find.text('透明度'), findsNothing);
     expect(find.textContaining('55 / 100'), findsOneWidget);
-    expect(find.text('高质量覆盖全部面板'), findsNothing);
+    expect(find.text('高质量覆盖全部面板'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('default-glass-opacity-marker')),
       findsOneWidget,
@@ -217,7 +217,16 @@ void main() {
 
     await tester.tap(find.text('自动'));
     await tester.pumpAndSettle();
-    expect(find.text('高质量覆盖全部面板'), findsNothing);
+    final automaticSwitch = find.widgetWithText(SwitchListTile, '高质量覆盖全部面板');
+    expect(automaticSwitch, findsOneWidget);
+    expect(tester.widget<SwitchListTile>(automaticSwitch).value, isTrue);
+    await tester.tap(automaticSwitch);
+    await tester.pumpAndSettle();
+    expect(app.settings.highQualityAllSurfaces, isFalse);
+    expect(
+      (await SettingsRepository(db).read()).highQualityAllSurfaces,
+      isFalse,
+    );
   });
 
   testWidgets(

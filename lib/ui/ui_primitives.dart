@@ -388,11 +388,80 @@ class SiteLensPageScaffold extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(actions: actions),
+    appBar:
+        ModalRoute.of(context)?.impliesAppBarDismissal == true ||
+            actions?.isNotEmpty == true
+        ? AppBar(actions: actions)
+        : null,
     body: Semantics(
       namesRoute: true,
       label: title,
       child: SafeArea(child: body),
+    ),
+  );
+}
+
+/// Refresh action with continuous activity feedback and reduced-motion support.
+class SiteLensRefreshButton extends StatefulWidget {
+  const SiteLensRefreshButton({
+    super.key,
+    required this.tooltip,
+    required this.refreshing,
+    required this.onPressed,
+  });
+
+  final String tooltip;
+  final bool refreshing;
+  final VoidCallback? onPressed;
+
+  @override
+  State<SiteLensRefreshButton> createState() => _SiteLensRefreshButtonState();
+}
+
+class _SiteLensRefreshButtonState extends State<SiteLensRefreshButton>
+    with SingleTickerProviderStateMixin {
+  late final _rotation = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  );
+
+  void _syncAnimation() {
+    if (widget.refreshing && !MediaQuery.disableAnimationsOf(context)) {
+      if (!_rotation.isAnimating) _rotation.repeat();
+    } else {
+      _rotation.stop();
+      _rotation.value = 0;
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncAnimation();
+  }
+
+  @override
+  void didUpdateWidget(covariant SiteLensRefreshButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _syncAnimation();
+  }
+
+  @override
+  void dispose() {
+    _rotation.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => IconButton(
+    tooltip: widget.refreshing ? '${widget.tooltip}，刷新中' : widget.tooltip,
+    onPressed: widget.refreshing ? null : widget.onPressed,
+    icon: RotationTransition(
+      turns: _rotation,
+      child: Icon(
+        Icons.refresh,
+        color: widget.refreshing ? Theme.of(context).colorScheme.primary : null,
+      ),
     ),
   );
 }

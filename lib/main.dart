@@ -103,7 +103,7 @@ class SiteLensApp extends ConsumerWidget {
               brightnessResolver: Theme.maybeBrightnessOf,
               // Start at standard, then let the package benchmark raster time.
               // The Site Lens strategy keeps content panels conservative unless
-              // the manual high-quality all-surfaces override is enabled.
+              // all-surfaces coverage is enabled for the selected quality.
               adaptiveQuality: !_isFlutterTestBinding(),
               adaptiveConfig: app.glassAdaptiveConfig,
               child: SiteLensGlassPolicyScope(

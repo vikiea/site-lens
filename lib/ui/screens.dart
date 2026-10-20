@@ -214,7 +214,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           // One backdrop read for the whole screen: the top bar, the panels and
           // the bottom bar share it instead of taking a full-screen capture each.
           child: Scaffold(
-            appBar: destination == AppDestination.media
+            appBar:
+                destination == AppDestination.media ||
+                    destination == AppDestination.settings
                 ? null
                 : AppBar(
                     title: destination == AppDestination.sites
@@ -1375,6 +1377,10 @@ class FilterSettingsScreen extends StatefulWidget {
 class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
   AppController get app => widget.app;
   bool _busy = false;
+  FilterSource? _refreshingSource;
+  bool _refreshingAll = false;
+  int _refreshIndex = 0;
+  int _refreshTotal = 0;
 
   Future<void> _run(Future<void> Function() action) async {
     if (_busy) return;
@@ -1384,7 +1390,22 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
     } catch (error) {
       if (mounted) showError(context, error);
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _refreshingSource = null;
+          _refreshingAll = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _refreshSource(FilterSource source) async {
+    if (mounted) setState(() => _refreshingSource = source);
+    try {
+      await app.refreshFilterSource(source);
+    } finally {
+      if (mounted) setState(() => _refreshingSource = null);
     }
   }
 
@@ -1427,7 +1448,7 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
         version: draft.version,
         license: draft.license,
       );
-      await app.refreshFilterSource(source);
+      await _refreshSource(source);
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('已添加并刷新「${source.label}」')));
@@ -1439,10 +1460,16 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
     final sources = List<FilterSource>.of(app.filterSourceList);
     if (sources.isEmpty) return;
     await _run(() async {
+      setState(() {
+        _refreshingAll = true;
+        _refreshTotal = sources.length;
+        _refreshIndex = 0;
+      });
       final failures = <String>[];
       for (final source in sources) {
+        if (mounted) setState(() => _refreshIndex++);
         try {
-          await app.refreshFilterSource(source);
+          await _refreshSource(source);
         } catch (_) {
           failures.add(source.label);
         }
@@ -1552,14 +1579,20 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
           ),
           SiteLensSectionHeader(
             title: '规则源',
-            subtitle: '支持常见 Adblock/uBlock 文本规则；内置源和自定义源都可刷新。',
+            subtitle: _refreshingSource != null
+                ? _refreshingAll
+                      ? '正在刷新 $_refreshIndex / $_refreshTotal · ${_refreshingSource!.label}'
+                      : '正在刷新「${_refreshingSource!.label}」…'
+                : '支持常见 Adblock/uBlock 文本规则；内置源和自定义源都可刷新。',
             action: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                IconButton(
+                SiteLensRefreshButton(
                   tooltip: '刷新全部规则',
-                  onPressed: _busy ? null : _refreshAllSources,
-                  icon: const Icon(Icons.refresh),
+                  refreshing: _refreshingAll || _refreshingSource != null,
+                  onPressed: _busy || app.filterSourceList.isEmpty
+                      ? null
+                      : _refreshAllSources,
                 ),
                 IconButton(
                   tooltip: '添加规则源',
@@ -1588,10 +1621,11 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
                         _FilterSourceRow(
                           source: app.filterSourceList[index],
                           busy: _busy,
+                          refreshing:
+                              _refreshingSource?.id ==
+                              app.filterSourceList[index].id,
                           onRefresh: () => _run(
-                            () => app.refreshFilterSource(
-                              app.filterSourceList[index],
-                            ),
+                            () => _refreshSource(app.filterSourceList[index]),
                           ),
                           onDelete: () =>
                               _deleteSource(app.filterSourceList[index]),
@@ -1626,12 +1660,14 @@ class _FilterSourceRow extends StatelessWidget {
   const _FilterSourceRow({
     required this.source,
     required this.busy,
+    required this.refreshing,
     required this.onRefresh,
     required this.onDelete,
   });
 
   final FilterSource source;
   final bool busy;
+  final bool refreshing;
   final VoidCallback onRefresh;
   final VoidCallback onDelete;
 
@@ -1646,22 +1682,32 @@ class _FilterSourceRow extends StatelessWidget {
     ),
     title: Text(source.label),
     subtitle: Text(
-      source.error == null
+      refreshing
+          ? '正在刷新…'
+          : source.error == null
           ? '${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)} · ${source.url}'
           : '${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)}\n${friendlyError(source.error!)}',
       maxLines: 3,
       overflow: TextOverflow.ellipsis,
     ),
-    trailing: PopupMenuButton<String>(
-      enabled: !busy,
-      tooltip: '规则源操作',
-      onSelected: (value) {
-        if (value == 'refresh') onRefresh();
-        if (value == 'delete') onDelete();
-      },
-      itemBuilder: (_) => const [
-        PopupMenuItem(value: 'refresh', child: Text('刷新规则')),
-        PopupMenuItem(value: 'delete', child: Text('删除规则源')),
+    trailing: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SiteLensRefreshButton(
+          tooltip: '刷新「${source.label}」',
+          refreshing: refreshing,
+          onPressed: busy ? null : onRefresh,
+        ),
+        PopupMenuButton<String>(
+          enabled: !busy,
+          tooltip: '规则源操作',
+          onSelected: (value) {
+            if (value == 'delete') onDelete();
+          },
+          itemBuilder: (_) => const [
+            PopupMenuItem(value: 'delete', child: Text('删除规则源')),
+          ],
+        ),
       ],
     ),
   );
@@ -1917,11 +1963,16 @@ class _SettingsPageState extends State<SettingsPage> {
                   title: const Text('当前有效质量'),
                   subtitle: Text(app.effectiveGlassQuality.label),
                 ),
-                if (app.settings.glassQualityMode ==
-                    SiteLensGlassQualityMode.high)
+                if (app.settings.glassQualityMode !=
+                    SiteLensGlassQualityMode.standard)
                   SwitchListTile(
                     title: const Text('高质量覆盖全部面板'),
-                    subtitle: const Text('仅在高质量模式下应用于内容面板'),
+                    subtitle: Text(
+                      app.settings.glassQualityMode ==
+                              SiteLensGlassQualityMode.automatic
+                          ? '自动选择高质量时应用于内容面板'
+                          : '应用于内容面板、弹窗和卡片',
+                    ),
                     value: app.settings.highQualityAllSurfaces,
                     onChanged: (value) => safely(
                       context,

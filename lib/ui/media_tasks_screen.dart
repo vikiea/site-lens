@@ -943,7 +943,12 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
   @override
   void initState() {
     super.initState();
-    unawaited(_load());
+    // Restoring artifacts notifies AppController. Defer it until this route
+    // has completed its first frame so switching to the Media tab cannot
+    // notify a parent while the destination tree is still being built.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_load());
+    });
   }
 
   Future<void> _load() async {

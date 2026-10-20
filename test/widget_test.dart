@@ -34,6 +34,20 @@ void main() {
     expect(find.byTooltip('全部检测'), findsOneWidget);
     expect(find.byTooltip('站点操作'), findsNothing);
 
+    await tester.tap(find.text('浏览'));
+    await tester.pump();
+    expect(find.byType(AppBar), findsOneWidget);
+    expect(find.byTooltip('新建标签页'), findsOneWidget);
+    await tester.tap(find.text('媒体'));
+    await tester.pump();
+    expect(tester.widget<Scaffold>(find.byType(Scaffold).first).appBar, isNull);
+    await tester.tap(find.text('设置'));
+    await tester.pump();
+    expect(find.byType(AppBar), findsNothing);
+    await tester.tap(find.text('站点'));
+    await tester.pump();
+    expect(find.text('Site Lens'), findsOneWidget);
+
     await tester.pumpWidget(const SizedBox());
     await app.shutdown();
     await db.close();

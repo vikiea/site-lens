@@ -81,7 +81,7 @@ Use `SiteLensMenuSelector<T>` with typed `SiteLensMenuOption<T>` values for an i
 
 - Label the setting `不透明度`; show only the numeric value, without explanatory notes. The value is absolute body alpha for Flutter liquid-glass surfaces: 100 is fully opaque and 0 is transparent fill. The default is `55`, and the slider exposes a clickable default marker that restores `55`. Do not multiply by the library preset alpha. Keep frost at the material baseline for values at or above the default 55; keep the selected body alpha linear so the slider remains predictable, and use the neutral fill tokens to preserve contrast at low values while blur, refraction and rim treatment remain active. Chrome surfaces must retain a visible AdaptiveGlass material floor at 0 so navigation controls remain legible. Content panels retain the exact selected alpha; their neutral fill tokens provide contrast even near the low end. The backdrop itself stays opaque and controls over a native WebView retain their polarity-matched contrast backer.
 
-- The setting `高质量覆盖全部面板` is a manual high-quality scope override. It is shown only while `玻璃质量` is `高质量`, and affects Flutter content panels, dialogs, sheets, and glass cards only in that mode; `platformView` surfaces retain their live backdrop path.
+- Show `高质量覆盖全部面板` in `自动` and `高质量` modes. When enabled, Flutter content panels, dialogs, sheets, and glass cards follow the selected quality: adaptive standard/premium in automatic mode, premium in high mode. Standard mode keeps standard quality and retains the saved coverage preference. Preserve the Android WebView composition fence and the platform-view rendering path.
 
 ## Settings diagnostics and theme presets
 

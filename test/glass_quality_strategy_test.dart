@@ -106,6 +106,64 @@ void main() {
     );
   });
 
+  testWidgets('automatic panel coverage follows adaptive quality and safety', (
+    tester,
+  ) async {
+    final previous = debugDefaultTargetPlatformOverride;
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    try {
+      late BuildContext context;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+          home: Builder(
+            builder: (value) {
+              context = value;
+              return const SizedBox();
+            },
+          ),
+        ),
+      );
+      for (final quality in GlassQuality.values) {
+        for (final coverage in [false, true]) {
+          final strategy = SiteLensGlassQualityStrategy(
+            allSurfacesHighQuality: coverage,
+            adaptiveQualityOverride: quality,
+            shaderSupported: true,
+          );
+          expect(
+            strategy.resolve(context, role: SiteLensSurfaceRole.panel).quality,
+            coverage && quality == GlassQuality.premium
+                ? GlassQuality.premium
+                : GlassQuality.standard,
+          );
+          final browsing = SiteLensGlassQualityStrategy(
+            allSurfacesHighQuality: coverage,
+            adaptiveQualityOverride: quality,
+            webViewVisible: true,
+            shaderSupported: true,
+          );
+          for (final role in SiteLensSurfaceRole.values) {
+            final plan = browsing.resolve(context, role: role);
+            expect(plan.quality, GlassQuality.standard);
+            expect(plan.useCompatibilityFallback, isTrue);
+          }
+        }
+      }
+      const standard = SiteLensGlassQualityStrategy(
+        mode: SiteLensGlassQualityMode.standard,
+        allSurfacesHighQuality: true,
+        adaptiveQualityOverride: GlassQuality.premium,
+      );
+      expect(
+        standard.resolve(context, role: SiteLensSurfaceRole.panel).quality,
+        GlassQuality.standard,
+      );
+    } finally {
+      debugDefaultTargetPlatformOverride = previous;
+    }
+  });
+
   testWidgets(
     'high mode requests premium even when adaptive quality is standard',
     (tester) async {

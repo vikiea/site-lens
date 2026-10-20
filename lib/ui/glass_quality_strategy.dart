@@ -140,17 +140,16 @@ class SiteLensGlassQualityStrategy {
         role != SiteLensSurfaceRole.platformView) {
       return GlassQuality.standard;
     }
+    final selectedQuality = switch (mode) {
+      SiteLensGlassQualityMode.standard => GlassQuality.standard,
+      SiteLensGlassQualityMode.automatic => adaptiveQuality,
+      SiteLensGlassQualityMode.high => GlassQuality.premium,
+    };
     final quality = switch (role) {
       SiteLensSurfaceRole.panel =>
-        mode == SiteLensGlassQualityMode.high && allSurfacesHighQuality
-            ? GlassQuality.premium
-            : GlassQuality.standard,
+        allSurfacesHighQuality ? selectedQuality : GlassQuality.standard,
       SiteLensSurfaceRole.platformView => GlassQuality.standard,
-      SiteLensSurfaceRole.chrome => switch (mode) {
-        SiteLensGlassQualityMode.standard => GlassQuality.standard,
-        SiteLensGlassQualityMode.automatic => adaptiveQuality,
-        SiteLensGlassQualityMode.high => GlassQuality.premium,
-      },
+      SiteLensSurfaceRole.chrome => selectedQuality,
     };
     // Minimal is a renderer fallback, not a user-facing quality mode for these
     // surfaces. The Android WebView route uses the clipped fill selected in
