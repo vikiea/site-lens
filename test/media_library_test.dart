@@ -650,6 +650,47 @@ void main() {
     tasks.release(item.taskId);
   });
 
+  for (final legacy in [false, true]) {
+    test(
+      'download deletion preserves ${legacy ? "legacy shared" : "independent"} MP4 and catalog after restart',
+      () async {
+        final cacheRoot = await tasks.cacheDirectory(
+          storageDirectory: task.storageDirectoryName,
+        );
+        final cache = File('${cacheRoot.path}/${task.cacheKey}.media');
+        await cache.writeAsBytes([7, 8, 9]);
+        tasks.setLocalRef(task.id, legacy ? output.path : cache.path);
+        final item = await library.register(task, output.path);
+        await tasks.flush(task.id);
+        final bytes = await output.readAsBytes();
+
+        await MediaDownloadService(tasks: tasks).delete(task.id);
+
+        expect(tasks.task(task.id), isNull);
+        expect(await cache.exists(), isFalse);
+        expect(await output.readAsBytes(), bytes);
+        expect(await db.mediaArtifacts(), hasLength(1));
+        final restoredTasks = MediaTaskStore(
+          db: db,
+          directoryProvider: () async => root,
+        );
+        final restoredLibrary = MediaLibrary(db: db, tasks: restoredTasks);
+        addTearDown(restoredLibrary.dispose);
+        await restoredTasks.restore();
+        await restoredLibrary.restore();
+        expect(restoredTasks.task(task.id), isNull);
+        expect(restoredLibrary.item(item.taskId)?.location, item.location);
+        expect(await restoredLibrary.localFile(item.taskId), isNotNull);
+        restoredTasks.retain(item.taskId);
+        await expectLater(
+          restoredLibrary.delete(item.taskId),
+          throwsStateError,
+        );
+        restoredTasks.release(item.taskId);
+      },
+    );
+  }
+
   test('scan identity is replaced by its task identity durably', () async {
     await library.rescan();
     final scannedId = library.items.single.taskId;

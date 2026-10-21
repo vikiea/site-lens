@@ -2836,9 +2836,9 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   bool _backInFlight = false;
   bool _forwardInFlight = false;
   bool _handleDragActive = false;
-  Offset _handleSwipeOffset = Offset.zero;
+  bool _handleIdle = false;
+  final _controlsAreaKey = GlobalKey();
   Offset? _handlePointerDown;
-  Timer? _handleLongPressTimer;
   bool _emptyRoutePopScheduled = false;
   bool _hasHadTabs = false;
   bool _exiting = false;
@@ -2871,6 +2871,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
       _browserSurfaceLease = widget.app.claimBrowserSurface(visible: !_covered);
       if (mounted) setState(() => _surfaceReady = true);
       unawaited(_start());
+      _armHideTimer();
     });
   }
 
@@ -2883,9 +2884,8 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
       if (autoHide != _autoHideEnabled) {
         _autoHideEnabled = autoHide;
         _hideTimer?.cancel();
-        if (autoHide && _navigationVisible) {
-          _armHideTimer();
-        }
+        _handleIdle = false;
+        if (autoHide) _armHideTimer();
       }
       if (host != null && !host!.disposed && _tab?.failure == null) {
         error = null;
@@ -3009,7 +3009,6 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     final lease = _browserSurfaceLease;
     if (lease != null) widget.app.releaseBrowserSurface(lease);
     _hideTimer?.cancel();
-    _handleLongPressTimer?.cancel();
     unawaited(_leaveFullscreen(updateState: false));
     // Tabs are owned by AppController so the home floating entry can restore
     // the same native WebView without recreating it.
@@ -3027,19 +3026,14 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   /// control is smaller than the drag area, which holds for every layout the app
   /// targets (an extreme sub-phone width folds the card instead).
   void _moveControls(DragUpdateDetails details) {
-    final media = MediaQuery.of(context);
+    final area =
+        (_controlsAreaKey.currentContext?.findRenderObject() as RenderBox?)
+            ?.size;
     final child =
-        (_controlsKey.currentContext?.findRenderObject() as RenderBox?)?.size ??
-        Size.zero;
-    final freeWidth = math.max(1.0, media.size.width - 24 - child.width);
-    final freeHeight = math.max(
-      1.0,
-      media.size.height -
-          24 -
-          media.padding.top -
-          media.padding.bottom -
-          child.height,
-    );
+        (_controlsKey.currentContext?.findRenderObject() as RenderBox?)?.size;
+    if (area == null || child == null) return;
+    final freeWidth = math.max(1.0, area.width - child.width);
+    final freeHeight = math.max(1.0, area.height - child.height);
     final current = widget.app.browserControlsFraction;
     unawaited(
       widget.app.setBrowserControlsFraction(
@@ -3061,7 +3055,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   void _armHideTimer() {
     _hideTimer?.cancel();
     if (!mounted ||
-        !_navigationVisible ||
+        _handleDragActive ||
         _toolbarHolds > 0 ||
         !widget.app.settings.autoHideBrowserControls) {
       return;
@@ -3073,6 +3067,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
         setState(() {
           _navigationVisible = false;
           _moreNavigationVisible = false;
+          _handleIdle = true;
         });
       }
     });
@@ -3161,18 +3156,13 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
 
   void _toggleNavigationVisibility() {
     if (!mounted) return;
-    _handleLongPressTimer?.cancel();
-    _handleLongPressTimer = null;
     _handleDragActive = false;
     setState(() {
+      _handleIdle = false;
       _navigationVisible = !_navigationVisible;
       _moreNavigationVisible = false;
     });
-    if (_navigationVisible) {
-      _armHideTimer();
-    } else {
-      _hideTimer?.cancel();
-    }
+    _armHideTimer();
   }
 
   /// Transient surfaces hold the toolbar open: its countdown resumes when the
@@ -3438,65 +3428,28 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     }
   }
 
-  static const _handleSwipeDistance = 48.0;
-  static const _handleLongPressDelay = Duration(milliseconds: 320);
-
   void _handlePanDown(DragDownDetails details) {
+    _hideTimer?.cancel();
     _handlePointerDown = details.globalPosition;
-    _handleSwipeOffset = Offset.zero;
-    _handleDragActive = false;
-    _handleLongPressTimer?.cancel();
-    _handleLongPressTimer = Timer(_handleLongPressDelay, () {
-      _handleDragActive = true;
-      _handleSwipeOffset = Offset.zero;
-    });
+    if (_handleIdle) setState(() => _handleIdle = false);
   }
 
   void _handlePanStart(DragStartDetails details) {
+    _handleDragActive = true;
     final delta =
         details.globalPosition - (_handlePointerDown ?? details.globalPosition);
-    if (_handleDragActive) {
-      _moveControls(
-        DragUpdateDetails(globalPosition: details.globalPosition, delta: delta),
-      );
-    } else {
-      // Once a swipe has moved beyond touch slop, a slow gesture must not
-      // become a long-press reposition half way through the same pointer.
-      _handleLongPressTimer?.cancel();
-      _handleSwipeOffset = delta;
-    }
+    _moveControls(
+      DragUpdateDetails(globalPosition: details.globalPosition, delta: delta),
+    );
   }
 
-  void _handlePanUpdate(DragUpdateDetails details) {
-    if (_handleDragActive) {
-      _moveControls(details);
-    } else {
-      _handleSwipeOffset += details.delta;
-    }
-  }
+  void _handlePanUpdate(DragUpdateDetails details) => _moveControls(details);
 
   Future<void> _handlePanEnd(DragEndDetails details) async {
-    _handleLongPressTimer?.cancel();
-    _handleLongPressTimer = null;
-    final wasDrag = _handleDragActive;
-    final delta = _handleSwipeOffset;
     _handleDragActive = false;
     _handlePointerDown = null;
-    _handleSwipeOffset = Offset.zero;
-    if (wasDrag) {
-      await _persistControls();
-      return;
-    }
-    if (delta.distance < _handleSwipeDistance) return;
-    if (delta.dx.abs() >= delta.dy.abs()) {
-      if (delta.dx < 0) {
-        await _systemBack();
-      } else {
-        await _goForwardFromUi();
-      }
-    } else if (delta.dy < 0) {
-      await _goHome();
-    }
+    await _persistControls();
+    _armHideTimer();
   }
 
   Widget _webContent() {
@@ -3706,8 +3659,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                     ),
                   ),
                 // The handle is always available: a tap toggles the toolbar, a
-                // short swipe invokes navigation, and a long press followed by a
-                // move changes its position. Pages and scripts keep the rest of
+                // drag changes its position immediately. Pages and scripts keep the rest of
                 // the surface, so only this small control owns these gestures.
                 if (tab != null)
                   Positioned.fill(
@@ -3719,13 +3671,11 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                         bottom:
                             bottomInset +
                             SiteLensMetrics.toolbarInset +
-                            (_navigationVisible
-                                ? SiteLensMetrics.toolbarHeight *
-                                          (_moreNavigationVisible ? 2 : 1) +
-                                      SiteLensMetrics.itemGap
-                                : 0),
+                            SiteLensMetrics.toolbarHeight * 2 +
+                            SiteLensMetrics.itemGap,
                       ),
                       child: Align(
+                        key: _controlsAreaKey,
                         alignment: Alignment(
                           widget.app.browserControlsFraction.dx * 2 - 1,
                           widget.app.browserControlsFraction.dy * 2 - 1,
@@ -3740,12 +3690,17 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                           onPanEnd: (details) =>
                               unawaited(_handlePanEnd(details)),
                           onPanCancel: () {
-                            _handleLongPressTimer?.cancel();
-                            _handleLongPressTimer = null;
                             _handleDragActive = false;
-                            _handleSwipeOffset = Offset.zero;
+                            _handlePointerDown = null;
+                            unawaited(_persistControls());
+                            _armHideTimer();
                           },
-                          child: _BrowserHandle(expanded: _navigationVisible),
+                          child: AnimatedOpacity(
+                            key: const ValueKey('browser-handle-opacity'),
+                            opacity: _handleIdle ? 0.2 : 1,
+                            duration: const Duration(milliseconds: 200),
+                            child: _BrowserHandle(expanded: _navigationVisible),
+                          ),
                         ),
                       ),
                     ),
@@ -4227,7 +4182,7 @@ class _BrowserHandle extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Semantics(
     button: true,
-    label: expanded ? '收起浏览工具栏（可长按拖动）' : '展开浏览工具栏（可长按拖动）',
+    label: expanded ? '收起浏览工具栏（可拖动）' : '展开浏览工具栏（可拖动）',
     child: SiteLensGlassSurface(
       role: SiteLensSurfaceRole.platformView,
       radius: 18,

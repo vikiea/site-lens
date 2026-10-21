@@ -470,6 +470,7 @@ class ControlledHttp {
     int resumeOffset = 0,
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    void Function(int bytesWritten)? onProgress,
     Duration timeout = const Duration(seconds: 15),
     int routeAttempt = 0,
   }) async {
@@ -499,6 +500,7 @@ class ControlledHttp {
       resumeOffset,
       maxBytes,
       onHeaders,
+      onProgress,
       timeout,
       routeAttempt,
     );
@@ -627,6 +629,7 @@ class ControlledHttp {
     int resumeOffset,
     int maxBytes,
     Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    void Function(int bytesWritten)? onProgress,
     Duration timeout,
     int routeAttempt,
   ) async {
@@ -758,6 +761,7 @@ class ControlledHttp {
           if (total > maxBytes) throw StateError('响应超过 $maxBytes 字节');
           sink.add(chunk);
           await sink.flush();
+          onProgress?.call((appended ? resumeOffset : 0) + written);
         }
       } finally {
         await sink.close();

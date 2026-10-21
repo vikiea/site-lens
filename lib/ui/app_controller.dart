@@ -997,6 +997,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     notifyMediaChanged();
   }
 
+  /// Downloads own their cache, while exported documents belong to the library.
+  Future<void> deleteMediaTask(String taskId) async {
+    await mediaLibrary.restore();
+    await mediaDownloads.delete(taskId);
+    notifyMediaChanged();
+  }
+
   Future<void> cleanupTemporaryCastTask(String taskId) async {
     final task = mediaTasks.task(taskId);
     if (task == null) return;

@@ -81,6 +81,7 @@ class _DeviceDiagnosticsScreenState extends State<DeviceDiagnosticsScreen>
       ],
       body: SiteLensGlassGroup(
         child: ListView(
+          key: const ValueKey('device-diagnostics-scroll'),
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
           children: [
             SiteLensPanel(
@@ -104,6 +105,7 @@ class _DeviceDiagnosticsScreenState extends State<DeviceDiagnosticsScreen>
             const SizedBox(height: SiteLensMetrics.itemGap),
             SiteLensPanel(
               padding: EdgeInsets.zero,
+              scrollingContent: true,
               child: Column(
                 children: [
                   for (var i = 0; i < records.length; i++) ...[
@@ -122,28 +124,11 @@ class _DeviceDiagnosticsScreenState extends State<DeviceDiagnosticsScreen>
             const SizedBox(height: SiteLensMetrics.itemGap),
             if (app.deviceDiagnostics.platform == 'android')
               SiteLensPanel(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '编解码器清单',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '按需读取系统已注册的 codec 描述，不实例化 codec。',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 8),
-                    TextButton.icon(
-                      onPressed: _loadCodecs,
-                      icon: Icon(
-                        _showCodecs ? Icons.expand_less : Icons.expand_more,
-                      ),
-                      label: Text(_showCodecs ? '收起清单' : '读取清单'),
-                    ),
-                    if (_showCodecs) _CodecList(future: _codecs!),
-                  ],
+                scrollingContent: true,
+                scrollContent: false,
+                child: _CodecList(
+                  future: _showCodecs ? _codecs : null,
+                  onToggle: _loadCodecs,
                 ),
               )
             else
@@ -414,49 +399,93 @@ class _CapabilityRow extends StatelessWidget {
 }
 
 class _CodecList extends StatelessWidget {
-  const _CodecList({required this.future});
+  const _CodecList({required this.future, required this.onToggle});
 
-  final Future<List<CodecDescriptor>> future;
+  final Future<List<CodecDescriptor>>? future;
+  final VoidCallback onToggle;
 
   @override
   Widget build(BuildContext context) => FutureBuilder<List<CodecDescriptor>>(
     future: future,
     builder: (context, snapshot) {
-      if (snapshot.connectionState != ConnectionState.done) {
-        return const Padding(
-          padding: EdgeInsets.all(8),
-          child: LinearProgressIndicator(),
-        );
-      }
-      if (snapshot.hasError) return const Text('读取 codec 清单失败，请收起后再次读取。');
       final codecs = snapshot.data ?? const <CodecDescriptor>[];
-      if (codecs.isEmpty) return const Text('系统没有返回 codec 描述。');
-      return Column(
-        children: [
-          for (final codec in codecs)
-            ListTile(
-              dense: true,
-              title: Text(codec.name),
-              subtitle: Text(
-                '${codec.mimeType ?? "MIME 未知"} · ${codec.encoder ? "编码器" : "解码器"}\n'
-                '${codec.hardwareAccelerated == null
-                    ? "硬件属性未知"
-                    : codec.hardwareAccelerated!
-                    ? "硬件"
-                    : "非硬件"}'
-                '${codec.vendor == null ? "" : " · 厂商实现：${codec.vendor}"}\n'
-                '纯软件：${codec.softwareOnly == null
-                    ? "未知"
-                    : codec.softwareOnly!
-                    ? "是"
-                    : "否"}\n'
-                'Profile/Level：${codec.profileLevelsJson ?? "未知"}'
-                '${codec.error == null ? "" : "\n${codec.error}"}',
+      return CustomScrollView(
+        key: const ValueKey('device-codec-list'),
+        primary: false,
+        shrinkWrap: true,
+        slivers: [
+          const SliverToBoxAdapter(child: _CodecHeader()),
+          SliverToBoxAdapter(
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: onToggle,
+                icon: Icon(
+                  future == null ? Icons.expand_more : Icons.expand_less,
+                ),
+                label: Text(future == null ? '读取清单' : '收起清单'),
               ),
-              isThreeLine: true,
+            ),
+          ),
+          if (future == null)
+            const SliverToBoxAdapter(child: SizedBox.shrink())
+          else if (snapshot.connectionState != ConnectionState.done)
+            const SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.all(8),
+                child: LinearProgressIndicator(),
+              ),
+            )
+          else if (snapshot.hasError)
+            const SliverToBoxAdapter(child: Text('读取 codec 清单失败，请收起后再次读取。'))
+          else if (codecs.isEmpty)
+            const SliverToBoxAdapter(child: Text('系统没有返回 codec 描述。'))
+          else
+            SliverList(
+              delegate: SliverChildBuilderDelegate((context, index) {
+                final codec = codecs[index];
+                return ListTile(
+                  dense: true,
+                  title: Text(codec.name),
+                  subtitle: Text(
+                    '${codec.mimeType ?? "MIME 未知"} · ${codec.encoder ? "编码器" : "解码器"}\n'
+                    '${codec.hardwareAccelerated == null
+                        ? "硬件属性未知"
+                        : codec.hardwareAccelerated!
+                        ? "硬件"
+                        : "非硬件"}'
+                    '${codec.vendor == null ? "" : " · 厂商实现：${codec.vendor}"}\n'
+                    '纯软件：${codec.softwareOnly == null
+                        ? "未知"
+                        : codec.softwareOnly!
+                        ? "是"
+                        : "否"}\n'
+                    'Profile/Level：${codec.profileLevelsJson ?? "未知"}'
+                    '${codec.error == null ? "" : "\n${codec.error}"}',
+                  ),
+                  isThreeLine: true,
+                );
+              }, childCount: codecs.length),
             ),
         ],
       );
     },
+  );
+}
+
+class _CodecHeader extends StatelessWidget {
+  const _CodecHeader();
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text('编解码器清单', style: Theme.of(context).textTheme.titleMedium),
+      const SizedBox(height: 4),
+      Text(
+        '按需读取系统已注册的 codec 描述，不实例化 codec。',
+        style: Theme.of(context).textTheme.bodySmall,
+      ),
+    ],
   );
 }

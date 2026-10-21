@@ -206,39 +206,46 @@ void main() {
     );
   });
 
-  testWidgets('floating handle toggles and routes short swipes', (
-    tester,
-  ) async {
-    final db = AppDatabase(NativeDatabase.memory());
-    final app = await boot(tester, db);
-    addTearDown(() async {
-      await app.shutdown();
-      await db.close();
-    });
+  testWidgets(
+    'floating handle drags immediately and fades to twenty percent when idle',
+    (tester) async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final app = await boot(tester, db);
+      addTearDown(() async {
+        await app.shutdown();
+        await db.close();
+      });
 
-    final handle = find.byIcon(Icons.keyboard_arrow_up);
-    await tester.tap(handle);
-    await tester.pump();
-    expect(find.byKey(const ValueKey('browser-navigation')), findsOneWidget);
-    expect(find.byIcon(Icons.keyboard_arrow_down), findsOneWidget);
+      final handle = find.byIcon(Icons.keyboard_arrow_up);
+      await tester.tap(handle);
+      await tester.pump();
+      expect(find.byKey(const ValueKey('browser-navigation')), findsOneWidget);
+      expect(find.byIcon(Icons.keyboard_arrow_down), findsOneWidget);
 
-    await tester.tap(find.byIcon(Icons.keyboard_arrow_down));
-    await tester.pump();
-    expect(find.byKey(const ValueKey('browser-navigation')), findsNothing);
+      await tester.tap(find.byIcon(Icons.keyboard_arrow_down));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('browser-navigation')), findsNothing);
 
-    final api = app.hosts.api as FakeWebHostApi;
-    final hiddenHandle = find.byIcon(Icons.keyboard_arrow_up);
-    await tester.drag(hiddenHandle, const Offset(96, 0));
-    await tester.pumpAndSettle();
-    expect(api.wentForward, contains(app.activeBrowser!.host.id));
-
-    await tester.drag(
-      find.byIcon(Icons.keyboard_arrow_up),
-      const Offset(0, -96),
-    );
-    await tester.pumpAndSettle();
-    expect(api.navigated[app.activeBrowser!.host.id], contains(_siteUrl));
-  });
+      final api = app.hosts.api as FakeWebHostApi;
+      final hiddenHandle = find.byIcon(Icons.keyboard_arrow_up);
+      final before = tester.getCenter(hiddenHandle);
+      await tester.drag(hiddenHandle, const Offset(-96, -96));
+      await tester.pump(const Duration(milliseconds: 200));
+      final after = tester.getCenter(hiddenHandle);
+      expect(after.dx, lessThan(before.dx - 40));
+      expect(after.dy, lessThan(before.dy - 40));
+      expect(api.wentForward, isEmpty);
+      expect(api.wentBack, isEmpty);
+      final opacity = find.byKey(const ValueKey('browser-handle-opacity'));
+      expect(tester.widget<AnimatedOpacity>(opacity).opacity, 1);
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(tester.widget<AnimatedOpacity>(opacity).opacity, 0.2);
+      await tester.tap(hiddenHandle);
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(tester.widget<AnimatedOpacity>(opacity).opacity, 1);
+    },
+  );
 
   testWidgets('fullscreen clears the WebView viewport inset', (tester) async {
     final db = AppDatabase(NativeDatabase.memory());

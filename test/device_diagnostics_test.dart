@@ -9,6 +9,8 @@ import 'package:site_lens/diagnostics/device_diagnostics.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/app_theme.dart';
 import 'package:site_lens/ui/device_diagnostics_screen.dart';
+import 'package:site_lens/ui/glass_surface.dart';
+import 'package:site_lens/settings/app_settings.dart';
 import 'package:site_lens/web_host/web_host.g.dart';
 
 import 'fake_device_diagnostics_api.dart';
@@ -240,10 +242,20 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('读取清单'), findsNothing);
-      await tester.scrollUntilVisible(
-        find.text('不适用：当前 iOS 版本不提供此编解码器清单。'),
-        400,
-      );
+      final outer = find
+          .descendant(
+            of: find.byKey(const ValueKey('device-diagnostics-scroll')),
+            matching: find.byType(Scrollable),
+          )
+          .first;
+      tester
+          .state<ScrollableState>(outer)
+          .position
+          .jumpTo(
+            tester.state<ScrollableState>(outer).position.maxScrollExtent,
+          );
+      await tester.pumpAndSettle();
+      expect(find.text('不适用：当前 iOS 版本不提供此编解码器清单。'), findsOneWidget);
       expect(api.codecReads, 0);
       await tester.pumpWidget(const SizedBox());
     });
@@ -325,6 +337,101 @@ void main() {
       await app.shutdown();
       await db.close();
     });
+    for (final height in [220.0, 640.0]) {
+      testWidgets(
+        'codec header and list share a bounded scroll at height $height',
+        (tester) async {
+          tester.view.physicalSize = Size(360, height);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.reset);
+          await tester.pumpWidget(
+            MaterialApp(
+              theme: buildSiteLensTheme(
+                ThemePresetId.sunsetCoral,
+                Brightness.dark,
+              ),
+              home: MediaQuery(
+                data: MediaQueryData(
+                  size: Size(360, height),
+                  textScaler: const TextScaler.linear(2),
+                ),
+                child: SiteLensGlassPolicyScope(
+                  strategy: const SiteLensGlassQualityStrategy(
+                    mode: SiteLensGlassQualityMode.high,
+                    allSurfacesHighQuality: true,
+                    shaderSupported: true,
+                  ),
+                  child: DeviceDiagnosticsScreen(app: app),
+                ),
+              ),
+            ),
+          );
+          await tester.pumpAndSettle();
+          final outer = find
+              .descendant(
+                of: find.byKey(const ValueKey('device-diagnostics-scroll')),
+                matching: find.byType(Scrollable),
+              )
+              .first;
+          tester
+              .state<ScrollableState>(outer)
+              .position
+              .jumpTo(
+                tester.state<ScrollableState>(outer).position.maxScrollExtent,
+              );
+          await tester.pumpAndSettle();
+          final panelScroll = find.descendant(
+            of: find.byKey(const ValueKey('device-codec-list')),
+            matching: find.byType(Scrollable),
+          );
+          expect(panelScroll, findsOneWidget);
+          await tester.scrollUntilVisible(
+            find.text('读取清单'),
+            60,
+            scrollable: panelScroll,
+          );
+          await Scrollable.ensureVisible(
+            tester.element(find.text('读取清单')),
+            alignment: 0.5,
+          );
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('读取清单'));
+          await tester.pumpAndSettle();
+          expect(api.codecReads, 1);
+          expect(tester.takeException(), isNull);
+          if (height >= 300) {
+            final position = tester
+                .state<ScrollableState>(panelScroll)
+                .position;
+            position.jumpTo(position.maxScrollExtent);
+            await tester.pumpAndSettle();
+            await Scrollable.ensureVisible(
+              tester.element(find.text('test.codec')),
+              alignment: 0.5,
+            );
+            await tester.pumpAndSettle();
+            expect(find.text('test.codec').hitTestable(), findsOneWidget);
+            position.jumpTo(0);
+            await tester.pumpAndSettle();
+            await tester.scrollUntilVisible(
+              find.text('收起清单'),
+              40,
+              scrollable: panelScroll,
+            );
+            await Scrollable.ensureVisible(
+              tester.element(find.text('收起清单')),
+              alignment: 0.5,
+            );
+            await tester.pumpAndSettle();
+            await tester.tap(find.text('收起清单'));
+            await tester.pumpAndSettle();
+            expect(find.text('test.codec'), findsNothing);
+          }
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox());
+        },
+      );
+    }
     testWidgets('shows explicit facts and refreshes without creating hosts', (
       tester,
     ) async {

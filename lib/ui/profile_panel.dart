@@ -124,6 +124,7 @@ class _ProfileCard extends StatelessWidget {
     final actionLabel = profile.enabled ? (stale ? '尝试上次地址' : '进入站点') : '站点已停用';
 
     return SiteLensPanel(
+      scrollingContent: true,
       padding: EdgeInsets.zero,
       child: InkWell(
         onTap: onOpen,
@@ -495,6 +496,7 @@ class ProfileDetailScreen extends StatelessWidget {
             if (app.activeBrowser != null)
               const SizedBox(height: SiteLensMetrics.itemGap),
             SiteLensPanel(
+              scrollingContent: true,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -667,6 +669,7 @@ class _DetectionPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final notice = app.probes.profileId == profileId ? app.probes.notice : null;
     return SiteLensPanel(
+      scrollingContent: true,
       padding: EdgeInsets.zero,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -890,6 +893,7 @@ class _AdvancedArea extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SiteLensPanel(
+    scrollingContent: true,
     padding: EdgeInsets.zero,
     child: SiteLensFoldable(
       child: ExpansionTile(
@@ -1091,6 +1095,7 @@ class _ProfileFilterSettingsScreenState
                 : '此档案当前跟随全局策略。修改下面任一项会创建单独策略，不会影响其他档案。',
           ),
           SiteLensPanel(
+            scrollingContent: true,
             padding: EdgeInsets.zero,
             child: Column(
               children: [

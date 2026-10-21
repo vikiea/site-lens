@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.webkit.CookieManager
 import android.webkit.WebSettings
 import io.flutter.plugin.common.MethodCall
@@ -14,7 +15,10 @@ import java.net.URI
 import java.util.concurrent.Executors
 import java.io.File
 
-class MediaNetworkRuntime(appContext: Context) : MethodChannel.MethodCallHandler {
+class MediaNetworkRuntime(
+    appContext: Context,
+    private val channel: MethodChannel,
+) : MethodChannel.MethodCallHandler {
     private val context = appContext
     private val connectivity = appContext.getSystemService(ConnectivityManager::class.java)
     private val userAgent = WebSettings.getDefaultUserAgent(appContext)
@@ -66,7 +70,7 @@ class MediaNetworkRuntime(appContext: Context) : MethodChannel.MethodCallHandler
                     SystemMediaNetwork.openConnection(uri, allowProxyFakeIp = vpn, attempt = attempt)
                 },
             )
-            transfers.submit(job, transfer::abort, { transferFile(call, transfer) }) { outcome ->
+            transfers.submit(job, transfer::abort, { transferFile(call, transfer, job) }) { outcome ->
                 main.post { outcome.fold(
                     onSuccess = { result.success(null) },
                     onFailure = { failTransfer(result, it) },
@@ -103,7 +107,7 @@ class MediaNetworkRuntime(appContext: Context) : MethodChannel.MethodCallHandler
         )
     }
 
-    private fun transferFile(call: MethodCall, transfer: ResumableMediaTransfer) {
+    private fun transferFile(call: MethodCall, transfer: ResumableMediaTransfer, job: String) {
             val url = URI(call.argument<String>("url") ?: error("缺少媒体地址"))
             val document = URI(call.argument<String>("document") ?: error("缺少来源页面"))
             SystemMediaNetwork.validateTarget(url)
@@ -114,8 +118,21 @@ class MediaNetworkRuntime(appContext: Context) : MethodChannel.MethodCallHandler
             require(output.name.endsWith(".part")) { "媒体缓存目标无效" }
             val maxBytes = call.argument<Number>("maxBytes")?.toLong() ?: 0L
             require(maxBytes in 1..(2L * 1024 * 1024 * 1024)) { "媒体大小上限无效" }
+            var lastProgressAt: Long? = null
             transfer.transfer(url, document, output, userAgent, maxBytes = maxBytes,
                 requestCookies = { target -> CookieManager.getInstance().getCookie(target.toString()) },
+                onProgress = { bytes, _ ->
+                    val now = SystemClock.elapsedRealtime()
+                    if (lastProgressAt == null || now - lastProgressAt!! >= 250L) {
+                        lastProgressAt = now
+                        main.post {
+                            channel.invokeMethod(
+                                "transferProgress",
+                                mapOf("jobId" to job, "bytesDownloaded" to bytes),
+                            )
+                        }
+                    }
+                },
             )
     }
 

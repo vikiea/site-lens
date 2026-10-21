@@ -21,6 +21,7 @@ class PlayerGesturesScreen extends StatelessWidget {
         padding: const EdgeInsets.all(SiteLensMetrics.pagePadding),
         children: [
           SiteLensPanel(
+            scrollingContent: true,
             padding: EdgeInsets.zero,
             child: Column(
               children: [

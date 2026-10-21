@@ -1492,6 +1492,7 @@ class _StatusHttp extends ControlledHttp {
     int resumeOffset = 0,
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    void Function(int bytesWritten)? onProgress,
     Duration timeout = const Duration(seconds: 15),
     int routeAttempt = 0,
   }) async => FetchFileResponse(
@@ -1541,6 +1542,7 @@ class _MapHttp extends ControlledHttp {
     int resumeOffset = 0,
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    void Function(int bytesWritten)? onProgress,
     Duration timeout = const Duration(seconds: 15),
     int routeAttempt = 0,
   }) async {
@@ -1582,6 +1584,7 @@ class _InterruptingHttp extends ControlledHttp {
     int resumeOffset = 0,
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    void Function(int bytesWritten)? onProgress,
     Duration timeout = const Duration(seconds: 15),
     int routeAttempt = 0,
   }) async {

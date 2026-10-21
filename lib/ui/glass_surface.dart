@@ -72,12 +72,21 @@ class SiteLensGlassSurface extends StatelessWidget {
     this.role = SiteLensSurfaceRole.panel,
     this.radius = SiteLensMetrics.panelRadius,
     this.padding,
+    this.scrollingContent = false,
+    this.scrollContent = true,
   });
 
   final Widget child;
   final SiteLensSurfaceRole role;
   final double radius;
   final EdgeInsetsGeometry? padding;
+
+  /// Bounds the material to the viewport and scrolls long content inside it.
+  /// The selected glass quality stays unchanged.
+  final bool scrollingContent;
+
+  /// False when a bounded child already owns its scrollable viewport.
+  final bool scrollContent;
 
   @override
   Widget build(BuildContext context) {
@@ -89,31 +98,71 @@ class SiteLensGlassSurface extends StatelessWidget {
     );
     final plan = SiteLensGlassPolicyScope.of(context)
         .resolve(context, role: role);
-    if (plan.useCompatibilityFallback) {
-      final backer = plan.settings.effectiveBackerColor;
-      return ClipPath(
-        clipper: ShapeBorderClipper(
-          shape: LiquidRoundedSuperellipse(borderRadius: radius),
-        ),
-        child: Stack(
-          fit: StackFit.passthrough,
-          children: [
-            if (backer != null)
-              Positioned.fill(child: ColoredBox(color: backer)),
-            ColoredBox(color: plan.glassColor, child: content),
-          ],
-        ),
+    Widget surface(Widget body) {
+      if (plan.useCompatibilityFallback) {
+        final backer = plan.settings.effectiveBackerColor;
+        return ClipPath(
+          clipper: ShapeBorderClipper(
+            shape: LiquidRoundedSuperellipse(borderRadius: radius),
+          ),
+          child: Stack(
+            fit: StackFit.passthrough,
+            children: [
+              if (backer != null)
+                Positioned.fill(child: ColoredBox(color: backer)),
+              ColoredBox(color: plan.glassColor, child: body),
+            ],
+          ),
+        );
+      }
+      return AdaptiveGlass(
+        shape: LiquidRoundedSuperellipse(borderRadius: radius),
+        settings: plan.settings,
+        quality: plan.quality,
+        platformViewBackdrop: plan.platformViewBackdrop,
+        // Chrome and panels both provide the backdrop for their children: glass
+        // inside a bar is a nested surface and would only double the blur.
+        allowElevation: false,
+        child: body,
       );
     }
-    return AdaptiveGlass(
-      shape: LiquidRoundedSuperellipse(borderRadius: radius),
-      settings: plan.settings,
-      quality: plan.quality,
-      platformViewBackdrop: plan.platformViewBackdrop,
-      // Chrome and panels both provide the backdrop for their children: glass
-      // inside a bar is a nested surface and would only double the blur.
-      allowElevation: false,
-      child: content,
+
+    if (!scrollingContent &&
+        (role != SiteLensSurfaceRole.panel ||
+            plan.quality != GlassQuality.premium)) {
+      return surface(content);
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final media = MediaQuery.of(context);
+        final viewport =
+            (media.size.height -
+                    media.padding.vertical -
+                    media.viewInsets.vertical)
+                .clamp(0.0, double.infinity);
+        final maxHeight =
+            (constraints.hasBoundedHeight
+                    ? constraints.maxHeight.clamp(0.0, viewport * 0.7)
+                    : viewport * 0.7)
+                .toDouble();
+        if (maxHeight == 0) return const SizedBox.shrink();
+        final width = constraints.hasBoundedWidth ? constraints.maxWidth : null;
+        return Align(
+          alignment: Alignment.topCenter,
+          heightFactor: 1,
+          child: SizedBox(
+            width: width,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: maxHeight),
+              child: surface(
+                scrollContent
+                    ? SingleChildScrollView(primary: false, child: content)
+                    : content,
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -149,15 +198,24 @@ class SiteLensPanel extends StatelessWidget {
     required this.child,
     this.padding = const EdgeInsets.all(SiteLensMetrics.panelPadding),
     this.radius = SiteLensMetrics.panelRadius,
+    this.scrollingContent = false,
+    this.scrollContent = true,
   });
 
   final Widget child;
   final EdgeInsetsGeometry padding;
   final double radius;
+  final bool scrollingContent;
+  final bool scrollContent;
 
   @override
-  Widget build(BuildContext context) =>
-      SiteLensGlassSurface(radius: radius, padding: padding, child: child);
+  Widget build(BuildContext context) => SiteLensGlassSurface(
+    radius: radius,
+    padding: padding,
+    scrollingContent: scrollingContent,
+    scrollContent: scrollContent,
+    child: child,
+  );
 }
 
 /// Groups the glass of one screen so sibling surfaces share a single backdrop

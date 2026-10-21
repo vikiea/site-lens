@@ -1234,6 +1234,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
               ],
             if (allExports.isEmpty)
               const SiteLensPanel(
+                scrollingContent: true,
                 child: ListTile(
                   leading: Icon(Icons.video_library_outlined),
                   title: Text('暂无导出的 MP4'),
@@ -1311,6 +1312,7 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
           '${item.width}×${item.height}',
       ];
       return SiteLensPanel(
+        scrollingContent: true,
         padding: EdgeInsets.zero,
         child: ListTile(
           leading: SizedBox(
@@ -1531,6 +1533,7 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
       ),
       children: [
         SiteLensPanel(
+          scrollingContent: true,
           padding: EdgeInsets.zero,
           child: Column(
             children: [
@@ -1604,12 +1607,13 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   @override
   void initState() {
     super.initState();
+    widget.app.mediaTasks.addListener(_tasksChanged);
     _mediaStates = widget.app.nativeMedia.states.listen((_) {
       if (mounted) setState(() {});
     });
     unawaited(_refreshCachedFiles());
     if (widget.app.nativeDownloads != null) {
-      _poller = Timer.periodic(const Duration(seconds: 2), (_) {
+      _poller = Timer.periodic(const Duration(seconds: 1), (_) {
         unawaited(_pollNativeTasks());
       });
     }
@@ -1617,9 +1621,14 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
 
   @override
   void dispose() {
+    widget.app.mediaTasks.removeListener(_tasksChanged);
     _poller?.cancel();
     _mediaStates?.cancel();
     super.dispose();
+  }
+
+  void _tasksChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _refreshCachedFiles() async {
@@ -1759,7 +1768,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           builder: (dialogContext) => SiteLensAlertDialog(
             title: const Text('批量删除媒体任务'),
             content: Text(
-              '删除选中的 ${selected.length} 个任务、下载缓存和已导出媒体文件？正在播放、导出或投屏的任务会保留。',
+              '删除选中的 ${selected.length} 个任务和下载缓存？已导出媒体文件保留，正在使用的任务会保留。',
             ),
             actions: [
               TextButton(
@@ -1794,11 +1803,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
             case _MediaBatchAction.export:
               await widget.app.exportMediaTask(task);
             case _MediaBatchAction.delete:
-              await widget.app.deleteMediaArtifact(
-                task.id,
-                deleteTaskCache: true,
-                deleteTask: true,
-              );
+              await widget.app.deleteMediaTask(task.id);
           }
           succeeded++;
         } catch (error, stack) {
@@ -1939,6 +1944,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           ),
           if (activePlayback != null)
             SiteLensPanel(
+              scrollingContent: true,
               child: Row(
                 children: [
                   const Icon(Icons.play_circle_filled),
@@ -2008,6 +2014,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
             ],
           if (allTasks.isEmpty)
             const SiteLensPanel(
+              scrollingContent: true,
               child: ListTile(
                 leading: Icon(Icons.download_done),
                 title: Text('暂无媒体任务'),
@@ -2016,6 +2023,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
             ),
           for (final task in tasks) ...[
             SiteLensPanel(
+              scrollingContent: true,
               padding: EdgeInsets.zero,
               child: Column(
                 children: [
@@ -2122,10 +2130,10 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                                             builder: (dialogContext) =>
                                                 SiteLensAlertDialog(
                                                   title: const Text(
-                                                    '删除任务及媒体文件',
+                                                    '删除任务及下载缓存',
                                                   ),
                                                   content: Text(
-                                                    '同时删除“${task.displayName}”的已导出文件和播放副本？',
+                                                    '删除“${task.displayName}”的任务和下载缓存？已导出媒体文件保留。',
                                                   ),
                                                   actions: [
                                                     TextButton(
@@ -2149,10 +2157,8 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                                           );
                                           if (confirmed != true) return;
                                         }
-                                        await widget.app.deleteMediaArtifact(
+                                        await widget.app.deleteMediaTask(
                                           task.id,
-                                          deleteTaskCache: true,
-                                          deleteTask: true,
                                         );
                                         if (mounted) setState(() {});
                                       }, taskId: task.id),
@@ -2216,7 +2222,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                                     widget.app.mediaLibrary.item(task.id) ==
                                             null
                                         ? '删除任务'
-                                        : '删除任务及媒体文件',
+                                        : '删除任务及下载缓存',
                                   ),
                                 ),
                               ],
@@ -2350,6 +2356,7 @@ class _MediaFolderRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SiteLensPanel(
+    scrollingContent: true,
     padding: EdgeInsets.zero,
     child: ListTile(
       leading: Icon(parent ? Icons.folder_open : Icons.folder_outlined),

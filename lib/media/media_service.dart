@@ -5,6 +5,7 @@ import 'dart:math';
 import 'dart:isolate';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart' show ChangeNotifier;
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -371,7 +372,7 @@ class MediaCandidateCollector {
   }
 }
 
-class MediaTaskStore {
+class MediaTaskStore extends ChangeNotifier {
   MediaTaskStore({Future<Directory> Function()? directoryProvider, this.db})
     : _directoryProvider = directoryProvider ?? getApplicationSupportDirectory;
 
@@ -404,6 +405,7 @@ class MediaTaskStore {
   String resolveTaskId(String id) => _resolveId(id);
 
   void _saveTask(MediaTask task) {
+    notifyListeners();
     if (db == null) return;
     final previous = _writes[task.id] ?? Future<void>.value();
     var failureId = task.id;
@@ -850,6 +852,7 @@ class MediaTaskStore {
     _writeFailures.remove(canonicalId);
     _aliases.removeWhere((key, value) => key == taskId || value == canonicalId);
     _byCacheKey.removeWhere((_, id) => id == canonicalId);
+    notifyListeners();
   }
 
   Future<void> reconcileCachedFiles() async {
@@ -903,7 +906,19 @@ class MediaTaskStore {
     if (!isExclusive(taskId)) throw StateError('媒体任务未持有排他操作锁');
     final current = task(taskId) ?? (throw StateError('媒体任务不存在'));
     final file = await cachedFile(taskId, validateHls: false);
-    if (file != null) {
+    final appRoot = await _directoryProvider();
+    final exportRoot = Directory('${appRoot.path}/media_exports');
+    final exportPath = await exportRoot.exists()
+        ? await exportRoot.resolveSymbolicLinks()
+        : exportRoot.absolute.path;
+    // Legacy tasks can still point at their exported MP4. Reading that file is
+    // allowed, but deleting a download must never acquire ownership of it.
+    final pointsAtExport =
+        file != null &&
+        (await file.resolveSymbolicLinks()).startsWith(
+          '$exportPath${Platform.pathSeparator}',
+        );
+    if (file != null && !pointsAtExport) {
       // Only a task-specific HLS directory may be removed recursively; a
       // series directory can contain other episodes and must remain intact.
       if (file.parent.uri.pathSegments.where((v) => v.isNotEmpty).lastOrNull ==
@@ -1069,6 +1084,15 @@ class MediaTaskStore {
 /// Resumable, app-private media download orchestration. The native Media3
 /// implementation can replace this transport while keeping the same task
 /// states and cache keys.
+typedef NativeTlsTransfer = Future<void> Function(
+  Uri url,
+  Uri document,
+  File destination,
+  int maxBytes,
+  Cancellation cancellation, {
+  void Function(int bytesWritten)? onProgress,
+});
+
 class MediaDownloadService {
   MediaDownloadService({
     required this.tasks,
@@ -1076,11 +1100,13 @@ class MediaDownloadService {
     this.native,
     this.authorize,
     this.tlsTransfer,
+    this.progressElapsed,
   }) : http = http ?? ControlledHttp();
 
   final MediaTaskStore tasks;
   final ControlledHttp http;
-  final Future<void> Function(Uri, Uri, File, int, Cancellation)? tlsTransfer;
+  final NativeTlsTransfer? tlsTransfer;
+  final Duration Function()? progressElapsed;
 
   /// Optional Android OS-managed backend. The deterministic Dart backend stays
   /// available for tests and platforms without DownloadManager.
@@ -1093,6 +1119,23 @@ class MediaDownloadService {
   final _controls = <String, Future<void>>{};
   final _stopping = <String>{};
   final _dartTasks = <String>{};
+  final _progressAtMs = <String, int>{};
+  final _progressClock = Stopwatch()..start();
+
+  void _reportTaskProgress(
+    String taskId,
+    int bytes, {
+    int? totalBytes,
+    bool force = false,
+  }) {
+    final now =
+        progressElapsed?.call().inMilliseconds ??
+        _progressClock.elapsedMilliseconds;
+    final last = _progressAtMs[taskId];
+    if (!force && last != null && now - last < 250) return;
+    _progressAtMs[taskId] = now;
+    tasks.updateProgress(taskId, bytes, totalBytes: totalBytes);
+  }
 
   /// Resume identity keeps content selectors while dropping only credentials
   /// that are expected to rotate. It is separate from [mediaCandidateGroupKey]
@@ -1143,6 +1186,12 @@ class MediaDownloadService {
   /// Refresh only the backend owning this task. Missing native rows must never
   /// overwrite a Dart HLS download or a completed local cache.
   Future<MediaTask> refreshTask(String taskId) async {
+    final id = tasks.resolveTaskId(taskId);
+    // A foreground Dart transfer owns fresh progress; never queue behind the
+    // entire transfer just to rediscover that it has no WorkManager record.
+    if (_active.containsKey(id) || _dartTasks.contains(id)) {
+      return tasks.task(id) ?? (throw StateError('媒体任务不存在'));
+    }
     final result = await _control(taskId, (id) async {
       var current = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
       if (_active.containsKey(id) || _dartTasks.contains(id)) {
@@ -1514,6 +1563,7 @@ class MediaDownloadService {
           cancel,
           document: authorized.sourceUrl,
           maxBytes: maxBytes,
+          onProgress: (bytes) => _reportTaskProgress(id, bytes),
         );
         cancel.check();
         final size = await base.length();
@@ -1538,6 +1588,7 @@ class MediaDownloadService {
       } finally {
         if (identical(_active[id], cancel)) _active.remove(id);
         _dartTasks.remove(id);
+        _progressAtMs.remove(id);
       }
     }),
   );
@@ -1626,6 +1677,8 @@ class MediaDownloadService {
               totalBytes,
               maxBytes,
               document: candidate.sourceUrl,
+              onProgress: (bytes) =>
+                  _reportTaskProgress(task.id, totalBytes + bytes),
             );
             totalBytes += local.bytes;
             output.add(_replaceHlsUri(line, local.name));
@@ -1651,11 +1704,14 @@ class MediaDownloadService {
           totalBytes,
           maxBytes,
           document: candidate.sourceUrl,
+          onProgress: (bytes) =>
+              _reportTaskProgress(task.id, totalBytes + bytes),
         );
         totalBytes += local.bytes;
         hasSegment = true;
         output.add(local.name);
-        current = tasks.updateProgress(task.id, totalBytes);
+        _reportTaskProgress(task.id, totalBytes);
+        current = tasks.task(task.id) ?? current;
       }
       if (!hasSegment) throw const FormatException('HLS 清单没有媒体分片');
       final temporaryPlaylist = File('${staging.path}/index.m3u8');
@@ -1670,11 +1726,13 @@ class MediaDownloadService {
       if (cachedBytes == null) throw StateError('HLS 缓存文件不完整');
       cancel.check();
       if (_stopping.contains(task.id)) throw const Cancelled();
-      current = tasks.updateProgress(
+      _reportTaskProgress(
         task.id,
         cachedBytes,
         totalBytes: cachedBytes,
+        force: true,
       );
+      current = tasks.task(task.id) ?? current;
       current = tasks.transition(task.id, MediaTaskState.completed);
       current = tasks.transition(task.id, MediaTaskState.playable);
       final completed = tasks.setLocalRef(task.id, finalFile.path);
@@ -1786,6 +1844,7 @@ class MediaDownloadService {
     int downloaded,
     int maxBytes, {
     required Uri document,
+    void Function(int bytesWritten)? onProgress,
   }) async {
     final remote = playlist.resolve(raw);
     if (!['http', 'https'].contains(remote.scheme) ||
@@ -1819,6 +1878,7 @@ class MediaDownloadService {
       cancel,
       document: document,
       maxBytes: min(64 * 1024 * 1024, maxBytes),
+      onProgress: onProgress,
     );
     cancel.check();
     final size = await partial.length();
@@ -1980,10 +2040,18 @@ class MediaDownloadService {
     Cancellation cancel, {
     required Uri document,
     required int maxBytes,
+    void Function(int bytesWritten)? onProgress,
   }) async {
     final nativeResume = File('${partial.path}.resume');
     if (tlsTransfer != null && await nativeResume.exists()) {
-      await tlsTransfer!(url, document, partial, maxBytes, cancel);
+      await tlsTransfer!(
+        url,
+        document,
+        partial,
+        maxBytes,
+        cancel,
+        onProgress: onProgress,
+      );
       cancel.check();
       return;
     }
@@ -2014,6 +2082,7 @@ class MediaDownloadService {
           resumeOffset: offset,
           maxBytes: maxBytes,
           routeAttempt: attempt,
+          onProgress: onProgress,
           headers: {
             if (offset > 0) 'Range': 'bytes=$offset-',
             if (offset > 0 && validator != null) 'If-Range': validator,
@@ -2117,7 +2186,14 @@ class MediaDownloadService {
             final state = File('${partial.path}$suffix');
             if (await state.exists()) await state.delete();
           }
-          await tlsTransfer!(url, document, partial, maxBytes, cancel);
+          await tlsTransfer!(
+            url,
+            document,
+            partial,
+            maxBytes,
+            cancel,
+            onProgress: onProgress,
+          );
           cancel.check();
           return;
         }

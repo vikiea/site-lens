@@ -155,12 +155,21 @@ void main() {
         final result = await MediaDownloadService(
           tasks: tasks,
           http: http,
-          tlsTransfer: (url, document, destination, maxBytes, cancel) async {
-            nativeCalls++;
-            expect(url.path, '/segment.ts');
-            expect(document, candidate.sourceUrl);
-            await destination.writeAsBytes([4, 5, 6], flush: true);
-          },
+          tlsTransfer:
+              (
+                url,
+                document,
+                destination,
+                maxBytes,
+                cancel, {
+                void Function(int bytesWritten)? onProgress,
+              }) async {
+                nativeCalls++;
+                expect(url.path, '/segment.ts');
+                expect(document, candidate.sourceUrl);
+                await destination.writeAsBytes([4, 5, 6], flush: true);
+                onProgress?.call(3);
+              },
         ).start(tasks.create(candidate), candidate);
         expect(result.state, MediaTaskState.playable);
         expect(http.attempts, [0, 1, 2, 3]);
@@ -410,6 +419,7 @@ class _FailingTlsHttp extends ControlledHttp {
     int resumeOffset = 0,
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int, Map<String, String>)? onHeaders,
+    void Function(int bytesWritten)? onProgress,
     Duration timeout = const Duration(seconds: 15),
     int routeAttempt = 0,
   }) async {
@@ -471,6 +481,7 @@ class _RotatingHlsHttp extends ControlledHttp {
     int resumeOffset = 0,
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int, Map<String, String>)? onHeaders,
+    void Function(int bytesWritten)? onProgress,
     Duration timeout = const Duration(seconds: 15),
     int routeAttempt = 0,
   }) async {
@@ -549,6 +560,7 @@ class _HlsResumeHttp extends ControlledHttp {
     int resumeOffset = 0,
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    void Function(int bytesWritten)? onProgress,
     Duration timeout = const Duration(seconds: 15),
     int routeAttempt = 0,
   }) async {
@@ -645,6 +657,7 @@ class _BoundedHlsResumeHttp extends ControlledHttp {
     int resumeOffset = 0,
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    void Function(int bytesWritten)? onProgress,
     Duration timeout = const Duration(seconds: 15),
     int routeAttempt = 0,
   }) async {
@@ -733,6 +746,7 @@ class _Invalid416HlsHttp extends ControlledHttp {
     int resumeOffset = 0,
     int maxBytes = 2 * 1024 * 1024 * 1024,
     Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    void Function(int bytesWritten)? onProgress,
     Duration timeout = const Duration(seconds: 15),
     int routeAttempt = 0,
   }) async {
