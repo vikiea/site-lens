@@ -76,6 +76,33 @@ class SystemMediaNetworkTest {
         assertEquals(true, SystemMediaNetwork.fakeIp(InetAddress.getByName("198.19.0.1")))
     }
 
+    @Test
+    fun directMediaRouteMayUseDnsFakeIpWhenProxyPolicyAllowsIt() {
+        val target = URI("https://cdn.example/a")
+        val connection = object : HttpURLConnection(target.toURL()) {
+            override fun connect() = Unit
+            override fun disconnect() = Unit
+            override fun usingProxy() = false
+        }
+        val actual = SystemMediaNetwork.openConnection(
+            target,
+            allowProxyFakeIp = true,
+            selector = selector { listOf(Proxy.NO_PROXY) },
+            resolve = { arrayOf(InetAddress.getByName("198.18.0.7")) },
+            open = { _, _ -> connection },
+        )
+        assertEquals(connection, actual)
+    }
+
+    @Test
+    fun fakeIpRequiresVpnOrExplicitNonVpnCapabilityAndDirectRoute() {
+        assertEquals(true, SystemMediaNetwork.fakeIpRouteAllowed(true, true, true, true))
+        assertEquals(true, SystemMediaNetwork.fakeIpRouteAllowed(false, false, true, true))
+        assertEquals(false, SystemMediaNetwork.fakeIpRouteAllowed(false, null, true, true))
+        assertEquals(false, SystemMediaNetwork.fakeIpRouteAllowed(false, false, false, true))
+        assertEquals(false, SystemMediaNetwork.fakeIpRouteAllowed(false, false, true, false))
+    }
+
     private fun selector(select: (URI) -> List<Proxy>) = object : ProxySelector() {
         override fun select(uri: URI) = select.invoke(uri)
         override fun connectFailed(uri: URI, address: SocketAddress, error: IOException) = Unit

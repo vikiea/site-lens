@@ -498,6 +498,35 @@ void main() {
     );
   });
 
+  test('temporary line parameters collapse display duplicates only', () {
+    final first = Uri.parse(
+      'https://cdn.example/live/index.m3u8?line=54&t=one',
+    );
+    final second = Uri.parse(
+      'https://cdn.example/live/index.m3u8?line=55&t=two',
+    );
+    expect(
+      mediaCandidateGroupKey(first),
+      isNot(mediaCandidateGroupKey(second)),
+    );
+    expect(
+      mediaCandidateAuthorizationKey(first),
+      isNot(mediaCandidateAuthorizationKey(second)),
+    );
+    expect(
+      mediaCandidateDisplayGroupKey(candidate(url: first.toString())),
+      mediaCandidateDisplayGroupKey(candidate(url: second.toString())),
+    );
+    expect(
+      mediaCandidateGroupKey(Uri.parse('https://cdn.example/live/index.m3u8')),
+      isNot(
+        mediaCandidateGroupKey(
+          Uri.parse('https://cdn.example/live/index.m3u8?line=54&t=one'),
+        ),
+      ),
+    );
+  });
+
   test('HLS transport segments are never selectable media', () {
     final segment = candidate(
       url: 'https://cdn.example/live/segment0.ts?auth=short-lived',

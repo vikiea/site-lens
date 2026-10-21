@@ -828,7 +828,15 @@ Uri? optionalMediaUri(String? raw) {
 /// picker. The selected candidate still keeps its complete URL for playback;
 /// task/cache identity continues to use [mediaCandidateGroupKey].
 String mediaCandidateDisplayGroupKey(MediaCandidate candidate) {
-  return mediaCandidateAuthorizationKey(candidate.mediaUrl);
+  final clean = candidate.mediaUrl.removeFragment();
+  if (clean.queryParameters.isEmpty) return clean.toString();
+  final retained = <String, String>{};
+  for (final entry in clean.queryParameters.entries) {
+    if (entry.key.toLowerCase() != 'line') retained[entry.key] = entry.value;
+  }
+  return mediaCandidateAuthorizationKey(
+    clean.replace(queryParameters: retained),
+  );
 }
 
 enum MediaTaskState {

@@ -764,6 +764,7 @@ class DlnaCastController extends ChangeNotifier {
   int? _volume;
   bool _volumeSupported = false;
   bool _seekSupported = true;
+  bool _remoteHls = false;
   Uri? _expectedUri;
   bool _disposed = false;
 
@@ -831,9 +832,11 @@ class DlnaCastController extends ChangeNotifier {
             mediaUrl.userInfo.isNotEmpty)) {
       throw StateError('远程投屏媒体地址无效');
     }
+    final remoteHls = localHlsPlaylist == null && _isHlsMime(mime);
     sessions.begin(device: device, mediaTaskId: mediaTaskId);
     final epoch = ++_epoch;
     _device = device;
+    _remoteHls = remoteHls;
     _resetControls();
     _changed();
     DlnaSoapClient? soap;
@@ -937,7 +940,7 @@ class DlnaCastController extends ChangeNotifier {
       }
       return result;
     } catch (error) {
-      final reported = _normalizeCastError(error, mime);
+      final reported = _normalizeCastError(error, mime, remoteHls: remoteHls);
       soap?.close();
       await relay?.close();
       await hlsRelay?.close();
@@ -1031,7 +1034,12 @@ class DlnaCastController extends ChangeNotifier {
       _transport = transport;
       _changed();
       if (transport.status != 'OK') {
-        await _failActive(epoch, '电视播放失败：${transport.status}');
+        await _failActive(
+          epoch,
+          _remoteHls
+              ? '电视无法拉取远程 HLS，请重新投屏以使用本地 MP4 转换'
+              : '电视播放失败：${transport.status}',
+        );
       } else if (transport.state == 'STOPPED' ||
           transport.state == 'NO_MEDIA_PRESENT') {
         _epoch++;
@@ -1391,10 +1399,22 @@ class DlnaCastController extends ChangeNotifier {
     super.dispose();
   }
 
-  Object _normalizeCastError(Object error, String mime) {
+  Object _normalizeCastError(
+    Object error,
+    String mime, {
+    bool remoteHls = false,
+  }) {
     if (error is DlnaSoapException &&
         (error.upnpCode == 704 || error.upnpCode == 714)) {
       return DlnaUnsupportedFormatException(mime: mime);
+    }
+    if (remoteHls &&
+        error is StateError &&
+        (error.message.contains('电视未确认') || error.message.contains('电视播放失败'))) {
+      // A renderer can advertise HLS in Sink but still be unable to fetch the
+      // remote CDN URL. Let the playback screen use its local HLS/MP4 relay
+      // fallback instead of surfacing a generic DLNA component failure.
+      return DlnaUnsupportedFormatException(mime: mime, unknown: true);
     }
     if (error is TimeoutException ||
         error is SocketException ||

@@ -9,6 +9,7 @@ import android.webkit.CookieManager
 import android.webkit.WebSettings
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import java.net.InetAddress
 import java.net.URI
 import java.util.concurrent.Executors
 import java.io.File
@@ -37,8 +38,7 @@ class MediaNetworkRuntime(appContext: Context) : MethodChannel.MethodCallHandler
                 val uri = URI(call.argument<String>("url") ?: error("缺少媒体地址"))
                 val attempt = call.argument<Int>("attempt") ?: 0
                 val proxy = SystemMediaNetwork.configuration(uri, attempt = attempt)
-                val vpn = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
-                    ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+                val vpn = allowsProxyFakeIp(uri)
                 val cookie = runCatching {
                     CookieManager.getInstance().getCookie(uri.toString())
                 }.getOrNull()
@@ -62,8 +62,7 @@ class MediaNetworkRuntime(appContext: Context) : MethodChannel.MethodCallHandler
             require(job.matches(Regex("[A-Za-z0-9_-]{1,100}"))) { "下载任务无效" }
             val transfer = ResumableMediaTransfer(
                 connectForAttempt = { uri, attempt ->
-                    val vpn = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
-                        ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+                    val vpn = allowsProxyFakeIp(uri)
                     SystemMediaNetwork.openConnection(uri, allowProxyFakeIp = vpn, attempt = attempt)
                 },
             )
@@ -81,6 +80,27 @@ class MediaNetworkRuntime(appContext: Context) : MethodChannel.MethodCallHandler
     private fun failTransfer(result: MethodChannel.Result, error: Throwable) {
         val code = if (error is MediaAuthorizationException) "media_authorization" else "media_transfer"
         result.error(code, error.message ?: "媒体连接失败，已保留缓存，可重试", null)
+    }
+
+    /**
+     * TUN/VPN implementations do not all expose TRANSPORT_VPN on Android.
+     * Fake-IP DNS is still a positive signal that the direct socket is meant
+     * to be intercepted by the system network path, so allow it through the
+     * media route policy in that case.
+     */
+    private fun allowsProxyFakeIp(uri: URI): Boolean {
+        val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
+        val directRoute = runCatching { SystemMediaNetwork.hasDirectRoute(uri) }
+            .getOrDefault(false)
+        val fakeIp = runCatching {
+            InetAddress.getAllByName(uri.host).any(SystemMediaNetwork::fakeIp)
+        }.getOrDefault(false)
+        return SystemMediaNetwork.fakeIpRouteAllowed(
+            vpnTransport = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true,
+            explicitlyNotVpn = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN),
+            directRoute = directRoute,
+            dnsContainsFakeIp = fakeIp,
+        )
     }
 
     private fun transferFile(call: MethodCall, transfer: ResumableMediaTransfer) {

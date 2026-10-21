@@ -9,8 +9,11 @@ import androidx.work.WorkerParameters
 import java.io.File
 import java.io.IOException
 import java.io.InterruptedIOException
+import java.net.InetAddress
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
 import android.webkit.CookieManager
 
 /** Bounded native work slices. WorkManager reschedules interrupted work with
@@ -26,71 +29,80 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
             val current = repository.read(taskId)
             return isStopped || current == null || current.workId != id.toString() || current.paused || current.cancelled
         }
-        return withFileLock(applicationContext, taskId) {
-            if (isObsolete()) return@withFileLock Result.failure()
-            val record = repository.read(taskId) ?: return@withFileLock Result.failure()
-            val partial = partialFile(applicationContext, record)
-            val finalFile = finalFile(applicationContext, record)
-            if (finalFile.isFile && finalFile.length() > 0L) {
-                return@withFileLock success(finalFile)
-            }
-            val transfer = ResumableMediaTransfer(
-                cancelled = { isObsolete() || SystemClock.elapsedRealtime() >= deadline },
-                connectForAttempt = { uri, attempt ->
-                    val connectivity = applicationContext.getSystemService(android.net.ConnectivityManager::class.java)
-                    val vpn = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
-                        ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true
-                    SystemMediaNetwork.openConnection(uri, allowProxyFakeIp = vpn, attempt = attempt)
-                },
-            )
-            ownedTransfer = transfer
-            transfers[taskId] = transfer
-            try {
-                partial.parentFile?.mkdirs()
-                var lastProgress = 0L
-                val initialUrl = validateUrl(record.url)
-                val sourceUrl = validateUrl(record.sourceUrl.ifBlank { record.url })
-                transfer.transfer(
-                    initialUrl,
-                    sourceUrl,
-                    partial,
-                    android.webkit.WebSettings.getDefaultUserAgent(applicationContext),
-                    requestCookies = { uri ->
-                        runCatching {
-                            CookieManager.getInstance().getCookie(uri.toString())
-                        }.getOrNull()
-                    },
-                    onProgress = { bytes, total ->
-                        val now = SystemClock.elapsedRealtime()
-                        if (now - lastProgress >= 1000) {
-                            lastProgress = now
-                            setProgressAsync(Data.Builder().putLong("bytesDownloaded", bytes)
-                                .putLong("totalBytes", total ?: -1L).build())
-                        }
+        val acquired = try {
+            downloadSlots.tryAcquire(30, TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+        if (!acquired) return Result.retry()
+        try {
+            return withFileLock(applicationContext, taskId) {
+                if (isObsolete()) return@withFileLock Result.failure()
+                val record = repository.read(taskId) ?: return@withFileLock Result.failure()
+                val partial = partialFile(applicationContext, record)
+                val finalFile = finalFile(applicationContext, record)
+                if (finalFile.isFile && finalFile.length() > 0L) {
+                    return@withFileLock success(finalFile)
+                }
+                val transfer = ResumableMediaTransfer(
+                    cancelled = { isObsolete() || SystemClock.elapsedRealtime() >= deadline },
+                    connectForAttempt = { uri, attempt ->
+                        val vpn = allowsProxyFakeIp(uri)
+                        SystemMediaNetwork.openConnection(uri, allowProxyFakeIp = vpn, attempt = attempt)
                     },
                 )
-                val published = transfer.publishIfActive(::isObsolete) {
-                    check(partial.length() > 0L) { "媒体响应为空" }
-                    check(partial.renameTo(finalFile)) { "无法提交媒体文件" }
+                ownedTransfer = transfer
+                transfers[taskId] = transfer
+                try {
+                    partial.parentFile?.mkdirs()
+                    var lastProgress = 0L
+                    val initialUrl = validateUrl(record.url)
+                    val sourceUrl = validateUrl(record.sourceUrl.ifBlank { record.url })
+                    transfer.transfer(
+                        initialUrl,
+                        sourceUrl,
+                        partial,
+                        android.webkit.WebSettings.getDefaultUserAgent(applicationContext),
+                        requestCookies = { uri ->
+                            runCatching {
+                                CookieManager.getInstance().getCookie(uri.toString())
+                            }.getOrNull()
+                        },
+                        onProgress = { bytes, total ->
+                            val now = SystemClock.elapsedRealtime()
+                            if (now - lastProgress >= 1000) {
+                                lastProgress = now
+                                setProgressAsync(Data.Builder().putLong("bytesDownloaded", bytes)
+                                    .putLong("totalBytes", total ?: -1L).build())
+                            }
+                        },
+                    )
+                    val published = transfer.publishIfActive(::isObsolete) {
+                        check(partial.length() > 0L) { "媒体响应为空" }
+                        check(partial.renameTo(finalFile)) { "无法提交媒体文件" }
+                    }
+                    if (published == null) return@withFileLock Result.failure()
+                    File(partial.path + ".resume").delete()
+                    File(partial.path + ".resume.tmp").delete()
+                    success(finalFile)
+                } catch (error: MediaAuthorizationException) {
+                    failure("reauthorize", "下载地址需要重新授权")
+                } catch (error: InterruptedIOException) {
+                    if (isObsolete()) Result.failure() else Result.retry()
+                } catch (error: IOException) {
+                    if (isObsolete()) Result.failure()
+                    else if (runAttemptCount < 4) Result.retry()
+                    else failure("network", "网络连接中断，已保留已下载内容，可重试")
+                } catch (error: Exception) {
+                    failure("download_failed", error.message ?: "媒体下载失败")
+                } finally {
+                    transfers.remove(taskId, transfer)
+                    ownedTransfer = null
                 }
-                if (published == null) return@withFileLock Result.failure()
-                File(partial.path + ".resume").delete()
-                File(partial.path + ".resume.tmp").delete()
-                success(finalFile)
-            } catch (error: MediaAuthorizationException) {
-                failure("reauthorize", "下载地址需要重新授权")
-            } catch (error: InterruptedIOException) {
-                if (isObsolete()) Result.failure() else Result.retry()
-            } catch (error: IOException) {
-                if (isObsolete()) Result.failure()
-                else if (runAttemptCount < 4) Result.retry()
-                else failure("network", "网络连接中断，已保留已下载内容，可重试")
-            } catch (error: Exception) {
-                failure("download_failed", error.message ?: "媒体下载失败")
-            } finally {
-                transfers.remove(taskId, transfer)
-                ownedTransfer = null
             }
+        } finally {
+            downloadSlots.release()
         }
     }
 
@@ -106,8 +118,27 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
     private fun failure(code: String, reason: String): Result =
         Result.failure(Data.Builder().putString("errorCode", code).putString("errorReason", reason).build())
 
+    private fun allowsProxyFakeIp(uri: URI): Boolean {
+        val connectivity = applicationContext.getSystemService(
+            android.net.ConnectivityManager::class.java,
+        )
+        val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
+        val directRoute = runCatching { SystemMediaNetwork.hasDirectRoute(uri) }
+            .getOrDefault(false)
+        val fakeIp = runCatching {
+            InetAddress.getAllByName(uri.host).any(SystemMediaNetwork::fakeIp)
+        }.getOrDefault(false)
+        return SystemMediaNetwork.fakeIpRouteAllowed(
+            vpnTransport = capabilities?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true,
+            explicitlyNotVpn = capabilities?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN),
+            directRoute = directRoute,
+            dnsContainsFakeIp = fakeIp,
+        )
+    }
+
     companion object {
         private val transfers = ConcurrentHashMap<String, ResumableMediaTransfer>()
+        private val downloadSlots = Semaphore(2, true)
         // In-process monitors prevent OverlappingFileLockException while the
         // OS lock additionally protects against a second app process.
         private val fileMonitors = ConcurrentHashMap<String, Any>()
@@ -152,5 +183,6 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
             SystemMediaNetwork.validateTarget(uri)
             return uri
         }
+
     }
 }

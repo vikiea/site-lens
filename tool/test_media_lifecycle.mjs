@@ -122,6 +122,22 @@ assert.ok(mimeValues.includes('application/vnd.apple.mpegurl'));
 assert.ok(mimeValues.includes('video/mp4'));
 console.log('Direct frame handshake and split state/candidate telemetry PASS.');
 
+dataElements.length = 0;
+performanceEntries.length = 0;
+nodes.forEach(node => { node.isConnected = false; });
+nodes.length = 0;
+dataElements.push(
+  new DataElement({'data-play-src': '/assets/one.m3u8?line=54&t=first'}),
+  new DataElement({'data-play-src': '/assets/one.m3u8?line=55&t=second'}),
+);
+mutation();
+await waitForReport();
+const lineCandidates = outbound.filter(value => value.kind === 'candidates').at(-1).candidates;
+assert.equal(lineCandidates.length, 1);
+console.log('Temporary line parameters collapse one page candidate PASS.');
+
+nodes.push(new Media());
+await nodes[0].play();
 await native('pause');
 assert.equal(nodes[0].paused, true);
 assert.ok(outbound.some(value => value.kind === 'ack' && value.ok === true));

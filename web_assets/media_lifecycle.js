@@ -142,7 +142,7 @@
     return Number.isFinite(value) && value > 0 && value < 100000 ? value : null;
   }
   function candidateKey(url) {
-    const volatile = /^(?:auth|auth_key|expires?|exp|hmac|sig(?:nature)?|sign|t|time|timestamp|token|via|via_bm)$/i;
+    const volatile = /^(?:auth|auth_key|expires?|exp|hmac|line|sig(?:nature)?|sign|t|time|timestamp|token|via|via_bm)$/i;
     for (const key of Array.from(url.searchParams.keys())) {
       if (volatile.test(key)) url.searchParams.delete(key);
     }

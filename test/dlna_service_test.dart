@@ -362,6 +362,29 @@ void _httpTests() {
       },
     );
 
+    test('remote HLS playback failure guides local relay conversion', () async {
+      receiver.sink = 'http-get:*:application/vnd.apple.mpegurl:*';
+      receiver.trackOverride = 'http://example.com/previous.m3u8';
+      await expectLater(
+        cast.cast(
+          device: device,
+          mediaTaskId: task.id,
+          mediaUrl: Uri.parse('https://cdn.example/remote.m3u8'),
+          mime: 'application/vnd.apple.mpegurl',
+          title: '远程 HLS',
+        ),
+        throwsA(
+          isA<DlnaUnsupportedFormatException>().having(
+            (error) => error.requiresMp4,
+            'requiresMp4',
+            isTrue,
+          ),
+        ),
+      );
+      expect(cast.active!.state, CastSessionState.failed);
+      expect(tasks.canDelete(task.id), isTrue);
+    });
+
     test(
       'SOAP MIME fault with any prefix gives HLS conversion guidance',
       () async {

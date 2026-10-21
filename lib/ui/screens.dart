@@ -3985,7 +3985,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
             ' - 批次${DateTime.now().microsecondsSinceEpoch}',
           )
         : null;
-    final starts = <Future<void>>[];
+    final pending = <({MediaTask task, MediaCandidate candidate})>[];
     for (final candidate in candidates) {
       try {
         final authorized = widget.app.hosts.authorizeMediaCandidate(
@@ -4005,21 +4005,36 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
           batchDirectory: batchName,
         );
         added++;
-        starts.add(
-          widget.app.mediaDownloads
-              .startNative(task, authorized)
-              .then<void>(
-                (_) {},
-                onError: (Object _) {
-                  failed++;
-                },
-              ),
-        );
+        pending.add((task: task, candidate: authorized));
       } catch (_) {
         failed++;
       }
     }
-    await Future.wait(starts);
+    // HLS downloads open a manifest, key, and many segment connections. Keep
+    // the batch bounded so a system proxy or CDN edge is not overwhelmed by
+    // every episode starting its handshake at the same time.
+    var cursor = 0;
+    Future<void> runWorker() async {
+      while (true) {
+        final index = cursor++;
+        if (index >= pending.length) return;
+        final item = pending[index];
+        try {
+          await widget.app.mediaDownloads.startNative(
+            item.task,
+            item.candidate,
+          );
+        } catch (_) {
+          failed++;
+        }
+      }
+    }
+
+    if (pending.isNotEmpty) {
+      await Future.wait(
+        List.generate(math.min(2, pending.length), (_) => runWorker()),
+      );
+    }
     if (!mounted) return;
     final parts = <String>[];
     if (added > 0) parts.add('已加入 $added 个');

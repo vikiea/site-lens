@@ -52,6 +52,17 @@ object SystemMediaNetwork {
         return selected
     }
 
+    fun hasDirectRoute(uri: URI, selector: ProxySelector? = ProxySelector.getDefault()): Boolean =
+        proxies(uri, selector).any { it.type() == Proxy.Type.DIRECT }
+
+    fun fakeIpRouteAllowed(
+        vpnTransport: Boolean,
+        explicitlyNotVpn: Boolean?,
+        directRoute: Boolean,
+        dnsContainsFakeIp: Boolean,
+    ): Boolean =
+        (vpnTransport || explicitlyNotVpn == false) && directRoute && dnsContainsFakeIp
+
     fun configuration(
         uri: URI,
         selector: ProxySelector? = ProxySelector.getDefault(),
