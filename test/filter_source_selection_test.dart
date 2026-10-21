@@ -9,6 +9,7 @@ import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/filter/filter_service.dart';
 import 'package:site_lens/network/transport.dart';
 import 'package:site_lens/ui/app_controller.dart';
+import 'package:site_lens/web_host/host_dto_codec.dart';
 
 import 'fake_web_host_api.dart';
 
@@ -274,6 +275,140 @@ void main() {
       expect(store.activeSnapshot, same(previousSnapshot));
     },
   );
+
+  test(
+    'selection preflight rolls back a bundle over the load budget',
+    () async {
+      store = FilterSnapshotStore(
+        directoryProvider: () async => root,
+        maxRuleCount: 1,
+      );
+      manager = FilterSourceManager(store: store, db: db);
+      await seed(1, '||ads.example^');
+      await seed(2, '||tracker.example^', enabled: false);
+      await manager.rebuildBundle();
+
+      await expectLater(manager.setEnabled(2, true), throwsStateError);
+      expect(
+        (await db.filterSources())
+            .firstWhere((source) => source.id == 2)
+            .enabled,
+        isFalse,
+      );
+      expect(store.activeEngine!.rules, hasLength(1));
+    },
+  );
+
+  test('filter resource limits are explicit and enforce exact payload/rule boundaries', () async {
+    expect(FilterLoadLimits.maxSourceBytes, 10 * 1024 * 1024);
+    expect(FilterLoadLimits.maxPayloadBytes, 32 * 1024 * 1024);
+    expect(FilterLoadLimits.maxRuleCount, 300000);
+
+    final oneRule = '||one.example^';
+    final exactStore = FilterSnapshotStore(
+      directoryProvider: () async => root,
+      maxPayloadBytes: utf8
+          .encode(
+            HostDtoCodec.encodeRules(const [
+              FilterRule(
+                pattern: '||one.example^',
+                block: true,
+                hostOnly: true,
+              ),
+            ]),
+          )
+          .length,
+    );
+    await exactStore.publish(
+      id: 'exact-payload',
+      sourceId: 1,
+      version: '1',
+      sourceUrl: Uri.parse('https://filters.example/1'),
+      source: oneRule,
+      fileRef: 'exact-payload',
+      activate: false,
+    );
+    final tooSmallStore = FilterSnapshotStore(
+      directoryProvider: () async => root,
+      maxPayloadBytes: 1,
+    );
+    await expectLater(
+      tooSmallStore.publish(
+        id: 'too-small-payload',
+        sourceId: 1,
+        version: '1',
+        sourceUrl: Uri.parse('https://filters.example/1'),
+        source: oneRule,
+        fileRef: 'too-small-payload',
+        activate: false,
+      ),
+      throwsStateError,
+    );
+
+    final exactRuleStore = FilterSnapshotStore(
+      directoryProvider: () async => root,
+      maxRuleCount: 1,
+    );
+    await exactRuleStore.publish(
+      id: 'exact-rule',
+      sourceId: 1,
+      version: '1',
+      sourceUrl: Uri.parse('https://filters.example/1'),
+      source: oneRule,
+      fileRef: 'exact-rule',
+      activate: false,
+    );
+    final tooManyRuleStore = FilterSnapshotStore(
+      directoryProvider: () async => root,
+      maxRuleCount: 0,
+    );
+    await expectLater(
+      tooManyRuleStore.publish(
+        id: 'too-many-rules',
+        sourceId: 1,
+        version: '1',
+        sourceUrl: Uri.parse('https://filters.example/1'),
+        source: oneRule,
+        fileRef: 'too-many-rules',
+        activate: false,
+      ),
+      throwsStateError,
+    );
+  });
+
+  test('refresh failure removes the provisional source snapshot and active bundle stays paired', () async {
+    final source = await seed(1, '||old.example^');
+    await seed(2, '||tracker.example^');
+    await manager.rebuildBundle();
+    final previousBundle = store.activeSnapshot;
+    final previousSource = (await db.latestFilterSnapshotsBySource())
+        .firstWhere((snapshot) => snapshot.sourceId == source.id);
+    final other = (await db.latestFilterSnapshotsBySource()).firstWhere(
+      (snapshot) => snapshot.sourceId == 2,
+    );
+    await File(other.fileRef).writeAsString('tampered');
+
+    final http = _PendingFilterHttp();
+    manager = FilterSourceManager(store: store, db: db, http: http);
+    final refresh = manager.refresh(source);
+    await http.started.future;
+    http.result.complete('||new.example^');
+    await expectLater(refresh, throwsStateError);
+
+    final currentSource = (await db.filterSources()).singleWhere(
+      (item) => item.id == source.id,
+    );
+    expect(currentSource.status, FilterSourceStatus.failed);
+    expect(currentSource.fileRef, source.fileRef);
+    expect(
+      (await db.latestFilterSnapshotsBySource())
+          .singleWhere((snapshot) => snapshot.sourceId == source.id)
+          .id,
+      previousSource.id,
+    );
+    expect(store.activeSnapshot, same(previousBundle));
+    expect(store.activeEngine!.rules, hasLength(2));
+  });
 }
 
 class _PendingFilterHttp extends ControlledHttp {

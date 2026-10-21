@@ -9,6 +9,17 @@ import '../data/database.dart';
 import '../domain/models.dart';
 import '../network/transport.dart';
 
+/// Resource guards for subscription input and the compiled bundle. The old
+/// 512 KiB platform-channel budget is handled separately by
+/// the host payload store, which switches to an app-private file transport.
+class FilterLoadLimits {
+  const FilterLoadLimits._();
+
+  static const maxSourceBytes = 10 * 1024 * 1024;
+  static const maxPayloadBytes = 32 * 1024 * 1024;
+  static const maxRuleCount = 300000;
+}
+
 class BuiltInFilterSourceSpec {
   const BuiltInFilterSourceSpec({
     required this.key,
@@ -132,6 +143,24 @@ class FilterRule {
   /// evaluated as JavaScript; unknown names stay in diagnostics.
   final String? scriptlet;
   final List<String> scriptletArgs;
+
+  /// Narrow host representation; credentials and local file paths never enter
+  /// the compiled payload. Kept here so preflight uses the transport encoding.
+  Map<String, Object?> toHostJson() => {
+    'pattern': pattern,
+    if (!block) 'block': false,
+    if (cosmetic) 'cosmetic': true,
+    if (hostOnly) 'hostOnly': true,
+    if (domain != null) 'domain': domain,
+    if (domains.isNotEmpty) 'domains': domains,
+    if (excludedDomains.isNotEmpty) 'excludedDomains': excludedDomains,
+    if (exception) 'exception': true,
+    if (resourceTypes.isNotEmpty)
+      'resourceTypes': resourceTypes.toList(growable: false),
+    if (thirdParty != null) 'thirdParty': thirdParty,
+    if (scriptlet != null) 'scriptlet': scriptlet,
+    if (scriptletArgs.isNotEmpty) 'scriptletArgs': scriptletArgs,
+  };
 
   bool matches(
     Uri url, {
@@ -353,6 +382,12 @@ class FilterCompiler {
       if (line.isEmpty || line.startsWith('!') || line.startsWith('[')) {
         continue;
       }
+      if (line.contains('#@#+js(')) {
+        // Scriptlet exceptions need a paired runtime cancellation model. Do
+        // not miscompile them as CSS selectors; report them as unsupported.
+        unsupported.add(line);
+        continue;
+      }
       final cosmeticMatch = RegExp(r'^(?:[^#\s]+)?##(?!\+js)(.+)$')
           .firstMatch(line);
       final exceptionCosmeticMatch = RegExp(r'^(?:[^#\s]+)?#@#(.+)$')
@@ -566,9 +601,14 @@ class FilterCompiler {
 /// Atomic snapshot publisher.  It writes a temp file, verifies the digest,
 /// then renames it and only afterwards returns the immutable metadata.
 class FilterSnapshotStore {
-  FilterSnapshotStore({Future<Directory> Function()? directoryProvider})
-    : _directoryProvider = directoryProvider ?? getApplicationSupportDirectory;
+  FilterSnapshotStore({
+    Future<Directory> Function()? directoryProvider,
+    this.maxRuleCount = FilterLoadLimits.maxRuleCount,
+    this.maxPayloadBytes = FilterLoadLimits.maxPayloadBytes,
+  }) : _directoryProvider = directoryProvider ?? getApplicationSupportDirectory;
 
+  final int maxRuleCount;
+  final int maxPayloadBytes;
   final Future<Directory> Function() _directoryProvider;
   FilterEngine? _active;
   FilterSnapshot? _activeSnapshot;
@@ -580,6 +620,24 @@ class FilterSnapshotStore {
     _activeSnapshot = null;
   }
 
+  void _validateLoadable(FilterEngine engine) {
+    if (engine.rules.length > maxRuleCount) {
+      throw StateError('过滤规则数量超过内存保护上限（$maxRuleCount 条），请减少启用的规则源');
+    }
+    // Count the exact JSON/UTF-8 representation one rule at a time. A preflight
+    // must not build an additional complete map/JSON/byte copy of the bundle.
+    var size = 2; // []
+    for (var index = 0; index < engine.rules.length; index++) {
+      size += utf8.encode(jsonEncode(engine.rules[index].toHostJson())).length;
+      if (index > 0) size++;
+      if (size > maxPayloadBytes) {
+        throw StateError(
+          '过滤规则超过内存保护上限（${maxPayloadBytes ~/ (1024 * 1024)} MiB），请减少启用的规则源',
+        );
+      }
+    }
+  }
+
   Future<FilterSnapshot> publish({
     required String id,
     required int? sourceId,
@@ -589,6 +647,8 @@ class FilterSnapshotStore {
     required String fileRef,
     bool activate = true,
   }) async {
+    final compiled = const FilterCompiler().compile(source, snapshotId: id);
+    _validateLoadable(compiled.engine);
     final bytes = utf8.encode(source);
     final digest = sha256.convert(bytes).toString();
     final directory = await _directoryProvider();
@@ -597,7 +657,6 @@ class FilterSnapshotStore {
     final safeRef = _safeFileRef(fileRef);
     final destination = File('${root.path}/$safeRef.rules');
     final staging = File('${root.path}/.$safeRef.tmp');
-    final compiled = const FilterCompiler().compile(source, snapshotId: id);
     try {
       await staging.writeAsBytes(bytes, flush: true);
       final check = sha256.convert(await staging.readAsBytes()).toString();
@@ -657,10 +716,12 @@ class FilterSnapshotStore {
     if (sha256.convert(bytes).toString() != snapshot.sha256) {
       throw StateError('规则快照文件摘要不匹配');
     }
-    return const FilterCompiler().compile(
+    final result = const FilterCompiler().compile(
       utf8.decode(bytes),
       snapshotId: snapshot.id,
     );
+    _validateLoadable(result.engine);
+    return result;
   }
 }
 
@@ -672,7 +733,7 @@ class FilterSourceManager {
     required this.store,
     this.db,
     ControlledHttp? http,
-    this.maxBytes = 10 * 1024 * 1024,
+    this.maxBytes = FilterLoadLimits.maxSourceBytes,
   }) : http = http ?? ControlledHttp();
 
   final FilterSnapshotStore store;
@@ -728,24 +789,30 @@ class FilterSourceManager {
   /// a failed refresh can fall back without losing the previous source.
   Future<FilterSnapshot?> rebuildBundle() => _serial(_rebuildBundle);
 
-  Future<FilterSnapshot?> _rebuildBundle() async {
+  Future<FilterSnapshot?> _rebuildBundle({
+    bool allowHistoricalFallback = true,
+  }) async {
     final database = db;
     if (database == null) return store.activeSnapshot;
     final sourceSnapshots = await database.latestFilterSnapshotsBySource();
-    if (sourceSnapshots.isEmpty) {
+    final snapshotsBySource = <int, FilterSnapshot>{
+      for (final snapshot in sourceSnapshots)
+        if (snapshot.sourceId != null) snapshot.sourceId!: snapshot,
+    };
+    if (snapshotsBySource.isEmpty) {
       store.clear();
       return null;
     }
-    sourceSnapshots.sort(
-      (a, b) => (a.sourceId ?? 0).compareTo(b.sourceId ?? 0),
-    );
     final parts = <String>[];
     var unsupported = 0;
     final enabledMetadata = (await database.filterSources())
         .where((source) => source.enabled)
         .toList();
-    final enabledSources = enabledMetadata.map((source) => source.id).toSet();
-    final members = enabledSources.toList()..sort();
+    final members = enabledMetadata.map((source) => source.id).toList()..sort();
+    final selectedSnapshots = [
+      for (final id in members)
+        if (snapshotsBySource[id] != null) snapshotsBySource[id]!,
+    ];
     final selection = [
       for (final id in members)
         [
@@ -754,22 +821,23 @@ class FilterSourceManager {
               .firstWhere((source) => source.id == id)
               .url
               .toString(),
+          snapshotsBySource[id]?.id ?? '',
+          snapshotsBySource[id]?.sha256 ?? '',
         ],
     ];
     final version =
-        'bundle-v2-${sha256.convert(utf8.encode(jsonEncode(selection)))}';
+        'bundle-v3-${sha256.convert(utf8.encode(jsonEncode(selection)))}';
     try {
-      for (final snapshot in sourceSnapshots.reversed) {
+      for (final snapshot in selectedSnapshots.reversed) {
         final sourceId = snapshot.sourceId;
-        if (sourceId == null || !enabledSources.contains(sourceId)) {
-          continue;
-        }
+        if (sourceId == null) continue;
         final compiled = await store.compileSnapshot(snapshot);
         unsupported += snapshot.unsupportedRuleCount;
         parts.add('! Site Lens source ${snapshot.sourceId}\n');
         parts.addAll(compiled.engine.rules.map((rule) => _ruleToSource(rule)));
       }
     } catch (error, stack) {
+      if (!allowHistoricalFallback) Error.throwWithStackTrace(error, stack);
       for (final bundle in await database.filterBundles(version)) {
         try {
           await store.load(bundle);
@@ -781,7 +849,9 @@ class FilterSourceManager {
       Error.throwWithStackTrace(error, stack);
     }
     final source = parts.join('\n');
-    final first = sourceSnapshots.first;
+    final first = selectedSnapshots.isNotEmpty
+        ? selectedSnapshots.first
+        : sourceSnapshots.first;
     final bundleId =
         'filter-bundle-${DateTime.now().toUtc().microsecondsSinceEpoch}';
     final bundle = await store.publish(
@@ -872,6 +942,7 @@ class FilterSourceManager {
     }
     final cancel = cancellation ?? Cancellation();
     final previous = store.activeSnapshot;
+    final previousEngine = store.activeEngine;
     final pending = FilterSource(
       id: source.id,
       label: source.label,
@@ -945,41 +1016,40 @@ class FilterSourceManager {
         fileRef: '$id-${sha256.convert(loaded.bytes)}',
         activate: db == null,
       );
-      await db?.saveFilterSnapshot(snapshot);
-      await db?.saveFilterSource(
-        FilterSource(
-          id: source.id,
-          label: source.label,
-          // Keep the subscription identity stable across mirror fallback.
-          // The actual transport URL belongs to the snapshot metadata.
-          url: source.url,
-          profileId: source.profileId,
-          kind: source.kind,
-          enabled: source.enabled,
-          version: source.version,
-          license: source.license,
-          sha256: snapshot.sha256,
-          status: snapshot.state == FilterSnapshotState.valid
-              ? FilterSourceStatus.valid
-              : FilterSourceStatus.degraded,
-          fileRef: snapshot.fileRef,
-          refreshedAt: snapshot.createdAt,
-          error: snapshot.state == FilterSnapshotState.valid
-              ? null
-              : '已缓存；${snapshot.unsupportedRuleCount} 条规则语法未支持',
-        ),
-      );
-      final bundle = await _rebuildBundle();
-      if (bundle == null) throw StateError('没有可用规则快照');
-      return bundle;
+      if (db == null) return snapshot;
+      return await db!.transaction(() async {
+        await db!.saveFilterSnapshot(snapshot);
+        await db!.saveFilterSource(
+          FilterSource(
+            id: source.id,
+            label: source.label,
+            // Keep the subscription identity stable across mirror fallback.
+            // The actual transport URL belongs to the snapshot metadata.
+            url: source.url,
+            profileId: source.profileId,
+            kind: source.kind,
+            enabled: source.enabled,
+            version: source.version,
+            license: source.license,
+            sha256: snapshot.sha256,
+            status: snapshot.state == FilterSnapshotState.valid
+                ? FilterSourceStatus.valid
+                : FilterSourceStatus.degraded,
+            fileRef: snapshot.fileRef,
+            refreshedAt: snapshot.createdAt,
+            error: snapshot.state == FilterSnapshotState.valid
+                ? null
+                : '已缓存；${snapshot.unsupportedRuleCount} 条规则语法未支持',
+          ),
+        );
+        final bundle = await _rebuildBundle(allowHistoricalFallback: false);
+        if (bundle == null) throw StateError('没有可用规则快照');
+        return bundle;
+      });
     } catch (error) {
-      // The active store intentionally remains on [previous]. Keep this local
-      // fallback assertion as a regression guard for future store changes.
-      if (previous == null) {
-        store.clear();
-      } else {
-        await store.load(previous);
-      }
+      // Roll back the active pointers with the source/bundle database transaction.
+      store._active = previousEngine;
+      store._activeSnapshot = previous;
       await db?.saveFilterSource(
         FilterSource(
           id: source.id,

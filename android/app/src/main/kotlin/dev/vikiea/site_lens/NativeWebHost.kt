@@ -435,6 +435,20 @@ private data class NativeFilterState(
     val snapshotId: String = "",
 )
 
+internal data class NativeFilterInjectionSelection(
+    val cosmetic: List<NativeFilterRule>,
+    val scriptlets: List<NativeFilterRule>,
+)
+
+internal const val MAX_FILTER_INJECTION_BYTES = 4 * 1024 * 1024
+
+/** Preserve all frame scopes. The runtime applies per-frame budgets after exceptions. */
+internal fun selectFilterInjectionRules(rules: List<NativeFilterRule>): NativeFilterInjectionSelection =
+    NativeFilterInjectionSelection(
+        cosmetic = rules.filter { it.cosmetic && it.scriptlet == null },
+        scriptlets = rules.filter { it.scriptlet != null },
+    )
+
 private const val FILTER_RUNTIME_ASSET = "flutter_assets/web_assets/filter_runtime.js"
 
 @Suppress("SetJavaScriptEnabled")
@@ -608,20 +622,41 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     private fun registerFilterInjection(state: NativeFilterState): ScriptHandler? {
         if (!state.enabled || !state.pageFiltering || !hasStart || destroyed) return null
         val source = activity.assets.open(FILTER_RUNTIME_ASSET).bufferedReader().use { it.readText() }
-        val cosmetic = state.rules.filter { it.cosmetic && it.scriptlet == null && isSafeCosmeticSelector(it.pattern) }.map { rule ->
-            JSONObject().put("selector", rule.pattern).put("domain", rule.domain ?: "*")
+        val selected = selectFilterInjectionRules(state.rules)
+        val cosmeticJson = mutableListOf<String>()
+        val scriptletJson = mutableListOf<String>()
+        var encodedBytes = 0
+        fun appendEncoded(target: MutableList<String>, value: String): Boolean {
+            encodedBytes += value.toByteArray(Charsets.UTF_8).size + 1
+            if (encodedBytes > MAX_FILTER_INJECTION_BYTES) return false
+            target += value
+            return true
+        }
+        for (rule in selected.cosmetic) {
+            if (!isSafeCosmeticSelector(rule.pattern)) continue
+            val value = JSONObject().put("selector", rule.pattern).put("domain", rule.domain ?: "*")
                 .put("domains", JSONArray(rule.domains)).put("excludedDomains", JSONArray(rule.excludedDomains))
-                .put("exception", rule.exception)
-        }.take(128)
-        val scriptlets = state.rules.filter { it.scriptlet != null }.map { rule ->
-            JSONObject().put("domain", rule.pattern).put("name", rule.scriptlet)
-                .put("args", JSONArray(rule.scriptletArgs))
-        }.take(32)
+                .put("exception", rule.exception).toString()
+            if (!appendEncoded(cosmeticJson, value)) {
+                throw IllegalStateException("页面过滤规则超过 ${MAX_FILTER_INJECTION_BYTES / (1024 * 1024)} MiB document-start 预算")
+            }
+        }
+        for (rule in selected.scriptlets) {
+            val value = JSONObject().put("domain", rule.pattern).put("name", rule.scriptlet)
+                .put("domains", JSONArray(rule.domains)).put("excludedDomains", JSONArray(rule.excludedDomains))
+                .put("args", JSONArray(rule.scriptletArgs)).toString()
+            if (!appendEncoded(scriptletJson, value)) {
+                throw IllegalStateException("页面过滤规则超过 ${MAX_FILTER_INJECTION_BYTES / (1024 * 1024)} MiB document-start 预算")
+            }
+        }
         val config = JSONObject()
             .put("enabled", true)
-            .put("selectors", JSONArray(cosmetic))
-            .put("scriptlets", JSONArray(scriptlets))
+            .put("selectors", JSONArray().apply { cosmeticJson.forEach { put(JSONObject(it)) } })
+            .put("scriptlets", JSONArray().apply { scriptletJson.forEach { put(JSONObject(it)) } })
             .put("snapshotId", state.snapshotId)
+        if (config.toString().toByteArray(Charsets.UTF_8).size > MAX_FILTER_INJECTION_BYTES) {
+            throw IllegalStateException("页面过滤规则超过 ${MAX_FILTER_INJECTION_BYTES / (1024 * 1024)} MiB document-start 预算")
+        }
         return if (hasWorld) {
             val world = WebViewCompat.getExecutionWorld(webView, JavaScriptExecutionWorld.PAGE_WORLD_NAME)
             WebViewCompat.addJavaScriptOnEvent(webView, source.replace("__SITE_LENS_FILTER_CONFIG__", config.toString()), WebViewCompat.INJECTION_EVENT_DOCUMENT_START, setOf("*"), world)

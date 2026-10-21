@@ -341,6 +341,7 @@ void main() {
     expect(find.text('拦截域名'), findsOneWidget);
     expect(find.text('例外域名'), findsOneWidget);
     expect(find.text('规则源'), findsOneWidget);
+    expect(find.textContaining('大型规则源会自动加载'), findsOneWidget);
     expect(app.filterSourceList, hasLength(builtInFilterSources.length));
     expect(
       app.filterSourceList.every((source) => source.kind == 'builtin'),

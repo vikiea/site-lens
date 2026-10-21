@@ -88,22 +88,7 @@ class HostDtoCodec {
   static String encodeRules(List<FilterRule> rules) =>
       encodeRuleMaps(rules.map(encodeRule).toList(growable: false));
 
-  static Map<String, Object?> encodeRule(FilterRule rule) => <String, Object?>{
-    'pattern': rule.pattern,
-    if (!rule.block) 'block': false,
-    if (rule.cosmetic) 'cosmetic': true,
-    if (rule.hostOnly) 'hostOnly': true,
-    if (rule.domain != null) 'domain': rule.domain,
-    if (rule.domains.isNotEmpty) 'domains': rule.domains,
-    if (rule.excludedDomains.isNotEmpty)
-      'excludedDomains': rule.excludedDomains,
-    if (rule.exception) 'exception': true,
-    if (rule.resourceTypes.isNotEmpty)
-      'resourceTypes': rule.resourceTypes.toList(growable: false),
-    if (rule.thirdParty != null) 'thirdParty': rule.thirdParty,
-    if (rule.scriptlet != null) 'scriptlet': rule.scriptlet,
-    if (rule.scriptletArgs.isNotEmpty) 'scriptletArgs': rule.scriptletArgs,
-  };
+  static Map<String, Object?> encodeRule(FilterRule rule) => rule.toHostJson();
 
   static String encodeRuleMaps(List<Map<String, Object?>> rules) =>
       jsonEncode(rules);

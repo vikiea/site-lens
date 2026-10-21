@@ -16,7 +16,6 @@
   const selectorRules = Array.isArray(config.selectors)
     ? config.selectors.filter(safeSelector)
     : [];
-  const scriptlets = Array.isArray(config.scriptlets) ? config.scriptlets : [];
   const hostMatches = (domain, domains, excludedDomains) => {
     const host = String(location.hostname || '').toLowerCase();
     const excluded = Array.isArray(excludedDomains) && excludedDomains.some(item => {
@@ -54,25 +53,31 @@
   };
   const effectiveSelectors = () => {
     const blocked = new Set();
+    const exceptions = new Set();
     for (const item of selectorRules) {
       const selector = typeof item === 'string' ? item : item.selector;
       const domain = typeof item === 'string' ? '*' : item.domain;
       if (!hostMatches(domain, typeof item === 'string' ? null : item.domains, typeof item === 'string' ? null : item.excludedDomains)) continue;
-      if (typeof item !== 'string' && item.exception) blocked.delete(selector);
+      if (typeof item !== 'string' && item.exception) exceptions.add(selector);
       else blocked.add(selector);
     }
-    return [...blocked];
+    return [...blocked].filter(selector => !exceptions.has(selector)).slice(0, 128);
   };
+  // Resolve once for this document, before budgets. Unrelated domains must not
+  // consume a frame's budget; exceptions also apply irrespective of source order.
+  const selectors = effectiveSelectors();
+  const scriptlets = (Array.isArray(config.scriptlets) ? config.scriptlets : [])
+    .filter(item => item && hostMatches(item.domain, item.domains, item.excludedDomains))
+    .slice(0, 32);
   const remove = root => {
-    for (const selector of effectiveSelectors()) {
+    for (const selector of selectors) {
       try { root.querySelectorAll(selector).forEach(node => node.remove()); } catch (_) {}
     }
   };
   const install = () => {
     if (!document.documentElement) return false;
-    scriptlets.slice(0, 32).forEach(applyScriptlet);
+    scriptlets.forEach(applyScriptlet);
     remove(document);
-    const selectors = effectiveSelectors();
     if (selectors.length) {
       const style = document.createElement('style');
       style.dataset.siteLensFilter = String(config.snapshotId || '');

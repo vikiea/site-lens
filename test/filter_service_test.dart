@@ -50,6 +50,18 @@ void main() {
     );
   });
 
+  test('scriptlet exceptions are reported unsupported instead of becoming CSS selectors', () {
+    final result = const FilterCompiler().compile(
+      'example.com#@#+js(set-constant,tracker,false)',
+      snapshotId: 'scriptlet-exception',
+    );
+    expect(result.engine.rules, isEmpty);
+    expect(
+      result.unsupportedRules,
+      contains('example.com#@#+js(set-constant,tracker,false)'),
+    );
+  });
+
   test(
     'cosmetic exceptions cancel only their selector and never block requests',
     () {

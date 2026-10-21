@@ -1527,7 +1527,7 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
           SiteLensHelpNotice(
             app: app,
             noticeId: 'filters.overview',
-            text: '规则只处理网页请求和页面元素，不读取 Cookie、账号密码或站点存储。内置推荐源只保存来源地址，点击刷新后才下载、校验并编译规则；不支持的语法会显示为降级状态。',
+            text: '规则只处理网页请求和页面元素，不读取 Cookie、账号密码或站点存储。旧的 512 KiB 通道限制不再作为规则总上限；大型规则源会自动加载，网络规则仍受 32 MiB 和 30 万条资源保护，页面元素规则按 document-start 预算运行。超出保护上限时会提示减少启用源。内置推荐源只保存来源地址，点击刷新后才下载、校验并编译规则；不支持的语法会显示为降级状态。',
           ),
           SiteLensPanel(
             padding: EdgeInsets.zero,

@@ -19,7 +19,7 @@ class FilterPayloadStore {
   FilterPayloadStore({Future<Directory> Function()? directoryProvider})
     : _directoryProvider = directoryProvider ?? getApplicationSupportDirectory;
 
-  static const maxBytes = 32 * 1024 * 1024;
+  static const maxBytes = FilterLoadLimits.maxPayloadBytes;
   final Future<Directory> Function() _directoryProvider;
   FilterEngine? _engine;
   FilterSnapshot? _snapshot;
@@ -49,8 +49,8 @@ class FilterPayloadStore {
     FilterEngine? engine,
   ) async {
     final rules = engine?.rules ?? const <FilterRule>[];
-    if (rules.length > 300000) {
-      throw StateError('过滤规则数量超过内存保护上限（300000 条）');
+    if (rules.length > FilterLoadLimits.maxRuleCount) {
+      throw StateError('过滤规则数量超过内存保护上限（${FilterLoadLimits.maxRuleCount} 条）');
     }
     final ruleMaps = rules.map(HostDtoCodec.encodeRule).toList(growable: false);
     final json = rules.length <= 1000
