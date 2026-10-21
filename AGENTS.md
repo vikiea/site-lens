@@ -28,6 +28,21 @@ Name Dart tests with descriptive `*_test.dart` suffixes and group cases around o
 
 Use imperative Conventional Commit-style subjects with a scope, for example `fix(browser): preserve same-origin leases` or `test(ui): cover tab switching`. Keep commits focused. Pull requests should explain the behavior change, list validation commands, link a related issue or milestone when applicable, and include screenshots or device evidence for visible changes. Mention regenerated files and any Android/iOS scope limitations.
 
+## Release Completion & Records
+
+- For stable promotion, synchronize the remote branches, merge the reviewed feature branch into `main`, and publish a stable tag from that commit using `docs/releasing.md` and `docs/release-channels.md`. Preserve published tags; subsequent fixes receive a new patch version.
+- Treat a successful `Release Site Lens` workflow as release completion. The workflow owns formal signing, package identity, versionCode allocation, and APK/checksum upload. Download published assets again only when investigating a release anomaly or when explicitly requested.
+- Keep final release status, workflow links, and the manual acceptance checklist in GitHub Release notes. Repository validation documents hold reusable procedures, regression cases, and checks already completed before the code commit. Avoid post-release placeholders and follow-up commits solely to fill release evidence.
+- Report independent review, local checks, GitHub Verify, Release, and device acceptance separately. When device checks are explicitly deferred, retain the manual checklist as pending; publication does not establish device acceptance. Verify's debug APK is an internal Actions artifact; the Release APK is the user-facing download.
+- Investigate failed checks before retrying. Turn a confirmed race into a deterministic regression and repair it before claiming that `main` is healthy, even if the same commit passed another workflow run.
+
+## Media & Persistence Contracts
+
+- HLS downloads and exported MP4 documents have independent ownership. Protect both through file leases; preserve exported indexes when task/cache rows disappear, and use persistent source identity to deduplicate rescans. A moved file keeps its catalog ID; a new file at its previous path receives another ID.
+- For HLS remuxing, preserve video decode order and B-frame PTS, and write each AAC access unit separately after removing ADTS transport headers. Validate ASC/ADTS/track configuration, timing, EOS, and output sample counts; existing broken MP4 files require regeneration from HLS.
+- Parse timestamps or normalize their precision before ordering persisted updates. Dart's UTC ISO output can contain three or six fractional digits, which makes raw SQLite text comparison misorder `.123Z` and `.123001Z`. Preserve the atomic upsert and stale-progress guards.
+- Candidate display deduplication may remove known transport/authentication parameters while preserving episode, quality, and audio selection. Keep download/cache authorization identities separate; dropping every HLS query parameter can hide distinct resources.
+
 ## Security & Configuration Tips
 
 Do not commit signing keys, credentials, private URLs, or personal device data. Release builds require the fixed formal signing configuration stored outside the repository; see `docs/android-modernization.md`. Keep user scripts and network permissions fail-closed, and review `docs/support.md` when changing script or browser behavior.
