@@ -17,20 +17,20 @@ dependencies:
   crypto: ^3.0.7
   archive: ^4.5.2
   workmanager: ^0.10.10
-  liquid_glass_widgets: '1.13.0'
+  liquid_glass_widgets: '1.14.0'
   package_info_plus: ^10.2.2
   url_launcher: ^6.3.3
   http: ^1.6.0
   re_editor: ^0.10.0
   re_highlight: ^0.0.3
-  flutter_secure_storage: ^10.0.0-beta.1
+  flutter_secure_storage: ^11.2.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
   integration_test:
     sdk: flutter
   flutter_lints: ^6.0.0
-  pigeon: ^29.0.10
+  pigeon: ^29.0.11
 flutter:
   uses-material-design: true
   assets:
@@ -39,3 +39,4 @@ flutter:
     - web_assets/media_lifecycle.js
     - web_assets/filter_runtime.js
     - integration_test/fixtures/miss_player_5.6.17.user.js
+    - integration_test/fixtures/media3_parity.zip

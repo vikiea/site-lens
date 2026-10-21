@@ -468,6 +468,7 @@ def main() -> int:
             'integration_test/modernization_test.dart',
             'integration_test/script_import_test.dart',
             'integration_test/media_tasks_test.dart',
+            'integration_test/media3_parity_test.dart',
             'integration_test/configured_sites_test.dart',
             'integration_test/navigation_lease_test.dart',
         ],

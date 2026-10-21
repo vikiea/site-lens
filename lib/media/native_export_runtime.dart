@@ -28,8 +28,11 @@ class NativeExportRuntime {
     return result?['output'] as String? ?? output;
   }
 
-  Future<bool> validateOutput(String path) async =>
-      await _channel.invokeMethod<bool>('validateOutput', {'path': path}) ??
+  Future<bool> validateOutput(String path, {String? jobId}) async =>
+      await _channel.invokeMethod<bool>('validateOutput', {
+        'path': path,
+        'jobId': ?jobId,
+      }) ??
       false;
 
   Future<void> cancel({String? jobId}) {
@@ -58,6 +61,13 @@ class NativeExportRuntime {
 
   Future<Map<String, Object?>> inspect(String source) async => (await _channel
       .invokeMapMethod<String, Object?>('inspect', {'source': source}))!;
+
+  /// Read-only sample report for media acceptance. Scans at most two million
+  /// samples and reports the first 512 PTS/sizes per track in decode order.
+  Future<Map<String, Object?>> inspectSamples(String path) async =>
+      (await _channel.invokeMapMethod<String, Object?>('inspectSamples', {
+        'source': path,
+      }))!;
 
   /// Checks readable bytes independently of optional codec metadata.
   Future<Map<String, Object?>> stat(String source) async => (await _channel

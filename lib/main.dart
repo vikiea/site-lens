@@ -112,6 +112,7 @@ class SiteLensApp extends ConsumerWidget {
                   mode: app.settings.glassQualityMode,
                   allSurfacesHighQuality: app.settings.highQualityAllSurfaces,
                   webViewVisible: app.browserSurfaceActive,
+                  hcppEffective: app.deviceDiagnostics.effectiveHcpp,
                 ),
                 child: GlassAccessibilityScope(
                   // The material does not step down for high contrast; contrast is

@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:convert';
 
 import 'package:drift/native.dart';
 import 'package:flutter/widgets.dart';
@@ -16,7 +15,7 @@ import 'package:site_lens/media/native_media_runtime.dart';
 import 'package:site_lens/network/transport.dart';
 import 'package:site_lens/ui/app_controller.dart';
 
-import 'video_fixture.dart';
+import 'media3_fixture.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -96,14 +95,14 @@ void main() {
         );
         final cache = await Directory('${parent.path}/${task.cacheKey}.hls')
             .create();
-        final segment = await File('${cache.path}/segment.mp4')
-            .writeAsBytes(base64Decode(videoFixtureBase64));
-        final playlist = await File('${cache.path}/index.m3u8').writeAsString(
-          '#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\nsegment.mp4\n#EXTINF:2,\nsegment.mp4\n#EXT-X-ENDLIST\n',
-        );
+        await unpackMedia3Fixtures(cache);
+        final playlist = File('${cache.path}/h264_ts/index.m3u8');
         tasks.setLocalRef(task.id, playlist.path);
         tasks.transition(task.id, MediaTaskState.playable);
-        final expected = await playlist.length() + await segment.length();
+        var expected = 0;
+        await for (final file in cache.list(recursive: true)) {
+          if (file is File) expected += await file.length();
+        }
         expect(await tasks.cachedBytes(task.id), expected);
         final input = await const HlsPlaylistParser().parseFile(playlist.uri);
         final export = await Mp4ExportService(

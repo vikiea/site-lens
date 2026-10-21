@@ -2217,7 +2217,7 @@ class MediaDownloadService {
 }
 
 /// Validates a local HLS task before handing it to a native muxer.  No remote
-/// URI, path traversal, or missing segment can reach FFmpeg.
+/// URI, path traversal, or missing segment can reach the native media pipeline.
 class HlsInputValidator {
   const HlsInputValidator();
 
@@ -2427,8 +2427,8 @@ typedef Mp4Muxer = Future<void> Function({
 });
 
 /// Orchestrates a single local-only HLS export. The muxer is injected so the
-/// Dart layer can be tested without shipping an FFmpeg binary; production
-/// supplies the fixed-version JNI implementation.
+/// Dart layer can be tested without a platform runtime; production uses the
+/// pinned Media3 Transformer and Inspector implementation.
 class Mp4ExportService {
   Mp4ExportService({
     required this.tasks,
@@ -2454,24 +2454,30 @@ class Mp4ExportService {
         task.state != MediaTaskState.playable) {
       throw StateError('媒体缓存尚未完成');
     }
-    await validateHlsCacheInput(input);
     final cancel = cancellation ?? Cancellation();
     final report = onProgress ?? (_) {};
-    final root = await _directoryProvider();
     final id = 'export_${DateTime.now().microsecondsSinceEpoch}';
-    final exportFolder = task.batchDirectory == null
-        ? id
-        : '${mediaSeriesDirectoryName(task.batchDirectory!)}/$id';
-    final outputDirectory = Directory(
-      '${root.path}/media_exports/$exportFolder',
-    );
-    await outputDirectory.create(recursive: true);
-    final output = File('${outputDirectory.path}/${mediaExportFileName(task)}');
-    final temporary = File('${output.path}.part');
+    Directory? outputDirectory;
+    File? temporary;
+    File? output;
+    var committed = false;
+    // Validation itself reads the cache asynchronously, so it needs the same
+    // lease as Transformer and the final output scan.
     tasks.retain(taskId);
     try {
       cancel.check();
+      await validateHlsCacheInput(input);
+      cancel.check();
+      final root = await _directoryProvider();
+      final exportFolder = task.batchDirectory == null
+          ? id
+          : '${mediaSeriesDirectoryName(task.batchDirectory!)}/$id';
+      outputDirectory = Directory('${root.path}/media_exports/$exportFolder');
+      await outputDirectory.create(recursive: true);
+      output = File('${outputDirectory.path}/${mediaExportFileName(task)}');
+      temporary = File('${output.path}.part');
       report(0);
+      cancel.check();
       final injectedMuxer = muxer;
       if (injectedMuxer != null) {
         await injectedMuxer(
@@ -2487,12 +2493,23 @@ class Mp4ExportService {
         cancel.check();
         report(10);
         final jobId = 'export-${DateTime.now().microsecondsSinceEpoch}';
-        cancel.onCancel(() => native!.cancel(jobId: jobId));
-        await native!.muxHls(
-          playlist: input.playlist.toFilePath(),
-          output: temporary.path,
-          jobId: jobId,
-        );
+        var nativeJobActive = true;
+        cancel.onCancel(() {
+          if (!nativeJobActive) return;
+          // The mux call remains awaited until the native writer has stopped.
+          // A cancellation-channel failure must not escape the user's action.
+          unawaited(native!.cancel(jobId: jobId).catchError((Object _) {}));
+        });
+        try {
+          cancel.check();
+          await native!.muxHls(
+            playlist: input.playlist.toFilePath(),
+            output: temporary.path,
+            jobId: jobId,
+          );
+        } finally {
+          nativeJobActive = false;
+        }
         report(90);
       } else {
         throw StateError(MediaErrorCode.unsupported);
@@ -2501,11 +2518,33 @@ class Mp4ExportService {
       if (!await temporary.exists() || await temporary.length() == 0) {
         throw StateError('导出文件为空');
       }
-      if (native != null && !await native!.validateOutput(temporary.path)) {
-        throw StateError('输出校验失败');
+      if (native != null) {
+        final validationJobId =
+            'validate-${DateTime.now().microsecondsSinceEpoch}';
+        var validationActive = true;
+        cancel.onCancel(() {
+          if (!validationActive) return;
+          unawaited(
+            native!.cancel(jobId: validationJobId).catchError((Object _) {}),
+          );
+        });
+        try {
+          cancel.check();
+          if (!await native!.validateOutput(
+            temporary.path,
+            jobId: validationJobId,
+          )) {
+            throw StateError('输出校验失败');
+          }
+        } finally {
+          validationActive = false;
+        }
       }
-      report(100);
+      cancel.check();
       await temporary.rename(output.path);
+      cancel.check();
+      committed = true;
+      report(100);
       // MediaLibrary registers the MP4 separately so the original HLS cache
       // remains available after delivery failure or an explicit file deletion.
       return Mp4ExportTask(
@@ -2515,41 +2554,40 @@ class Mp4ExportService {
         outputPath: output.path,
         progress: 100,
       );
-    } on Cancelled {
-      if (await temporary.exists()) await temporary.delete();
-      if (await outputDirectory.exists() &&
-          (await outputDirectory.list().isEmpty)) {
-        await outputDirectory.delete(recursive: true);
-      }
-      return Mp4ExportTask(
-        id: id,
-        mediaTaskId: taskId,
-        state: ExportState.cancelled,
-        outputPath: output.path,
-        errorCode: MediaErrorCode.cancelled,
-        progress: 0,
-      );
     } catch (error, stack) {
-      if (await temporary.exists()) await temporary.delete();
-      if (await outputDirectory.exists() &&
-          (await outputDirectory.list().isEmpty)) {
-        await outputDirectory.delete(recursive: true);
+      // A native cancellation arrives as PlatformException. The cancellation
+      // token still owns the user-visible terminal state and never logs a
+      // cancelled export as a failure.
+      final cancelled = error is Cancelled || cancel.cancelled;
+      if (!committed) {
+        if (temporary != null && await temporary.exists()) {
+          await temporary.delete();
+        }
+        if (output != null && await output.exists()) await output.delete();
+        if (outputDirectory != null &&
+            await outputDirectory.exists() &&
+            await outputDirectory.list().isEmpty) {
+          await outputDirectory.delete();
+        }
       }
-      AppErrorLogger.capture(
-        error,
-        module: 'media.export',
-        context: 'task=$taskId',
-        stack: stack,
-      );
+      if (!cancelled) {
+        AppErrorLogger.capture(
+          error,
+          module: 'media.export',
+          context: 'task=$taskId',
+          stack: stack,
+        );
+      }
       return Mp4ExportTask(
         id: id,
         mediaTaskId: taskId,
-        state: ExportState.failed,
-        outputPath: output.path,
-        errorCode:
-            error is PlatformException &&
-                error.message != null &&
-                error.message!.trim().isNotEmpty
+        state: cancelled ? ExportState.cancelled : ExportState.failed,
+        outputPath: output?.path,
+        errorCode: cancelled
+            ? MediaErrorCode.cancelled
+            : error is PlatformException &&
+                  error.message != null &&
+                  error.message!.trim().isNotEmpty
             ? readableError(StateError(error.message!))
             : readableError(error),
         progress: 0,

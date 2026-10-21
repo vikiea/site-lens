@@ -25,6 +25,87 @@ class HostCapabilities {
   String reason;
 }
 
+/// A query failure is distinct from an unsupported capability. Null values in
+/// a record mean that the passive query has no authoritative answer.
+enum CapabilityState { supported, unsupported, unknown, notApplicable, error }
+
+class CapabilityRecord {
+  CapabilityRecord({
+    required this.id,
+    required this.state,
+    required this.reason,
+    required this.source,
+    required this.capturedAtMs,
+    this.configured,
+    this.effective,
+    this.observed,
+    this.observedAtMs,
+    this.detailsJson,
+  });
+  String id;
+  CapabilityState state;
+  bool? configured;
+  bool? effective;
+  String? observed;
+  String reason;
+  String source;
+  int capturedAtMs;
+  int? observedAtMs;
+  String? detailsJson;
+}
+
+class CodecDescriptor {
+  CodecDescriptor({
+    required this.name,
+    this.mimeType,
+    required this.encoder,
+    this.hardwareAccelerated,
+    this.softwareOnly,
+    this.vendor,
+    this.profileLevelsJson,
+    this.error,
+  });
+  String name;
+  String? mimeType;
+  bool encoder;
+  bool? hardwareAccelerated;
+  bool? softwareOnly;
+  String? vendor;
+  String? profileLevelsJson;
+  String? error;
+}
+
+class DeviceDiagnosticsSnapshot {
+  DeviceDiagnosticsSnapshot({
+    required this.platform,
+    required this.osVersion,
+    required this.appVersion,
+    required this.capturedAtMs,
+    required this.capabilities,
+    this.apiLevel,
+    this.flutterVersion,
+    this.webViewProvider,
+  });
+  String platform;
+  String osVersion;
+  int? apiLevel;
+  String appVersion;
+  String? flutterVersion;
+  String? webViewProvider;
+  int capturedAtMs;
+  List<CapabilityRecord> capabilities;
+}
+
+/// Reads OS declarations and existing observations only. Implementations must
+/// not create views/codecs, request access, probe the network or schedule work.
+@HostApi()
+abstract class DeviceDiagnosticsApi {
+  @asyncCallback
+  DeviceDiagnosticsSnapshot readSnapshot();
+  @asyncCallback
+  List<CodecDescriptor> readCodecInventory();
+}
+
 class ScriptRegistration {
   ScriptRegistration({
     required this.id,

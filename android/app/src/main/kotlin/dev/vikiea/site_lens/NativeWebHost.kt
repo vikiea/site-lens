@@ -491,11 +491,12 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         }
     } else null
     val platformView: View = refreshLayout ?: webView
-    private val hasWorld = WebViewFeature.isFeatureSupported(WebViewFeature.JS_INJECTION_IN_FRAME_AND_WORLD)
-    private val hasNavigation = WebViewFeature.isFeatureSupported(WebViewFeature.NAVIGATION_LISTENER)
-    private val hasStart = hasWorld || WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
-    private val hasProfiles = WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)
-    private val enhanced = hasWorld && hasNavigation
+    private val webCapabilities = NativeWebCapabilityEvaluator.evaluate(activity)
+    private val hasWorld = webCapabilities.hasWorld
+    private val hasNavigation = webCapabilities.hasNavigation
+    private val hasStart = webCapabilities.hasStart
+    private val hasProfiles = webCapabilities.hasProfiles
+    private val enhanced = webCapabilities.enhanced
     val capabilities: HostCapabilities
     var generation = 0L
     var destroyed = false

@@ -12,6 +12,14 @@ val signerPath = System.getenv("SITE_LENS_SIGNING_PROPERTIES")
     ?: "${System.getProperty("user.home")}/.config/site-lens/signing.properties"
 val signerFile = file(signerPath)
 val signer = Properties().apply { if (signerFile.isFile) signerFile.inputStream().use { load(it) } }
+val localSdkProperties = Properties().apply {
+    rootProject.file("local.properties").inputStream().use { load(it) }
+}
+val flutterVersionFile = file("${localSdkProperties.getProperty("flutter.sdk")}/bin/cache/flutter.version.json")
+val builtFlutterVersion = if (flutterVersionFile.isFile) {
+    Regex("\"frameworkVersion\"\\s*:\\s*\"([A-Za-z0-9.+-]+)\"")
+        .find(flutterVersionFile.readText())?.groupValues?.get(1) ?: "unknown"
+} else "unknown"
 check(!releaseRequested || signerFile.isFile) {
     "Formal signer missing. Configure SITE_LENS_SIGNING_PROPERTIES outside the repository."
 }
@@ -32,6 +40,7 @@ android {
 
     defaultConfig {
         manifestPlaceholders["appLabel"] = "择站 · Site Lens"
+        manifestPlaceholders["flutterVersion"] = builtFlutterVersion
         applicationId = "dev.vikiea.site_lens"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
@@ -91,17 +100,20 @@ flutter {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.16.0")
-    implementation("androidx.work:work-runtime:2.11.2")
+    implementation("androidx.core:core-ktx:1.18.0")
+    implementation("androidx.work:work-runtime:2.12.0")
     testImplementation("junit:junit:4.13.2")
     implementation("androidx.webkit:webkit:1.17.1")
-    implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
+    implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.2.0")
     // MediaPlayer cannot reliably decode HLS playlists emitted by modern
     // WebView pages. Media3 supplies a maintained HLS renderer and buffering
     // stack for the native texture player.
     implementation("androidx.media3:media3-exoplayer:1.11.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.11.1")
     implementation("androidx.media3:media3-muxer:1.11.1")
+    implementation("androidx.media3:media3-inspector:1.11.1")
+    implementation("androidx.media3:media3-inspector-frame:1.11.1")
+    implementation("androidx.media3:media3-transformer:1.11.1")
 }
 
 // Formal release builds must never silently fall back to a debug certificate.

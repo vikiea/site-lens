@@ -17,6 +17,7 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -244,6 +245,30 @@ class NativeMediaRuntime(
         }
         val next = playerBuilder.build()
         player = next
+        val observationSession = sessionId!!
+        next.addAnalyticsListener(object : AnalyticsListener {
+            override fun onVideoDecoderInitialized(
+                eventTime: AnalyticsListener.EventTime,
+                decoderName: String,
+                initializedTimestampMs: Long,
+                initializationDurationMs: Long,
+            ) {
+                if (next !== player || observationSession != sessionId) return
+                NativeMediaObservations.recordDecoder(observationSession, decoderName,
+                    next.videoFormat?.sampleMimeType, "video")
+            }
+
+            override fun onAudioDecoderInitialized(
+                eventTime: AnalyticsListener.EventTime,
+                decoderName: String,
+                initializedTimestampMs: Long,
+                initializationDurationMs: Long,
+            ) {
+                if (next !== player || observationSession != sessionId) return
+                NativeMediaObservations.recordDecoder(observationSession, decoderName,
+                    next.audioFormat?.sampleMimeType, "audio")
+            }
+        })
         next.setAudioAttributes(
             AudioAttributes.Builder()
                 .setUsage(C.USAGE_MEDIA)
@@ -339,6 +364,7 @@ class NativeMediaRuntime(
     }
 
     private fun emit(nextState: String, error: String? = null) {
+        sessionId?.let { NativeMediaObservations.recordPlayback(it, nextState) }
         channel?.invokeMethod("state", snapshot(nextState, error))
     }
 
@@ -361,6 +387,7 @@ class NativeMediaRuntime(
     }
 
     private fun stop() {
+        sessionId?.let { NativeMediaObservations.recordPlayback(it, "stopped") }
         player?.let { media ->
             runCatching { media.clearVideoSurface() }
             media.release()

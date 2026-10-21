@@ -35,6 +35,7 @@ class MainActivity : FlutterActivity() {
     private var nativeMedia: NativeMediaRuntime? = null
     private var nativeDownloads: NativeDownloadRuntime? = null
     private var nativeExport: NativeExportRuntime? = null
+    private var deviceDiagnostics: NativeDeviceDiagnostics? = null
     private var dlnaMulticastLock: WifiManager.MulticastLock? = null
     private var diagnosticsExecutor: ExecutorService? = null
     private var diagnosticsGeneration = 0
@@ -87,6 +88,8 @@ class MainActivity : FlutterActivity() {
             }
         }
         hosts = NativeWebHostRegistry(this, flutterEngine)
+        deviceDiagnostics = NativeDeviceDiagnostics(this) { dlnaMulticastLock?.isHeld ?: false }
+        DeviceDiagnosticsApi.setUp(flutterEngine.dartExecutor.binaryMessenger, deviceDiagnostics)
         registerDiagnosticsChannel(flutterEngine)
         registerDeviceChannel(flutterEngine)
         registerUpdateChannel(flutterEngine)
@@ -361,6 +364,9 @@ class MainActivity : FlutterActivity() {
         diagnosticsGeneration++
         diagnosticsExecutor?.shutdownNow()
         diagnosticsExecutor = null
+        DeviceDiagnosticsApi.setUp(flutterEngine.dartExecutor.binaryMessenger, null)
+        deviceDiagnostics?.dispose()
+        deviceDiagnostics = null
         hosts?.dispose(); hosts = null
         nativeMedia?.dispose(); nativeMedia = null
         nativeDownloads?.let { nativeDownloads = null }

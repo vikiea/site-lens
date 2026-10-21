@@ -14,6 +14,7 @@ import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../data/database.dart';
 import '../diagnostics/error_log.dart';
+import '../diagnostics/device_diagnostics.dart';
 import '../browser/browser_session.dart';
 import '../browser/browser_session_store.dart';
 export '../browser/browser_session.dart'
@@ -67,7 +68,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     HttpProbe? httpProbe,
     HomepageVerifier? homepageVerifier,
     BrowserSessionStore? sessionStore,
+    DeviceDiagnosticsService? diagnostics,
   }) {
+    deviceDiagnostics = diagnostics ?? DeviceDiagnosticsService();
+    deviceDiagnostics.addListener(_diagnosticsChanged);
+    unawaited(deviceDiagnostics.refreshHcpp());
     settingsRepository = SettingsRepository(db);
     errorLogger = AppErrorLogger(db);
     glassQualityCacheRepository = SiteLensGlassQualityCacheRepository(db);
@@ -80,6 +85,15 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     nativeDownloads = Platform.isAndroid ? NativeDownloadRuntime() : null;
     nativeExports = Platform.isAndroid ? NativeExportRuntime() : null;
     nativeMedia = NativeMediaRuntime();
+    _diagnosticPlaybackEvents = nativeMedia.states.listen((session) {
+      deviceDiagnostics.recordObservation(
+        id: 'media.playback.session',
+        observed: session.state.name,
+        source: 'NativeMediaRuntime.states',
+        identity: session.id,
+        failed: session.errorCode != null,
+      );
+    });
     mediaDownloads = MediaDownloadService(
       tasks: mediaTasks,
       native: nativeDownloads,
@@ -105,6 +119,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       onSessionFinished: _releaseCastCopy,
     );
     mediaPlayback = NativePlaybackController();
+    mediaCast.addListener(_observeCastForDiagnostics);
     hosts.onNewWindow = (hostId, url) {
       unawaited(_openLinkInNewTab(hostId, url));
     };
@@ -134,6 +149,37 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     )..addListener(notifyListeners);
   }
   final AppDatabase db;
+  late final DeviceDiagnosticsService deviceDiagnostics;
+  StreamSubscription<NativePlaybackSession>? _diagnosticPlaybackEvents;
+
+  void _diagnosticsChanged() {
+    // Diagnostics must not run the media-policy reconciliation performed by
+    // this controller's general notifyListeners override.
+    if (!_disposed) super.notifyListeners();
+  }
+
+  void _observeCastForDiagnostics() {
+    final session = mediaCast.active;
+    if (session == null) return;
+    deviceDiagnostics.recordObservation(
+      id: 'network.cast.session',
+      observed: session.state.name,
+      source: 'DlnaCastController',
+      identity: session.id,
+      failed: session.errorCode != null,
+    );
+  }
+
+  List<CapabilityRecord> get deviceDiagnosticRecords =>
+      deviceDiagnostics.records(
+        glassMode: settings.glassQualityMode.name,
+        adaptiveQuality: effectiveGlassQuality.name,
+        allSurfacesHighQuality: settings.highQualityAllSurfaces,
+        webViewMounted: browserSurfaceActive,
+        backgroundHealthCheck: settings.backgroundHealthCheck,
+        allowBackgroundPlayback: settings.allowBackgroundPlayback,
+        exportDirectory: settings.mp4ExportDirectory,
+      );
   late final AppErrorLogger errorLogger;
   late final SettingsRepository settingsRepository;
   late final SiteLensGlassQualityCacheRepository glassQualityCacheRepository;
@@ -214,6 +260,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _foreground = state == AppLifecycleState.resumed;
+    if (_foreground) unawaited(deviceDiagnostics.refreshHcpp());
     unawaited(syncMediaPolicy());
   }
 
@@ -429,7 +476,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   GlassAdaptiveScopeConfig get glassAdaptiveConfig {
     final mode = settings.glassQualityMode;
-    final androidWebViewSurface = Platform.isAndroid && browserSurfaceActive;
+    final androidWebViewSurface =
+        Platform.isAndroid &&
+        browserSurfaceActive &&
+        !deviceDiagnostics.effectiveHcpp;
     final cached = glassQualityCache;
     final cachedQuality =
         cached != null && cached.matches(glassQualityFingerprint)
@@ -1609,11 +1659,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  /// Checks the native browser host once without opening a user tab or
-  /// running the background HTTP health policy. The temporary host is destroyed
-  /// immediately after its capabilities are captured.
   /// Compatibility API for existing background-check integration coverage.
-  /// The settings page now uses [checkHostCapabilities] instead.
+  /// The settings page uses the passive device diagnostics API instead.
   Future<HealthRunReport> runHealthCheckOnce({
     HealthConditions? conditions,
   }) async {
@@ -1637,12 +1684,23 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<HostCapabilities> checkHostCapabilities() async {
     checkingHostCapabilities = true;
     hostCapabilityError = null;
-    notifyListeners();
-    HostSession? host;
+    _diagnosticsChanged();
     try {
-      host = await hosts.create(HostPurpose.browsing);
-      final result = host.capabilities;
-      await hosts.destroy(host);
+      final snapshot = await deviceDiagnostics.refresh();
+      final records = {for (final row in snapshot.capabilities) row.id: row};
+      bool supported(String id) =>
+          records[id]?.state == CapabilityState.supported &&
+          records[id]?.effective == true;
+      if (!records.containsKey('webview.isolatedScripts')) {
+        throw StateError('网页能力查询未完成');
+      }
+      final result = HostCapabilities(
+        platform: snapshot.webViewProvider ?? snapshot.platform,
+        isolatedScripts: supported('webview.isolatedScripts'),
+        documentStart: supported('webview.documentStart'),
+        privateProbes: supported('webview.privateProbes'),
+        reason: records['webview.isolatedScripts']!.reason,
+      );
       capabilities = result;
       return result;
     } catch (_) {
@@ -1651,7 +1709,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       throw StateError('检查未完成，请重试');
     } finally {
       checkingHostCapabilities = false;
-      notifyListeners();
+      _diagnosticsChanged();
     }
   }
 
@@ -2270,6 +2328,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final mediaFlush = mediaTasks.flushAll();
     WidgetsBinding.instance.removeObserver(this);
     _disposed = true;
+    deviceDiagnostics.removeListener(_diagnosticsChanged);
+    deviceDiagnostics.dispose();
+    unawaited(_diagnosticPlaybackEvents?.cancel());
+    mediaCast.removeListener(_observeCastForDiagnostics);
     hosts.changed.removeListener(_hostMetadataChanged);
     _network?.cancel();
     _discovery.cancel();

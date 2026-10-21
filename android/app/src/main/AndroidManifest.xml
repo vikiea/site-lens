@@ -12,6 +12,12 @@
         android:name="dev.vikiea.site_lens.SiteLensApplication"
         android:usesCleartextTraffic="true"
         android:icon="@mipmap/ic_launcher">
+        <meta-data
+            android:name="io.flutter.embedding.android.EnableHcpp"
+            android:value="true" />
+        <meta-data
+            android:name="dev.vikiea.site_lens.FlutterVersion"
+            android:value="${flutterVersion}" />
         <activity
             android:name="dev.vikiea.site_lens.MainActivity"
             android:exported="true"

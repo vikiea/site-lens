@@ -230,7 +230,7 @@ void main() {
   });
 
   testWidgets(
-    'capability results have one readable summary without raw diagnostics',
+    'settings opens passive diagnostics and missing native query stays error',
     (tester) async {
       app.capabilities = HostCapabilities(
         platform: 'Android WebView private raw platform',
@@ -241,24 +241,32 @@ void main() {
       );
       await pumpSettings(tester, app);
       await tester.scrollUntilVisible(
-        find.text('检查宿主能力'),
+        find.text('设备能力与平台策略'),
         400,
         scrollable: find.byType(Scrollable),
       );
-      expect(find.text('检查宿主能力'), findsOneWidget);
-      expect(find.textContaining('脚本增强：支持'), findsOneWidget);
-      expect(find.textContaining('页面注入：不可用'), findsOneWidget);
+      expect(find.text('设备能力与平台策略'), findsOneWidget);
+      expect(find.text('查看实际能力、授权状态和当前策略'), findsOneWidget);
       expect(find.textContaining('private raw'), findsNothing);
       expect(find.textContaining('internal_reason'), findsNothing);
       expect(
         find.byKey(const ValueKey('details-host-capabilities')),
         findsNothing,
       );
-      await tester.ensureVisible(find.text('检查宿主能力'));
+      await tester.ensureVisible(find.text('设备能力与平台策略'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('检查宿主能力'));
+      await tester.tap(find.text('设备能力与平台策略'));
       await tester.pumpAndSettle();
-      expect(find.text('网页增强能力可用'), findsOneWidget);
+      expect(find.text('当前环境'), findsOneWidget);
+      expect(find.textContaining('原生只读查询未完成'), findsOneWidget);
+      expect(
+        app.deviceDiagnostics.snapshot!.capabilities.single.state,
+        CapabilityState.error,
+      );
+      expect(
+        app.deviceDiagnostics.snapshot!.capabilities.single.effective,
+        isNull,
+      );
       expect(app.browserTabs, isEmpty);
       expect(app.hosts.sessions, isEmpty);
     },
@@ -308,7 +316,7 @@ void main() {
         scrollable: find.byType(Scrollable),
       );
       expect(find.text('同站点标签页互相替换'), findsOneWidget);
-      expect(find.text('检查宿主能力'), findsOneWidget);
+      expect(find.text('设备能力与平台策略'), findsOneWidget);
       expect(
         find.byKey(const ValueKey('details-host-capabilities')),
         findsNothing,

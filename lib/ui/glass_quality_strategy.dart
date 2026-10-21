@@ -55,6 +55,7 @@ class SiteLensGlassQualityStrategy {
     this.mode = SiteLensGlassQualityMode.automatic,
     this.allSurfacesHighQuality = false,
     this.webViewVisible = false,
+    this.hcppEffective = false,
     this.shaderSupported,
     this.adaptiveQualityOverride,
   });
@@ -62,11 +63,14 @@ class SiteLensGlassQualityStrategy {
   final SiteLensGlassQualityMode mode;
   final bool allSurfacesHighQuality;
 
-  /// Whether an Android WebView is currently visible in the browsing route.
-  /// Premium glass is kept available everywhere else; while a native view is
-  /// composited, Flutter glass uses the 0.1.3-safe optical tier and avoids a
-  /// live backdrop read over the Android WebView.
+  /// Whether an Android WebView remains mounted, including below a modal.
+  /// Legacy composition retains the compatibility fence until the current
+  /// engine positively confirms HCPP.
   final bool webViewVisible;
+
+  /// Current engine HCPP predicate; an API level or GPU declaration alone
+  /// cannot remove the compatibility fence.
+  final bool hcppEffective;
   final bool? shaderSupported;
   final GlassQuality? adaptiveQualityOverride;
 
@@ -98,18 +102,18 @@ class SiteLensGlassQualityStrategy {
     // renderer fallback below. This changes only the sampling path; controls,
     // tint, shape, and interaction remain unchanged.
     final androidWebViewComposition = isAndroid && webViewVisible;
+    final legacyComposition = androidWebViewComposition && !hcppEffective;
     final platformViewBackdrop =
         role == SiteLensSurfaceRole.platformView && !androidWebViewComposition;
     final shaderSupported =
         this.shaderSupported ?? ui.ImageFilter.isShaderFilterSupported;
-    // While an Android WebView remains mounted, every Site Lens glass surface
-    // uses the clipped fill. Standard/premium shader surfaces can still create
-    // capture layers that sample or retain a hybrid-composed video surface,
-    // even when the surface is a panel or a modal above the WebView. The fence
-    // is scoped to this route; pages without a WebView retain premium/shader
-    // rendering.
+    // HCPP removes the route-wide legacy fence for Flutter-owned surfaces.
+    // Native webpage pixels still have no sampling bridge, so controls over
+    // the platform view retain their clipped fill and polarity backer.
     final useCompatibilityFallback =
-        androidWebViewComposition ||
+        legacyComposition ||
+        (androidWebViewComposition &&
+            role == SiteLensSurfaceRole.platformView) ||
         (!shaderSupported && !platformViewBackdrop);
 
     return SiteLensGlassRenderPlan(
@@ -137,6 +141,7 @@ class SiteLensGlassQualityStrategy {
   }) {
     if (isAndroid &&
         webViewVisible &&
+        !hcppEffective &&
         role != SiteLensSurfaceRole.platformView) {
       return GlassQuality.standard;
     }
@@ -195,7 +200,7 @@ class SiteLensGlassQualityStrategy {
         : 0.15 + 0.85 * Curves.easeOut.transform(lowAlphaProgress);
     final premiumSurface =
         isAndroid &&
-        !webViewVisible &&
+        (!webViewVisible || hcppEffective) &&
         role != SiteLensSurfaceRole.platformView &&
         quality == GlassQuality.premium;
     final adjusted = role == SiteLensSurfaceRole.platformView

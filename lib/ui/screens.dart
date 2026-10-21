@@ -18,7 +18,6 @@ import '../scripts/metadata.dart';
 import '../update/update_controller.dart';
 import '../update/github_token_store.dart';
 import '../web_host/native_hosts.dart';
-import '../web_host/web_host.g.dart';
 import 'app_controller.dart';
 import 'navigation_observer.dart';
 import 'data_management_screen.dart';
@@ -39,6 +38,7 @@ import 'profile_panel.dart';
 import 'media_tasks_screen.dart';
 import 'player_gestures_screen.dart';
 import 'error_logs_screen.dart';
+import 'device_diagnostics_screen.dart';
 import 'filter_diagnostics_panel.dart';
 import 'ui_util.dart';
 import 'ui_primitives.dart';
@@ -2176,28 +2176,14 @@ class _SettingsPageState extends State<SettingsPage> {
                     Icons.health_and_safety_outlined,
                     size: 20,
                   ),
-                  title: const Text('检查宿主能力'),
-                  subtitle: Text(
-                    app.hostCapabilityError ??
-                        _hostCapabilitySummary(app.capabilities),
+                  title: const Text('设备能力与平台策略'),
+                  subtitle: const Text('查看实际能力、授权状态和当前策略'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push<void>(
+                    MaterialPageRoute(
+                      builder: (_) => DeviceDiagnosticsScreen(app: app),
+                    ),
                   ),
-                  isThreeLine: app.capabilities != null,
-                  trailing: const Icon(Icons.play_circle_outline),
-                  onTap: app.checkingHostCapabilities
-                      ? null
-                      : () async {
-                          String notice;
-                          try {
-                            final capabilities = await app
-                                .checkHostCapabilities();
-                            notice = _hostCapabilitiesNotice(capabilities);
-                          } catch (_) {
-                            notice = '检查未完成，请重试';
-                          }
-                          if (!context.mounted) return;
-                          ScaffoldMessenger.of(context)
-                              .showSnackBar(SnackBar(content: Text(notice)));
-                        },
                 ),
                 Divider(height: 1, indent: 18, endIndent: 18),
                 _Details(
@@ -2274,23 +2260,6 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
     );
   }
-
-  String _hostCapabilitySummary(HostCapabilities? capabilities) {
-    if (capabilities == null) return '点击检查网页增强能力';
-    return '脚本增强：${_capabilityLabel(capabilities.isolatedScripts)}\n'
-        '页面注入：${_capabilityLabel(capabilities.documentStart)} · '
-        '检测隔离：${_capabilityLabel(capabilities.privateProbes)}';
-  }
-
-  String _hostCapabilitiesNotice(HostCapabilities capabilities) {
-    final complete =
-        capabilities.isolatedScripts &&
-        capabilities.documentStart &&
-        capabilities.privateProbes;
-    return complete ? '网页增强能力可用' : '网页增强能力受限，部分功能不可用';
-  }
-
-  String _capabilityLabel(bool value) => value ? '支持' : '不可用';
 
   Widget _sectionLabel(BuildContext context, String text) => Padding(
     padding: const EdgeInsets.fromLTRB(6, SiteLensMetrics.sectionGap, 6, 8),
@@ -3594,14 +3563,14 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     final padding = MediaQuery.paddingOf(context);
     final bottomInset = _webViewFullScreen ? 0.0 : padding.bottom;
     final topInset = _webViewFullScreen ? 0.0 : padding.top;
-    // Keep the WebView route at the standard compatibility tier from its
-    // first frame. The app-level browserSurfaceActive flag is intentionally
-    // notified from a microtask, so this local scope closes that short window
-    // without changing the global settings or renderer policy.
+    // Apply the engine's composition policy from the first browser frame.
+    // The local scope also covers the microtask before the global mounted-
+    // surface notification reaches the app wrapper.
     final browserGlassStrategy = SiteLensGlassQualityStrategy(
       mode: widget.app.settings.glassQualityMode,
       allSurfacesHighQuality: widget.app.settings.highQualityAllSurfaces,
       webViewVisible: true,
+      hcppEffective: widget.app.deviceDiagnostics.effectiveHcpp,
     );
     return SiteLensGlassPolicyScope(
       strategy: browserGlassStrategy,

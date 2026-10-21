@@ -11,6 +11,71 @@ import 'package:site_lens/ui/glass_quality_cache.dart';
 import 'package:site_lens/ui/glass_quality_strategy.dart';
 
 void main() {
+  testWidgets('HCPP restores Flutter glass while native overlays stay fenced', (
+    tester,
+  ) async {
+    final previous = debugDefaultTargetPlatformOverride;
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    try {
+      for (final brightness in Brightness.values) {
+        for (final opacity in [0, 55, 100]) {
+          late BuildContext context;
+          await tester.pumpWidget(
+            MaterialApp(
+              theme: buildSiteLensTheme(
+                ThemePresetId.sunsetCoral,
+                brightness,
+                glassOpacity: opacity,
+              ),
+              themeAnimationDuration: Duration.zero,
+              themeAnimationCurve: Curves.linear,
+              home: Builder(
+                builder: (value) {
+                  context = value;
+                  return const SizedBox();
+                },
+              ),
+            ),
+          );
+          await tester.pump();
+          for (final enabled in [false, true]) {
+            final strategy = SiteLensGlassQualityStrategy(
+              mode: SiteLensGlassQualityMode.high,
+              allSurfacesHighQuality: true,
+              webViewVisible: true,
+              hcppEffective: enabled,
+              shaderSupported: true,
+            );
+            for (final role in [
+              SiteLensSurfaceRole.panel,
+              SiteLensSurfaceRole.chrome,
+            ]) {
+              final plan = strategy.resolve(context, role: role);
+              expect(plan.useCompatibilityFallback, !enabled);
+              expect(
+                plan.quality,
+                enabled ? GlassQuality.premium : GlassQuality.standard,
+              );
+            }
+            final overlay = strategy.resolve(
+              context,
+              role: SiteLensSurfaceRole.platformView,
+            );
+            expect(overlay.quality, GlassQuality.standard);
+            expect(overlay.useCompatibilityFallback, true);
+            expect(overlay.platformViewBackdrop, false);
+            final panel = strategy.resolve(
+              context,
+              role: SiteLensSurfaceRole.panel,
+            );
+            expect(panel.glassColor.a, closeTo(opacity / 100, 0.005));
+          }
+        }
+      }
+    } finally {
+      debugDefaultTargetPlatformOverride = previous;
+    }
+  });
   testWidgets('role and mode policy keeps panels at standard', (tester) async {
     late BuildContext context;
     await tester.pumpWidget(

@@ -4,7 +4,17 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 /// files. The token is never returned to UI callers after it is saved.
 class GitHubTokenStore {
   GitHubTokenStore({FlutterSecureStorage? storage})
-    : _storage = storage ?? const FlutterSecureStorage();
+    : _storage =
+          storage ??
+          const FlutterSecureStorage(
+            aOptions: AndroidOptions(
+              // A migration failure must remain recoverable. The update path
+              // must never silently erase the user's optional GitHub token.
+              resetOnError: false,
+              migrateOnAlgorithmChange: true,
+              migrateWithBackup: true,
+            ),
+          );
 
   static const key = 'github_api_token_v1';
   final FlutterSecureStorage _storage;

@@ -5,13 +5,15 @@
 ## 产品行为
 
 - 一级导航固定为「站点 / 浏览 / 设置」。脚本管理位于设置二级页面，浏览菜单提供当前档案与未绑定脚本入口。首页右上角直接提供导入档案包与全部检测；更多站点操作暂时隐藏。
-- 全局 iOS 27 液态玻璃：顶部栏、底部导航、内容面板、标签卡片、菜单、弹窗、提示条共用一套材质、圆角、间距与状态色；背景是随主题色变化的静态柔和渐变。使用 `liquid_glass_widgets 1.13.0` 的 `ios27Light` / `ios27Dark` 预设与独立 `SiteLensGlassQualityStrategy`。默认和标准模式下内容面板保持 `standard`；`自动` 模式允许静态 chrome 按帧耗时争取 `premium`，手动`高质量`模式锁定导航 chrome 为 `premium`。开启“高质量覆盖全部面板”后，Flutter 内容面板、弹窗、sheet 和玻璃卡片也使用 `premium`，但不改变 WebView 覆盖层约束。默认不透明度为 `55`，浅色使用中性浅灰 `#E7EAEE`、深色使用中性炭灰 `#25272B`，与静态背景保持足够对比；普通 Android 页面正常使用 premium 光学参数，只有 WebView 路由可见期间临时使用 0.1.3 的安全参数。Android WebView 上方控件使用裁剪的半透明材质填充，避免对原生视频表面执行实时 backdrop 采样；控件的颜色、圆角、位置和交互保持不变。iOS 及普通 Flutter 页面仍按原策略使用实时 backdrop 或 premium shader；shader 或 renderer 不可用时，非 WebView 覆盖的 Flutter 玻璃表面走兼容性的裁剪半透明 Material fallback。`GlassAccessibilityScope(reduceTransparency: false)` 保证高对比度不换材质，Reduce Motion 只停动效。普通按钮、FAB、浮动把手与导航项没有额外阴影。
+- 全局 iOS 27 液态玻璃：顶部栏、底部导航、内容面板、标签卡片、菜单、弹窗、提示条共用一套材质、圆角、间距与状态色；背景是随主题色变化的静态柔和渐变。使用 `liquid_glass_widgets 1.14.0` 的 `ios27Light` / `ios27Dark` 预设与独立 `SiteLensGlassQualityStrategy`。默认和标准模式下内容面板保持 `standard`；`自动` 模式允许静态 chrome 按帧耗时争取 `premium`，手动`高质量`模式锁定导航 chrome 为 `premium`。开启“高质量覆盖全部面板”后，Flutter 内容面板、弹窗、sheet 和玻璃卡片也使用 `premium`，但不改变 WebView 覆盖层约束。默认不透明度为 `55`，浅色使用中性浅灰 `#E7EAEE`、深色使用中性炭灰 `#25272B`，与静态背景保持足够对比；普通 Android 页面正常使用 premium 光学参数，HCPP 不可用且 WebView 路由可见期间使用兼容策略；HCPP 当前引擎检查通过时，Flutter 自有 surface 恢复对应的标准/高质量策略。Android WebView 上方控件使用裁剪的半透明材质填充，避免对原生视频表面执行实时 backdrop 采样；控件的颜色、圆角、位置和交互保持不变。iOS 及普通 Flutter 页面仍按原策略使用实时 backdrop 或 premium shader；shader 或 renderer 不可用时，非 WebView 覆盖的 Flutter 玻璃表面走兼容性的裁剪半透明 Material fallback。`GlassAccessibilityScope(reduceTransparency: false)` 保证高对比度不换材质，Reduce Motion 只停动效。普通按钮、FAB、浮动把手与导航项没有额外阴影。
 - 明暗模式是外观区的行内分段选择，主题色是默认折叠的内嵌色板，默认使用落日珊瑚；提供星海蓝、雾松绿、鸢尾紫、玫瑰灰、砂岩铜、石墨蓝灰等主题。主题 ID 用 snake_case 保存。玻璃质量提供「自动 / 标准 / 高质量」三档；「自动」按设备帧耗时自适应，「标准」和「高质量」分别锁定对应的导航 chrome 质量；高质量模式可通过“高质量覆盖全部面板”扩展到 Flutter 内容面板，WebView 覆盖层仍受 role 和 renderer 能力约束。
 - 设置格式为 `app_settings_v2`：只接受当前格式；旧设置记录与含旧格式设置的备份都会被拒绝（本应用尚无正式用户，因此不做旧数据迁移）。
 - 底部一级导航固定单行窄胶囊，**显示图标和文字**（主体 72dp、图标 20dp、左右外边距 28dp、上下内边距 6dp）；浅色和深色主题分别使用中性玻璃填充 token，选中态使用低透明度主题色胶囊。浏览工具栏固定单行七项（后退、前进、刷新、回首页、标签页、退出、更多），图标 18dp、高度 48dp、宽度等分且**不换行、不折叠、不横向滚动**；点击更多时在其上方增加一行三格的仅图标快捷操作，只有半透明把手可拖动并持久化位置，工具栏覆盖网页而不改变 WebView 尺寸。浮在网页上的控件带 `backerColor` 压暗层（深色约 60% 黑、浅色约 65% 白），使主题极性不同的网页背景下文字与图标仍然可读。
 - 重启恢复稳定标签 ID、原始与当前地址、标题、档案引用、选择器覆盖和当前标签。选择标签时才创建 WebView；不恢复播放、脚本授权租约或 WebView host ID。
 - 默认离开浏览页、被二级页面覆盖或应用转入后台时暂停。可选择当前标签后台播放，由原生静音、HTML 媒体/WebAudio 暂停、媒体会话及前台服务共同控制。系统暂停、继续、停止均绑定当前宿主。缺少必要播放能力的 Android WebView 在离开后销毁宿主并保留标签元数据，以关闭潜在后台音频。进程死亡和重启不会自动播放。
 - 入口重定向默认开启且只跟随应用发起的一次入口链；下拉刷新默认关闭。浏览工具栏的 3 秒自动隐藏在标签面板/脚本菜单打开期间暂停。单档案检测、取消、标签容量预留和地址去重保持有效。
+
+设置新增「设备能力与平台策略」只读详情页。媒体 Inspector/Transformer、HCPP 实际策略、权限、SAF 授权、后台限制、codec 和投屏观测的边界与验证方法见 [Media3/HCPP/诊断说明](media3-hcpp-diagnostics.md)。
 
 ## 分层与数据
 

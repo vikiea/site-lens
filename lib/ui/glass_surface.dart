@@ -171,7 +171,8 @@ class SiteLensGlassGroup extends StatelessWidget {
     enabled:
         !kIsWeb &&
         !(defaultTargetPlatform == TargetPlatform.android &&
-            SiteLensGlassPolicyScope.of(context).webViewVisible),
+            SiteLensGlassPolicyScope.of(context).webViewVisible &&
+            !SiteLensGlassPolicyScope.of(context).hcppEffective),
     joinEnclosing: true,
     child: child,
   );

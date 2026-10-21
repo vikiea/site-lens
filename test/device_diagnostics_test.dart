@@ -1,0 +1,358 @@
+import 'dart:convert';
+
+import 'package:drift/native.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:site_lens/data/database.dart';
+import 'package:site_lens/diagnostics/device_diagnostics.dart';
+import 'package:site_lens/ui/app_controller.dart';
+import 'package:site_lens/ui/app_theme.dart';
+import 'package:site_lens/ui/device_diagnostics_screen.dart';
+import 'package:site_lens/web_host/web_host.g.dart';
+
+import 'fake_device_diagnostics_api.dart';
+import 'fake_web_host_api.dart';
+
+List<CapabilityRecord> records(
+  DeviceDiagnosticsService service, {
+  String? directory,
+}) => service.records(
+  glassMode: 'high',
+  adaptiveQuality: 'premium',
+  allSurfacesHighQuality: true,
+  webViewMounted: true,
+  backgroundHealthCheck: true,
+  allowBackgroundPlayback: false,
+  exportDirectory: directory,
+);
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('HCPP false leaves actual backend unknown and reads no codec', () async {
+    final api = FakeDeviceDiagnosticsApi();
+    final service = DeviceDiagnosticsService(
+      api: api,
+      platform: 'android',
+      hcppReader: () async => false,
+    );
+    addTearDown(service.dispose);
+    await service.refresh();
+    final result = {for (final row in records(service)) row.id: row};
+    expect(result['platform.hcpp.engine']!.effective, false);
+    expect(result['platform.renderer']!.state, CapabilityState.unknown);
+    expect(result['platform.renderer']!.observed, isNull);
+    expect(api.codecReads, 0);
+  });
+
+  test(
+    'HCPP true has authoritative backend but no fabricated view observation',
+    () async {
+      final service = DeviceDiagnosticsService(
+        api: FakeDeviceDiagnosticsApi(),
+        platform: 'android',
+        hcppReader: () async => true,
+      );
+      addTearDown(service.dispose);
+      await service.refresh();
+      final result = {for (final row in records(service)) row.id: row};
+      expect(service.effectiveHcpp, true);
+      expect(result['platform.renderer']!.observed, 'Impeller Vulkan');
+      expect(result['platform.renderer']!.observedAtMs, isNull);
+      expect(result['media.playback.session']!.state, CapabilityState.unknown);
+    },
+  );
+
+  test('API below 34 and iOS mark HCPP not applicable', () async {
+    final api = FakeDeviceDiagnosticsApi()..apiLevel = 33;
+    var hcppQueries = 0;
+    for (final platform in ['android', 'ios']) {
+      final service = DeviceDiagnosticsService(
+        api: api,
+        platform: platform,
+        hcppReader: () async {
+          hcppQueries++;
+          return false;
+        },
+      );
+      await service.refresh();
+      expect(
+        records(service)
+            .singleWhere((row) => row.id == 'platform.hcpp.engine')
+            .state,
+        CapabilityState.notApplicable,
+      );
+      service.dispose();
+    }
+    expect(hcppQueries, 1);
+  });
+
+  test(
+    'failed query stays error, and codec inventory is lazy and retryable',
+    () async {
+      final api = FakeDeviceDiagnosticsApi()..fail = true;
+      final service = DeviceDiagnosticsService(
+        api: api,
+        platform: 'android',
+        hcppReader: () async => throw StateError('engine'),
+      );
+      addTearDown(service.dispose);
+      await service.refresh();
+      expect(
+        service.snapshot!.capabilities.single.state,
+        CapabilityState.error,
+      );
+      expect(service.hcppSupported, isNull);
+      expect(api.codecReads, 0);
+      await expectLater(service.readCodecInventory(), throwsStateError);
+      api.fail = false;
+      expect(await service.readCodecInventory(), isNotEmpty);
+      await service.readCodecInventory();
+      expect(api.codecReads, 2);
+    },
+  );
+
+  test('refresh never retimestamps historical session observations', () async {
+    var now = DateTime.fromMillisecondsSinceEpoch(1234);
+    final service = DeviceDiagnosticsService(
+      api: FakeDeviceDiagnosticsApi(),
+      platform: 'android',
+      hcppReader: () async => false,
+      now: () => now,
+    );
+    addTearDown(service.dispose);
+    service.recordObservation(
+      id: 'network.cast.session',
+      observed: 'playing',
+      source: 'actualEvent',
+      identity: 'session-1',
+    );
+    now = DateTime.fromMillisecondsSinceEpoch(5678);
+    await service.refresh();
+    final row = records(service)
+        .singleWhere((row) => row.id == 'network.cast.session');
+    expect(row.observedAtMs, 1234);
+    expect(jsonDecode(row.detailsJson!)['identity'], 'session-1');
+  });
+
+  test(
+    'SAF directory matches ledger only and never declares writable proof',
+    () async {
+      const uri = 'content://provider/tree/test';
+      final api = FakeDeviceDiagnosticsApi()
+        ..rows = [
+          CapabilityRecord(
+            id: 'storage.saf.persistedGrants',
+            state: CapabilityState.supported,
+            reason: 'ledger only',
+            source: 'test',
+            capturedAtMs: 1000,
+            detailsJson: jsonEncode([
+              {'uri': uri, 'read': true, 'write': true},
+            ]),
+          ),
+        ];
+      final service = DeviceDiagnosticsService(
+        api: api,
+        platform: 'android',
+        hcppReader: () async => false,
+      );
+      addTearDown(service.dispose);
+      await service.refresh();
+      final row = records(
+        service,
+        directory: uri,
+      ).singleWhere((row) => row.id == 'storage.exportDirectory');
+      expect(jsonDecode(row.detailsJson!)['matchedGrant'], true);
+      expect(row.effective, isNull);
+      expect(row.state, CapabilityState.unknown);
+    },
+  );
+
+  test(
+    'canonical policy rows replace native rows without duplicates',
+    () async {
+      for (final platform in ['android', 'ios']) {
+        final api = FakeDeviceDiagnosticsApi()
+          ..rows = [
+            for (final id in [
+              'platform.hcpp.engine',
+              'platform.renderer',
+              'glass.policy',
+              'webview.nativePixelSampling',
+              'settings.backgroundPolicy',
+              'storage.exportDirectory',
+            ])
+              CapabilityRecord(
+                id: id,
+                state: CapabilityState.unknown,
+                reason: 'native',
+                source: 'test',
+                capturedAtMs: 1000,
+              ),
+          ];
+        final service = DeviceDiagnosticsService(
+          api: api,
+          platform: platform,
+          hcppReader: () async => false,
+        );
+        await service.refresh();
+        final rows = records(service);
+        expect(rows.map((row) => row.id).toSet(), hasLength(rows.length));
+        service.dispose();
+      }
+    },
+  );
+
+  group('iOS diagnostic screen', () {
+    late AppDatabase db;
+    late FakeDeviceDiagnosticsApi api;
+    late AppController app;
+    setUp(() async {
+      db = AppDatabase(NativeDatabase.memory());
+      api = FakeDeviceDiagnosticsApi()
+        ..rows = [
+          CapabilityRecord(
+            id: 'media.codecInventory',
+            state: CapabilityState.notApplicable,
+            reason: 'iOS',
+            source: 'test',
+            capturedAtMs: 1000,
+          ),
+        ];
+      app = AppController(
+        db,
+        api: FakeWebHostApi(),
+        diagnostics: DeviceDiagnosticsService(api: api, platform: 'ios'),
+      );
+      await app.load();
+    });
+    tearDown(() async {
+      await app.shutdown();
+      await db.close();
+    });
+    testWidgets('codec inventory is inapplicable and never queried', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(home: DeviceDiagnosticsScreen(app: app)),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('读取清单'), findsNothing);
+      await tester.scrollUntilVisible(
+        find.text('不适用：当前 iOS 版本不提供此编解码器清单。'),
+        400,
+      );
+      expect(api.codecReads, 0);
+      await tester.pumpWidget(const SizedBox());
+    });
+  });
+
+  test('Pigeon codec preserves nullable facts and typed records', () async {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final api = DeviceDiagnosticsApi();
+    final original = DeviceDiagnosticsSnapshot(
+      platform: 'Android',
+      osVersion: '16',
+      appVersion: 'test',
+      capturedAtMs: 1000,
+      capabilities: [
+        CapabilityRecord(
+          id: 'test',
+          state: CapabilityState.unknown,
+          reason: 'unknown',
+          source: 'test',
+          capturedAtMs: 1000,
+        ),
+      ],
+    );
+    const channel =
+        'dev.flutter.pigeon.site_lens.DeviceDiagnosticsApi.readSnapshot';
+    messenger.setMockDecodedMessageHandler<Object?>(
+      BasicMessageChannel<Object?>(
+        channel,
+        DeviceDiagnosticsApi.pigeonChannelCodec,
+      ),
+      (_) async => [original],
+    );
+    addTearDown(
+      () => messenger.setMockDecodedMessageHandler<Object?>(
+        BasicMessageChannel<Object?>(
+          channel,
+          DeviceDiagnosticsApi.pigeonChannelCodec,
+        ),
+        null,
+      ),
+    );
+    final decoded = await api.readSnapshot();
+    expect(decoded.capabilities.single.configured, isNull);
+    expect(decoded.capabilities.single.observedAtMs, isNull);
+    expect(decoded.capabilities.single.state, CapabilityState.unknown);
+  });
+
+  group('passive diagnostic screen', () {
+    late AppDatabase db;
+    late FakeWebHostApi web;
+    late FakeDeviceDiagnosticsApi api;
+    late AppController app;
+    setUp(() async {
+      db = AppDatabase(NativeDatabase.memory());
+      web = FakeWebHostApi();
+      api = FakeDeviceDiagnosticsApi()
+        ..rows = [
+          CapabilityRecord(
+            id: 'permissions.installPackages',
+            state: CapabilityState.unsupported,
+            configured: true,
+            effective: false,
+            reason: 'passive',
+            source: 'OS',
+            capturedAtMs: 1000,
+            detailsJson: jsonEncode({'canInstallPackages': false}),
+          ),
+        ];
+      final service = DeviceDiagnosticsService(
+        api: api,
+        platform: 'android',
+        hcppReader: () async => false,
+      );
+      app = AppController(db, api: web, diagnostics: service);
+      await app.load();
+    });
+    tearDown(() async {
+      await app.shutdown();
+      await db.close();
+    });
+    testWidgets('shows explicit facts and refreshes without creating hosts', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildSiteLensTheme(
+            ThemePresetId.sunsetCoral,
+            Brightness.light,
+          ),
+          home: DeviceDiagnosticsScreen(app: app),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(web.created, isEmpty);
+      expect(api.codecReads, 0);
+      await tester.tap(find.text('应用安装授权'));
+      await tester.pumpAndSettle();
+      expect(find.text('应用配置：是'), findsOneWidget);
+      expect(find.text('当前有效：否'), findsOneWidget);
+      expect(find.text('实际观测：无观测记录'), findsOneWidget);
+      expect(find.text('安装授权：否'), findsOneWidget);
+      final before = api.reads;
+      await tester.tap(find.byTooltip('刷新'));
+      await tester.pumpAndSettle();
+      expect(api.reads, before + 1);
+      expect(web.created, isEmpty);
+      expect(app.hosts.sessions, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+    });
+  });
+}
