@@ -63,6 +63,12 @@ class NativeExportRuntime {
   Future<Map<String, Object?>> stat(String source) async => (await _channel
       .invokeMapMethod<String, Object?>('stat', {'source': source}))!;
 
+  /// Enumerates MP4 documents in app storage and persisted, user-granted trees.
+  Future<Map<String, Object?>> scanMedia({String? directory}) async =>
+      (await _channel.invokeMapMethod<String, Object?>('scanMedia', {
+        'directory': ?directory,
+      }))!;
+
   Future<String> materialize(String source) async =>
       (await _channel.invokeMethod<String>('materialize', {'source': source}))!;
 

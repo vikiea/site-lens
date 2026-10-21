@@ -11,6 +11,8 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -242,6 +244,14 @@ class NativeMediaRuntime(
         }
         val next = playerBuilder.build()
         player = next
+        next.setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                .build(),
+            true,
+        )
+        next.setHandleAudioBecomingNoisy(true)
         attachSurface(next)
         next.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {

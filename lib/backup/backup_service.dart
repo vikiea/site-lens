@@ -101,7 +101,7 @@ class BackupService {
     if (manifest is! Map ||
         manifest['format'] != 'site-lens-backup' ||
         manifest['version'] != 1 ||
-        !{8, 9, db.schemaVersion}.contains(manifest['schema']) ||
+        !{8, 9, 10, db.schemaVersion}.contains(manifest['schema']) ||
         manifest['bytes'] != body.length ||
         manifest['sha256'] != sha256.convert(body).toString() ||
         manifest['createdAt'] is! String ||

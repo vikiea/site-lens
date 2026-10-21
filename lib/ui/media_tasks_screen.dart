@@ -1001,6 +1001,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
   AppController get app => widget.app;
   String? _error;
   String? _folder;
+  bool _scanning = false;
 
   @override
   void initState() {
@@ -1021,16 +1022,49 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
     }
   }
 
+  Future<void> _rescan() async {
+    if (_scanning) return;
+    setState(() => _scanning = true);
+    try {
+      final result = await app.mediaLibrary.rescan(
+        directory: app.mp4ExportDirectory,
+      );
+      if (!mounted) return;
+      showShortToast(
+        context,
+        result.added == 0
+            ? '已扫描 ${result.found} 个 MP4，索引没有新增'
+            : '已恢复 ${result.added} 个媒体文件索引',
+      );
+      if (result.warnings.isNotEmpty) {
+        setState(() => _error = result.warnings.join('；'));
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = friendlyError(error));
+    } finally {
+      if (mounted) setState(() => _scanning = false);
+    }
+  }
+
   Future<void> _action(MediaArtifact item, String action) async {
-    final task = app.mediaTasks.task(item.taskId);
-    if (task == null) throw StateError('媒体任务不存在');
+    final linkedTask = app.mediaTasks.task(item.taskId);
+    final task =
+        app.mediaTasks.referenceTask(item.taskId) ??
+        app.mediaLibrary.presentationTask(item);
     switch (action) {
       case 'details':
         await showMediaTaskDetails(context, app, task, artifact: item);
       case 'play':
         await openMediaTaskPlayer(context, app, task, preferExported: true);
       case 'cast':
+        if (linkedTask == null) {
+          throw StateError('该 MP4 没有对应媒体任务，暂不支持投屏');
+        }
         await castMediaTask(context, app, task);
+      case 'regenerate':
+        if (linkedTask == null) throw StateError('原下载任务已不存在，请重新下载 HLS 后导出');
+        await app.exportMediaTask(linkedTask, forceRegenerate: true);
+        if (mounted) showShortToast(context, 'MP4 已重新导出');
       case 'rename':
         final controller = TextEditingController(
           text: item.name.replaceFirst(
@@ -1091,15 +1125,16 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('删除“${item.name}”及其应用播放副本？'),
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    controlAffinity: ListTileControlAffinity.leading,
-                    title: const Text('同时删除媒体任务缓存'),
-                    subtitle: const Text('默认保留，删除后需要重新下载'),
-                    value: deleteTaskCache,
-                    onChanged: (value) =>
-                        setDialogState(() => deleteTaskCache = value == true),
-                  ),
+                  if (linkedTask != null)
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      title: const Text('同时删除媒体任务缓存'),
+                      subtitle: const Text('默认保留，删除后需要重新下载'),
+                      value: deleteTaskCache,
+                      onChanged: (value) =>
+                          setDialogState(() => deleteTaskCache = value == true),
+                    ),
                 ],
               ),
               actions: [
@@ -1118,7 +1153,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
         if (confirmed == true) {
           await app.deleteMediaArtifact(
             item.taskId,
-            deleteTaskCache: deleteTaskCache,
+            deleteTaskCache: linkedTask != null && deleteTaskCache,
           );
         }
     }
@@ -1131,20 +1166,22 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
       final allExports = app.mediaLibrary.items;
       final folders = <String, int>{};
       for (final item in allExports) {
-        final folder = app.mediaTasks.task(item.taskId)?.batchDirectory;
+        final folder = app.mediaLibrary.folderFor(item);
         if (folder != null) {
           folders.update(folder, (count) => count + 1, ifAbsent: () => 1);
         }
       }
       final exports = allExports
-          .where(
-            (item) =>
-                app.mediaTasks.task(item.taskId)?.batchDirectory == _folder,
-          )
+          .where((item) => app.mediaLibrary.folderFor(item) == _folder)
           .toList();
       return SiteLensPageScaffold(
         title: '媒体',
         actions: [
+          SiteLensRefreshButton(
+            tooltip: '重新扫描媒体文件',
+            refreshing: _scanning,
+            onPressed: _rescan,
+          ),
           if (app.mediaCast.status.active)
             IconButton(
               tooltip: '投屏控制',
@@ -1200,24 +1237,23 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
                 child: ListTile(
                   leading: Icon(Icons.video_library_outlined),
                   title: Text('暂无导出的 MP4'),
-                  subtitle: Text('在媒体任务中完成下载并导出后，媒体会出现在这里。'),
+                  subtitle: Text('在媒体任务中完成下载并导出后，媒体会出现在这里；文件仍在目录时可点击右上角重新扫描。'),
                 ),
               ),
             for (final item in exports) ...[
-              if (app.mediaTasks.task(item.taskId) case final MediaTask task)
-                _MediaLibraryTile(
-                  key: ValueKey(item.taskId),
-                  app: app,
-                  item: item,
-                  task: task,
-                  onAction: (action) => safely(
-                    context,
-                    () => _action(
-                      app.mediaLibrary.item(item.taskId) ?? item,
-                      action,
-                    ),
+              _MediaLibraryTile(
+                key: ValueKey(item.taskId),
+                app: app,
+                item: item,
+                task: app.mediaLibrary.presentationTask(item),
+                onAction: (action) => safely(
+                  context,
+                  () => _action(
+                    app.mediaLibrary.item(item.taskId) ?? item,
+                    action,
                   ),
                 ),
+              ),
               const SizedBox(height: SiteLensMetrics.itemGap),
             ],
           ],
@@ -1328,10 +1364,17 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
               : PopupMenuButton<String>(
                   tooltip: '媒体文件操作',
                   onSelected: widget.onAction,
-                  itemBuilder: (_) => const [
+                  itemBuilder: (_) => [
                     PopupMenuItem(value: 'details', child: Text('查看详情')),
                     PopupMenuItem(value: 'play', child: Text('原生播放')),
-                    PopupMenuItem(value: 'cast', child: Text('DLNA 投屏')),
+                    if (widget.app.mediaTasks.task(item.taskId) !=
+                        null) ...const [
+                      PopupMenuItem(value: 'cast', child: Text('DLNA 投屏')),
+                      PopupMenuItem(
+                        value: 'regenerate',
+                        child: Text('重新导出 MP4'),
+                      ),
+                    ],
                     PopupMenuItem(value: 'move', child: Text('移动到目录')),
                     PopupMenuItem(value: 'rename', child: Text('重命名')),
                     PopupMenuItem(value: 'delete', child: Text('删除文件')),

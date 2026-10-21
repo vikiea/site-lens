@@ -190,7 +190,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 10);
+      expect(raw.userVersion, 11);
       expect(raw.select('SELECT COUNT(*) AS c FROM probes').single['c'], 281);
 
       final scripts = await db.scripts();
@@ -426,7 +426,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 10);
+      expect(raw.userVersion, 11);
       expect(
         raw.select(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='filter_snapshots'",
@@ -487,7 +487,7 @@ void main() {
 
     final raw = sqlite3.open(file.path);
     addTearDown(raw.close);
-    expect(raw.userVersion, 10);
+    expect(raw.userVersion, 11);
     expect(
       raw.select('PRAGMA table_info(media_tasks)').map((row) => row['name']),
       contains('batch_directory'),
@@ -519,13 +519,75 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 10);
+      expect(raw.userVersion, 11);
       expect(
         raw
             .select('PRAGMA table_info(media_tasks)')
             .where((row) => row['name'] == 'batch_directory'),
         hasLength(1),
       );
+    },
+  );
+
+  test(
+    'v10 -> v11 preserves export indexes after download row deletion',
+    () async {
+      final file = File('${dir.path}/v10-artifacts.sqlite');
+      final seed = AppDatabase(NativeDatabase(file));
+      await seed.customSelect('SELECT 1').get();
+      final candidate = MediaCandidate(
+        id: 'export-candidate',
+        hostId: 1,
+        generation: 1,
+        sourceUrl: Uri.parse('https://example.com/watch'),
+        mediaUrl: Uri.parse('https://example.com/video.m3u8'),
+        title: '旧导出',
+        mime: 'application/vnd.apple.mpegurl',
+        source: MediaCandidateSource.dom,
+      );
+      await seed.saveMediaCandidate(candidate);
+      final store = MediaTaskStore(db: seed);
+      final task = store.create(candidate);
+      await store.flush(task.id);
+      await seed.close();
+      final before = sqlite3.open(file.path);
+      before.execute('DROP TABLE media_artifacts');
+      before.execute(
+        'CREATE TABLE media_artifacts(task_id TEXT PRIMARY KEY REFERENCES media_tasks(id) ON DELETE CASCADE, metadata TEXT NOT NULL)',
+      );
+      before.execute('INSERT INTO media_artifacts VALUES(?, ?)', [
+        task.id,
+        jsonEncode({
+          'taskId': task.id,
+          'location': 'content://provider/document/one',
+          'name': '旧导出.mp4',
+          'size': 600,
+          'createdAt': '2026-10-21T00:00:00Z',
+        }),
+      ]);
+      before.execute('INSERT INTO media_artifacts VALUES(?,?)', [
+        'library_old',
+        jsonEncode({
+          'taskId': 'library_old',
+          'location': 'content://provider/tree/elsewhere/document/one',
+          'name': '重复索引.mp4',
+          'size': 600,
+          'createdAt': '2026-10-21T00:00:00Z',
+        }),
+      ]);
+      before.userVersion = 10;
+      before.close();
+      final db = AppDatabase(NativeDatabase(file));
+      addTearDown(db.close);
+      expect((await db.mediaArtifacts()).single['name'], '旧导出.mp4');
+      expect(
+        await db.customSelect('PRAGMA foreign_key_list(media_artifacts)').get(),
+        isEmpty,
+      );
+      expect(await db.mediaTasks(), hasLength(1));
+      await db.deleteMediaTask(task.id);
+      expect(await db.mediaTasks(), isEmpty);
+      expect(await db.mediaArtifacts(), hasLength(1));
     },
   );
 }

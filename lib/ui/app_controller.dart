@@ -819,10 +819,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<MediaArtifact> exportMediaTask(
     MediaTask task, {
     bool deliverToConfiguredDirectory = true,
+    bool forceRegenerate = false,
   }) async {
     final artifactFuture = _exportingMedia.putIfAbsent(
       task.id,
-      () => _prepareMediaArtifact(task),
+      () => _prepareMediaArtifact(task, forceRegenerate: forceRegenerate),
     );
     final artifact = await artifactFuture;
     if (!deliverToConfiguredDirectory) return artifact;
@@ -832,14 +833,17 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     return mediaLibrary.item(task.id) ?? artifact;
   }
 
-  Future<MediaArtifact> _prepareMediaArtifact(MediaTask task) async {
+  Future<MediaArtifact> _prepareMediaArtifact(
+    MediaTask task, {
+    bool forceRegenerate = false,
+  }) async {
     var retained = false;
     try {
       await Future<void>.value();
       mediaTasks.retain(task.id);
       retained = true;
       await mediaLibrary.restore();
-      var artifact = mediaLibrary.item(task.id);
+      var artifact = forceRegenerate ? null : mediaLibrary.item(task.id);
       if (artifact != null) {
         try {
           artifact = await mediaLibrary.inspect(task.id);

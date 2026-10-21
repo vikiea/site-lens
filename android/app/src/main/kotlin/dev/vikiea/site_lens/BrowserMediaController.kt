@@ -329,7 +329,12 @@ class BrowserMediaController(
         }.getOrDefault(false)
         if (!updated && playing) {
             diagnostic("service_start_rejected")
-            manualPause = true; mute(true); broadcast("pause")
+            // A foreground page must keep its own WebView audio when the
+            // notification service cannot be updated. Only background or
+            // hidden playback is paused by this failure path.
+            if (!foreground || !visible || !current) {
+                manualPause = true; mute(true); broadcast("pause")
+            }
         }
     }
     private fun diagnostic(code: String, action: String = "policy") {

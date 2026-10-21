@@ -11,6 +11,8 @@ SERVICE = (ANDROID / "BrowserMediaService.kt").read_text()
 LIFECYCLE = (ROOT / "web_assets/media_lifecycle.js").read_text()
 TRANSFER = (ANDROID / "ResumableMediaTransfer.kt").read_text()
 DOWNLOAD_RUNTIME = (ANDROID / "NativeDownloadRuntime.kt").read_text()
+NATIVE_MEDIA = (ANDROID / "NativeMediaRuntime.kt").read_text()
+NATIVE_EXPORT = (ANDROID / "NativeExportRuntime.kt").read_text()
 
 
 class NativeMediaContractTests(unittest.TestCase):
@@ -65,6 +67,24 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn('partial.length()', TRANSFER)
         self.assertIn('媒体分段响应缺少验证标识', TRANSFER)
         self.assertIn('publishIfActive', TRANSFER)
+
+    def test_native_playback_claims_media_audio_focus(self):
+        self.assertIn("setAudioAttributes", NATIVE_MEDIA)
+        self.assertIn("C.USAGE_MEDIA", NATIVE_MEDIA)
+        self.assertIn("setHandleAudioBecomingNoisy(true)", NATIVE_MEDIA)
+
+    def test_hls_mux_scans_all_tracks_before_starting_and_validates_samples(self):
+        self.assertIn("val formats = linkedMapOf<String, MediaFormat>()", NATIVE_EXPORT)
+        self.assertIn("formats.putIfAbsent(kind, format)", NATIVE_EXPORT)
+        self.assertIn("val prepared = segments.mapIndexed", NATIVE_EXPORT)
+        self.assertIn("val sampleTrack = extractor.sampleTrackIndex", NATIVE_EXPORT)
+        self.assertIn("var samples = 0", NATIVE_EXPORT)
+        self.assertIn("samples > 0", NATIVE_EXPORT)
+        self.assertIn("formatSignatures", NATIVE_EXPORT)
+        self.assertIn("audioSegments == 0 || audioSegments == prepared.size", NATIVE_EXPORT)
+        self.assertIn("暂不支持含 discontinuity 的 HLS 清单导出", NATIVE_EXPORT)
+        self.assertNotIn("coerceAtLeast(0L)\n                        info.presentationTimeUs", NATIVE_EXPORT)
+        self.assertNotIn("trackIds[mime]", NATIVE_EXPORT)
 
     def test_legacy_migration_can_recover_a_staged_copy(self):
         self.assertIn('stagedFinal = File(finalTarget.path + ".legacy.tmp")', DOWNLOAD_RUNTIME)

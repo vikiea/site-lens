@@ -65,8 +65,8 @@ void main() {
   });
   tearDown(() => db.close());
 
-  test('schema 8 and 9 business backups stay compatible with current media indexing', () async {
-    for (final schema in [8, 9]) {
+  test('schema 8, 9 and 10 business backups stay compatible with current media indexing', () async {
+    for (final schema in [8, 9, 10]) {
       final source = ZipDecoder().decodeBytes(await backup.export());
       final manifest = jsonDecode(
         utf8.decode(source.findFile('manifest.json')!.readBytes()!),

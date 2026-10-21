@@ -6,10 +6,15 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
-import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
-import android.media.MediaMuxer
+import androidx.media3.common.Format
+import androidx.media3.common.C
+import androidx.media3.common.util.MediaFormatUtil
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.muxer.Mp4Muxer
+import androidx.media3.muxer.BufferInfo
+import androidx.media3.muxer.SeekableMuxerOutput
 import android.media.MediaMetadataRetriever
 import android.graphics.Bitmap
 import android.os.Build
@@ -30,6 +35,7 @@ import javax.crypto.spec.SecretKeySpec
  * The native boundary validates paths and the Android extractor/muxer performs
  * a local remux of cached MPEG-TS/fMP4 segments. No caller-provided command
  * line or remote URI can reach this code. */
+@androidx.annotation.OptIn(UnstableApi::class)
 class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCallHandler {
     private val filesRoot = context.filesDir.canonicalFile
     private val worker = Executors.newSingleThreadExecutor()
@@ -61,7 +67,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             try { pickDirectory(result) } catch (error: Exception) { fail(call, result, error) }
             return
         }
-        val supported = setOf("validateLocalInput", "muxHls", "validateOutput", "deliver", "deliverToDirectory", "stat", "inspect", "materialize", "rename", "move", "delete")
+        val supported = setOf("validateLocalInput", "muxHls", "validateOutput", "deliver", "deliverToDirectory", "stat", "inspect", "scanMedia", "materialize", "rename", "move", "delete")
         if (call.method !in supported) { result.notImplemented(); return }
         val jobId = call.argument<String>("jobId") ?: "job-${System.nanoTime()}"
         val cancellation = AtomicBoolean(false)
@@ -97,6 +103,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             "deliverToDirectory" -> deliverToDirectory(argument("source"), Uri.parse(argument("directory")), argument("fileName"), call.argument<String>("subdirectory"))
             "stat" -> stat(argument("source"))
             "inspect" -> inspect(argument("source"))
+            "scanMedia" -> scanMedia(call.argument<String>("directory"), cancellation)
             "materialize" -> materialize(argument("source"))
             "rename" -> rename(argument("source"), argument("fileName"))
             "move" -> {
@@ -190,71 +197,246 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         if (temp.exists()) temp.delete()
         if (workDir.exists()) workDir.deleteRecursively()
         workDir.mkdirs()
-        var muxer: MediaMuxer? = null
+        var muxer: Mp4Muxer? = null
         val trackIds = mutableMapOf<String, Int>()
         var segmentStartUs = 0L
         try {
-            for ((index, segment) in segments.withIndex()) {
+            // Prepare and inspect every segment before adding muxer tracks. A
+            // later HLS segment may be the first one containing AAC (or may
+            // expose tracks in a different order); building tracks from only
+            // segment zero used to silently discard the rest of that segment.
+            val prepared = segments.mapIndexed { index, segment ->
                 check(!cancelled.get() && !disposed) { "导出已取消" }
-                val input = prepareSegment(segment, workDir, index)
+                prepareSegment(segment, workDir, index)
+            }
+            val formats = linkedMapOf<String, MediaFormat>()
+            val formatSignatures = mutableMapOf<String, String>()
+            val firstSamples = mutableListOf<Long>()
+            val inputCounts = mutableMapOf<String, Int>()
+            var audioSegments = 0
+            var videoSegments = 0
+            for (input in prepared) {
+                check(!cancelled.get() && !disposed) { "导出已取消" }
                 val extractor = MediaExtractor()
                 extractor.setDataSource(input.path)
                 try {
-                    if (muxer == null) {
-                        muxer = MediaMuxer(temp.path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-                        for (index in 0 until extractor.trackCount) {
-                            val format = extractor.getTrackFormat(index)
-                            val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
-                            if (mime.startsWith("video/") || mime.startsWith("audio/")) {
-                                trackIds[mime] = muxer!!.addTrack(format)
+                    val selected = linkedMapOf<String, Int>()
+                    for (index in 0 until extractor.trackCount) {
+                        val format = extractor.getTrackFormat(index)
+                        val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+                        val kind = mediaTrackKind(mime) ?: continue
+                        require(selected[kind] == null) { "HLS 分片包含多个${if (kind == "audio") "音频" else "视频"}轨道" }
+                        val signature = mediaFormatSignature(format)
+                        val previous = formatSignatures.putIfAbsent(kind, signature)
+                        require(previous == null || previous == signature) { "HLS ${if (kind == "audio") "音频" else "视频"}轨道格式发生变化" }
+                        selected[kind] = index
+                        formats.putIfAbsent(kind, format)
+                    }
+                    require(selected.containsKey("video")) { "HLS 分片缺少视频轨道" }
+                    if (selected.containsKey("audio")) audioSegments++
+                    videoSegments++
+                    selected.values.forEach(extractor::selectTrack)
+                    val lastSampleByKind = mutableMapOf<String, Long>()
+                    val sampleCountByKind = mutableMapOf<String, Int>()
+                    var firstSampleUs: Long? = null
+                    while (extractor.sampleTrackIndex >= 0) {
+                        val sampleTrack = extractor.sampleTrackIndex
+                        val mime = extractor.getTrackFormat(sampleTrack).getString(MediaFormat.KEY_MIME)
+                            ?: error("HLS 样本轨道格式缺失")
+                        val kind = mediaTrackKind(mime) ?: error("HLS 样本轨道不支持")
+                        if (kind == "video" && sampleCountByKind[kind] == null) {
+                            require(extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) {
+                                "HLS 分片不是从视频关键帧开始"
                             }
                         }
-                        require(trackIds.isNotEmpty()) { "HLS 分片不含音视频轨道" }
-                        muxer!!.start()
-                    }
-                    val selected = (0 until extractor.trackCount).filter { index ->
-                        val mime = extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME) ?: ""
-                        mime.startsWith("video/") || mime.startsWith("audio/")
-                    }
-                    selected.forEach(extractor::selectTrack)
-                    val firstSampleUs = extractor.sampleTime.coerceAtLeast(0L)
-                    var segmentEndUs = segmentStartUs
-                    val buffer = ByteBuffer.allocate(1024 * 1024)
-                    val info = MediaCodec.BufferInfo()
-                    while (true) {
-                        check(!cancelled.get() && !disposed) { "导出已取消" }
-                        buffer.clear()
-                        val size = extractor.readSampleData(buffer, 0)
-                        if (size < 0) break
-                        val mime = extractor.getTrackFormat(extractor.sampleTrackIndex).getString(MediaFormat.KEY_MIME) ?: break
-                        val track = trackIds[mime] ?: break
-                        info.offset = 0
-                        info.size = size
-                        info.presentationTimeUs = segmentStartUs + (extractor.sampleTime - firstSampleUs).coerceAtLeast(0L)
-                        info.flags = extractor.sampleFlags
-                        muxer!!.writeSampleData(track, buffer, info)
-                        segmentEndUs = maxOf(segmentEndUs, info.presentationTimeUs)
+                        val sampleTime = extractor.sampleTime
+                        val previous = lastSampleByKind[kind]
+                        require(kind != "audio" || previous == null || sampleTime >= previous) {
+                            "HLS 音频轨道时间顺序无效"
+                        }
+                        lastSampleByKind[kind] = sampleTime
+                        sampleCountByKind[kind] = (sampleCountByKind[kind] ?: 0) + 1
+                        firstSampleUs = minOf(firstSampleUs ?: sampleTime, sampleTime)
                         extractor.advance()
                     }
-                    segmentStartUs = maxOf(segmentEndUs + 1, segmentStartUs + segment.durationUs)
+                    require(sampleCountByKind.keys.containsAll(selected.keys)) {
+                        "HLS 分片存在空音视频轨道"
+                    }
+                    sampleCountByKind.forEach { (kind, count) -> inputCounts[kind] = (inputCounts[kind] ?: 0) + count }
+                    firstSamples += firstSampleUs ?: error("HLS 分片没有可写入样本")
                 } finally {
                     extractor.release()
                 }
             }
-            muxer?.stop()
-            muxer?.release()
+            require(videoSegments == prepared.size) { "HLS 分片视频样本不完整" }
+            require(audioSegments == 0 || audioSegments == prepared.size) {
+                "HLS 音频轨道只覆盖部分分片，无法生成连续有声 MP4"
+            }
+            require(formats.isNotEmpty()) { "HLS 分片不含音视频轨道" }
+            muxer = Mp4Muxer.Builder(SeekableMuxerOutput.of(temp.path))
+                .setSampleBatchingEnabled(false)
+                .setLastSampleDurationBehavior(Mp4Muxer.LAST_SAMPLE_DURATION_BEHAVIOR_SET_FROM_END_OF_STREAM_BUFFER_OR_DUPLICATE_PREVIOUS)
+                .build()
+            formats.forEach { (kind, format) ->
+                trackIds[kind] = muxer.addTrack(toMuxerFormat(format))
+            }
+            val lastOutputPtsByKind = mutableMapOf<String, Long>()
+            val outputCounts = mutableMapOf<String, Int>()
+            var audioEndUs = 0L
+            val aacClock = formats["audio"]?.takeIf { it.getString(MediaFormat.KEY_MIME) == "audio/mp4a-latm" }
+                ?.let { AacAccessUnits.Clock(it.getInteger(MediaFormat.KEY_SAMPLE_RATE)) }
+            for ((index, input) in prepared.withIndex()) {
+                check(!cancelled.get() && !disposed) { "导出已取消" }
+                val segment = segments[index]
+                val extractor = MediaExtractor()
+                extractor.setDataSource(input.path)
+                try {
+                    val selected = (0 until extractor.trackCount).mapNotNull { trackIndex ->
+                        val mime = extractor.getTrackFormat(trackIndex).getString(MediaFormat.KEY_MIME) ?: return@mapNotNull null
+                        val kind = mediaTrackKind(mime) ?: return@mapNotNull null
+                        if (kind !in trackIds) return@mapNotNull null
+                        kind to trackIndex
+                    }.groupBy({ it.first }, { it.second }).mapValues { it.value.first() }
+                    selected.values.forEach(extractor::selectTrack)
+                    require(selected.isNotEmpty()) { "HLS 分片缺少已选择的音视频轨道" }
+                    val firstSampleUs = firstSamples[index]
+                    var segmentEndUs = segmentStartUs
+                    var buffer = ByteBuffer.allocateDirect(1024 * 1024)
+                    while (true) {
+                        check(!cancelled.get() && !disposed) { "导出已取消" }
+                        val requiredSize = extractor.sampleSize
+                        require(requiredSize <= 32L * 1024L * 1024L) { "HLS 单个样本过大" }
+                        if (requiredSize > buffer.capacity()) buffer = ByteBuffer.allocateDirect(requiredSize.toInt())
+                        buffer.clear()
+                        val size = extractor.readSampleData(buffer, 0)
+                        if (size < 0) break
+                        val sampleTrack = extractor.sampleTrackIndex
+                        val mime = extractor.getTrackFormat(sampleTrack).getString(MediaFormat.KEY_MIME)
+                            ?: error("HLS 样本轨道格式缺失")
+                        val kind = mediaTrackKind(mime) ?: error("HLS 样本轨道不支持")
+                        val track = trackIds[kind] ?: error("HLS 样本轨道未映射")
+                        // Audio and video share one segment offset. Keep the
+                        // extractor's decode order and original PTS spacing;
+                        // do not sort or independently zero each track, since
+                        // B-frame composition offsets are valid here.
+                        val relativePts = extractor.sampleTime - firstSampleUs
+                        require(relativePts >= 0L) { "HLS 样本时间早于分片起点" }
+                        val outputPts = segmentStartUs + relativePts
+                        buffer.position(0)
+                        buffer.limit(size)
+                        val flags = if (extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0)
+                            C.BUFFER_FLAG_KEY_FRAME else 0
+                        val format = extractor.getTrackFormat(sampleTrack)
+                        val frames = if (mime == "audio/mp4a-latm") {
+                            val csd = format.getByteBuffer("csd-0")?.duplicate() ?: error("AAC 解码初始化信息缺失")
+                            val config = ByteArray(csd.remaining()).also { csd.get(it) }
+                            AacAccessUnits.split(buffer, format.getInteger(MediaFormat.KEY_SAMPLE_RATE),
+                                format.getInteger(MediaFormat.KEY_CHANNEL_COUNT), config,
+                                format.containsKey(MediaFormat.KEY_IS_ADTS) && format.getInteger(MediaFormat.KEY_IS_ADTS) == 1)
+                        } else listOf(AacAccessUnits.Frame(buffer, 0L))
+                        for (frame in frames) {
+                            // TS extractors can return several complete ADTS
+                            // frames as one sample. MP4 needs one raw AAC AU
+                            // per sample, with the ADTS transport header removed.
+                            val pts = if (frame.adts) aacClock!!.next(outputPts + frame.offsetUs) else outputPts + frame.offsetUs
+                            val previousPts = lastOutputPtsByKind[kind]
+                            require(kind != "audio" || previousPts == null || pts > previousPts) {
+                                "HLS 音频轨道跨分片时间重叠，无法生成连续 MP4"
+                            }
+                            val sampleSize = frame.data.remaining()
+                            muxer.writeSampleData(track, frame.data, BufferInfo(pts, sampleSize, flags))
+                            lastOutputPtsByKind[kind] = maxOf(previousPts ?: pts, pts)
+                            outputCounts[kind] = (outputCounts[kind] ?: 0) + 1
+                            val frameEndUs = if (mime == "audio/mp4a-latm") {
+                                pts + 1024L * 1_000_000L / format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                            } else {
+                                pts
+                            }
+                            segmentEndUs = maxOf(segmentEndUs, frameEndUs)
+                            if (mime == "audio/mp4a-latm") {
+                                val end = if (frame.adts) aacClock!!.endUs() else pts + 1024L * 1_000_000L / format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                                audioEndUs = maxOf(audioEndUs, end)
+                            }
+                        }
+                        extractor.advance()
+                    }
+                    require(segment.durationUs > 0L) { "HLS 分片时长无效" }
+                    require(segmentEndUs - segmentStartUs <= segment.durationUs + 1_000_000L) {
+                        "HLS 样本超出清单分片时长"
+                    }
+                    segmentStartUs += segment.durationUs
+                } finally {
+                    extractor.release()
+                }
+            }
+            trackIds.forEach { (kind, trackId) ->
+                val last = lastOutputPtsByKind[kind] ?: error("输出缺少 $kind 样本")
+                val end = if (kind == "audio") maxOf(segmentStartUs, audioEndUs, last + 1) else maxOf(segmentStartUs, last + 1)
+                muxer.writeSampleData(trackId, ByteBuffer.allocate(0), BufferInfo(end, 0, C.BUFFER_FLAG_END_OF_STREAM))
+            }
+            muxer.close()
             muxer = null
             require(temp.isFile && temp.length() > 0) { "导出文件为空" }
+            require(outputCounts["video"] == inputCounts["video"] &&
+                (outputCounts["audio"] ?: 0) >= (inputCounts["audio"] ?: 0) && validateOutput(temp.path, outputCounts)) {
+                "导出文件音视频样本不完整"
+            }
             if (output.exists()) output.delete()
             check(temp.renameTo(output)) { "无法提交导出文件" }
         } catch (error: Exception) {
-            runCatching { muxer?.stop() }
-            runCatching { muxer?.release() }
+            runCatching { muxer?.close() }
             if (temp.exists()) temp.delete()
             throw error
         } finally {
             if (workDir.exists()) workDir.deleteRecursively()
         }
+    }
+
+    private fun mediaTrackKind(mime: String): String? = when {
+        mime.startsWith("video/") -> "video"
+        mime.startsWith("audio/") -> "audio"
+        else -> null
+    }
+
+    private fun mediaFormatSignature(format: MediaFormat): String {
+        val integerKeys = listOf(
+            MediaFormat.KEY_WIDTH,
+            MediaFormat.KEY_HEIGHT,
+            MediaFormat.KEY_PROFILE,
+            MediaFormat.KEY_LEVEL,
+            MediaFormat.KEY_SAMPLE_RATE,
+            MediaFormat.KEY_CHANNEL_COUNT,
+            MediaFormat.KEY_ROTATION,
+        )
+        val values = integerKeys.joinToString("|") { key ->
+            val value = runCatching {
+                if (format.containsKey(key)) format.getInteger(key).toString() else ""
+            }.getOrDefault("")
+            "$key=$value"
+        }
+        val csd = listOf("csd-0", "csd-1").joinToString("|") { key ->
+            val buffer = format.getByteBuffer(key)?.duplicate() ?: return@joinToString "$key="
+            val bytes = ByteArray(buffer.remaining())
+            buffer.get(bytes)
+            "$key=${bytes.joinToString("") { byte -> "%02x".format(byte) }}"
+        }
+        return "${format.getString(MediaFormat.KEY_MIME)}|$values|$csd"
+    }
+
+    private fun toMuxerFormat(format: MediaFormat): Format {
+        val converted = MediaFormatUtil.createFormatFromMediaFormat(format)
+        if (converted.sampleMimeType == "video/avc") {
+            require(converted.initializationData.size >= 2 &&
+                converted.initializationData.take(2).all { it.isNotEmpty() }) {
+                "HLS 视频解码初始化信息缺失"
+            }
+        }
+        if (converted.sampleMimeType in setOf("video/hevc", "audio/mp4a-latm")) {
+            require(converted.initializationData.isNotEmpty() && converted.initializationData.all { it.isNotEmpty() }) {
+                "HLS 音视频解码初始化信息缺失"
+            }
+        }
+        return converted
     }
 
     private data class HlsSegment(
@@ -285,6 +467,9 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 sequence = line.substringAfter(':').trim().toLongOrNull()
                     ?: error("HLS 序列号无效")
                 continue
+            }
+            if (line.startsWith("#EXT-X-DISCONTINUITY")) {
+                error("暂不支持含 discontinuity 的 HLS 清单导出")
             }
             if (line.startsWith("#EXT-X-KEY:")) {
                 val method = attribute(line, "METHOD")?.trim()
@@ -327,6 +512,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             if (line.startsWith("http://") || line.startsWith("https://")) {
                 error("HLS 清单包含远程分片")
             }
+            require(durationUs > 0L) { "HLS 分片时长无效" }
             result += HlsSegment(
                 file = localResource(base, line, "HLS 输入分片"),
                 key = keyFile,
@@ -335,6 +521,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 init = initFile,
                 durationUs = durationUs,
             )
+            durationUs = 0L
         }
         return result
     }
@@ -410,16 +597,33 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         return output
     }
 
-    private fun validateOutput(path: String): Boolean {
+    private fun validateOutput(path: String, expectedCounts: Map<String, Int>? = null): Boolean {
         val file = File(path).canonicalFile
         if (!file.isFile || file.length() <= 0L) return false
         require(nativeValidatePath(file.path, filesRoot.path)) { "输出路径越界" }
         val extractor = MediaExtractor()
         return try {
             extractor.setDataSource(file.path)
-            extractor.trackCount > 0 && (0 until extractor.trackCount).any { index ->
-                extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.let { it.startsWith("audio/") || it.startsWith("video/") } == true
+            val tracks = (0 until extractor.trackCount).mapNotNull { index ->
+                val mime = extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)
+                if (mime?.startsWith("audio/") == true || mime?.startsWith("video/") == true) index else null
             }
+            if (tracks.isEmpty()) return false
+            tracks.forEach(extractor::selectTrack)
+            var samples = 0
+            val sampleCounts = mutableMapOf<Int, Int>()
+            while (extractor.sampleTrackIndex >= 0) {
+                val track = extractor.sampleTrackIndex
+                if (extractor.sampleSize <= 0L) return false
+                sampleCounts[track] = (sampleCounts[track] ?: 0) + 1
+                samples++
+                extractor.advance()
+                if (samples > 10_000_000) return false
+            }
+            samples > 0 && sampleCounts.keys.containsAll(tracks) && (expectedCounts == null || tracks.all { index ->
+                val mime = extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME) ?: return@all false
+                sampleCounts[index] == expectedCounts[mediaTrackKind(mime)]
+            })
         } finally { extractor.release() }
     }
 
@@ -649,6 +853,87 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         require(file.length() > 0L) { "媒体文件为空" }
         file.inputStream().use { require(it.read() >= 0) { "媒体文件为空" } }
         return mapOf("size" to file.length(), "modifiedMs" to file.lastModified())
+    }
+
+    private fun scanMedia(directory: String?, cancelled: AtomicBoolean): Map<String, Any> {
+        val grants = context.contentResolver.persistedUriPermissions.filter {
+            it.isReadPermission && DocumentsContract.isTreeUri(it.uri)
+        }
+        val roots = if (directory.isNullOrBlank()) grants.map { it.uri }
+        else {
+            val tree = Uri.parse(directory)
+            require(grants.any { it.uri == tree }) { "MP4 目录权限已失效，请重新选择保存目录" }
+            listOf(tree)
+        }
+        val files = mutableListOf<Map<String, Any?>>()
+        val warnings = mutableListOf<String>()
+        val visited = mutableSetOf<String>()
+        if (roots.isEmpty()) warnings += "未找到可读取的保存目录；请选择 MP4 保存目录后重新扫描"
+        for (tree in roots) {
+            val pending = java.util.ArrayDeque<Pair<String, String>>()
+            pending.add(DocumentsContract.getTreeDocumentId(tree) to "")
+            while (pending.isNotEmpty()) {
+                check(!cancelled.get() && !disposed) { "扫描已取消" }
+                val (parentId, folder) = pending.removeFirst()
+                if (!visited.add("${tree.authority}/$parentId")) continue
+                if (visited.size > 10_000 || files.size >= 10_000) {
+                    warnings += "目录项目较多，请选择较小的媒体目录继续扫描"
+                    pending.clear()
+                    break
+                }
+                val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
+                try {
+                    context.contentResolver.query(children, arrayOf(
+                        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                        DocumentsContract.Document.COLUMN_MIME_TYPE,
+                        DocumentsContract.Document.COLUMN_SIZE,
+                        DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+                    ), null, null, null)?.use { cursor ->
+                        while (cursor.moveToNext()) {
+                            check(!cancelled.get() && !disposed) { "扫描已取消" }
+                            val id = cursor.getString(0) ?: continue
+                            val name = cursor.getString(1) ?: continue
+                            val mime = cursor.getString(2)
+                            if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                                if (folder.count { it == '/' } < 16 && name != "materialized") {
+                                    pending.add(id to if (folder.isEmpty()) name else "$folder/$name")
+                                }
+                                continue
+                            }
+                            if (!name.endsWith(".mp4", true)) continue
+                            val document = DocumentsContract.buildDocumentUriUsingTree(tree, id)
+                            // Reading track headers rejects a still-empty or incomplete
+                            // document. No MP4 copy, thumbnail, or network request is made.
+                            val extractor = MediaExtractor()
+                            try {
+                                context.contentResolver.openAssetFileDescriptor(document, "r")?.use { asset ->
+                                    if (asset.length >= 0) extractor.setDataSource(asset.fileDescriptor, asset.startOffset, asset.length)
+                                    else extractor.setDataSource(asset.fileDescriptor)
+                                    if ((0 until extractor.trackCount).none {
+                                            extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+                                        }) continue
+                                    files += mapOf(
+                                        "uri" to document.toString(), "name" to name,
+                                        "size" to if (cursor.isNull(3)) asset.length else cursor.getLong(3),
+                                        "modifiedMs" to if (cursor.isNull(4)) 0L else cursor.getLong(4),
+                                        "folder" to folder.ifEmpty { null },
+                                    )
+                                }
+                            } catch (_: Exception) {
+                                warnings += "部分 MP4 暂不可读，已保留现有索引"
+                            } finally { extractor.release() }
+                        }
+                    }
+                } catch (error: SecurityException) {
+                    warnings += "部分目录读取权限已失效，请重新选择保存目录"
+                } catch (error: Exception) {
+                    check(!cancelled.get() && !disposed) { "扫描已取消" }
+                    warnings += "部分目录暂不可读，已保留现有索引"
+                }
+            }
+        }
+        return mapOf("files" to files, "warnings" to warnings.distinct())
     }
 
     private fun inspect(source: String): Map<String, Any?> {

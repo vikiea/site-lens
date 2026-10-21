@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../domain/models.dart';
+import '../domain/media_artifact_identity.dart';
 
 /// SQLite statements that materialise the v2 "profile" schema. They are shared
 /// by fresh installs (`onCreate`) and the v1 -> v2 migration (`onUpgrade`) so
@@ -119,7 +120,7 @@ const _v8ErrorLogsTable =
 
 const _v9MediaArtifactsTable =
     'CREATE TABLE IF NOT EXISTS media_artifacts('
-    'task_id TEXT PRIMARY KEY REFERENCES media_tasks(id) ON DELETE CASCADE, '
+    'task_id TEXT PRIMARY KEY, source_key TEXT NOT NULL UNIQUE, '
     'metadata TEXT NOT NULL)';
 const _v10TaskBatchDirectoryColumn =
     'ALTER TABLE media_tasks ADD COLUMN batch_directory TEXT';
@@ -143,7 +144,7 @@ class AppDatabase extends GeneratedDatabase {
   static void Function(String step)? migrationDebugHook;
 
   @override
-  int get schemaVersion => 10;
+  int get schemaVersion => 11;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -181,6 +182,45 @@ class AppDatabase extends GeneratedDatabase {
       if (from < 9) await customStatement(_v9MediaArtifactsTable);
       if (from < 10 && !await _columnExists('media_tasks', 'batch_directory')) {
         await customStatement(_v10TaskBatchDirectoryColumn);
+      }
+      if (from < 11) {
+        // Exported documents outlive download caches and their task rows.
+        // Keep the legacy record key while removing the cascading ownership.
+        await customStatement(
+          'ALTER TABLE media_artifacts RENAME TO media_artifacts_v10',
+        );
+        await customStatement(_v9MediaArtifactsTable);
+        final legacy = await customSelect(
+          'SELECT metadata FROM media_artifacts_v10',
+        ).get();
+        final records =
+            legacy
+                .map(
+                  (row) =>
+                      jsonDecode(row.read<String>('metadata'))
+                          as Map<String, dynamic>,
+                )
+                .toList()
+              ..sort((a, b) {
+                final left = a['taskId'] as String;
+                final right = b['taskId'] as String;
+                if (left.startsWith('library_') !=
+                    right.startsWith('library_')) {
+                  return left.startsWith('library_') ? 1 : -1;
+                }
+                return left.compareTo(right);
+              });
+        for (final record in records) {
+          await customStatement(
+            'INSERT OR IGNORE INTO media_artifacts(task_id,source_key,metadata) VALUES(?,?,?)',
+            [
+              record['taskId'],
+              mediaArtifactSourceKey(record['location'] as String),
+              jsonEncode(record),
+            ],
+          );
+        }
+        await customStatement('DROP TABLE media_artifacts_v10');
       }
     },
     beforeOpen: (_) async {
@@ -1444,13 +1484,30 @@ class AppDatabase extends GeneratedDatabase {
           )
           .toList();
 
-  Future<void> saveMediaArtifact(
+  Future<String> saveMediaArtifact(
     String taskId,
     Map<String, Object?> metadata,
-  ) => customStatement(
-    'INSERT INTO media_artifacts(task_id,metadata) VALUES(?,?) ON CONFLICT(task_id) DO UPDATE SET metadata=excluded.metadata',
-    [taskId, jsonEncode(metadata)],
-  );
+  ) => transaction(() async {
+    final key = mediaArtifactSourceKey(metadata['location'] as String);
+    final existing = await customSelect(
+      'SELECT task_id FROM media_artifacts WHERE source_key=?',
+      variables: [Variable.withString(key)],
+    ).getSingleOrNull();
+    final previousId = existing?.read<String>('task_id');
+    if (previousId != null && previousId != taskId) {
+      // A directory scan may recover an orphan, but never remove a download
+      // task's association with an exported document.
+      if (taskId.startsWith('library_') && !previousId.startsWith('library_')) {
+        return previousId;
+      }
+      await deleteMediaArtifact(previousId);
+    }
+    await customStatement(
+      'INSERT INTO media_artifacts(task_id,source_key,metadata) VALUES(?,?,?) ON CONFLICT(task_id) DO UPDATE SET source_key=excluded.source_key,metadata=excluded.metadata',
+      [taskId, key, jsonEncode(metadata)],
+    );
+    return taskId;
+  });
 
   Future<void> deleteMediaArtifact(String taskId) =>
       customStatement('DELETE FROM media_artifacts WHERE task_id=?', [taskId]);

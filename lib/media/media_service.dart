@@ -378,6 +378,7 @@ class MediaTaskStore {
   final Future<Directory> Function() _directoryProvider;
   final AppDatabase? db;
   final _tasks = <String, MediaTask>{};
+  final _localMediaReferences = <String, MediaTask>{};
   final _byCacheKey = <String, String>{};
   final _references = <String, int>{};
   final _exclusive = <String>{};
@@ -463,6 +464,16 @@ class MediaTaskStore {
   }
 
   MediaTask? task(String id) => _tasks[_resolveId(id)];
+
+  /// Local library files share playback/file locks without becoming downloads
+  /// or acquiring a synthetic network candidate.
+  MediaTask? referenceTask(String id) => task(id) ?? _localMediaReferences[id];
+  void registerLocalMediaReference(MediaTask reference) {
+    _localMediaReferences[reference.id] = reference;
+  }
+
+  void unregisterLocalMediaReference(String id) =>
+      _localMediaReferences.remove(id);
   List<MediaTask> get tasks => List.unmodifiable(_tasks.values);
 
   MediaTask? taskForCandidate(MediaCandidate candidate) {
@@ -617,6 +628,10 @@ class MediaTaskStore {
   }
 
   Future<void> restore() async {
+    if (_references.isNotEmpty || _exclusive.isNotEmpty) {
+      throw StateError('媒体正在使用，停止播放、投屏或文件操作后才能重新载入任务');
+    }
+    await flushAll();
     final persisted = await db?.mediaTasks();
     if (persisted == null) return;
     final repaired = <MediaTask>[];
@@ -650,10 +665,15 @@ class MediaTaskStore {
         await db!.saveMediaTask(next);
       }
     }
+    if (_references.isNotEmpty || _exclusive.isNotEmpty) {
+      throw StateError('媒体正在使用，无法重新载入任务');
+    }
     _tasks
       ..clear()
       ..addEntries(repaired.map((task) => MapEntry(task.id, task)));
     _aliases.clear();
+    _references.clear();
+    _exclusive.clear();
     _authorizationKeys
       ..clear()
       ..addAll(authorizationKeys);
@@ -767,7 +787,7 @@ class MediaTaskStore {
 
   void retain(String taskId) {
     final canonicalId = _resolveId(taskId);
-    if (!_tasks.containsKey(canonicalId)) throw StateError('媒体任务不存在');
+    if (referenceTask(canonicalId) == null) throw StateError('媒体文件不存在');
     if (_exclusive.contains(canonicalId)) {
       throw StateError('媒体任务正在执行文件操作，请稍后重试');
     }
@@ -792,7 +812,7 @@ class MediaTaskStore {
 
   void acquireExclusive(String taskId) {
     final canonicalId = _resolveId(taskId);
-    if (!_tasks.containsKey(canonicalId)) throw StateError('媒体任务不存在');
+    if (referenceTask(canonicalId) == null) throw StateError('媒体文件不存在');
     if (!canDelete(canonicalId) || !_exclusive.add(canonicalId)) {
       throw StateError('媒体任务仍被播放、导出、投屏或管理占用');
     }
@@ -2705,7 +2725,7 @@ class CastSessionController {
         _active!.state != CastSessionState.failed) {
       throw StateError('已有投屏会话');
     }
-    if (tasks.task(mediaTaskId) == null) throw StateError('媒体任务不存在');
+    if (tasks.referenceTask(mediaTaskId) == null) throw StateError('媒体文件不存在');
     final session = CastSession(
       id: 'cast_${DateTime.now().microsecondsSinceEpoch}',
       deviceId: device.id,

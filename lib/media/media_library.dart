@@ -1,13 +1,16 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
 import '../data/database.dart';
 import '../diagnostics/error_log.dart';
 import '../domain/models.dart';
+import '../domain/media_artifact_identity.dart';
 import 'media_service.dart';
 import 'native_export_runtime.dart';
 
@@ -25,6 +28,7 @@ class MediaArtifact {
     this.width,
     this.height,
     this.thumbnailPath,
+    this.folder,
   });
 
   final String taskId;
@@ -38,6 +42,7 @@ class MediaArtifact {
   final int? width;
   final int? height;
   final String? thumbnailPath;
+  final String? folder;
   final DateTime createdAt;
 
   MediaArtifact withLocation(String value, {String? name}) => MediaArtifact(
@@ -52,6 +57,7 @@ class MediaArtifact {
     width: width,
     height: height,
     thumbnailPath: thumbnailPath,
+    folder: folder,
     createdAt: createdAt,
   );
 
@@ -68,6 +74,7 @@ class MediaArtifact {
         width: width,
         height: height,
         thumbnailPath: thumbnailPath,
+        folder: folder,
         createdAt: createdAt,
       );
 
@@ -83,6 +90,7 @@ class MediaArtifact {
     'width': width,
     'height': height,
     'thumbnailPath': thumbnailPath,
+    'folder': folder,
     'createdAt': createdAt.toIso8601String(),
   };
 
@@ -98,6 +106,7 @@ class MediaArtifact {
     width: (json['width'] as num?)?.toInt(),
     height: (json['height'] as num?)?.toInt(),
     thumbnailPath: json['thumbnailPath'] as String?,
+    folder: json['folder'] as String?,
     createdAt: DateTime.parse(json['createdAt'] as String),
   );
 }
@@ -118,9 +127,43 @@ class MediaLibrary extends ChangeNotifier {
   final _items = <String, MediaArtifact>{};
   final _busy = <String>{};
   final _inspections = <String, Future<MediaArtifact>>{};
+  final _materializations = <String, Future<File?>>{};
   bool _restored = false;
   Future<void>? _restoring;
   bool _disposed = false;
+  Future<({int added, int found, List<String> warnings})>? _scanning;
+  bool get scanning => _scanning != null;
+  int _catalogEpoch = 0;
+  Future<void> _catalogTail = Future<void>.value();
+
+  MediaTask presentationTask(MediaArtifact item) =>
+      tasks.task(item.taskId) ??
+      MediaTask(
+        id: item.taskId,
+        candidateId: '',
+        hostId: 0,
+        generation: 0,
+        sourceUrl: Uri.tryParse(item.location)?.hasScheme == true
+            ? Uri.parse(item.location)
+            : Uri.file(item.location),
+        cacheKey: sha256
+            .convert(utf8.encode(_sourceKey(item.location)))
+            .toString(),
+        state: MediaTaskState.playable,
+        updatedAt: item.createdAt,
+        displayTitle: item.name.replaceFirst(
+          RegExp(r'\.mp4$', caseSensitive: false),
+          '',
+        ),
+        batchDirectory: item.folder,
+        bytesDownloaded: item.size,
+        totalBytes: item.size,
+      );
+
+  String? folderFor(MediaArtifact item) =>
+      item.folder ?? tasks.task(item.taskId)?.batchDirectory;
+
+  static String _sourceKey(String source) => mediaArtifactSourceKey(source);
 
   List<MediaArtifact> get items =>
       _items.values.toList()
@@ -133,9 +176,31 @@ class MediaLibrary extends ChangeNotifier {
 
   Future<void> _restore() async {
     if (!_restored) {
+      final restored = <String, MediaArtifact>{};
+      final duplicates = <MediaArtifact>[];
       for (final raw in await db.mediaArtifacts()) {
         final item = MediaArtifact.fromJson(raw);
-        _items[item.taskId] = item;
+        final key = _sourceKey(item.location);
+        final previous = restored[key];
+        if (previous == null ||
+            previous.taskId.startsWith('library_') &&
+                !item.taskId.startsWith('library_')) {
+          if (previous != null) duplicates.add(previous);
+          restored[key] = item;
+        } else {
+          duplicates.add(item);
+        }
+      }
+      _items
+        ..clear()
+        ..addEntries(
+          restored.values.map((item) => MapEntry(item.taskId, item)),
+        );
+      for (final duplicate in duplicates) {
+        await db.deleteMediaArtifact(duplicate.taskId);
+      }
+      for (final item in _items.values) {
+        tasks.registerLocalMediaReference(presentationTask(item));
       }
     }
     // Earlier builds replaced localRef with the MP4 and left its title empty.
@@ -169,14 +234,208 @@ class MediaLibrary extends ChangeNotifier {
     _notify();
   }
 
+  Future<({int added, int found, List<String> warnings})> rescan({
+    String? directory,
+  }) => _scanning ??= _rescan(directory).whenComplete(() => _scanning = null);
+
+  Future<({int added, int found, List<String> warnings})> _rescan(
+    String? directory,
+  ) async {
+    await restore();
+    if (_busy.isNotEmpty) {
+      return (added: 0, found: 0, warnings: ['媒体文件操作进行中，请完成后重新扫描']);
+    }
+    final epoch = ++_catalogEpoch;
+    final entries = <_ScannedMedia>[];
+    final warnings = <String>[];
+    final root = await tasks.cacheRootDirectory();
+    final exports = Directory('${root.parent.path}/media_exports');
+    await _scanLocal(exports, entries);
+    final configured = directory?.trim();
+    if (native != null || configured != null && configured.isNotEmpty) {
+      final uri = Uri.tryParse(configured ?? '');
+      try {
+        if (uri?.scheme == 'content' ||
+            configured == null ||
+            configured.isEmpty) {
+          final response = native == null
+              ? null
+              : await native!.scanMedia(directory: configured);
+          for (final raw in (response?['files'] as List?) ?? const []) {
+            if (raw is! Map) continue;
+            final source = raw['uri'] as String?;
+            final name = raw['name'] as String?;
+            if (source == null || name == null || !_isMp4(name)) continue;
+            entries.add(
+              _ScannedMedia(
+                source: source,
+                name: name,
+                size: (raw['size'] as num?)?.toInt() ?? 0,
+                modifiedMs: (raw['modifiedMs'] as num?)?.toInt() ?? 0,
+                folder: raw['folder'] as String?,
+              ),
+            );
+          }
+          for (final warning in (response?['warnings'] as List?) ?? const []) {
+            if (warning is String) warnings.add(warning);
+          }
+        } else {
+          if (uri?.hasScheme == true && uri?.scheme != 'file') {
+            throw const FormatException('保存目录类型无效，请重新选择 MP4 保存目录');
+          }
+          if (native != null) {
+            throw const FormatException('请通过系统选择器重新授权 MP4 保存目录');
+          }
+          await _scanLocal(
+            uri?.scheme == 'file'
+                ? Directory.fromUri(uri!)
+                : Directory(configured),
+            entries,
+          );
+        }
+      } catch (error) {
+        warnings.add(error.toString());
+      }
+    }
+    final unique = <String, _ScannedMedia>{};
+    for (final entry in entries) {
+      unique[_sourceKey(entry.source)] = entry;
+    }
+    var added = 0;
+    for (final entry in unique.values) {
+      final key = _sourceKey(entry.source);
+      // Source identity, never the filename, determines whether a document
+      // is already in the catalog. Copies and in-flight file operations also
+      // invalidate this scan before it can resurrect a removed record.
+      final known = _items.values.any(
+        (item) =>
+            _sourceKey(item.location) == key ||
+            item.libraryCopy != null && _sourceKey(item.libraryCopy!) == key ||
+            item.materializedCopy != null &&
+                _sourceKey(item.materializedCopy!) == key,
+      );
+      if (known || entry.size == 0) continue;
+      if (epoch != _catalogEpoch) break;
+      // The document may later move while keeping this catalog identity. A
+      // new file at its old path must receive a different identity.
+      final id =
+          'library_${sha256.convert(utf8.encode(key))}_${DateTime.now().microsecondsSinceEpoch}';
+      final value = MediaArtifact(
+        taskId: id,
+        location: entry.source,
+        name: entry.name,
+        size: entry.size,
+        mime: 'video/mp4',
+        createdAt: DateTime.fromMillisecondsSinceEpoch(
+          entry.modifiedMs > 0
+              ? entry.modifiedMs
+              : DateTime.now().millisecondsSinceEpoch,
+          isUtc: true,
+        ),
+        folder: entry.folder,
+      );
+      if (await _save(value, structural: false, expectedEpoch: epoch)) added++;
+    }
+    return (added: added, found: unique.length, warnings: warnings);
+  }
+
+  Future<void> _scanLocal(Directory root, List<_ScannedMedia> output) async {
+    if (!await root.exists()) return;
+    await for (final entity in root.list(recursive: true, followLinks: false)) {
+      if (entity is! File || !_isMp4(entity.path)) continue;
+      final name = p.basename(entity.path);
+      if (name.endsWith('.part')) continue;
+      final relative = p.relative(entity.path, from: root.path);
+      if (relative.split(p.separator).contains('materialized')) continue;
+      final stat = await entity.stat();
+      if (stat.size <= 0) continue;
+      output.add(
+        _ScannedMedia(
+          source: entity.path,
+          name: name,
+          size: stat.size,
+          modifiedMs: stat.modified.millisecondsSinceEpoch,
+          folder: p.dirname(relative) == '.' ? null : p.dirname(relative),
+        ),
+      );
+    }
+  }
+
+  static bool _isMp4(String path) =>
+      path.toLowerCase().endsWith('.mp4') &&
+      !path.toLowerCase().endsWith('.mp4.part');
+
   void _notify() {
     if (!_disposed) notifyListeners();
   }
 
-  Future<void> _save(MediaArtifact value) async {
-    await db.saveMediaArtifact(value.taskId, value.toJson());
-    _items[value.taskId] = value;
-    _notify();
+  Future<T> _catalogOperation<T>(Future<T> Function() action) {
+    final operation = _catalogTail.then((_) => action());
+    _catalogTail = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return operation;
+  }
+
+  Future<bool> _save(
+    MediaArtifact value, {
+    bool structural = true,
+    int? expectedEpoch,
+    MediaArtifact? expectedArtifact,
+  }) {
+    if (structural) _catalogEpoch++;
+    return _catalogOperation(() async {
+      bool stale() =>
+          expectedEpoch != null &&
+              (expectedEpoch != _catalogEpoch || _busy.isNotEmpty) ||
+          expectedArtifact != null &&
+              (!identical(_items[value.taskId], expectedArtifact) ||
+                  _busy.contains(value.taskId));
+      if (stale()) return false;
+      final duplicates = _items.values
+          .where(
+            (item) =>
+                item.taskId != value.taskId &&
+                _sourceKey(item.location) == _sourceKey(value.location),
+          )
+          .toList();
+      if (value.taskId.startsWith('library_') &&
+          duplicates.any((item) => !item.taskId.startsWith('library_'))) {
+        return false;
+      }
+      final duplicateLeases = <String>[];
+      try {
+        for (final duplicate in duplicates) {
+          tasks.acquireExclusive(duplicate.taskId);
+          duplicateLeases.add(duplicate.taskId);
+        }
+        await db.transaction(() async {
+          if (stale()) throw const _StaleCatalogWrite();
+          final canonical = await db.saveMediaArtifact(
+            value.taskId,
+            value.toJson(),
+          );
+          if (canonical != value.taskId || stale()) {
+            throw const _StaleCatalogWrite();
+          }
+        });
+      } on _StaleCatalogWrite {
+        return false;
+      } finally {
+        for (final duplicateId in duplicateLeases.reversed) {
+          tasks.releaseExclusive(duplicateId);
+        }
+      }
+      for (final duplicate in duplicates) {
+        _items.remove(duplicate.taskId);
+        tasks.unregisterLocalMediaReference(duplicate.taskId);
+      }
+      _items[value.taskId] = value;
+      tasks.registerLocalMediaReference(presentationTask(value));
+      _notify();
+      return true;
+    });
   }
 
   Future<MediaArtifact> register(
@@ -187,12 +446,18 @@ class MediaLibrary extends ChangeNotifier {
   }) async {
     final stat = await File(path).stat();
     if (stat.size <= 0) throw StateError('导出文件为空');
+    final previous = _items[task.id];
     final value = MediaArtifact(
       taskId: task.id,
       location: path,
       name: name ?? mediaExportFileName(task),
       size: stat.size,
       mime: mime,
+      folder: task.batchDirectory,
+      libraryCopy: previous?.location != path
+          ? previous?.location
+          : previous?.libraryCopy,
+      materializedCopy: previous?.materializedCopy,
       createdAt: DateTime.now().toUtc(),
     );
     await _save(value);
@@ -244,10 +509,11 @@ class MediaLibrary extends ChangeNotifier {
           height: _positiveInt(metadata['height']) ?? value.height,
           thumbnailPath:
               metadata['thumbnailPath'] as String? ?? value.thumbnailPath,
+          folder: value.folder,
           createdAt: value.createdAt,
         );
-        await _save(next);
-        return next;
+        await _save(next, structural: false, expectedArtifact: value);
+        return _items[taskId] ?? value;
       } finally {
         _inspections.remove(taskId);
       }
@@ -272,8 +538,8 @@ class MediaLibrary extends ChangeNotifier {
           );
       try {
         await _verifyReadable(candidate);
-        await _save(candidate);
-        return candidate;
+        if (await _save(candidate, expectedArtifact: value)) return candidate;
+        return _items[taskId];
       } catch (_) {
         // Try the next private copy before falling back to HLS regeneration.
       }
@@ -297,7 +563,33 @@ class MediaLibrary extends ChangeNotifier {
     }
   }
 
-  Future<File?> localFile(String taskId) async {
+  Future<File?> localFile(String taskId, {bool exclusiveAlreadyHeld = false}) =>
+      _materializations.putIfAbsent(
+        taskId,
+        () => _runMaterialization(
+          taskId,
+          exclusiveAlreadyHeld: exclusiveAlreadyHeld,
+        ),
+      );
+
+  Future<File?> _runMaterialization(
+    String taskId, {
+    required bool exclusiveAlreadyHeld,
+  }) async {
+    try {
+      return await _localFile(
+        taskId,
+        exclusiveAlreadyHeld: exclusiveAlreadyHeld,
+      );
+    } finally {
+      _materializations.remove(taskId);
+    }
+  }
+
+  Future<File?> _localFile(
+    String taskId, {
+    required bool exclusiveAlreadyHeld,
+  }) async {
     final value = _items[taskId];
     if (value == null) return null;
     final source = value.location;
@@ -309,24 +601,39 @@ class MediaLibrary extends ChangeNotifier {
         }
       }
       final runtime = native ?? (throw StateError('当前平台无法打开系统媒体文件'));
-      final path = await runtime.materialize(source);
-      await _save(
-        MediaArtifact(
-          taskId: value.taskId,
-          location: value.location,
-          libraryCopy: value.libraryCopy,
-          materializedCopy: path,
-          name: value.name,
-          size: value.size,
-          mime: value.mime,
-          durationMs: value.durationMs,
-          width: value.width,
-          height: value.height,
-          thumbnailPath: value.thumbnailPath,
-          createdAt: value.createdAt,
-        ),
-      );
-      return File(path);
+      if (!exclusiveAlreadyHeld) tasks.retain(taskId);
+      try {
+        final path = await runtime.materialize(source);
+        final saved = await _save(
+          MediaArtifact(
+            taskId: value.taskId,
+            location: value.location,
+            libraryCopy: value.libraryCopy,
+            materializedCopy: path,
+            name: value.name,
+            size: value.size,
+            mime: value.mime,
+            durationMs: value.durationMs,
+            width: value.width,
+            height: value.height,
+            thumbnailPath: value.thumbnailPath,
+            folder: value.folder,
+            createdAt: value.createdAt,
+          ),
+          structural: false,
+          expectedArtifact: value,
+        );
+        if (!saved) {
+          final current = _items[taskId];
+          if (current?.materializedCopy != path) {
+            await runtime.delete(path, allowMissing: true);
+            return null;
+          }
+        }
+        return File(path);
+      } finally {
+        if (!exclusiveAlreadyHeld) tasks.release(taskId);
+      }
     }
     final file = File(source);
     return await file.exists() && await file.length() > 0 ? file : null;
@@ -343,11 +650,13 @@ class MediaLibrary extends ChangeNotifier {
       throw StateError('媒体正在播放、导出、投屏或管理中，请先停止');
     }
     if (!exclusiveAlreadyHeld) tasks.acquireExclusive(taskId);
+    _catalogEpoch++;
     _notify();
     try {
       await _inspections[taskId];
       return await action(_items[taskId] ?? (throw StateError('媒体文件不存在')));
     } finally {
+      _catalogEpoch++;
       if (!exclusiveAlreadyHeld) tasks.releaseExclusive(taskId);
       _busy.remove(taskId);
       _notify();
@@ -401,7 +710,11 @@ class MediaLibrary extends ChangeNotifier {
       return;
     }
     final source =
-        (await localFile(taskId))?.path ?? (throw StateError('媒体文件不存在'));
+        (await localFile(
+          taskId,
+          exclusiveAlreadyHeld: tasks.isExclusive(taskId),
+        ))?.path ??
+        (throw StateError('媒体文件不存在'));
     String target;
     if (uri.scheme == 'content') {
       final runtime = native ?? (throw StateError('当前平台不支持系统保存目录'));
@@ -454,6 +767,7 @@ class MediaLibrary extends ChangeNotifier {
         width: value.width,
         height: value.height,
         thumbnailPath: value.thumbnailPath,
+        folder: value.folder,
         createdAt: value.createdAt,
       ),
     );
@@ -549,6 +863,7 @@ class MediaLibrary extends ChangeNotifier {
       width: value.width,
       height: value.height,
       thumbnailPath: value.thumbnailPath,
+      folder: value.folder,
       createdAt: value.createdAt,
     );
     await _save(next);
@@ -593,6 +908,7 @@ class MediaLibrary extends ChangeNotifier {
             width: value.width,
             height: value.height,
             thumbnailPath: value.thumbnailPath,
+            folder: value.folder,
             createdAt: value.createdAt,
           ),
         );
@@ -651,9 +967,12 @@ class MediaLibrary extends ChangeNotifier {
         if (await file.exists()) await file.delete();
       }
     }
-    await db.deleteMediaArtifact(taskId);
-    _items.remove(taskId);
-    _notify();
+    await _catalogOperation(() async {
+      await db.deleteMediaArtifact(taskId);
+      _items.remove(taskId);
+      tasks.unregisterLocalMediaReference(taskId);
+      _notify();
+    });
   }, exclusiveAlreadyHeld: exclusiveAlreadyHeld);
 
   @override
@@ -661,4 +980,24 @@ class MediaLibrary extends ChangeNotifier {
     _disposed = true;
     super.dispose();
   }
+}
+
+class _StaleCatalogWrite implements Exception {
+  const _StaleCatalogWrite();
+}
+
+class _ScannedMedia {
+  const _ScannedMedia({
+    required this.source,
+    required this.name,
+    required this.size,
+    required this.modifiedMs,
+    this.folder,
+  });
+
+  final String source;
+  final String name;
+  final int size;
+  final int modifiedMs;
+  final String? folder;
 }

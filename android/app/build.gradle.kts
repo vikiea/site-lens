@@ -101,6 +101,7 @@ dependencies {
     // stack for the native texture player.
     implementation("androidx.media3:media3-exoplayer:1.11.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.11.1")
+    implementation("androidx.media3:media3-muxer:1.11.1")
 }
 
 // Formal release builds must never silently fall back to a debug certificate.

@@ -167,6 +167,35 @@ void main() {
     },
   );
 
+  testWidgets(
+    'media library rescan restores an MP4 after its index is missing',
+    (tester) async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-media-rescan-',
+      );
+      final db = AppDatabase(NativeDatabase.memory());
+      final tasks = MediaTaskStore(directoryProvider: () async => root, db: db);
+      final library = MediaLibrary(db: db, tasks: tasks);
+      try {
+        final directory = await Directory('${root.path}/media_exports/batch')
+            .create(recursive: true);
+        final file = await File('${directory.path}/恢复索引.mp4')
+            .writeAsBytes([1, 2, 3, 4]);
+        final result = await library.rescan();
+        expect(result.added, 1);
+        expect(library.items.single.location, file.path);
+        expect(library.items.single.taskId, startsWith('library_'));
+        expect((await library.rescan()).added, 0);
+        debugPrint('MEDIA_LIBRARY_RESCAN_PASS');
+      } finally {
+        library.dispose();
+        await db.close();
+        if (await root.exists()) await root.delete(recursive: true);
+        await tester.pumpWidget(const SizedBox());
+      }
+    },
+  );
+
   testWidgets('media task lifecycle and local HLS export gate', (tester) async {
     final db = AppDatabase(NativeDatabase.memory());
     final root = await Directory.systemTemp.createTemp(

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 
 import 'package:drift/native.dart';
 import 'package:flutter/services.dart';
@@ -64,6 +65,66 @@ class _MissingArtifactRuntime extends NativeExportRuntime {
   @override
   Future<Map<String, Object?>> stat(String source) =>
       Future.error(PlatformException(code: 'media_file_missing'));
+}
+
+class _ScanRuntime extends NativeExportRuntime {
+  _ScanRuntime(this.files);
+
+  final List<Map<String, Object?>> files;
+
+  @override
+  Future<Map<String, Object?>> scanMedia({String? directory}) async => {
+    'files': files,
+    'warnings': const <String>[],
+  };
+
+  @override
+  Future<Map<String, Object?>> inspect(String source) async => {'size': 6};
+
+  @override
+  Future<Map<String, Object?>> stat(String source) async => {'size': 6};
+}
+
+class _DelayedScanRuntime extends _ScanRuntime {
+  _DelayedScanRuntime(super.files);
+  final started = Completer<void>();
+  final resume = Completer<void>();
+
+  @override
+  Future<Map<String, Object?>> scanMedia({String? directory}) async {
+    started.complete();
+    await resume.future;
+    return super.scanMedia(directory: directory);
+  }
+
+  @override
+  Future<void> delete(String source, {bool allowMissing = false}) async {
+    if (source.startsWith('content:')) return;
+    if (await File(source).exists()) await File(source).delete();
+  }
+}
+
+class _MaterializeRuntime extends _ScanRuntime {
+  _MaterializeRuntime(this.path) : super([]);
+  final String path;
+  final started = Completer<void>();
+  final resume = Completer<void>();
+  int materializeCalls = 0;
+
+  @override
+  Future<String> materialize(String source) async {
+    materializeCalls++;
+    started.complete();
+    await resume.future;
+    await File(path).writeAsBytes([1, 2, 3]);
+    return path;
+  }
+
+  @override
+  Future<void> delete(String source, {bool allowMissing = false}) async {
+    if (source.startsWith('content:')) return;
+    if (await File(source).exists()) await File(source).delete();
+  }
 }
 
 void main() {
@@ -528,4 +589,184 @@ void main() {
     expect(library.item(task.id)!.location, previous.location);
     expect(await output.length(), 6);
   });
+
+  test(
+    'rescan restores an MP4 after its catalog row is missing and is idempotent',
+    () async {
+      library.dispose();
+      library = MediaLibrary(db: db, tasks: tasks);
+      await library.restore();
+
+      final first = await library.rescan();
+      expect(first.added, 1);
+      expect(first.found, 1);
+      expect(library.items.single.location, output.path);
+      expect(library.items.single.taskId, startsWith('library_'));
+      expect(await db.mediaArtifacts(), hasLength(1));
+
+      final second = await library.rescan();
+      expect(second.added, 0);
+      expect(library.items, hasLength(1));
+    },
+  );
+
+  test('rescan indexes a persisted SAF document without copying it', () async {
+    await output.delete();
+    final runtime = _ScanRuntime([
+      {
+        'uri': 'content://provider/tree/root/document/video',
+        'name': '扫描恢复.mp4',
+        'size': 600,
+        'modifiedMs': 1,
+        'folder': '批次',
+      },
+    ]);
+    library.dispose();
+    library = MediaLibrary(db: db, tasks: tasks, native: runtime);
+    final result = await library.rescan(
+      directory: 'content://provider/tree/root',
+    );
+    expect(result.added, 1);
+    final item = library.items.single;
+    expect(item.location, 'content://provider/tree/root/document/video');
+    expect(item.folder, '批次');
+    expect(item.libraryCopy, isNull);
+    expect(item.materializedCopy, isNull);
+  });
+
+  test('media artifact index survives deletion of its download task', () async {
+    final item = await library.register(task, output.path);
+    await tasks.delete(task.id);
+    final restored = MediaLibrary(db: db, tasks: tasks);
+    addTearDown(restored.dispose);
+    await restored.restore();
+    expect(restored.item(item.taskId), isNotNull);
+    expect(await output.exists(), isTrue);
+    tasks.retain(item.taskId);
+    await expectLater(tasks.restore(), throwsStateError);
+    tasks.release(item.taskId);
+    await tasks.restore();
+    tasks.retain(item.taskId);
+    tasks.release(item.taskId);
+  });
+
+  test('scan identity is replaced by its task identity durably', () async {
+    await library.rescan();
+    final scannedId = library.items.single.taskId;
+    await library.register(task, output.path);
+    expect(library.items.single.taskId, task.id);
+    expect(library.item(scannedId), isNull);
+    expect(await db.mediaArtifacts(), hasLength(1));
+    final staleScan = MediaArtifact(
+      taskId: scannedId,
+      location: output.uri.toString(),
+      name: '扫描.mp4',
+      size: 6,
+      createdAt: DateTime.now().toUtc(),
+    );
+    expect(await db.saveMediaArtifact(scannedId, staleScan.toJson()), task.id);
+    expect((await db.mediaArtifacts()).single['taskId'], task.id);
+    final restored = MediaLibrary(db: db, tasks: tasks);
+    addTearDown(restored.dispose);
+    await restored.restore();
+    expect(restored.items.single.taskId, task.id);
+  });
+
+  test(
+    'reusing a moved export path preserves both catalog identities',
+    () async {
+      await library.rescan();
+      final original = library.items.single;
+      final destination = Directory('${root.path}/moved-away');
+      await library.move(original.taskId, destination.path);
+      final moved = library.item(original.taskId)!;
+      await output.writeAsBytes([7, 8, 9]);
+      final result = await library.rescan();
+      expect(result.added, 1);
+      expect(library.items, hasLength(2));
+      expect(library.item(original.taskId)!.location, moved.location);
+      expect(await File(moved.location).readAsBytes(), [1, 2, 3, 4, 5, 6]);
+      expect(await output.readAsBytes(), [7, 8, 9]);
+      expect(await db.mediaArtifacts(), hasLength(2));
+    },
+  );
+
+  test(
+    'scan started before deletion does not resurrect a stale document',
+    () async {
+      final runtime = _DelayedScanRuntime([
+        {'uri': output.path, 'name': 'old.mp4', 'size': 6},
+      ]);
+      library.dispose();
+      library = MediaLibrary(db: db, tasks: tasks, native: runtime);
+      await library.register(task, output.path);
+      final scan = library.rescan();
+      await runtime.started.future;
+      runtime.resume.complete();
+      await library.delete(task.id);
+      final result = await scan;
+      expect(result.added, 0);
+      expect(library.items, isEmpty);
+      expect(await db.mediaArtifacts(), isEmpty);
+    },
+  );
+
+  test(
+    'rejected file operation does not cancel a scan or overcount it',
+    () async {
+      final runtime = _DelayedScanRuntime([
+        {
+          'uri': 'content://provider/document/other',
+          'name': '恢复.mp4',
+          'size': 6,
+        },
+      ]);
+      library.dispose();
+      library = MediaLibrary(db: db, tasks: tasks, native: runtime);
+      await library.register(task, output.path);
+      final scan = library.rescan();
+      await runtime.started.future;
+      tasks.retain(task.id);
+      await expectLater(library.rename(task.id, '使用中'), throwsStateError);
+      runtime.resume.complete();
+      final result = await scan;
+      tasks.release(task.id);
+      expect(result.added, 1);
+      expect(library.items, hasLength(2));
+    },
+  );
+
+  test(
+    'materialization holds a file lease until its catalog write completes',
+    () async {
+      final runtime = _MaterializeRuntime('${root.path}/materialized.mp4');
+      await db.saveMediaArtifact(
+        task.id,
+        MediaArtifact(
+          taskId: task.id,
+          location: 'content://provider/document/video',
+          name: '视频.mp4',
+          size: 6,
+          createdAt: DateTime.now().toUtc(),
+        ).toJson(),
+      );
+      library.dispose();
+      library = MediaLibrary(db: db, tasks: tasks, native: runtime);
+      await library.restore();
+      final pending = Future.wait([
+        library.localFile(task.id),
+        library.localFile(task.id),
+      ]);
+      await runtime.started.future;
+      await expectLater(library.delete(task.id), throwsStateError);
+      runtime.resume.complete();
+      final files = await pending;
+      expect(files.map((file) => file?.path), everyElement(runtime.path));
+      expect(runtime.materializeCalls, 1);
+      await library.delete(task.id);
+      expect(await File(runtime.path).exists(), isFalse);
+      expect(library.items, isEmpty);
+      expect(await db.mediaArtifacts(), isEmpty);
+    },
+  );
 }
