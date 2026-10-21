@@ -1400,7 +1400,10 @@ class AppDatabase extends GeneratedDatabase {
         'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,state,updated_at,display_title,batch_directory,episode_label,bytes_downloaded,total_bytes,error_code,error_reason,local_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
         'ON CONFLICT(id) DO UPDATE SET $update '
         'WHERE NOT ('
-        '(excluded.updated_at < media_tasks.updated_at) OR '
+        // Dart emits three or six fractional digits. Pad UTC timestamps
+        // before lexical comparison so .123001Z sorts after .123Z.
+        '(substr(replace(excluded.updated_at,\'Z\',\'000\'),1,26) < '
+        'substr(replace(media_tasks.updated_at,\'Z\',\'000\'),1,26)) OR '
         '(media_tasks.bytes_downloaded > excluded.bytes_downloaded) OR '
         '(media_tasks.total_bytes IS NOT NULL AND excluded.total_bytes IS NULL) OR '
         '(media_tasks.local_ref IS NOT NULL AND excluded.local_ref IS NULL) OR '

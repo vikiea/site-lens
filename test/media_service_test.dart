@@ -278,6 +278,30 @@ void main() {
     expect((await db.mediaTasks()).single.state, MediaTaskState.queued);
   });
 
+  test('task timestamps compare millisecond and microsecond precision chronologically', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final source = candidate(id: 'timestamp-precision');
+    await db.saveMediaCandidate(source);
+    final store = MediaTaskStore(db: db);
+    final original = store.create(source);
+    await store.flush(original.id);
+    MediaTask snapshot(String time, MediaTaskState state) => MediaTask.fromJson(
+      {...original.toJson(), 'updatedAt': time, 'state': state.name},
+    );
+    await db.saveMediaTask(
+      snapshot('2099-01-01T00:00:00.123Z', MediaTaskState.failed),
+    );
+    await db.saveMediaTask(
+      snapshot('2099-01-01T00:00:00.123001Z', MediaTaskState.queued),
+    );
+    expect((await db.mediaTasks()).single.state, MediaTaskState.queued);
+    await db.saveMediaTask(
+      snapshot('2099-01-01T00:00:00.123Z', MediaTaskState.failed),
+    );
+    expect((await db.mediaTasks()).single.state, MediaTaskState.queued);
+  });
+
   test(
     'direct retry states persist their transition back to downloading',
     () async {
