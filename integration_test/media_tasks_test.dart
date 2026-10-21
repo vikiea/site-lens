@@ -2,7 +2,7 @@ import 'dart:io';
 import 'dart:convert';
 
 import 'package:drift/native.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:path_provider/path_provider.dart';
@@ -14,11 +14,56 @@ import 'package:site_lens/media/media_library.dart';
 import 'package:site_lens/media/native_export_runtime.dart';
 import 'package:site_lens/media/native_media_runtime.dart';
 import 'package:site_lens/network/transport.dart';
+import 'package:site_lens/ui/app_controller.dart';
 
 import 'video_fixture.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets(
+    'temporary cast cleanup removes unfinished HLS without an MP4 artifact',
+    (tester) async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final app = AppController(db);
+      final candidate = MediaCandidate(
+        id: 'temporary-cast-cache-check',
+        hostId: 1,
+        generation: 1,
+        sourceUrl: Uri.parse('https://example.org/watch'),
+        mediaUrl: Uri.parse('https://example.org/index.m3u8'),
+        title: 'Temporary cast cleanup',
+        mime: 'application/vnd.apple.mpegurl',
+        source: MediaCandidateSource.dom,
+      );
+      try {
+        await db.saveMediaCandidate(candidate);
+        final task = app.mediaTasks.create(candidate);
+        final parent = await app.mediaTasks.cacheDirectory(
+          storageDirectory: task.storageDirectoryName,
+        );
+        final cache = await Directory('${parent.path}/${task.cacheKey}.hls')
+            .create();
+        final playlist = await File('${cache.path}/index.m3u8')
+            .writeAsString('#EXTM3U\n#EXTINF:1,\nsegment.ts\n#EXT-X-ENDLIST\n');
+        await File('${cache.path}/segment.ts').writeAsBytes([1, 2, 3]);
+        app.mediaTasks.transition(task.id, MediaTaskState.downloading);
+        app.mediaTasks.setLocalRef(task.id, playlist.path);
+        app.mediaTasks.transition(task.id, MediaTaskState.playable);
+        await app.mediaTasks.flush(task.id);
+        expect(app.mediaLibrary.item(task.id), isNull);
+        await app.cleanupTemporaryCastTask(task.id);
+        expect(app.mediaTasks.task(task.id), isNull);
+        expect(await cache.exists(), isFalse);
+        expect(await db.mediaTasks(), isEmpty);
+        debugPrint('NATIVE_TEMPORARY_CAST_CACHE_DELETE_PASS');
+      } finally {
+        await tester.pumpWidget(const SizedBox());
+        await app.shutdown();
+        await db.close();
+      }
+    },
+  );
 
   testWidgets(
     'native HLS remux plays continuously and task deletion removes cache',

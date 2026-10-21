@@ -937,21 +937,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> cleanupTemporaryCastTask(String taskId) async {
     final task = mediaTasks.task(taskId);
     if (task == null) return;
-    if (mediaLibrary.item(taskId) != null) {
-      await deleteMediaArtifact(
-        taskId,
-        deleteTaskCache: true,
-        deleteTask: true,
-      );
-      return;
-    }
-    if (mediaTasks.canDelete(taskId)) {
-      await mediaTasks.withExclusive(
-        taskId,
-        () => mediaTasks.delete(taskId, exclusiveAlreadyHeld: true),
-      );
-      notifyMediaChanged();
-    }
+    await deleteMediaArtifact(taskId, deleteTaskCache: true, deleteTask: true);
   }
 
   Future<void> _releaseCastCopy(String taskId) async {

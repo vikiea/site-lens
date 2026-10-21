@@ -135,32 +135,39 @@ void main() {
     });
   }
 
-  test(
-    'HLS TLS fallback uses native transport after bounded Dart attempts',
-    () async {
-      final root = await Directory.systemTemp.createTemp(
-        'site-lens-tls-fallback-',
-      );
-      addTearDown(() => root.delete(recursive: true));
-      final candidate = _candidate(Uri.parse('https://cdn.example/index.m3u8'));
-      final tasks = MediaTaskStore(directoryProvider: () async => root);
-      final http = _FailingTlsHttp();
-      var nativeCalls = 0;
-      final result = await MediaDownloadService(
-        tasks: tasks,
-        http: http,
-        tlsTransfer: (url, document, destination, maxBytes, cancel) async {
-          nativeCalls++;
-          expect(url.path, '/segment.ts');
-          expect(document, candidate.sourceUrl);
-          await destination.writeAsBytes([4, 5, 6], flush: true);
-        },
-      ).start(tasks.create(candidate), candidate);
-      expect(result.state, MediaTaskState.playable);
-      expect(http.attempts, [0, 1, 2, 3]);
-      expect(nativeCalls, 1);
-    },
-  );
+  for (final failure in [
+    const HandshakeException('Connection terminated during handshake'),
+    const SocketException('Connection reset by peer'),
+  ]) {
+    test(
+      'HLS ${failure.runtimeType} uses native transport after bounded Dart attempts',
+      () async {
+        final root = await Directory.systemTemp.createTemp(
+          'site-lens-tls-fallback-',
+        );
+        addTearDown(() => root.delete(recursive: true));
+        final candidate = _candidate(
+          Uri.parse('https://cdn.example/index.m3u8'),
+        );
+        final tasks = MediaTaskStore(directoryProvider: () async => root);
+        final http = _FailingTlsHttp(failure);
+        var nativeCalls = 0;
+        final result = await MediaDownloadService(
+          tasks: tasks,
+          http: http,
+          tlsTransfer: (url, document, destination, maxBytes, cancel) async {
+            nativeCalls++;
+            expect(url.path, '/segment.ts');
+            expect(document, candidate.sourceUrl);
+            await destination.writeAsBytes([4, 5, 6], flush: true);
+          },
+        ).start(tasks.create(candidate), candidate);
+        expect(result.state, MediaTaskState.playable);
+        expect(http.attempts, [0, 1, 2, 3]);
+        expect(nativeCalls, 1);
+      },
+    );
+  }
 
   test(
     'streamed transport safely handles 206, ignored Range 200 and 416',
@@ -366,6 +373,9 @@ void main() {
 }
 
 class _FailingTlsHttp extends ControlledHttp {
+  _FailingTlsHttp(this.failure);
+
+  final Object failure;
   final attempts = <int>[];
 
   @override
@@ -404,7 +414,7 @@ class _FailingTlsHttp extends ControlledHttp {
     int routeAttempt = 0,
   }) async {
     attempts.add(routeAttempt);
-    throw const HandshakeException('Connection terminated during handshake');
+    throw failure;
   }
 }
 

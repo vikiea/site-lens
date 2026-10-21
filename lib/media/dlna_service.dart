@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import '../diagnostics/error_log.dart';
 import '../domain/models.dart';
 import 'media_service.dart';
 
@@ -770,9 +771,49 @@ class DlnaCastController extends ChangeNotifier {
 
   CastSession? get active => sessions.active;
 
+  /// create() can reuse a reauthorization row after the token changes. Only
+  /// rows actually created by this attempt belong to the temporary cast.
+  ({MediaTask task, bool temporary}) prepareTask(MediaCandidate candidate) {
+    final existingIds = sessions.tasks.tasks.map((task) => task.id).toSet();
+    final task = sessions.tasks.create(candidate);
+    return (task: task, temporary: !existingIds.contains(task.id));
+  }
+
   void markTemporaryTask(String taskId) => _temporaryTaskIds.add(taskId);
 
   final _temporaryTaskIds = <String>{};
+  final _temporaryCleanups = <String, Future<void>>{};
+
+  /// A source preparation and its fallback share one temporary task. Wait
+  /// until both the screen and the cast session release it before deleting.
+  /// Failed cleanup keeps the marker so a later terminal event can retry.
+  Future<void> cleanupTemporaryTask(String taskId) async {
+    final pending = _temporaryCleanups[taskId];
+    if (pending != null) return pending;
+    final cleanup = onTemporaryTaskFinished;
+    if (!_temporaryTaskIds.contains(taskId) ||
+        !sessions.tasks.canDelete(taskId) ||
+        cleanup == null) {
+      return;
+    }
+    final operation = Future<void>.sync(() => cleanup(taskId)).then<void>(
+      (_) => _temporaryTaskIds.remove(taskId),
+      onError: (Object error, StackTrace stack) {
+        AppErrorLogger.capture(
+          error,
+          module: 'media.cleanup',
+          context: 'temporary-cast:$taskId',
+          stack: stack,
+        );
+      },
+    );
+    _temporaryCleanups[taskId] = operation;
+    try {
+      await operation;
+    } finally {
+      _temporaryCleanups.remove(taskId);
+    }
+  }
 
   DlnaCastStatus get status => DlnaCastStatus(
     session: active,
@@ -794,9 +835,8 @@ class DlnaCastController extends ChangeNotifier {
     final value = sessions.transition(next, errorCode: errorCode);
     if ((next == CastSessionState.failed || next == CastSessionState.stopped) &&
         previous != null &&
-        _temporaryTaskIds.remove(previous.mediaTaskId)) {
-      final cleanup = onTemporaryTaskFinished;
-      if (cleanup != null) unawaited(cleanup(previous.mediaTaskId));
+        _temporaryTaskIds.contains(previous.mediaTaskId)) {
+      unawaited(cleanupTemporaryTask(previous.mediaTaskId));
     }
     _changed();
     return value;
@@ -1202,12 +1242,18 @@ class DlnaCastController extends ChangeNotifier {
     }
     if (failure != null) {
       _finish(CastSessionState.failed, errorCode: _castError(failure));
+      final session = sessions.active;
+      if (session != null) await cleanupTemporaryTask(session.mediaTaskId);
       throw failure;
     }
     _finish(CastSessionState.stopped);
     _resetControls();
     _changed();
-    return sessions.active ?? (throw StateError('投屏会话不存在'));
+    final session = sessions.active ?? (throw StateError('投屏会话不存在'));
+    // Also runs when _finish() sees an already terminal session. A previous
+    // storage failure must remain retryable through the Stop control.
+    await cleanupTemporaryTask(session.mediaTaskId);
+    return session;
   }
 
   Future<DlnaCastStatus> refresh() => _enqueue(_epoch, _refresh);

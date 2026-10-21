@@ -108,12 +108,14 @@ class _DlnaCastScreenState extends State<DlnaCastScreen> {
     if (provided != null) return provided;
     final candidate = widget.candidate;
     if (candidate == null) throw StateError('缺少可投屏媒体');
-    final existing = widget.app.mediaTasks.taskForCandidate(candidate);
-    final created = _createdRemoteTask ??= widget.app.mediaTasks.create(
-      candidate,
-    );
-    _ownsRemoteTask = existing == null || existing.id != created.id;
-    return created;
+    final pending = _createdRemoteTask;
+    if (pending != null && widget.app.mediaTasks.task(pending.id) != null) {
+      return widget.app.mediaTasks.task(pending.id)!;
+    }
+    final prepared = cast.prepareTask(candidate);
+    _createdRemoteTask = prepared.task;
+    _ownsRemoteTask = prepared.temporary;
+    return prepared.task;
   }
 
   Future<({Uri url, String mime, String title, File? localFile, File? hls})>
@@ -159,6 +161,13 @@ class _DlnaCastScreenState extends State<DlnaCastScreen> {
     MediaTask? task;
     try {
       task = await _ensureTask();
+      await widget.app.mediaTasks.flush(task.id);
+      final durable = widget.app.mediaTasks.task(task.id) ?? task;
+      // A legacy cache-key collision belongs to the existing durable task.
+      // A new picker must never acquire temporary ownership of that row.
+      if (durable.id != task.id) _ownsRemoteTask = false;
+      task = durable;
+      if (widget.task == null) _createdRemoteTask = durable;
       if (widget.task == null && _ownsRemoteTask) {
         cast.markTemporaryTask(task.id);
       }
@@ -214,9 +223,12 @@ class _DlnaCastScreenState extends State<DlnaCastScreen> {
     } finally {
       if (retained) widget.app.mediaTasks.release(task!.id);
       if (widget.task == null && _ownsRemoteTask && task != null) {
-        await widget.app.cleanupTemporaryCastTask(task.id);
-        _createdRemoteTask = null;
-        _ownsRemoteTask = false;
+        cast.markTemporaryTask(task.id);
+        await cast.cleanupTemporaryTask(task.id);
+        if (widget.app.mediaTasks.task(task.id) == null) {
+          _createdRemoteTask = null;
+          _ownsRemoteTask = false;
+        }
       }
       if (mounted) setState(() => _startingDeviceId = null);
     }

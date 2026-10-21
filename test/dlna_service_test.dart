@@ -9,6 +9,30 @@ import 'package:site_lens/media/media_service.dart';
 
 void main() {
   _httpTests();
+  test('rotated-token cast preparation never owns an existing download', () {
+    final tasks = MediaTaskStore();
+    MediaCandidate candidate(String token) => MediaCandidate(
+      id: 'candidate-$token',
+      hostId: 1,
+      generation: 1,
+      sourceUrl: Uri.parse('https://example.org/watch'),
+      mediaUrl: Uri.parse('https://cdn.example.org/index.m3u8?token=$token'),
+      title: 'existing download',
+      mime: 'application/vnd.apple.mpegurl',
+      source: MediaCandidateSource.dom,
+    );
+    final task = tasks.create(candidate('old'));
+    tasks.transition(task.id, MediaTaskState.downloading);
+    tasks.updateProgress(task.id, 1024, totalBytes: 4096);
+    tasks.transition(task.id, MediaTaskState.reauthorize);
+    final cast = DlnaCastController(CastSessionController(tasks: tasks));
+    final prepared = cast.prepareTask(candidate('new'));
+    expect(prepared.temporary, isFalse);
+    expect(prepared.task.id, task.id);
+    expect(prepared.task.bytesDownloaded, 1024);
+    expect(prepared.task.candidateId, 'candidate-new');
+    cast.dispose();
+  });
   test('device description resolves URLBase and selects renderer services', () {
     final description = DlnaDiscovery.parseDescription('''<?xml version="1.0"?>
 <root xmlns="urn:schemas-upnp-org:device-1-0">
@@ -287,6 +311,54 @@ void _httpTests() {
       await stopped;
       expect(tasks.canDelete(task.id), isTrue);
     });
+
+    test(
+      'temporary cast cleanup waits for all task owners to release',
+      () async {
+        cast.dispose();
+        var cleanups = 0;
+        cast = DlnaCastController(
+          CastSessionController(tasks: tasks),
+          onTemporaryTaskFinished: (id) async {
+            expect(id, task.id);
+            cleanups++;
+          },
+        );
+        cast.markTemporaryTask(task.id);
+        tasks.retain(task.id);
+        await cast.cleanupTemporaryTask(task.id);
+        expect(cleanups, 0);
+        tasks.release(task.id);
+        await cast.cleanupTemporaryTask(task.id);
+        expect(cleanups, 1);
+      },
+    );
+
+    test(
+      'stopping a terminal session retries a failed temporary cleanup',
+      () async {
+        cast.dispose();
+        var cleanups = 0;
+        cast = DlnaCastController(
+          CastSessionController(tasks: tasks),
+          onTemporaryTaskFinished: (id) async {
+            if (++cleanups == 1) {
+              throw StateError('storage temporarily unavailable');
+            }
+            await tasks.delete(id);
+          },
+          monitorInterval: const Duration(hours: 1),
+        );
+        cast.markTemporaryTask(task.id);
+        await start();
+        await cast.stop();
+        expect(cleanups, 1);
+        expect(tasks.task(task.id), isNotNull);
+        await cast.stop();
+        expect(cleanups, 2);
+        expect(tasks.task(task.id), isNull);
+      },
+    );
 
     test(
       'seek and volume commands update the observable session state',

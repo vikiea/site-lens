@@ -2086,10 +2086,13 @@ class MediaDownloadService {
         );
         attempt++;
       } else {
-        if (lastError is TlsException && tlsTransfer != null) {
+        if ((lastError is TlsException || lastError is SocketException) &&
+            tlsTransfer != null) {
           // Dart and Android keep different validator sidecars. Transfer
           // ownership to Android before its first write so a later retry
           // cannot join native bytes using an older Dart validator.
+          // Android can also recover CDN connections that reset before Dart
+          // reports a TLS error, using the same verified system route.
           for (final suffix in ['.resume.json', '.resume.json.tmp']) {
             final state = File('${partial.path}$suffix');
             if (await state.exists()) await state.delete();
