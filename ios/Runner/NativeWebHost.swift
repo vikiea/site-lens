@@ -78,7 +78,8 @@ final class NativeWebHostRegistry: NSObject, WebHostApi {
     guard host.purpose == .browsing || scripts.isEmpty else { throw PigeonError(code: "probe_scripts_denied", message: "Probe hosts cannot run user scripts", details: nil) }
     host.revoke(); host.scripts = scripts
   }
-  func applyFilter(hostId: Int64, context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto) throws {
+  func applyFilter(hostId: Int64, context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto, completion: @escaping (Result<Void, Error>) -> Void) {
+    do {
     let host = try host(hostId)
     guard context.hostId == hostId, context.generation >= host.generation else {
       throw PigeonError(code: "stale_filter", message: "Filter generation is stale", details: nil)
@@ -87,6 +88,8 @@ final class NativeWebHostRegistry: NSObject, WebHostApi {
     // the snapshot for diagnostics and apply the safe cosmetic subset at
     // document start; Android enforces request blocking in its WebViewClient.
     host.applyFilter(context: context, policy: policy, snapshot: snapshot)
+    completion(.success(()))
+    } catch { completion(.failure(error)) }
   }
   func navigate(hostId: Int64, url: String) throws { let host = try host(hostId); let target = try webURL(url); host.prepareNavigation(target) { allowed in if allowed { host.explicitLoad = true; host.track(host.webView.load(URLRequest(url: target))) } } }
   func reload(hostId: Int64) throws { let host = try host(hostId); if let target = host.webView.url { host.prepareNavigation(target) { allowed in if allowed { host.explicitLoad = true; host.track(host.webView.reload()) } } } }

@@ -14,6 +14,7 @@ import '../media/media_service.dart';
 import '../filter/filter_service.dart';
 import 'web_host.g.dart';
 import 'host_dto_codec.dart';
+import 'filter_payload_store.dart';
 
 class HostSession {
   HostSession(this.id, this.purpose, this.capabilities, {this.profileId});
@@ -66,6 +67,7 @@ class NativeHosts extends WebHostEvents {
   final ScriptService scripts;
   final ControlledHttp http;
   final WebHostApi api;
+  final _filterPayloads = FilterPayloadStore();
   final sessions = <int, HostSession>{};
   FilterEngine? filterEngine;
   FilterPolicy filterPolicy = const FilterPolicy();
@@ -98,45 +100,61 @@ class NativeHosts extends WebHostEvents {
     filterPolicy = policy;
     filterSnapshot = snapshot;
     profileFilterPolicies = Map.unmodifiable(profilePolicies);
-    for (final session in sessions.values.toList()) {
-      if (!session.disposed) {
-        session.filterPolicy = _policyFor(session);
-        session.filterBlocked = 0;
-        session.filterAllowed = 0;
-        unawaited(_applyFilter(session));
-      }
-    }
+    // Existing documents retain their bound rules until the next navigation.
   }
 
   FilterPolicy _policyFor(HostSession session) =>
       profileFilterPolicies[session.profileId] ?? filterPolicy;
 
-  Future<void> _applyFilter(HostSession session) async {
+  Future<void> _applyFilter(HostSession session, {String? url}) async {
     if (session.disposed) return;
     final snapshot = filterSnapshot;
-    final source = session.url.isEmpty ? 'https://invalid.local/' : session.url;
+    final engine = filterEngine;
+    final generation = session.generation;
+    final source =
+        url ?? (session.url.isEmpty ? 'https://invalid.local/' : session.url);
     final policy = _policyFor(session);
-    session.filterPolicy = policy;
     try {
+      final payload = await _filterPayloads.prepare(
+        snapshot: snapshot,
+        engine: engine,
+      );
+      if (session.disposed || session.generation != generation) return;
       await api.applyFilter(
         session.id,
         HostDtoCodec.context(
           HostFilterContext(
             hostId: session.id,
-            generation: session.generation,
+            generation: generation,
             sourceUrl: webUri(source),
             snapshotId: snapshot?.id ?? '',
           ),
         ),
         HostDtoCodec.policy(policy),
-        HostDtoCodec.snapshot(value: snapshot, engine: filterEngine),
+        payload,
       );
+      if (session.disposed || session.generation != generation) return;
+      session.filterEngine = engine;
+      session.filterSnapshot = snapshot;
+      session.filterPolicy = policy;
+      session.filterBlocked = 0;
+      session.filterAllowed = 0;
+      if (session.errorKind == 'filterSnapshotLoadFailed' ||
+          session.errorKind == 'filterUnavailable') {
+        session.errorKind = null;
+        session.error = null;
+      }
     } catch (error) {
       // Older/iOS hosts can lack a request interception channel. Keep Dart's
       // filtering authority active and expose the degraded capability instead
       // of allowing an unawaited platform exception to fail a later test/UI
       // operation.
-      session.errorKind = 'filterUnavailable';
+      if (session.disposed || session.generation != generation) return;
+      session.errorKind =
+          error is MissingPluginException ||
+              (error is PlatformException && error.code == 'channel-error')
+          ? 'filterUnavailable'
+          : 'filterSnapshotLoadFailed';
       session.error = readableError(error);
     }
   }
@@ -282,11 +300,8 @@ class NativeHosts extends WebHostEvents {
       session.menus.clear();
       session.mediaCandidates.clear();
       session.generation = event.generation;
-      session.filterEngine = filterEngine;
-      session.filterPolicy = _policyFor(session);
       session.filterBlocked = 0;
       session.filterAllowed = 0;
-      session.filterSnapshot = filterSnapshot;
       session.loaded = false;
       session.error = null;
       session.errorKind = null;
@@ -404,6 +419,25 @@ class NativeHosts extends WebHostEvents {
   }
 
   @override
+  Future<void> prepareFilterForNavigation(
+    int hostId,
+    int generation,
+    String url,
+  ) async {
+    final session = sessions[hostId];
+    if (session == null ||
+        session.disposed ||
+        generation < session.generation) {
+      throw const Cancelled();
+    }
+    session.generation = generation;
+    await _applyFilter(session, url: url);
+    if (session.disposed || session.generation != generation) {
+      throw const Cancelled();
+    }
+  }
+
+  @override
   Future<List<ScriptRegistration>> getScriptsForNavigation(
     int hostId,
     int generation,
@@ -422,9 +456,7 @@ class NativeHosts extends WebHostEvents {
     session.menus.clear();
     // Bind the immutable snapshot to this document. A later refresh takes
     // effect on the next navigation and never changes an active page's rules.
-    session.filterEngine = filterEngine;
-    session.filterPolicy = _policyFor(session);
-    session.filterSnapshot = filterSnapshot;
+    await _applyFilter(session, url: url);
     if (session.purpose != HostPurpose.browsing) {
       await NetworkPolicy.publicNavigation(webUri(url));
       return [];

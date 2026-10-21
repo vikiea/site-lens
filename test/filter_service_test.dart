@@ -208,6 +208,45 @@ void main() {
   );
 
   test(
+    'mirror fallback keeps the subscription URL in source metadata',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-filter-url-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final primary = Uri.parse(
+        'https://easylist-downloads.adblockplus.org/easylist.txt',
+      );
+      final mirror = Uri.parse('https://easylist.to/easylist/easylist.txt');
+      await db.saveFilterSource(
+        FilterSource(
+          id: 1,
+          label: 'EasyList（广告）',
+          url: primary,
+          kind: 'builtin',
+        ),
+      );
+      final snapshot =
+          await FilterSourceManager(
+            store: FilterSnapshotStore(directoryProvider: () async => root),
+            db: db,
+            http: _MirrorReportingHttp(mirror),
+          ).refresh(
+            FilterSource(
+              id: 1,
+              label: 'EasyList（广告）',
+              url: primary,
+              kind: 'builtin',
+            ),
+          );
+      expect(snapshot.sourceUrl, mirror);
+      expect((await db.filterSources()).single.url, primary);
+    },
+  );
+
+  test(
     'rebuilds one active bundle from the newest snapshot of each source',
     () async {
       final root = await Directory.systemTemp.createTemp('site-lens-bundle-');
@@ -302,4 +341,29 @@ class _FilterHttp extends ControlledHttp {
       headers: const {},
     );
   }
+}
+
+class _MirrorReportingHttp extends ControlledHttp {
+  _MirrorReportingHttp(this.reportedUrl);
+  final Uri reportedUrl;
+
+  @override
+  Future<FetchResponse> fetch(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    String method = 'GET',
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    String? body,
+    Duration timeout = const Duration(seconds: 15),
+    int maxBytes = 1024 * 1024,
+    int routeAttempt = 0,
+  }) async => FetchResponse(
+    url: reportedUrl,
+    status: 200,
+    bytes: utf8.encode('[Adblock Plus 2.0]\n||ads.example^\n'),
+    headers: const {},
+  );
 }

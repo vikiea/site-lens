@@ -419,6 +419,7 @@ class FilterSource {
     required this.url,
     this.profileId,
     this.kind = 'list',
+    this.enabled = true,
     this.version = '',
     this.license = '',
     this.sha256 = '',
@@ -433,6 +434,7 @@ class FilterSource {
   final Uri url;
   final int? profileId;
   final String kind;
+  final bool enabled;
   final String version;
   final String license;
   final String sha256;
@@ -447,6 +449,7 @@ class FilterSource {
     'url': url.toString(),
     'profileId': profileId,
     'kind': kind,
+    'enabled': enabled,
     'version': version,
     'license': license,
     'sha256': sha256,
@@ -462,6 +465,7 @@ class FilterSource {
     url: webUri(json['url'] as String),
     profileId: (json['profileId'] as num?)?.toInt(),
     kind: json['kind'] as String? ?? 'list',
+    enabled: json['enabled'] as bool? ?? true,
     version: json['version'] as String? ?? '',
     license: json['license'] as String? ?? '',
     sha256: json['sha256'] as String? ?? '',

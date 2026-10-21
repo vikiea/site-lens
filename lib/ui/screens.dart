@@ -1457,7 +1457,9 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
   }
 
   Future<void> _refreshAllSources() async {
-    final sources = List<FilterSource>.of(app.filterSourceList);
+    final sources = app.filterSourceList
+        .where((source) => source.enabled)
+        .toList();
     if (sources.isEmpty) return;
     await _run(() async {
       setState(() {
@@ -1583,14 +1585,16 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
                 ? _refreshingAll
                       ? '正在刷新 $_refreshIndex / $_refreshTotal · ${_refreshingSource!.label}'
                       : '正在刷新「${_refreshingSource!.label}」…'
-                : '支持常见 Adblock/uBlock 文本规则；内置源和自定义源都可刷新。',
+                : '内置与自定义源可分别启停；仅刷新已启用源。修改后重新加载页面生效，关闭源保留缓存。',
             action: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 SiteLensRefreshButton(
                   tooltip: '刷新全部规则',
                   refreshing: _refreshingAll || _refreshingSource != null,
-                  onPressed: _busy || app.filterSourceList.isEmpty
+                  onPressed:
+                      _busy ||
+                          !app.filterSourceList.any((source) => source.enabled)
                       ? null
                       : _refreshAllSources,
                 ),
@@ -1626,6 +1630,12 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
                               app.filterSourceList[index].id,
                           onRefresh: () => _run(
                             () => _refreshSource(app.filterSourceList[index]),
+                          ),
+                          onEnabledChanged: (value) => _run(
+                            () => app.setFilterSourceEnabled(
+                              app.filterSourceList[index].id,
+                              value,
+                            ),
                           ),
                           onDelete: () =>
                               _deleteSource(app.filterSourceList[index]),
@@ -1663,6 +1673,7 @@ class _FilterSourceRow extends StatelessWidget {
     required this.refreshing,
     required this.onRefresh,
     required this.onDelete,
+    required this.onEnabledChanged,
   });
 
   final FilterSource source;
@@ -1670,6 +1681,7 @@ class _FilterSourceRow extends StatelessWidget {
   final bool refreshing;
   final VoidCallback onRefresh;
   final VoidCallback onDelete;
+  final ValueChanged<bool> onEnabledChanged;
 
   @override
   Widget build(BuildContext context) => ListTile(
@@ -1685,14 +1697,22 @@ class _FilterSourceRow extends StatelessWidget {
       refreshing
           ? '正在刷新…'
           : source.error == null
-          ? '${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)} · ${source.url}'
-          : '${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)}\n${friendlyError(source.error!)}',
+          ? '${source.enabled ? '已启用' : '已关闭'} · ${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)} · ${source.url}'
+          : '${source.enabled ? '已启用' : '已关闭'} · ${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)}\n${friendlyError(source.error!)}',
       maxLines: 3,
       overflow: TextOverflow.ellipsis,
     ),
     trailing: Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        Semantics(
+          label: '${source.label}规则源',
+          child: Switch(
+            key: ValueKey('filter-source-enabled-${source.id}'),
+            value: source.enabled,
+            onChanged: busy ? null : onEnabledChanged,
+          ),
+        ),
         SiteLensRefreshButton(
           tooltip: '刷新「${source.label}」',
           refreshing: refreshing,
@@ -1717,8 +1737,8 @@ String _filterSourceStatusLabel(FilterSourceStatus status) => switch (status) {
   FilterSourceStatus.missing => '未刷新',
   FilterSourceStatus.downloading => '下载中',
   FilterSourceStatus.compiling => '编译中',
-  FilterSourceStatus.valid => '已生效',
-  FilterSourceStatus.degraded => '已生效（部分语法未支持）',
+  FilterSourceStatus.valid => '已缓存',
+  FilterSourceStatus.degraded => '已缓存（部分语法未支持）',
   FilterSourceStatus.failed => '刷新失败',
 };
 

@@ -13,9 +13,8 @@ import 'web_host.g.dart';
 class HostDtoCodec {
   const HostDtoCodec._();
 
-  /// StandardMessageCodec ultimately crosses Android Binder. Refuse an
-  /// oversized rule payload before the native call so a large public list
-  /// degrades visibly instead of crashing the WebView or Flutter process.
+  /// Application budget for an inline platform-channel message. Larger rules
+  /// use the verified private-file transport prepared by FilterPayloadStore.
   static const maxFilterRulePayloadBytes = 512 * 1024;
 
   static const safeFilterSnapshotFields = <String>{
@@ -24,6 +23,8 @@ class HostDtoCodec {
     'sha256',
     'state',
     'rules',
+    'rulesFileId',
+    'rulesBytes',
   };
 
   static const safeFilterPolicyFields = <String>{
@@ -69,30 +70,11 @@ class HostDtoCodec {
   static FilterSnapshotDto snapshot({
     FilterSnapshot? value,
     FilterEngine? engine,
+    String? rulesJson,
   }) {
-    final rules =
-        engine?.rules
-            .map(
-              (rule) => <String, Object?>{
-                'pattern': rule.pattern,
-                'block': rule.block,
-                'cosmetic': rule.cosmetic,
-                'hostOnly': rule.hostOnly,
-                'domain': rule.domain,
-                'domains': rule.domains,
-                'excludedDomains': rule.excludedDomains,
-                'exception': rule.exception,
-                'resourceTypes': rule.resourceTypes.toList(growable: false),
-                'thirdParty': rule.thirdParty,
-                'scriptlet': rule.scriptlet,
-                'scriptletArgs': rule.scriptletArgs,
-              },
-            )
-            .toList(growable: false) ??
-        const <Map<String, Object?>>[];
-    final encodedRules = jsonEncode(rules);
-    if (encodedRules.length > maxFilterRulePayloadBytes) {
-      throw StateError('过滤快照过大，当前宿主暂不加载');
+    final encodedRules = rulesJson ?? encodeRules(engine?.rules ?? const []);
+    if (utf8.encode(encodedRules).length > maxFilterRulePayloadBytes) {
+      throw StateError('过滤快照需要应用内文件装载');
     }
     return FilterSnapshotDto(
       id: value?.id ?? '',
@@ -102,4 +84,27 @@ class HostDtoCodec {
       rules: encodedRules,
     );
   }
+
+  static String encodeRules(List<FilterRule> rules) =>
+      encodeRuleMaps(rules.map(encodeRule).toList(growable: false));
+
+  static Map<String, Object?> encodeRule(FilterRule rule) => <String, Object?>{
+    'pattern': rule.pattern,
+    if (!rule.block) 'block': false,
+    if (rule.cosmetic) 'cosmetic': true,
+    if (rule.hostOnly) 'hostOnly': true,
+    if (rule.domain != null) 'domain': rule.domain,
+    if (rule.domains.isNotEmpty) 'domains': rule.domains,
+    if (rule.excludedDomains.isNotEmpty)
+      'excludedDomains': rule.excludedDomains,
+    if (rule.exception) 'exception': true,
+    if (rule.resourceTypes.isNotEmpty)
+      'resourceTypes': rule.resourceTypes.toList(growable: false),
+    if (rule.thirdParty != null) 'thirdParty': rule.thirdParty,
+    if (rule.scriptlet != null) 'scriptlet': rule.scriptlet,
+    if (rule.scriptletArgs.isNotEmpty) 'scriptletArgs': rule.scriptletArgs,
+  };
+
+  static String encodeRuleMaps(List<Map<String, Object?>> rules) =>
+      jsonEncode(rules);
 }

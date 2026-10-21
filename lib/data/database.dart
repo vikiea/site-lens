@@ -70,6 +70,7 @@ const _v5Tables = <String>[
       'id INTEGER PRIMARY KEY AUTOINCREMENT, '
       'profile_id INTEGER REFERENCES profiles(id) ON DELETE SET NULL, '
       'label TEXT NOT NULL, url TEXT NOT NULL, kind TEXT NOT NULL DEFAULT \'list\', '
+      'enabled INTEGER NOT NULL DEFAULT 1, '
       'version TEXT NOT NULL DEFAULT \'\', license TEXT NOT NULL DEFAULT \'\', '
       'sha256 TEXT NOT NULL DEFAULT \'\', status TEXT NOT NULL DEFAULT \'missing\', '
       'file_ref TEXT, refreshed_at TEXT, error TEXT)',
@@ -124,6 +125,8 @@ const _v9MediaArtifactsTable =
     'metadata TEXT NOT NULL)';
 const _v10TaskBatchDirectoryColumn =
     'ALTER TABLE media_tasks ADD COLUMN batch_directory TEXT';
+const _v12FilterSourceEnabledColumn =
+    'ALTER TABLE filter_sources ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1';
 
 // Drift's SQL API keeps the small schema explicit and permits in-memory tests.
 // No browser cookie or password is copied into this database.
@@ -144,7 +147,7 @@ class AppDatabase extends GeneratedDatabase {
   static void Function(String step)? migrationDebugHook;
 
   @override
-  int get schemaVersion => 11;
+  int get schemaVersion => 12;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -221,6 +224,9 @@ class AppDatabase extends GeneratedDatabase {
           );
         }
         await customStatement('DROP TABLE media_artifacts_v10');
+      }
+      if (from < 12 && !await _columnExists('filter_sources', 'enabled')) {
+        await customStatement(_v12FilterSourceEnabledColumn);
       }
     },
     beforeOpen: (_) async {
@@ -1183,14 +1189,15 @@ class AppDatabase extends GeneratedDatabase {
 
   Future<int> saveFilterSource(FilterSource source) async {
     await customStatement(
-      'INSERT INTO filter_sources(id,profile_id,label,url,kind,version,license,sha256,status,file_ref,refreshed_at,error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) '
-      'ON CONFLICT(id) DO UPDATE SET profile_id=excluded.profile_id,label=excluded.label,url=excluded.url,kind=excluded.kind,version=excluded.version,license=excluded.license,sha256=excluded.sha256,status=excluded.status,file_ref=excluded.file_ref,refreshed_at=excluded.refreshed_at,error=excluded.error',
+      'INSERT INTO filter_sources(id,profile_id,label,url,kind,enabled,version,license,sha256,status,file_ref,refreshed_at,error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) '
+      'ON CONFLICT(id) DO UPDATE SET profile_id=excluded.profile_id,label=excluded.label,url=excluded.url,kind=excluded.kind,enabled=excluded.enabled,version=excluded.version,license=excluded.license,sha256=excluded.sha256,status=excluded.status,file_ref=excluded.file_ref,refreshed_at=excluded.refreshed_at,error=excluded.error',
       [
         source.id,
         source.profileId,
         source.label,
         source.url.toString(),
         source.kind,
+        source.enabled ? 1 : 0,
         source.version,
         source.license,
         source.sha256,
@@ -1217,6 +1224,7 @@ class AppDatabase extends GeneratedDatabase {
               label: row.read<String>('label'),
               url: webUri(row.read<String>('url')),
               kind: row.read<String>('kind'),
+              enabled: row.read<int>('enabled') != 0,
               version: row.read<String>('version'),
               license: row.read<String>('license'),
               sha256: row.read<String>('sha256'),
@@ -1295,6 +1303,17 @@ class AppDatabase extends GeneratedDatabase {
     ).getSingleOrNull();
     if (row == null) return null;
     return filterSnapshot(row.read<String>('id'));
+  }
+
+  Future<List<FilterSnapshot>> filterBundles(String version) async {
+    final rows = await customSelect(
+      'SELECT id FROM filter_snapshots WHERE source_id IS NULL AND version=? '
+      'AND state IN (?,?) ORDER BY created_at DESC',
+      variables: [Variable(version), Variable('valid'), Variable('degraded')],
+    ).get();
+    return [
+      for (final row in rows) (await filterSnapshot(row.read<String>('id')))!,
+    ];
   }
 
   /// Returns the newest usable source snapshot for every source. Bundle

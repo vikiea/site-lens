@@ -4,6 +4,7 @@ import '../domain/models.dart';
 import '../filter/filter_service.dart';
 import '../web_host/native_hosts.dart';
 import 'glass_surface.dart';
+import 'ui_util.dart';
 
 /// Explains the filter snapshot bound to the current document.
 ///
@@ -90,6 +91,9 @@ class FilterDiagnosticsPanel extends StatelessWidget {
 
   String? _degradedReason() {
     final current = session;
+    if (current?.errorKind == 'filterSnapshotLoadFailed') {
+      return '过滤快照装载失败，保留上一有效规则：${friendlyError(current?.error ?? '未知原因')}';
+    }
     if (current?.errorKind == 'filterUnavailable') {
       return '当前宿主未提供过滤接口，已降级并保留可证明的请求策略';
     }

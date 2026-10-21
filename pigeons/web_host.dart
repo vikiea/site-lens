@@ -196,9 +196,9 @@ class HostPreferences {
   bool pullToRefresh;
 }
 
-/// Immutable filtering data passed to a native host.  The native side never
-/// reads the rules from disk or asks Dart during a WebView request callback;
-/// it receives a complete snapshot before navigation starts.
+/// Immutable filtering data installed before navigation. Large rules use a
+/// content-addressed file in the app-private filter_payloads directory. Request
+/// callbacks only read the completely installed in-memory rules.
 class FilterSnapshotDto {
   FilterSnapshotDto({
     required this.id,
@@ -206,12 +206,16 @@ class FilterSnapshotDto {
     required this.sha256,
     required this.state,
     required this.rules,
+    this.rulesFileId,
+    this.rulesBytes,
   });
   String id;
   String version;
   String sha256;
   String state;
   String rules;
+  String? rulesFileId;
+  int? rulesBytes;
 }
 
 class FilterPolicyDto {
@@ -336,6 +340,7 @@ abstract class WebHostApi {
   void registerScripts(int hostId, List<ScriptRegistration> scripts);
   /// Installs an immutable filter snapshot before the next document starts.
   /// Native request callbacks must use this in-memory snapshot only.
+  @asyncCallback
   void applyFilter(
     int hostId,
     HostFilterContextDto context,
@@ -366,6 +371,9 @@ abstract class WebHostApi {
 abstract class WebHostEvents {
   @asyncCallback
   void onEvent(HostEvent event);
+  /// Binds filtering without granting or installing any user scripts.
+  @asyncCallback
+  void prepareFilterForNavigation(int hostId, int generation, String url);
   @asyncCallback
   List<ScriptRegistration> getScriptsForNavigation(
     int hostId,

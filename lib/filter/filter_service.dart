@@ -587,6 +587,7 @@ class FilterSnapshotStore {
     required Uri sourceUrl,
     required String source,
     required String fileRef,
+    bool activate = true,
   }) async {
     final bytes = utf8.encode(source);
     final digest = sha256.convert(bytes).toString();
@@ -619,8 +620,10 @@ class FilterSnapshotStore {
       fileRef: destination.path,
       unsupportedRuleCount: compiled.unsupportedRules.length,
     );
-    _active = compiled.engine;
-    _activeSnapshot = snapshot;
+    if (activate) {
+      _active = compiled.engine;
+      _activeSnapshot = snapshot;
+    }
     return snapshot;
   }
 
@@ -677,10 +680,55 @@ class FilterSourceManager {
   final ControlledHttp http;
   final int maxBytes;
 
+  Future<void> _pending = Future.value();
+
+  Future<T> _serial<T>(Future<T> Function() action) {
+    final result = _pending.then((_) => action());
+    _pending = result.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stack) {},
+    );
+    return result;
+  }
+
+  Future<FilterSnapshot?> setEnabled(int id, bool enabled) => _serial(
+    () => _changeSelection(
+      (database) => database.customStatement(
+        'UPDATE filter_sources SET enabled=? WHERE id=?',
+        [enabled ? 1 : 0, id],
+      ),
+    ),
+  );
+
+  Future<FilterSnapshot?> delete(int id) => _serial(
+    () => _changeSelection((database) => database.deleteFilterSource(id)),
+  );
+
+  Future<FilterSnapshot?> _changeSelection(
+    Future<void> Function(AppDatabase) change,
+  ) async {
+    final previousEngine = store._active;
+    final previousSnapshot = store._activeSnapshot;
+    try {
+      return await db!.transaction(() async {
+        await change(db!);
+        return _rebuildBundle();
+      });
+    } catch (_) {
+      // Roll back the in-memory installation along with Drift's transaction.
+      // This also preserves the exact engine already bound to live hosts.
+      store._active = previousEngine;
+      store._activeSnapshot = previousSnapshot;
+      rethrow;
+    }
+  }
+
   /// Rebuilds one deterministic active bundle from the newest usable snapshot
   /// of every source. Existing source snapshots remain independently stored so
   /// a failed refresh can fall back without losing the previous source.
-  Future<FilterSnapshot?> rebuildBundle() async {
+  Future<FilterSnapshot?> rebuildBundle() => _serial(_rebuildBundle);
+
+  Future<FilterSnapshot?> _rebuildBundle() async {
     final database = db;
     if (database == null) return store.activeSnapshot;
     final sourceSnapshots = await database.latestFilterSnapshotsBySource();
@@ -693,11 +741,44 @@ class FilterSourceManager {
     );
     final parts = <String>[];
     var unsupported = 0;
-    for (final snapshot in sourceSnapshots.reversed) {
-      final compiled = await store.compileSnapshot(snapshot);
-      unsupported += snapshot.unsupportedRuleCount;
-      parts.add('! Site Lens source ${snapshot.sourceId}\n');
-      parts.addAll(compiled.engine.rules.map((rule) => _ruleToSource(rule)));
+    final enabledMetadata = (await database.filterSources())
+        .where((source) => source.enabled)
+        .toList();
+    final enabledSources = enabledMetadata.map((source) => source.id).toSet();
+    final members = enabledSources.toList()..sort();
+    final selection = [
+      for (final id in members)
+        [
+          id,
+          enabledMetadata
+              .firstWhere((source) => source.id == id)
+              .url
+              .toString(),
+        ],
+    ];
+    final version =
+        'bundle-v2-${sha256.convert(utf8.encode(jsonEncode(selection)))}';
+    try {
+      for (final snapshot in sourceSnapshots.reversed) {
+        final sourceId = snapshot.sourceId;
+        if (sourceId == null || !enabledSources.contains(sourceId)) {
+          continue;
+        }
+        final compiled = await store.compileSnapshot(snapshot);
+        unsupported += snapshot.unsupportedRuleCount;
+        parts.add('! Site Lens source ${snapshot.sourceId}\n');
+        parts.addAll(compiled.engine.rules.map((rule) => _ruleToSource(rule)));
+      }
+    } catch (error, stack) {
+      for (final bundle in await database.filterBundles(version)) {
+        try {
+          await store.load(bundle);
+          return bundle;
+        } catch (_) {
+          // Try another verified bundle with the exact same source selection.
+        }
+      }
+      Error.throwWithStackTrace(error, stack);
     }
     final source = parts.join('\n');
     final first = sourceSnapshots.first;
@@ -706,7 +787,7 @@ class FilterSourceManager {
     final bundle = await store.publish(
       id: bundleId,
       sourceId: null,
-      version: 'bundle-v1',
+      version: version,
       sourceUrl: first.sourceUrl,
       source: source,
       fileRef: 'bundle-${sha256.convert(utf8.encode(source)).toString()}',
@@ -739,9 +820,13 @@ class FilterSourceManager {
       return '$domain##+js(${rule.scriptlet}${args.isEmpty ? '' : ',$args'})';
     }
     if (rule.cosmetic) {
-      final domains = rule.domains.isEmpty
-          ? (rule.domain == null || rule.domain == '*' ? '' : rule.domain!)
-          : rule.domains.join(',');
+      final included = rule.domains.isEmpty
+          ? [if (rule.domain != null && rule.domain != '*') rule.domain!]
+          : rule.domains;
+      final domains = [
+        ...included,
+        ...rule.excludedDomains.map((domain) => '~$domain'),
+      ].join(',');
       return '$domains${rule.exception ? '#@#' : '##'}${rule.pattern}';
     }
     final options = <String>[];
@@ -772,7 +857,19 @@ class FilterSourceManager {
   Future<FilterSnapshot> refresh(
     FilterSource source, {
     Cancellation? cancellation,
+  }) => _serial(() => _refresh(source, cancellation: cancellation));
+
+  Future<FilterSnapshot> _refresh(
+    FilterSource source, {
+    Cancellation? cancellation,
   }) async {
+    if (db != null) {
+      source =
+          (await db!.filterSources())
+              .where((item) => item.id == source.id)
+              .firstOrNull ??
+          (throw StateError('规则源不存在'));
+    }
     final cancel = cancellation ?? Cancellation();
     final previous = store.activeSnapshot;
     final pending = FilterSource(
@@ -781,6 +878,7 @@ class FilterSourceManager {
       url: source.url,
       profileId: source.profileId,
       kind: source.kind,
+      enabled: source.enabled,
       version: source.version,
       license: source.license,
       sha256: source.sha256,
@@ -844,16 +942,20 @@ class FilterSourceManager {
         version: source.version,
         sourceUrl: loaded.url,
         source: text,
-        fileRef: source.fileRef ?? 'source-${source.id}',
+        fileRef: '$id-${sha256.convert(loaded.bytes)}',
+        activate: db == null,
       );
       await db?.saveFilterSnapshot(snapshot);
       await db?.saveFilterSource(
         FilterSource(
           id: source.id,
           label: source.label,
-          url: loaded.url,
+          // Keep the subscription identity stable across mirror fallback.
+          // The actual transport URL belongs to the snapshot metadata.
+          url: source.url,
           profileId: source.profileId,
           kind: source.kind,
+          enabled: source.enabled,
           version: source.version,
           license: source.license,
           sha256: snapshot.sha256,
@@ -864,10 +966,10 @@ class FilterSourceManager {
           refreshedAt: snapshot.createdAt,
           error: snapshot.state == FilterSnapshotState.valid
               ? null
-              : '已生效；${snapshot.unsupportedRuleCount} 条规则语法未支持',
+              : '已缓存；${snapshot.unsupportedRuleCount} 条规则语法未支持',
         ),
       );
-      final bundle = await rebuildBundle();
+      final bundle = await _rebuildBundle();
       if (bundle == null) throw StateError('没有可用规则快照');
       return bundle;
     } catch (error) {
@@ -885,6 +987,7 @@ class FilterSourceManager {
           url: source.url,
           profileId: source.profileId,
           kind: source.kind,
+          enabled: source.enabled,
           version: source.version,
           license: source.license,
           sha256: source.sha256,

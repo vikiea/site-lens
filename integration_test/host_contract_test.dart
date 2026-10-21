@@ -3,6 +3,8 @@ import 'package:site_lens/settings/settings_repository.dart';
 import 'dart:io';
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart';
+
 import 'video_fixture.dart';
 
 import 'package:drift/native.dart';
@@ -17,6 +19,9 @@ import 'package:site_lens/network/transport.dart';
 import 'package:site_lens/scripts/script_service.dart';
 import 'package:site_lens/web_host/native_hosts.dart';
 import 'package:site_lens/web_host/web_host.g.dart';
+import 'package:site_lens/filter/filter_service.dart';
+import 'package:site_lens/web_host/filter_payload_store.dart';
+import 'package:path_provider/path_provider.dart';
 
 const fixture = '''<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Contract fixture</title></head><body>
 <main><h1>Unprivileged fixture</h1><p id="result">Waiting for approved user script</p><p id="page-bridge"></p><p id="cookie-state"></p><p id="local-state"></p><a href="/next">Next document</a></main>
@@ -133,6 +138,114 @@ void main() {
       try {
         debugPrint('CHECKPOINT create browser');
         final browser = await create(HostPurpose.browsing);
+        if (Platform.isAndroid) {
+          debugPrint('CHECKPOINT large filter payload and invalid identity');
+          final support = await getApplicationSupportDirectory();
+          final payloads = FilterPayloadStore();
+          final large = FilterEngine(
+            snapshotId: 'large-filter-contract',
+            rules: List.generate(
+              20000,
+              (index) => FilterRule(
+                pattern: '||ads$index.example^',
+                block: true,
+                hostOnly: true,
+              ),
+            ),
+          );
+          final payload = await payloads.prepare(engine: large);
+          expect(payload.rulesFileId, isNotNull);
+          final filterContext = HostFilterContextDto(
+            hostId: browser.id,
+            generation: browser.generation,
+            sourceUrl: url.toString(),
+            snapshotId: payload.id,
+          );
+          final filterPolicy = FilterPolicyDto(
+            enabled: true,
+            pageFiltering: false,
+            domainExceptions: [],
+            blockedDomains: [],
+          );
+          await step(
+            'load large filter',
+            hosts.api.applyFilter(
+              browser.id,
+              filterContext,
+              filterPolicy,
+              payload,
+            ),
+          );
+          for (final fileId in ['../outside', '0' * 64]) {
+            await expectLater(
+              hosts.api.applyFilter(
+                browser.id,
+                filterContext,
+                filterPolicy,
+                FilterSnapshotDto(
+                  id: payload.id,
+                  version: '',
+                  sha256: '',
+                  state: 'valid',
+                  rules: '',
+                  rulesFileId: fileId,
+                  rulesBytes: payload.rulesBytes,
+                ),
+              ),
+              throwsA(isA<PlatformException>()),
+            );
+          }
+          final badJson = utf8.encode('[{"pattern":');
+          final badHash = sha256.convert(badJson).toString();
+          final badFile = File('${support.path}/filter_payloads/$badHash.json');
+          await badFile.writeAsBytes(badJson);
+          try {
+            await expectLater(
+              hosts.api.applyFilter(
+                browser.id,
+                filterContext,
+                filterPolicy,
+                FilterSnapshotDto(
+                  id: payload.id,
+                  version: '',
+                  sha256: '',
+                  state: 'valid',
+                  rules: '',
+                  rulesFileId: badHash,
+                  rulesBytes: badJson.length,
+                ),
+              ),
+              throwsA(isA<PlatformException>()),
+            );
+          } finally {
+            await badFile.delete();
+          }
+          await step(
+            'restore empty filter',
+            hosts.api.applyFilter(
+              browser.id,
+              HostFilterContextDto(
+                hostId: browser.id,
+                generation: browser.generation,
+                sourceUrl: url.toString(),
+                snapshotId: '',
+              ),
+              FilterPolicyDto(
+                enabled: false,
+                pageFiltering: false,
+                domainExceptions: [],
+                blockedDomains: [],
+              ),
+              FilterSnapshotDto(
+                id: '',
+                version: '',
+                sha256: '',
+                state: 'missing',
+                rules: '[]',
+              ),
+            ),
+          );
+        }
         await hosts.api.setHostActivity(browser.id, true, true, true, false);
         debugPrint(
           'HOST_CAPABILITIES ${browser.capabilities.platform}: ${browser.capabilities.reason}',

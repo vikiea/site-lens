@@ -38,6 +38,7 @@ import org.json.JSONTokener
 import java.io.File
 import java.io.ByteArrayInputStream
 import java.util.UUID
+import java.util.concurrent.Executors
 
 private fun webUri(value: String): Uri {
     val uri = Uri.parse(value)
@@ -191,6 +192,10 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
     private var fullscreenOwner: NativeWebHost? = null
     private var disposed = false
     private var nextNotificationId = 1000
+    private val filterWorker = Executors.newSingleThreadExecutor()
+    private val filterRules = NativeFilterRules(activity.filesDir)
+    private val filterMain = Handler(Looper.getMainLooper())
+    private val filterRequests = mutableMapOf<Long, Long>()
     private val inspector = activity.assets.open("flutter_assets/web_assets/page_inspector.js").bufferedReader().use { it.readText() }
     init {
         WebHostApi.setUp(engine.dartExecutor.binaryMessenger, this)
@@ -263,11 +268,27 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
         require(host.purpose == HostPurpose.BROWSING || scripts.isEmpty()) { "Probe hosts cannot run user scripts" }
         host.revoke(); host.scripts = scripts
     }
-    override fun applyFilter(hostId: Long, context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto) {
-        val host = host(hostId)
-        require(context.hostId == hostId) { "Filter host identity mismatch" }
-        require(context.generation >= host.generation) { "Filter generation is stale" }
-        host.applyFilter(context, policy, snapshot)
+    override fun applyFilter(hostId: Long, context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto, callback: (Result<Unit>) -> Unit) {
+        try {
+            val target = host(hostId)
+            require(context.hostId == hostId && context.snapshotId == snapshot.id) { "Filter snapshot identity mismatch" }
+            require(context.generation >= target.generation) { "Filter generation is stale" }
+            val request = (filterRequests[hostId] ?: 0L) + 1L
+            filterRequests[hostId] = request
+            filterWorker.execute {
+                val prepared = runCatching { filterRules.load(snapshot) }
+                filterMain.post {
+                    callback(runCatching {
+                        require(host(hostId) === target && filterRequests[hostId] == request) { "Filter host or request is stale" }
+                        if (prepared.isFailure) {
+                            target.restoreFilterInjection()
+                            throw prepared.exceptionOrNull()!!
+                        }
+                        target.applyFilter(context, policy, snapshot, prepared.getOrThrow())
+                    })
+                }
+            }
+        } catch (error: Exception) { callback(Result.failure(error)) }
     }
     override fun setHostActivity(hostId: Long, isCurrent: Boolean, visible: Boolean, foreground: Boolean, allowBackgroundPlayback: Boolean): Boolean =
         host(hostId).media.activity(isCurrent, visible, foreground, allowBackgroundPlayback)
@@ -385,6 +406,7 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
     fun dispose() {
         if (disposed) return
         disposed = true
+        filterWorker.shutdown()
         // Closing hosts have already left the public registry but can still
         // await a Flutter platform-view release when the engine goes away.
         val previous = (hosts.values + retiringHosts).distinct()
@@ -411,21 +433,6 @@ private data class NativeFilterState(
     val blockedDomains: Set<String> = emptySet(),
     val rules: List<NativeFilterRule> = emptyList(),
     val snapshotId: String = "",
-)
-
-private data class NativeFilterRule(
-    val pattern: String,
-    val block: Boolean,
-    val cosmetic: Boolean,
-    val hostOnly: Boolean,
-    val domain: String? = null,
-    val domains: List<String> = emptyList(),
-    val excludedDomains: List<String> = emptyList(),
-    val exception: Boolean = false,
-    val resourceTypes: List<String> = emptyList(),
-    val thirdParty: Boolean? = null,
-    val scriptlet: String? = null,
-    val scriptletArgs: List<String> = emptyList(),
 )
 
 private const val FILTER_RUNTIME_ASSET = "flutter_assets/web_assets/filter_runtime.js"
@@ -504,7 +511,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     var scripts = emptyList<ScriptRegistration>()
     val bindings = mutableListOf<ScriptBinding>()
     private val injections = mutableListOf<ScriptHandler>()
-    private var filterInjection: ScriptHandler? = null
+    private val filterInstallation = NativeFilterInstallation<NativeFilterState, ScriptHandler>(NativeFilterState()) { it.remove() }
     private val retiredInjections = mutableListOf<ScriptHandler>()
     private val retiredBindings = mutableListOf<ScriptBinding>()
     private var bridgeCleanupScheduled = false
@@ -512,7 +519,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         bridgeCleanupScheduled = false
         flushRetiredBridges()
     }
-    @Volatile private var filterState = NativeFilterState()
+    private val filterState: NativeFilterState get() = filterInstallation.state
     private var filterBlockedCount = 0
     private var filterAllowedCount = 0
     private var accepting = false
@@ -572,39 +579,10 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     private var historyTargetUrl: String? = null
     private val profileName = if (purpose == HostPurpose.BROWSING) null else "site-lens-probe-${UUID.randomUUID()}"
 
-    fun applyFilter(context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto) {
+    internal fun applyFilter(context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto, rules: List<NativeFilterRule>) {
         check(context.hostId == id) { "Filter host identity mismatch" }
         check(context.generation >= generation) { "Filter generation is stale" }
-        val rules = runCatching {
-            val array = JSONArray(snapshot.rules)
-            (0 until array.length()).mapNotNull { index ->
-                val value = array.optJSONObject(index) ?: return@mapNotNull null
-                val pattern = value.optString("pattern").trim()
-                if (pattern.isEmpty()) null else NativeFilterRule(
-                    pattern = pattern,
-                    block = value.optBoolean("block", true),
-                    cosmetic = value.optBoolean("cosmetic", false),
-                    hostOnly = value.optBoolean("hostOnly", false),
-                    domain = value.optString("domain").takeIf { it.isNotEmpty() },
-                    domains = value.optJSONArray("domains")?.let { domains ->
-                        (0 until domains.length()).mapNotNull { domains.optString(it).takeIf(String::isNotBlank) }
-                    } ?: emptyList(),
-                    excludedDomains = value.optJSONArray("excludedDomains")?.let { domains ->
-                        (0 until domains.length()).mapNotNull { domains.optString(it).takeIf(String::isNotBlank) }
-                    } ?: emptyList(),
-                    exception = value.optBoolean("exception", false),
-                    resourceTypes = value.optJSONArray("resourceTypes")?.let { types ->
-                        (0 until types.length()).mapNotNull { types.optString(it).takeIf(String::isNotBlank) }
-                    } ?: emptyList(),
-                    thirdParty = if (value.has("thirdParty") && !value.isNull("thirdParty")) value.optBoolean("thirdParty") else null,
-                    scriptlet = value.optString("scriptlet").takeIf { it.isNotEmpty() },
-                    scriptletArgs = value.optJSONArray("scriptletArgs")?.let { args ->
-                        (0 until args.length()).mapNotNull { args.optString(it).takeIf { value -> value.isNotEmpty() } }
-                    } ?: emptyList(),
-                )
-            }
-        }.getOrDefault(emptyList())
-        filterState = NativeFilterState(
+        val nextState = NativeFilterState(
             enabled = policy.enabled && snapshot.state != "missing" && snapshot.state != "failed" && snapshot.state != "corrupt",
             pageFiltering = policy.pageFiltering,
             exceptions = policy.domainExceptions.map { it.lowercase() }.toSet(),
@@ -612,17 +590,24 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             rules = rules,
             snapshotId = snapshot.id,
         )
-        filterBlockedCount = 0
-        filterAllowedCount = 0
-        refreshFilterInjection()
+        installFilterState(nextState)
     }
 
-    private fun refreshFilterInjection() {
-        runCatching { filterInjection?.remove() }
-        filterInjection = null
-        val state = filterState
-        if (!state.enabled || !state.pageFiltering || !hasStart || destroyed) return
-        val source = runCatching { activity.assets.open(FILTER_RUNTIME_ASSET).bufferedReader().use { it.readText() } }.getOrNull() ?: return
+    /**
+     * Registers the new document-start hook before retiring the old one. The
+     * WebView provider may reject a registration (for example while the
+     * renderer is recovering); in that case the old state and hook remain
+     * active and the caller receives the failure.
+     */
+    private fun installFilterState(nextState: NativeFilterState) {
+        filterInstallation.replace(nextState, ::registerFilterInjection)
+        filterBlockedCount = 0
+        filterAllowedCount = 0
+    }
+
+    private fun registerFilterInjection(state: NativeFilterState): ScriptHandler? {
+        if (!state.enabled || !state.pageFiltering || !hasStart || destroyed) return null
+        val source = activity.assets.open(FILTER_RUNTIME_ASSET).bufferedReader().use { it.readText() }
         val cosmetic = state.rules.filter { it.cosmetic && it.scriptlet == null && isSafeCosmeticSelector(it.pattern) }.map { rule ->
             JSONObject().put("selector", rule.pattern).put("domain", rule.domain ?: "*")
                 .put("domains", JSONArray(rule.domains)).put("excludedDomains", JSONArray(rule.excludedDomains))
@@ -637,13 +622,19 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             .put("selectors", JSONArray(cosmetic))
             .put("scriptlets", JSONArray(scriptlets))
             .put("snapshotId", state.snapshotId)
-        filterInjection = runCatching {
-            if (hasWorld) {
-                val world = WebViewCompat.getExecutionWorld(webView, JavaScriptExecutionWorld.PAGE_WORLD_NAME)
-                WebViewCompat.addJavaScriptOnEvent(webView, source.replace("__SITE_LENS_FILTER_CONFIG__", config.toString()), WebViewCompat.INJECTION_EVENT_DOCUMENT_START, setOf("*"), world)
-            } else WebViewCompat.addDocumentStartJavaScript(webView, source.replace("__SITE_LENS_FILTER_CONFIG__", config.toString()), setOf("*"))
-        }.getOrNull()
+        return if (hasWorld) {
+            val world = WebViewCompat.getExecutionWorld(webView, JavaScriptExecutionWorld.PAGE_WORLD_NAME)
+            WebViewCompat.addJavaScriptOnEvent(webView, source.replace("__SITE_LENS_FILTER_CONFIG__", config.toString()), WebViewCompat.INJECTION_EVENT_DOCUMENT_START, setOf("*"), world)
+        } else {
+            WebViewCompat.addDocumentStartJavaScript(webView, source.replace("__SITE_LENS_FILTER_CONFIG__", config.toString()), setOf("*"))
+        }
     }
+
+    private fun refreshFilterInjection() {
+        filterInstallation.replace(filterState, ::registerFilterInjection)
+    }
+
+    internal fun restoreFilterInjection() { refreshFilterInjection() }
 
     private fun isSafeCosmeticSelector(selector: String): Boolean {
         if (selector.isBlank() || selector.length > 256 || selector.any { it == '{' || it == '}' || it == ';' }) return false
@@ -1164,10 +1155,8 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         // callback returns; generation/token checks already fail closed while
         // the old bridge is waiting for removal.
         retiredInjections.addAll(injections)
-        filterInjection?.let { retiredInjections.add(it) }
         retiredBindings.addAll(bindings)
         injections.clear()
-        filterInjection = null
         bindings.clear()
         if (!bridgeCleanupScheduled && (retiredInjections.isNotEmpty() || retiredBindings.isNotEmpty())) {
             bridgeCleanupScheduled = true
@@ -1207,10 +1196,19 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             // revoke() defers provider removals until the current callback
             // returns. Start the next document after that queue entry, or it
             // can run the previous document-start script before removal.
-            mainHandler.post {
-                if (!available || generation != ticket) return@post
-                expectedUrl = url; leasedOrigin = webOrigin(url)
-                load()
+            events.prepareFilterForNavigation(id, ticket, url) { result ->
+                if (!available || generation != ticket) return@prepareFilterForNavigation
+                if (result.isFailure) {
+                    refreshLayout?.isRefreshing = false
+                    event("networkError", result.exceptionOrNull()?.message ?: "Filter navigation rejected")
+                    return@prepareFilterForNavigation
+                }
+                mainHandler.post {
+                    if (!available || generation != ticket) return@post
+                    flushRetiredBridges()
+                    expectedUrl = url; leasedOrigin = webOrigin(url)
+                    load()
+                }
             }
             return
         }
@@ -1379,7 +1377,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         injections.clear(); bindings.clear(); scripts = emptyList()
         retiredInjections.clear(); retiredBindings.clear()
         bridgeCleanupScheduled = false
-        filterInjection = null
+        filterInstallation.forget()
         runCatching { forceClearFullscreen() }
         runCatching { (platformView.parent as? ViewGroup)?.removeView(platformView) }
         runCatching { (deadView.parent as? ViewGroup)?.removeView(deadView) }
@@ -1431,7 +1429,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         runCatching { media.dispose() }
         injections.clear(); bindings.clear(); scripts = emptyList()
         retiredInjections.clear(); retiredBindings.clear()
-        filterInjection = null
+        filterInstallation.forget()
         runCatching { forceClearFullscreen() }
         navigationListener?.let { runCatching { WebViewCompat.removeNavigationListener(webView, it) } }; navigationListener = null
         runCatching { webView.stopLoading() }

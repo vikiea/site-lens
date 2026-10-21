@@ -776,9 +776,9 @@ struct HostPreferences: Hashable, CustomStringConvertible {
   }
 }
 
-/// Immutable filtering data passed to a native host.  The native side never
-/// reads the rules from disk or asks Dart during a WebView request callback;
-/// it receives a complete snapshot before navigation starts.
+/// Immutable filtering data installed before navigation. Large rules use a
+/// content-addressed file in the app-private filter_payloads directory. Request
+/// callbacks only read the completely installed in-memory rules.
 ///
 /// Generated class from Pigeon that represents data sent in messages.
 struct FilterSnapshotDto: Hashable, CustomStringConvertible {
@@ -787,6 +787,8 @@ struct FilterSnapshotDto: Hashable, CustomStringConvertible {
   var sha256: String
   var state: String
   var rules: String
+  var rulesFileId: String? = nil
+  var rulesBytes: Int64? = nil
 
 
   // swift-format-ignore: AlwaysUseLowerCamelCase
@@ -796,13 +798,17 @@ struct FilterSnapshotDto: Hashable, CustomStringConvertible {
     let sha256 = pigeonVar_list[2] as! String
     let state = pigeonVar_list[3] as! String
     let rules = pigeonVar_list[4] as! String
+    let rulesFileId: String? = nilOrValue(pigeonVar_list[5])
+    let rulesBytes: Int64? = nilOrValue(pigeonVar_list[6])
 
     return FilterSnapshotDto(
       id: id,
       version: version,
       sha256: sha256,
       state: state,
-      rules: rules
+      rules: rules,
+      rulesFileId: rulesFileId,
+      rulesBytes: rulesBytes
     )
   }
   func toList() -> [Any?] {
@@ -812,13 +818,15 @@ struct FilterSnapshotDto: Hashable, CustomStringConvertible {
       sha256,
       state,
       rules,
+      rulesFileId,
+      rulesBytes,
     ]
   }
   static func == (lhs: FilterSnapshotDto, rhs: FilterSnapshotDto) -> Bool {
     if Swift.type(of: lhs) != Swift.type(of: rhs) {
       return false
     }
-    return WebHostPigeonInternal.deepEquals(lhs.id, rhs.id) && WebHostPigeonInternal.deepEquals(lhs.version, rhs.version) && WebHostPigeonInternal.deepEquals(lhs.sha256, rhs.sha256) && WebHostPigeonInternal.deepEquals(lhs.state, rhs.state) && WebHostPigeonInternal.deepEquals(lhs.rules, rhs.rules)
+    return WebHostPigeonInternal.deepEquals(lhs.id, rhs.id) && WebHostPigeonInternal.deepEquals(lhs.version, rhs.version) && WebHostPigeonInternal.deepEquals(lhs.sha256, rhs.sha256) && WebHostPigeonInternal.deepEquals(lhs.state, rhs.state) && WebHostPigeonInternal.deepEquals(lhs.rules, rhs.rules) && WebHostPigeonInternal.deepEquals(lhs.rulesFileId, rhs.rulesFileId) && WebHostPigeonInternal.deepEquals(lhs.rulesBytes, rhs.rulesBytes)
   }
 
   func hash(into hasher: inout Hasher) {
@@ -828,10 +836,12 @@ struct FilterSnapshotDto: Hashable, CustomStringConvertible {
     WebHostPigeonInternal.deepHash(value: sha256, hasher: &hasher)
     WebHostPigeonInternal.deepHash(value: state, hasher: &hasher)
     WebHostPigeonInternal.deepHash(value: rules, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: rulesFileId, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: rulesBytes, hasher: &hasher)
   }
 
   public var description: String {
-    return "FilterSnapshotDto(id: \(String(describing: id)), version: \(String(describing: version)), sha256: \(String(describing: sha256)), state: \(String(describing: state)), rules: \(String(describing: rules)))"
+    return "FilterSnapshotDto(id: \(String(describing: id)), version: \(String(describing: version)), sha256: \(String(describing: sha256)), state: \(String(describing: state)), rules: \(String(describing: rules)), rulesFileId: \(String(describing: rulesFileId)), rulesBytes: \(String(describing: rulesBytes)))"
   }
 }
 
@@ -1395,7 +1405,7 @@ protocol WebHostApi {
   func registerScripts(hostId: Int64, scripts: [ScriptRegistration]) throws
   /// Installs an immutable filter snapshot before the next document starts.
   /// Native request callbacks must use this in-memory snapshot only.
-  func applyFilter(hostId: Int64, context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto) throws
+  func applyFilter(hostId: Int64, context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto, completion: @escaping (Result<Void, Error>) -> Void)
   func navigate(hostId: Int64, url: String) throws
   func reload(hostId: Int64) throws
   func goBack(hostId: Int64) throws -> Bool
@@ -1493,11 +1503,13 @@ class WebHostApiSetup {
         let contextArg = args[1] as! HostFilterContextDto
         let policyArg = args[2] as! FilterPolicyDto
         let snapshotArg = args[3] as! FilterSnapshotDto
-        do {
-          try api.applyFilter(hostId: hostIdArg, context: contextArg, policy: policyArg, snapshot: snapshotArg)
-          reply(wrapResult(nil))
-        } catch {
-          reply(wrapError(error))
+        api.applyFilter(hostId: hostIdArg, context: contextArg, policy: policyArg, snapshot: snapshotArg) { result in
+          switch result {
+          case .success:
+            reply(wrapResult(nil))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
         }
       }
     } else {
@@ -1672,6 +1684,8 @@ class WebHostApiSetup {
 /// Generated protocol from Pigeon that represents Flutter messages that can be called from Swift.
 protocol WebHostEventsProtocol {
   func onEvent(event eventArg: HostEvent, completion: @escaping (Result<Void, PigeonError>) -> Void)
+  /// Binds filtering without granting or installing any user scripts.
+  func prepareFilterForNavigation(hostId hostIdArg: Int64, generation generationArg: Int64, url urlArg: String, completion: @escaping (Result<Void, PigeonError>) -> Void)
   func getScriptsForNavigation(hostId hostIdArg: Int64, generation generationArg: Int64, url urlArg: String, completion: @escaping (Result<[ScriptRegistration], PigeonError>) -> Void)
   func onGmRequest(request requestArg: GmRequest, completion: @escaping (Result<String, PigeonError>) -> Void)
 }
@@ -1689,6 +1703,25 @@ class WebHostEvents: WebHostEventsProtocol {
     let channelName: String = "dev.flutter.pigeon.site_lens.WebHostEvents.onEvent\(messageChannelSuffix)"
     let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
     channel.sendMessage([eventArg] as [Any?]) { response in
+      guard let listResponse = response as? [Any?] else {
+        completion(.failure(createConnectionError(withChannelName: channelName)))
+        return
+      }
+      if listResponse.count > 1 {
+        let code: String = listResponse[0] as! String
+        let message: String? = nilOrValue(listResponse[1])
+        let details: String? = nilOrValue(listResponse[2])
+        completion(.failure(PigeonError(code: code, message: message, details: details)))
+      } else {
+        completion(.success(()))
+      }
+    }
+  }
+  /// Binds filtering without granting or installing any user scripts.
+  func prepareFilterForNavigation(hostId hostIdArg: Int64, generation generationArg: Int64, url urlArg: String, completion: @escaping (Result<Void, PigeonError>) -> Void) {
+    let channelName: String = "dev.flutter.pigeon.site_lens.WebHostEvents.prepareFilterForNavigation\(messageChannelSuffix)"
+    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
+    channel.sendMessage([hostIdArg, generationArg, urlArg] as [Any?]) { response in
       guard let listResponse = response as? [Any?] else {
         completion(.failure(createConnectionError(withChannelName: channelName)))
         return

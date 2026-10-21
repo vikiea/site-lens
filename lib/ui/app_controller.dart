@@ -623,6 +623,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           url: webUri(spec.url),
           profileId: source.profileId,
           kind: source.kind,
+          enabled: source.enabled,
           version: source.version,
           license: source.license,
           sha256: source.sha256,
@@ -678,11 +679,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> deleteFilterSource(int id) async {
-    await db.deleteFilterSource(id);
-    if (filterSnapshots.activeSnapshot?.sourceId == id) {
-      filterSnapshots.clear();
-    }
-    final bundle = await filterSources.rebuildBundle();
+    final bundle = await filterSources.delete(id);
     hosts.setFilterEngine(
       filterSnapshots.activeEngine,
       policy: filterPolicy,
@@ -717,6 +714,18 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       orElse: () => throw StateError('规则源不存在'),
     );
     return refreshFilterSource(source);
+  }
+
+  Future<void> setFilterSourceEnabled(int id, bool enabled) async {
+    final bundle = await filterSources.setEnabled(id, enabled);
+    hosts.setFilterEngine(
+      filterSnapshots.activeEngine,
+      policy: filterPolicy,
+      snapshot: bundle ?? filterSnapshots.activeSnapshot,
+      profilePolicies: profileFilterPolicies,
+    );
+    filterSourceList = await db.filterSources();
+    notifyListeners();
   }
 
   void _applySettings() {
@@ -1211,11 +1220,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final latestFilter = await read(db.latestFilterSnapshot, null);
     if (latestFilter != null) {
       try {
-        if (latestFilter.sourceId == null) {
-          await filterSnapshots.load(latestFilter);
-        } else {
-          await filterSources.rebuildBundle();
-        }
+        await filterSources.rebuildBundle();
       } catch (_) {
         // Keep browsing available with no active snapshot; diagnostics are
         // retained in Drift and the next manual refresh can recover it.

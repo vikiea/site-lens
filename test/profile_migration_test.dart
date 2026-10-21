@@ -190,7 +190,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 11);
+      expect(raw.userVersion, 12);
       expect(raw.select('SELECT COUNT(*) AS c FROM probes').single['c'], 281);
 
       final scripts = await db.scripts();
@@ -426,7 +426,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 11);
+      expect(raw.userVersion, 12);
       expect(
         raw.select(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='filter_snapshots'",
@@ -487,7 +487,7 @@ void main() {
 
     final raw = sqlite3.open(file.path);
     addTearDown(raw.close);
-    expect(raw.userVersion, 11);
+    expect(raw.userVersion, 12);
     expect(
       raw.select('PRAGMA table_info(media_tasks)').map((row) => row['name']),
       contains('batch_directory'),
@@ -519,7 +519,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 11);
+      expect(raw.userVersion, 12);
       expect(
         raw
             .select('PRAGMA table_info(media_tasks)')
@@ -588,6 +588,45 @@ void main() {
       await db.deleteMediaTask(task.id);
       expect(await db.mediaTasks(), isEmpty);
       expect(await db.mediaArtifacts(), hasLength(1));
+    },
+  );
+
+  test(
+    'v11 filter sources upgrade once and preserve disabled state on reopen',
+    () async {
+      final file = File('${dir.path}/v11-filter-sources.sqlite');
+      final seed = AppDatabase(NativeDatabase(file));
+      await seed.saveFilterSource(
+        FilterSource(
+          id: 1,
+          label: '旧订阅',
+          url: Uri.parse('https://filters.example/list'),
+        ),
+      );
+      await seed.close();
+      final legacy = sqlite3.open(file.path);
+      legacy.execute('ALTER TABLE filter_sources DROP COLUMN enabled');
+      legacy.userVersion = 11;
+      legacy.close();
+      var db = AppDatabase(NativeDatabase(file));
+      expect((await db.filterSources()).single.enabled, isTrue);
+      await db.customStatement(
+        'UPDATE filter_sources SET enabled=0 WHERE id=1',
+      );
+      await db.close();
+      db = AppDatabase(NativeDatabase(file));
+      try {
+        expect((await db.filterSources()).single.enabled, isFalse);
+        final columns = await db
+            .customSelect('PRAGMA table_info(filter_sources)')
+            .get();
+        expect(
+          columns.where((row) => row.read<String>('name') == 'enabled'),
+          hasLength(1),
+        );
+      } finally {
+        await db.close();
+      }
     },
   );
 }

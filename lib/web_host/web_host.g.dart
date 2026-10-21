@@ -784,9 +784,9 @@ class HostPreferences {
   }
 }
 
-/// Immutable filtering data passed to a native host.  The native side never
-/// reads the rules from disk or asks Dart during a WebView request callback;
-/// it receives a complete snapshot before navigation starts.
+/// Immutable filtering data installed before navigation. Large rules use a
+/// content-addressed file in the app-private filter_payloads directory. Request
+/// callbacks only read the completely installed in-memory rules.
 class FilterSnapshotDto {
   FilterSnapshotDto({
     required this.id,
@@ -794,6 +794,8 @@ class FilterSnapshotDto {
     required this.sha256,
     required this.state,
     required this.rules,
+    this.rulesFileId,
+    this.rulesBytes,
   });
 
   String id;
@@ -806,6 +808,10 @@ class FilterSnapshotDto {
 
   String rules;
 
+  String? rulesFileId;
+
+  int? rulesBytes;
+
   List<Object?> _toList() {
     return <Object?>[
       id,
@@ -813,6 +819,8 @@ class FilterSnapshotDto {
       sha256,
       state,
       rules,
+      rulesFileId,
+      rulesBytes,
     ];
   }
 
@@ -827,6 +835,8 @@ class FilterSnapshotDto {
       sha256: result[2]! as String,
       state: result[3]! as String,
       rules: result[4]! as String,
+      rulesFileId: result[5] as String?,
+      rulesBytes: result[6] as int?,
     );
   }
 
@@ -839,7 +849,7 @@ class FilterSnapshotDto {
     if (identical(this, other)) {
       return true;
     }
-    return _deepEquals(id, other.id) && _deepEquals(version, other.version) && _deepEquals(sha256, other.sha256) && _deepEquals(state, other.state) && _deepEquals(rules, other.rules);
+    return _deepEquals(id, other.id) && _deepEquals(version, other.version) && _deepEquals(sha256, other.sha256) && _deepEquals(state, other.state) && _deepEquals(rules, other.rules) && _deepEquals(rulesFileId, other.rulesFileId) && _deepEquals(rulesBytes, other.rulesBytes);
   }
 
   @override
@@ -848,7 +858,7 @@ class FilterSnapshotDto {
 
   @override
   String toString() {
-    return 'FilterSnapshotDto(id: $id, version: $version, sha256: $sha256, state: $state, rules: $rules)';
+    return 'FilterSnapshotDto(id: $id, version: $version, sha256: $sha256, state: $state, rules: $rules, rulesFileId: $rulesFileId, rulesBytes: $rulesBytes)';
   }
 }
 
@@ -1758,6 +1768,9 @@ abstract class WebHostEvents {
 
   Future<void> onEvent(HostEvent event);
 
+  /// Binds filtering without granting or installing any user scripts.
+  Future<void> prepareFilterForNavigation(int hostId, int generation, String url);
+
   Future<List<ScriptRegistration>> getScriptsForNavigation(int hostId, int generation, String url);
 
   Future<String> onGmRequest(GmRequest request);
@@ -1780,6 +1793,29 @@ abstract class WebHostEvents {
           final HostEvent arg_event = args[0]! as HostEvent;
           try {
             await api.onEvent(arg_event);
+            return wrapResponse(empty: true);
+          } on PlatformException catch (e) {
+            return wrapResponse(error: e);
+          }          catch (e) {
+            return wrapResponse(error: PlatformException(code: 'error', message: e.toString()));
+          }
+        });
+      }
+    }
+    {
+      final pigeonVar_channel = BasicMessageChannel<Object?>(
+          'dev.flutter.pigeon.site_lens.WebHostEvents.prepareFilterForNavigation$messageChannelSuffix', pigeonChannelCodec,
+          binaryMessenger: binaryMessenger);
+      if (api == null) {
+        pigeonVar_channel.setMessageHandler(null);
+      } else {
+        pigeonVar_channel.setMessageHandler((Object? message) async {
+          final List<Object?> args = message! as List<Object?>;
+          final int arg_hostId = args[0]! as int;
+          final int arg_generation = args[1]! as int;
+          final String arg_url = args[2]! as String;
+          try {
+            await api.prepareFilterForNavigation(arg_hostId, arg_generation, arg_url);
             return wrapResponse(empty: true);
           } on PlatformException catch (e) {
             return wrapResponse(error: e);

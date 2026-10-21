@@ -772,9 +772,9 @@ data class HostPreferences (
 }
 
 /**
- * Immutable filtering data passed to a native host.  The native side never
- * reads the rules from disk or asks Dart during a WebView request callback;
- * it receives a complete snapshot before navigation starts.
+ * Immutable filtering data installed before navigation. Large rules use a
+ * content-addressed file in the app-private filter_payloads directory. Request
+ * callbacks only read the completely installed in-memory rules.
  *
  * Generated class from Pigeon that represents data sent in messages.
  */
@@ -783,7 +783,9 @@ data class FilterSnapshotDto (
   val version: String,
   val sha256: String,
   val state: String,
-  val rules: String
+  val rules: String,
+  val rulesFileId: String? = null,
+  val rulesBytes: Long? = null
 )
  {
   companion object {
@@ -793,7 +795,9 @@ data class FilterSnapshotDto (
       val sha256 = pigeonVar_list[2] as String
       val state = pigeonVar_list[3] as String
       val rules = pigeonVar_list[4] as String
-      return FilterSnapshotDto(id, version, sha256, state, rules)
+      val rulesFileId = pigeonVar_list[5] as String?
+      val rulesBytes = pigeonVar_list[6] as Long?
+      return FilterSnapshotDto(id, version, sha256, state, rules, rulesFileId, rulesBytes)
     }
   }
   fun toList(): List<Any?> {
@@ -803,6 +807,8 @@ data class FilterSnapshotDto (
       sha256,
       state,
       rules,
+      rulesFileId,
+      rulesBytes,
     )
   }
   override fun equals(other: Any?): Boolean {
@@ -813,7 +819,7 @@ data class FilterSnapshotDto (
       return true
     }
     val other = other as FilterSnapshotDto
-    return WebHostPigeonUtils.deepEquals(this.id, other.id) && WebHostPigeonUtils.deepEquals(this.version, other.version) && WebHostPigeonUtils.deepEquals(this.sha256, other.sha256) && WebHostPigeonUtils.deepEquals(this.state, other.state) && WebHostPigeonUtils.deepEquals(this.rules, other.rules)
+    return WebHostPigeonUtils.deepEquals(this.id, other.id) && WebHostPigeonUtils.deepEquals(this.version, other.version) && WebHostPigeonUtils.deepEquals(this.sha256, other.sha256) && WebHostPigeonUtils.deepEquals(this.state, other.state) && WebHostPigeonUtils.deepEquals(this.rules, other.rules) && WebHostPigeonUtils.deepEquals(this.rulesFileId, other.rulesFileId) && WebHostPigeonUtils.deepEquals(this.rulesBytes, other.rulesBytes)
   }
 
   override fun hashCode(): Int {
@@ -823,10 +829,12 @@ data class FilterSnapshotDto (
     result = 31 * result + WebHostPigeonUtils.deepHash(this.sha256)
     result = 31 * result + WebHostPigeonUtils.deepHash(this.state)
     result = 31 * result + WebHostPigeonUtils.deepHash(this.rules)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.rulesFileId)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.rulesBytes)
     return result
   }
   override fun toString(): String {
-    return "FilterSnapshotDto(id=$id, version=$version, sha256=$sha256, state=$state, rules=$rules)"
+    return "FilterSnapshotDto(id=$id, version=$version, sha256=$sha256, state=$state, rules=$rules, rulesFileId=$rulesFileId, rulesBytes=$rulesBytes)"
   }
 }
 
@@ -1430,7 +1438,7 @@ interface WebHostApi {
    * Installs an immutable filter snapshot before the next document starts.
    * Native request callbacks must use this in-memory snapshot only.
    */
-  fun applyFilter(hostId: Long, context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto)
+  fun applyFilter(hostId: Long, context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto, callback: (Result<Unit>) -> Unit)
   fun navigate(hostId: Long, url: String)
   fun reload(hostId: Long)
   fun goBack(hostId: Long): Boolean
@@ -1538,13 +1546,14 @@ interface WebHostApi {
             val contextArg = args[1] as HostFilterContextDto
             val policyArg = args[2] as FilterPolicyDto
             val snapshotArg = args[3] as FilterSnapshotDto
-            val wrapped: List<Any?> = try {
-              api.applyFilter(hostIdArg, contextArg, policyArg, snapshotArg)
-              listOf(null)
-            } catch (exception: Throwable) {
-              WebHostPigeonUtils.wrapError(exception)
+            api.applyFilter(hostIdArg, contextArg, policyArg, snapshotArg) { result: Result<Unit> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(WebHostPigeonUtils.wrapError(error))
+              } else {
+                reply.reply(WebHostPigeonUtils.wrapResult(null))
+              }
             }
-            reply.reply(wrapped)
           }
         } else {
           channel.setMessageHandler(null)
@@ -1757,6 +1766,24 @@ class WebHostEvents(private val binaryMessenger: BinaryMessenger, private val me
     val channelName = "dev.flutter.pigeon.site_lens.WebHostEvents.onEvent$separatedMessageChannelSuffix"
     val channel = BasicMessageChannel<Any?>(binaryMessenger, channelName, codec)
     channel.send(listOf(eventArg)) {
+      if (it is List<*>) {
+        if (it.size > 1) {
+          callback(Result.failure(FlutterError(it[0] as String, it[1] as String, it[2] as String?)))
+        } else {
+          callback(Result.success(Unit))
+        }
+      } else {
+        callback(Result.failure(WebHostPigeonUtils.createConnectionError(channelName)))
+      } 
+    }
+  }
+  /** Binds filtering without granting or installing any user scripts. */
+  fun prepareFilterForNavigation(hostIdArg: Long, generationArg: Long, urlArg: String, callback: (Result<Unit>) -> Unit)
+{
+    val separatedMessageChannelSuffix = if (messageChannelSuffix.isNotEmpty()) ".$messageChannelSuffix" else ""
+    val channelName = "dev.flutter.pigeon.site_lens.WebHostEvents.prepareFilterForNavigation$separatedMessageChannelSuffix"
+    val channel = BasicMessageChannel<Any?>(binaryMessenger, channelName, codec)
+    channel.send(listOf(hostIdArg, generationArg, urlArg)) {
       if (it is List<*>) {
         if (it.size > 1) {
           callback(Result.failure(FlutterError(it[0] as String, it[1] as String, it[2] as String?)))

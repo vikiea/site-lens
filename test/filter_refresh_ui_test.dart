@@ -19,11 +19,15 @@ void main() {
     db = AppDatabase(NativeDatabase.memory());
     app = _RefreshApp(db);
     await app.load();
-    app.filterSourceList = [
+    for (final source in await db.filterSources()) {
+      await db.deleteFilterSource(source.id);
+    }
+    final sources = [
       FilterSource(
         id: 1,
         label: '源一',
         url: Uri.parse('https://one.example/rules'),
+        kind: 'builtin',
       ),
       FilterSource(
         id: 2,
@@ -31,6 +35,10 @@ void main() {
         url: Uri.parse('https://two.example/rules'),
       ),
     ];
+    for (final source in sources) {
+      await db.saveFilterSource(source);
+    }
+    app.filterSourceList = await db.filterSources();
   });
 
   tearDown(() async {
@@ -89,7 +97,7 @@ void main() {
               .onPressed,
           isNotNull,
         );
-        expect(find.textContaining(fail ? '刷新失败' : '已生效'), findsWidgets);
+        expect(find.textContaining(fail ? '刷新失败' : '已缓存'), findsWidgets);
         await tester.pumpWidget(const SizedBox());
       },
     );
@@ -113,12 +121,78 @@ void main() {
     expect(find.textContaining('失败 1 个：源一'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets('source actions fit narrow phone with large text', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MediaQuery(
+          data: const MediaQueryData(textScaler: TextScaler.linear(2)),
+          child: FilterSettingsScreen(app: app),
+        ),
+      ),
+    );
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey('filter-source-enabled-1')),
+      150,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'both source kinds expose a labelled switch and selection feedback',
+    (tester) async {
+      app.simulateSelection = true;
+      await open(tester);
+      for (final id in [1, 2]) {
+        final toggle = find.byKey(ValueKey('filter-source-enabled-$id'));
+        await tester.ensureVisible(toggle);
+        await tester.tap(toggle);
+        await tester.pumpAndSettle();
+        expect(tester.widget<Switch>(toggle).value, isFalse);
+        expect(find.textContaining('已关闭'), findsWidgets);
+      }
+      await tester.ensureVisible(find.byTooltip('刷新全部规则'));
+      expect(
+        tester
+            .widget<SiteLensRefreshButton>(
+              find.ancestor(
+                of: find.byTooltip('刷新全部规则'),
+                matching: find.byType(SiteLensRefreshButton),
+              ),
+            )
+            .onPressed,
+        isNull,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 }
 
 class _RefreshApp extends AppController {
   _RefreshApp(super.db) : super(api: FakeWebHostApi());
 
   final requests = <({FilterSource source, Completer<void> result})>[];
+  bool simulateSelection = false;
+
+  @override
+  Future<void> setFilterSourceEnabled(int id, bool enabled) async {
+    if (!simulateSelection) return super.setFilterSourceEnabled(id, enabled);
+    filterSourceList = [
+      for (final source in filterSourceList)
+        FilterSource.fromJson({
+          ...source.toJson(),
+          if (source.id == id) 'enabled': enabled,
+        }),
+    ];
+    notifyListeners();
+  }
 
   @override
   Future<FilterSnapshot> refreshFilterSource(FilterSource source) async {
@@ -155,6 +229,8 @@ class _RefreshApp extends AppController {
                 id: source.id,
                 label: source.label,
                 url: source.url,
+                kind: source.kind,
+                enabled: source.enabled,
                 status: status,
                 error: error,
               )
