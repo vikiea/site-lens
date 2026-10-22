@@ -150,35 +150,32 @@ void main() {
     expect(find.byType(Scrollable), findsOneWidget);
   });
 
-  testWidgets('appearance keeps opacity compact and theme color in a menu', (
-    tester,
-  ) async {
-    await pumpSettings(tester, app);
-    expect(find.textContaining('55 / 100'), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('default-glass-opacity-marker')),
-      findsOneWidget,
-    );
-    final opacityValue = tester.getRect(find.textContaining('55 / 100'));
-    final opacitySlider = tester.getRect(find.byType(Slider));
-    expect(
-      (opacityValue.center.dy - opacitySlider.center.dy).abs(),
-      lessThan(18),
-    );
-    expect(find.byType(BottomSheet), findsNothing);
+  testWidgets(
+    'appearance keeps opacity compact and theme color swatches visible',
+    (tester) async {
+      await pumpSettings(tester, app);
+      expect(find.textContaining('55 / 100'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('default-glass-opacity-marker')),
+        findsOneWidget,
+      );
+      final opacityValue = tester.getRect(find.textContaining('55 / 100'));
+      final opacitySlider = tester.getRect(find.byType(Slider));
+      expect(
+        (opacityValue.center.dy - opacitySlider.center.dy).abs(),
+        lessThan(18),
+      );
+      expect(find.byType(BottomSheet), findsNothing);
 
-    await tester.tap(find.byTooltip('选择主题色'));
-    await tester.pumpAndSettle();
-    expect(find.text('雾松绿'), findsOneWidget);
-
-    await tester.tap(find.text('雾松绿'));
-    await tester.pumpAndSettle();
-    expect(app.themePreset, ThemePresetId.mistPine);
-    expect(
-      (await SettingsRepository(db).read()).themePreset,
-      ThemePresetId.mistPine,
-    );
-  });
+      await tester.tap(find.bySemanticsLabel('主题色 雾松绿'));
+      await tester.pumpAndSettle();
+      expect(app.themePreset, ThemePresetId.mistPine);
+      expect(
+        (await SettingsRepository(db).read()).themePreset,
+        ThemePresetId.mistPine,
+      );
+    },
+  );
 
   testWidgets('appearance settings persist through the existing setters', (
     tester,
@@ -195,6 +192,7 @@ void main() {
     await tester.tap(find.text('高质量'));
     await tester.pumpAndSettle();
     expect(app.effectiveGlassQuality, GlassQuality.premium);
+    expect(find.text('当前有效质量'), findsNothing);
     expect(find.text('高质量覆盖全部面板'), findsOneWidget);
     await tester.tap(find.text('高质量覆盖全部面板'));
     await tester.pumpAndSettle();
@@ -214,7 +212,7 @@ void main() {
     await tester.tap(find.text('软件更新'));
     await tester.pumpAndSettle();
     expect(find.byType(SoftwareUpdateScreen), findsOneWidget);
-    expect(find.text('更新设置'), findsOneWidget);
+    expect(find.text('更新渠道'), findsOneWidget);
     expect(find.text('稳定版'), findsOneWidget);
     await tester.pageBack();
   });

@@ -61,6 +61,7 @@ class _DeviceDiagnosticsScreenState extends State<DeviceDiagnosticsScreen>
   Widget _buildPage(BuildContext context) {
     final snapshot = app.deviceDiagnostics.snapshot;
     final records = _resolvedRecords(context, app);
+    final groups = _capabilityGroups(records);
     return SiteLensPageScaffold(
       title: '设备能力与平台策略',
       actions: [
@@ -71,83 +72,118 @@ class _DeviceDiagnosticsScreenState extends State<DeviceDiagnosticsScreen>
         ),
       ],
       body: SiteLensGlassGroup(
-        child: Padding(
-          padding: const EdgeInsets.all(SiteLensMetrics.pagePadding),
-          child: SiteLensPanel(
-            padding: EdgeInsets.zero,
-            child: ListView(
-              key: const ValueKey('device-diagnostics-scroll'),
-              padding: const EdgeInsets.fromLTRB(0, 12, 0, 24),
-              children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 18),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '当前环境',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        _environmentSummary(snapshot),
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        '诊断仅读取现有状态，不申请权限、不创建 WebView、不播放媒体、不写入文件，也不发起网络探测。',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 12),
-                const SiteLensPanelDivider(),
-                for (final group in _capabilityGroups(records))
-                  SiteLensActionRow(
-                    icon: Icons.fact_check_outlined,
-                    title: group.$1,
-                    subtitle: '${group.$2.length} 项能力与策略',
-                    onTap: () => Navigator.of(context).push<void>(
-                      MaterialPageRoute(
-                        builder: (_) =>
-                            _CapabilityGroupScreen(title: group.$1, app: app),
-                      ),
-                    ),
-                  ),
-                const SiteLensPanelDivider(),
-                if (app.deviceDiagnostics.platform == 'android')
-                  SiteLensActionRow(
-                    icon: Icons.video_settings_outlined,
-                    title: '编解码器清单',
-                    subtitle: '按需读取，窗口化浏览完整清单',
-                    onTap: () => Navigator.of(context).push<void>(
-                      MaterialPageRoute(
-                        builder: (_) => CodecInventoryScreen(app: app),
-                      ),
-                    ),
-                  )
-                else
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(18, 12, 18, 12),
-                    child: Text('不适用：当前 iOS 版本不提供此编解码器清单。'),
-                  ),
-              ],
-            ),
+        child: ListView(
+          key: const ValueKey('device-diagnostics-scroll'),
+          physics: const ClampingScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(
+            SiteLensMetrics.pagePadding,
+            12,
+            SiteLensMetrics.pagePadding,
+            24,
           ),
+          children: [
+            SiteLensPanel(
+              padding: EdgeInsets.zero,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
+                    child: _EnvironmentSummary(snapshot: snapshot),
+                  ),
+                  const SiteLensPanelDivider(),
+                  for (var index = 0; index < groups.length; index++) ...[
+                    SiteLensActionRow(
+                      icon: Icons.fact_check_outlined,
+                      title: groups[index].$1,
+                      subtitle: '${groups[index].$2.length} 项能力与策略',
+                      onTap: () => Navigator.of(context).push<void>(
+                        MaterialPageRoute(
+                          builder: (_) => _CapabilityGroupScreen(
+                            title: groups[index].$1,
+                            app: app,
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (index < groups.length - 1) const SiteLensPanelDivider(),
+                  ],
+                  const SiteLensPanelDivider(),
+                  if (app.deviceDiagnostics.platform == 'android')
+                    SiteLensActionRow(
+                      icon: Icons.video_settings_outlined,
+                      title: '编解码器清单',
+                      subtitle: '按需读取完整清单',
+                      onTap: () => Navigator.of(context).push<void>(
+                        MaterialPageRoute(
+                          builder: (_) => CodecInventoryScreen(app: app),
+                        ),
+                      ),
+                    )
+                  else
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(18, 16, 18, 16),
+                      child: Text('不适用：当前 iOS 版本不提供此编解码器清单。'),
+                    ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
+}
 
-  String _environmentSummary(DeviceDiagnosticsSnapshot? snapshot) {
-    if (snapshot == null) return '正在读取设备信息…';
-    final api = snapshot.apiLevel == null ? '' : ' · API ${snapshot.apiLevel}';
-    final provider = snapshot.webViewProvider == null
-        ? ''
-        : '\nWebView：${snapshot.webViewProvider}';
-    return '${snapshot.platform} ${snapshot.osVersion}$api\n'
-        '应用：${snapshot.appVersion}\nFlutter：${snapshot.flutterVersion ?? "未知"}$provider';
+class _EnvironmentSummary extends StatelessWidget {
+  const _EnvironmentSummary({required this.snapshot});
+
+  final DeviceDiagnosticsSnapshot? snapshot;
+
+  @override
+  Widget build(BuildContext context) {
+    if (snapshot == null) {
+      return const Text('正在读取设备信息…');
+    }
+    final rows = [
+      ('系统', '${snapshot!.platform} ${snapshot!.osVersion}'),
+      if (snapshot!.apiLevel != null) ('API', '${snapshot!.apiLevel}'),
+      ('应用', snapshot!.appVersion),
+      ('Flutter', snapshot!.flutterVersion ?? '未知'),
+      if (snapshot!.webViewProvider != null)
+        ('WebView', snapshot!.webViewProvider!),
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('当前环境', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 10),
+        for (final row in rows)
+          Padding(
+            padding: const EdgeInsets.only(
+              bottom: SiteLensMetrics.diagnosticRowGap,
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: SiteLensMetrics.diagnosticLabelWidth,
+                  child: Text(
+                    row.$1,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+                Expanded(child: Text(row.$2)),
+              ],
+            ),
+          ),
+        const SizedBox(height: 6),
+        Text(
+          '诊断仅读取现有状态，不申请权限、不创建 WebView、不播放媒体、不写入文件，也不发起网络探测。',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ],
+    );
   }
 }
 
@@ -221,30 +257,41 @@ class _CapabilityGroupScreenState extends State<_CapabilityGroupScreen> {
           ),
         );
       }
-      return SiteLensPageScaffold(
-        title: widget.title,
-        body: SiteLensGlassGroup(
-          child: SiteLensListPanel(
-            scrollKey: PageStorageKey('capabilities-${widget.title}'),
-            slivers: [
-              SliverList.builder(
-                itemCount: records.length,
-                itemBuilder: (context, index) => Column(
+      Widget rowAt(int index) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _CapabilityRow(
+            app: widget.app,
+            record: records[index],
+            accordion: _accordion,
+            initiallyExpanded: index == 0,
+          ),
+          if (index < records.length - 1) const SiteLensPanelDivider(),
+        ],
+      );
+      final content = records.length > 10
+          ? SiteLensListPanel(
+              scrollKey: PageStorageKey('capabilities-${widget.title}'),
+              slivers: [
+                SliverList.builder(
+                  itemCount: records.length,
+                  itemBuilder: (context, index) => rowAt(index),
+                ),
+              ],
+            )
+          : Padding(
+              padding: const EdgeInsets.all(SiteLensMetrics.pagePadding),
+              child: SiteLensPanel(
+                padding: EdgeInsets.zero,
+                child: Column(
                   mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _CapabilityRow(
-                      app: widget.app,
-                      record: records[index],
-                      accordion: _accordion,
-                    ),
-                    if (index < records.length - 1)
-                      const SiteLensPanelDivider(),
-                  ],
+                  children: [for (var i = 0; i < records.length; i++) rowAt(i)],
                 ),
               ),
-            ],
-          ),
-        ),
+            );
+      return SiteLensPageScaffold(
+        title: widget.title,
+        body: SiteLensGlassGroup(child: content),
       );
     },
   );
@@ -255,10 +302,12 @@ class _CapabilityRow extends StatelessWidget {
     required this.record,
     required this.app,
     required this.accordion,
+    required this.initiallyExpanded,
   });
 
   final AppController app;
   final SiteLensAccordionController accordion;
+  final bool initiallyExpanded;
 
   final CapabilityRecord record;
 
@@ -272,10 +321,11 @@ class _CapabilityRow extends StatelessWidget {
       leading: Icon(_statusIcon(record.state), color: color, size: 18),
       title: Text(_label(record.id)),
       subtitle: Text(
-        '${_statusLabel(record.state)} · ${record.reason}',
+        _statusLabel(record.state),
         maxLines: 2,
         overflow: TextOverflow.ellipsis,
       ),
+      initiallyExpanded: initiallyExpanded,
       details: (context) {
         final current = _resolvedRecords(
           context,
@@ -307,16 +357,33 @@ class _CapabilityRow extends StatelessWidget {
       '来源：${record.source}',
       ..._details(record.detailsJson),
     ];
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(_label(record.id), style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 4),
-        Text(record.reason),
-        const SizedBox(height: 8),
-        for (final line in lines)
-          Padding(padding: const EdgeInsets.only(bottom: 4), child: Text(line)),
-      ],
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxHeight:
+            MediaQuery.sizeOf(context).height *
+            SiteLensMetrics.diagnosticDetailMaxHeightFraction,
+      ),
+      child: SingleChildScrollView(
+        key: ValueKey('capability-detail-${record.id}'),
+        physics: const ClampingScrollPhysics(),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              _label(record.id),
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 4),
+            Text(record.reason),
+            const SizedBox(height: 8),
+            for (final line in lines)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(line),
+              ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -559,11 +626,6 @@ class _CodecInventoryScreenState extends State<CodecInventoryScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        '编解码器清单',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 6),
                       const Text('只读取系统描述，不实例化编解码器。'),
                       TextButton.icon(
                         onPressed:

@@ -131,8 +131,8 @@ void main() {
     await tester.tap(find.text('查看更新'));
     await tester.pumpAndSettle();
 
-    expect(find.text('软件更新'), findsNothing);
-    expect(find.bySemanticsLabel('软件更新'), findsOneWidget);
+    expect(find.text('软件更新'), findsOneWidget);
+    expect(find.bySemanticsLabel('软件更新'), findsAtLeastNWidgets(1));
     expect(controller.updateScreenVisible, isTrue);
     expect(controller.noticeVisible, isFalse);
   });

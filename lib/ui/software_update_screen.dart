@@ -132,8 +132,11 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
             padding: EdgeInsets.zero,
             child: Column(
               children: [
-                ListTile(
-                  leading: const Icon(Icons.phone_android_outlined),
+                SiteLensCompactRow(
+                  leading: const Icon(
+                    Icons.phone_android_outlined,
+                    size: SiteLensMetrics.compactIconSize,
+                  ),
                   title: const Text('Site Lens'),
                   subtitle: Text(
                     _controller.release == null
@@ -154,28 +157,33 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
                         ),
                 ),
                 if (_controller.checkMessage != null) ...[
-                  const Divider(height: 1, indent: 18, endIndent: 18),
-                  ListTile(
-                    leading: const Icon(Icons.schedule_outlined),
+                  const SiteLensPanelDivider(),
+                  SiteLensCompactRow(
+                    leading: const Icon(
+                      Icons.schedule_outlined,
+                      size: SiteLensMetrics.compactIconSize,
+                    ),
                     title: Text(_controller.checkMessage!),
                   ),
                 ],
                 if (_controller.installMessage != null) ...[
-                  const Divider(height: 1, indent: 18, endIndent: 18),
-                  ListTile(
+                  const SiteLensPanelDivider(),
+                  SiteLensCompactRow(
                     leading: Icon(
                       Icons.lock_open_outlined,
                       color: SiteLensColors.of(context).warning,
+                      size: SiteLensMetrics.compactIconSize,
                     ),
                     title: Text(_controller.installMessage!),
                   ),
                 ],
                 if (_controller.error != null) ...[
-                  const Divider(height: 1, indent: 18, endIndent: 18),
-                  ListTile(
+                  const SiteLensPanelDivider(),
+                  SiteLensCompactRow(
                     leading: Icon(
                       Icons.error_outline,
                       color: SiteLensColors.of(context).danger,
+                      size: SiteLensMetrics.compactIconSize,
                     ),
                     title: Text(_controller.error!),
                   ),
@@ -187,7 +195,7 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
             SiteLensSectionHeader(title: '未完成的下载'),
             SiteLensPanel(
               padding: EdgeInsets.zero,
-              child: ListTile(
+              child: SiteLensCompactRow(
                 leading: const Icon(Icons.history_outlined),
                 title: const Text('存在旧版本未完成下载'),
                 subtitle: Text(
@@ -199,7 +207,6 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
                       )
                       .join('；'),
                 ),
-                isThreeLine: _controller.stalePartials.length > 1,
                 trailing: TextButton(
                   onPressed: () => _controller.deleteStalePartials(),
                   child: const Text('清理'),
@@ -394,56 +401,46 @@ class _UpdatePreferencesPanel extends StatefulWidget {
 }
 
 class _UpdatePreferencesPanelState extends State<_UpdatePreferencesPanel> {
-  final _accordion = SiteLensAccordionController();
-
   @override
   Widget build(BuildContext context) => SiteLensPanel(
     padding: EdgeInsets.zero,
     child: Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        SiteLensAccordion(
-          id: 'update-preferences',
-          controller: _accordion,
-          initiallyExpanded: true,
-          title: const Text('更新设置'),
-          subtitle: Text(widget.channel.description),
+        SiteLensCompactRow(
           leading: const Icon(Icons.tune_outlined, size: 18),
-          details: (context) => Padding(
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                SegmentedButton<UpdateChannel>(
-                  segments: const [
-                    ButtonSegment(
-                      value: UpdateChannel.stable,
-                      label: Text('稳定版'),
-                      icon: Icon(Icons.verified_outlined),
-                    ),
-                    ButtonSegment(
-                      value: UpdateChannel.beta,
-                      label: Text('测试版'),
-                      icon: Icon(Icons.science_outlined),
-                    ),
-                  ],
-                  selected: {widget.channel},
-                  onSelectionChanged: widget.busy
-                      ? null
-                      : (values) {
-                          if (values.isNotEmpty) {
-                            widget.onChannelChanged(values.first);
-                          }
-                        },
-                ),
-                if (widget.channel == UpdateChannel.beta) ...[
-                  const SizedBox(height: 8),
-                  _UpdateGitHubTokenEntry(),
-                ],
-              ],
-            ),
+          title: const Text('更新渠道'),
+          subtitle: Text(widget.channel.description),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+          child: SegmentedButton<UpdateChannel>(
+            segments: const [
+              ButtonSegment(
+                value: UpdateChannel.stable,
+                label: Text('稳定版'),
+                icon: Icon(Icons.verified_outlined),
+              ),
+              ButtonSegment(
+                value: UpdateChannel.beta,
+                label: Text('测试版'),
+                icon: Icon(Icons.science_outlined),
+              ),
+            ],
+            selected: {widget.channel},
+            onSelectionChanged: widget.busy
+                ? null
+                : (values) {
+                    if (values.isNotEmpty) {
+                      widget.onChannelChanged(values.first);
+                    }
+                  },
           ),
         ),
+        if (widget.channel == UpdateChannel.beta) ...[
+          const SiteLensSettingsDivider(),
+          const _UpdateGitHubTokenEntry(),
+        ],
       ],
     ),
   );

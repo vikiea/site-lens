@@ -392,8 +392,16 @@ void main() {
             find.text('test.codec.299'),
             500,
             scrollable: viewport,
-            maxScrolls: 300,
+            maxScrolls: 600,
           );
+          final endPosition = tester.state<ScrollableState>(viewport).position;
+          endPosition.jumpTo(
+            (endPosition.maxScrollExtent - 60).clamp(
+              0,
+              endPosition.maxScrollExtent,
+            ),
+          );
+          await tester.pumpAndSettle();
           expect(find.text('test.codec.299').hitTestable(), findsOneWidget);
           expect(find.text('test.codec.0'), findsNothing);
           final position = tester.state<ScrollableState>(viewport).position;
@@ -471,8 +479,6 @@ void main() {
         );
         await tester.tap(find.text('存储与权限'));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('应用安装授权').first);
-        await tester.pumpAndSettle();
         expect(find.text('当前有效：否'), findsOneWidget);
         api.rows = [
           CapabilityRecord(
@@ -545,6 +551,58 @@ void main() {
       expect(api.reads, before + 1);
       expect(web.created, isEmpty);
       expect(app.hosts.sessions, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('short capability groups bound long expanded details', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(360, 420);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      api.rows = [
+        CapabilityRecord(
+          id: 'permissions.installPackages',
+          state: CapabilityState.supported,
+          configured: true,
+          effective: true,
+          reason: '长详情 fixture',
+          source: 'test',
+          capturedAtMs: 1000,
+          detailsJson: jsonEncode({
+            'facts': List.generate(40, (index) => 'detail-$index'),
+          }),
+        ),
+      ];
+      await app.deviceDiagnostics.refresh();
+      await tester.pumpWidget(
+        MaterialApp(home: DeviceDiagnosticsScreen(app: app)),
+      );
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('存储与权限'),
+        250,
+        scrollable: find.byType(Scrollable),
+      );
+      await tester.tap(find.text('存储与权限'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('capability-permissions.installPackages')),
+      );
+      await tester.pumpAndSettle();
+
+      final detail = find.byKey(
+        const ValueKey('capability-detail-permissions.installPackages'),
+      );
+      expect(detail, findsOneWidget);
+      final viewport = find.descendant(
+        of: detail,
+        matching: find.byType(Scrollable),
+      );
+      expect(viewport, findsOneWidget);
+      final state = tester.state<ScrollableState>(viewport);
+      expect(state.position.maxScrollExtent, greaterThan(0));
+      expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     });
   });

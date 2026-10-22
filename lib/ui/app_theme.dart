@@ -75,13 +75,22 @@ abstract final class SiteLensMetrics {
   static const panelPadding = 18.0;
   static const inputRadius = 14.0;
   static const compactRowHorizontalPadding = 12.0;
-  static const compactRowVerticalPadding = 3.0;
-  static const compactRowMinHeight = 52.0;
+
+  /// Shared settings/action row height. Keeping this value stable prevents
+  /// navigation rows and switch rows from developing two visual rhythms.
+  static const compactRowVerticalPadding = 0.0;
+  static const compactRowMinHeight = 64.0;
   static const compactIconSize = 18.0;
   static const compactIconButtonSize = 36.0;
+  static const compactSwitchScale = 0.84;
+  static const themeSwatchSize = 46.0;
+  static const themeSwatchGap = 10.0;
   static const compactDividerIndent = 12.0;
   static const accordionContentIndent = 42.0;
   static const settingsDividerIndent = 18.0;
+  static const diagnosticLabelWidth = 64.0;
+  static const diagnosticRowGap = 4.0;
+  static const diagnosticDetailMaxHeightFraction = 0.42;
   static const settingsSectionLabelHorizontalPadding = 6.0;
   static const settingsSectionLabelBottom = 8.0;
 
@@ -605,7 +614,7 @@ ThemeData buildSiteLensTheme(
       titleTextStyle: text.titleSmall,
       subtitleTextStyle: text.bodySmall,
       contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
-      minVerticalPadding: 12,
+      minVerticalPadding: 8,
       shape: RoundedRectangleBorder(borderRadius: radius),
       selectedColor: scheme.primary,
       selectedTileColor: scheme.primary.withValues(alpha: 0.12),

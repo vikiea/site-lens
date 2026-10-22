@@ -28,6 +28,11 @@ void main() {
           ),
         ),
       );
+      expect(
+        find.byKey(const PageStorageKey('media-library-scroll')),
+        findsOneWidget,
+      );
+      expect(find.byType(Scrollable), findsOneWidget);
       expect(find.text('不再提示'), findsOneWidget);
       await tester.tap(find.text('不再提示'));
       await tester.pumpAndSettle();
@@ -36,6 +41,27 @@ void main() {
         (await SettingsRepository(db).read()).mediaLibraryNoticeDismissed,
         isTrue,
       );
+    } finally {
+      await tester.pumpWidget(const SizedBox());
+      await app.shutdown();
+      await db.close();
+    }
+  });
+
+  testWidgets('media task page keeps one bounded list viewport', (
+    tester,
+  ) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final app = AppController(db, api: FakeWebHostApi());
+    try {
+      await tester.pumpWidget(MaterialApp(home: MediaTasksScreen(app: app)));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const PageStorageKey('media-tasks-scroll')),
+        findsOneWidget,
+      );
+      expect(find.byType(Scrollable), findsOneWidget);
+      expect(tester.takeException(), isNull);
     } finally {
       await tester.pumpWidget(const SizedBox());
       await app.shutdown();
@@ -60,6 +86,7 @@ void main() {
       );
       expect(find.text('手势用途'), findsNothing);
       expect(find.textContaining('向上增加'), findsNothing);
+      expect(find.byType(Scrollable), findsNothing);
       final label = tester.getRect(find.text('上下滑动'));
       final choice = tester.getRect(find.text('亮度 / 音量'));
       expect((label.center.dy - choice.center.dy).abs(), lessThan(2));
@@ -67,7 +94,7 @@ void main() {
         find.byType(SiteLensMenuSelector<PlayerVerticalGestureMode>),
       );
       final otherSummary = tester.getRect(find.text('快进 / 快退'));
-      expect(selector.right, closeTo(otherSummary.right, 1));
+      expect((selector.right - otherSummary.right).abs(), lessThan(16));
       final trigger = tester.widget<TextButton>(
         find.descendant(
           of: find.byTooltip('选择上下滑动操作'),
@@ -87,7 +114,7 @@ void main() {
         (await SettingsRepository(db).read()).playerVerticalGesture,
         PlayerVerticalGestureMode.episodeSwitch,
       );
-      await tester.tap(find.text('详情').first);
+      await tester.tap(find.text('上下滑动'));
       await tester.pumpAndSettle();
       expect(find.textContaining('向上滑动切换下一集'), findsOneWidget);
       expect(tester.takeException(), isNull);

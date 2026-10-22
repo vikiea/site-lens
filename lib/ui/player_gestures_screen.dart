@@ -24,68 +24,66 @@ class _PlayerGesturesScreenState extends State<PlayerGesturesScreen> {
     listenable: widget.app,
     builder: (context, _) => SiteLensPageScaffold(
       title: '播放器手势',
-      body: ListView(
+      body: Padding(
         padding: const EdgeInsets.all(SiteLensMetrics.pagePadding),
-        children: [
-          SiteLensPanel(
-            scrollingContent: true,
-            padding: EdgeInsets.zero,
-            child: Column(
-              children: [
-                ListTile(
-                  leading: const Icon(Icons.swipe_vertical_outlined, size: 20),
-                  title: _VerticalGestureSetting(app: widget.app),
-                ),
-                _GestureDetails(
-                  id: 'vertical',
-                  controller: _accordion,
+        child: SiteLensPanel(
+          padding: EdgeInsets.zero,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SiteLensAccordion(
+                key: const ValueKey('gesture-help-vertical'),
+                id: 'vertical',
+                controller: _accordion,
+                leading: const Icon(Icons.swipe_vertical_outlined, size: 18),
+                title: _VerticalGestureSetting(app: widget.app),
+                details: (_) => _GestureDetailText(
                   text:
                       widget.app.playerVerticalGesture ==
                           PlayerVerticalGestureMode.brightnessVolume
                       ? '在画面左半侧上下滑动调节亮度，右半侧调节媒体音量。向上增加，向下减少；从当前亮度和音量开始调节。'
                       : '向上滑动切换下一集，向下滑动切换上一集。滑动超过画面高度的十分之一才会切换；播放列表首尾不再继续切换。',
                 ),
-                const Divider(height: 1),
-                _GestureHelp(
-                  id: 'horizontal',
-                  controller: _accordion,
-                  icon: Icons.swipe_outlined,
-                  title: '左右滑动',
-                  summary: '快进 / 快退',
-                  details: '向右滑动快进，向左滑动快退。滑动时预览目标时间，松手后跳转；横向距离按视频总时长换算。尚未取得总时长时不可拖动定位。',
-                ),
-                const Divider(height: 1),
-                _GestureHelp(
-                  id: 'long-press',
-                  controller: _accordion,
-                  icon: Icons.touch_app_outlined,
-                  title: '长按',
-                  summary: '临时 2 倍速',
-                  details: '长按播放画面临时使用 2 倍速，松开后恢复长按前的播放速度。',
-                ),
-                const Divider(height: 1),
-                _GestureHelp(
-                  id: 'double-tap',
-                  controller: _accordion,
-                  icon: Icons.ads_click_outlined,
-                  title: '双击',
-                  summary: '播放 / 暂停',
-                  details: '双击播放画面切换播放与暂停；缓冲中仍以播放器实际状态为准。',
-                ),
-                const Divider(height: 1),
-                _GestureHelp(
-                  id: 'tap',
-                  controller: _accordion,
-                  icon: Icons.pan_tool_alt_outlined,
-                  title: '单击',
-                  summary: '显示 / 隐藏控制栏',
-                  details:
-                      '单击画面显示或隐藏控制栏。播放中控制栏会在空闲后自动收起；通过控制栏可打开播放列表、调整倍速或停止播放。',
-                ),
-              ],
-            ),
+              ),
+              const SiteLensPanelDivider(),
+              _GestureHelp(
+                id: 'horizontal',
+                controller: _accordion,
+                icon: Icons.swipe_outlined,
+                title: '左右滑动',
+                summary: '快进 / 快退',
+                details: '向右滑动快进，向左滑动快退。滑动时预览目标时间，松手后跳转；横向距离按视频总时长换算。尚未取得总时长时不可拖动定位。',
+              ),
+              const SiteLensPanelDivider(),
+              _GestureHelp(
+                id: 'long-press',
+                controller: _accordion,
+                icon: Icons.touch_app_outlined,
+                title: '长按',
+                summary: '临时 2 倍速',
+                details: '长按播放画面临时使用 2 倍速，松开后恢复长按前的播放速度。',
+              ),
+              const SiteLensPanelDivider(),
+              _GestureHelp(
+                id: 'double-tap',
+                controller: _accordion,
+                icon: Icons.ads_click_outlined,
+                title: '双击',
+                summary: '播放 / 暂停',
+                details: '双击播放画面切换播放与暂停；缓冲中仍以播放器实际状态为准。',
+              ),
+              const SiteLensPanelDivider(),
+              _GestureHelp(
+                id: 'tap',
+                controller: _accordion,
+                icon: Icons.pan_tool_alt_outlined,
+                title: '单击',
+                summary: '显示 / 隐藏控制栏',
+                details: '单击画面显示或隐藏控制栏。播放中控制栏会在空闲后自动收起；通过控制栏可打开播放列表、调整倍速或停止播放。',
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     ),
   );
@@ -169,14 +167,18 @@ class _GestureHelp extends StatelessWidget {
   final String details;
 
   @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      ListTile(
-        leading: Icon(icon, size: 20),
-        title: Text(title),
-        trailing: ConstrainedBox(
+  Widget build(BuildContext context) => SiteLensAccordion(
+    key: ValueKey('gesture-help-$id'),
+    id: id,
+    controller: controller,
+    leading: Icon(icon, size: SiteLensMetrics.compactIconSize),
+    title: Text(title),
+    trailingBuilder: (context, expanded) => Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ConstrainedBox(
           constraints: BoxConstraints(
-            maxWidth: MediaQuery.sizeOf(context).width * 0.42,
+            maxWidth: MediaQuery.sizeOf(context).width * 0.36,
           ),
           child: Text(
             summary,
@@ -186,30 +188,25 @@ class _GestureHelp extends StatelessWidget {
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ),
-      ),
-      _GestureDetails(id: id, controller: controller, text: details),
-    ],
+        const SizedBox(width: SiteLensMetrics.listGap),
+        Icon(
+          expanded ? Icons.expand_less : Icons.expand_more,
+          size: SiteLensMetrics.compactIconSize,
+        ),
+      ],
+    ),
+    details: (_) => _GestureDetailText(text: details),
   );
 }
 
-class _GestureDetails extends StatelessWidget {
-  const _GestureDetails({
-    required this.id,
-    required this.controller,
-    required this.text,
-  });
-  final String id;
-  final SiteLensAccordionController controller;
+class _GestureDetailText extends StatelessWidget {
+  const _GestureDetailText({required this.text});
+
   final String text;
 
   @override
-  Widget build(BuildContext context) => SiteLensAccordion(
-    id: id,
-    controller: controller,
-    title: Text('详情', style: Theme.of(context).textTheme.labelMedium),
-    details: (context) => Align(
-      alignment: Alignment.centerLeft,
-      child: Text(text, style: Theme.of(context).textTheme.bodySmall),
-    ),
+  Widget build(BuildContext context) => Align(
+    alignment: AlignmentDirectional.centerStart,
+    child: Text(text, style: Theme.of(context).textTheme.bodySmall),
   );
 }

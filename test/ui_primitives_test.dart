@@ -6,7 +6,7 @@ import 'package:site_lens/ui/glass_surface.dart';
 import 'package:site_lens/ui/ui_primitives.dart';
 
 void main() {
-  testWidgets('page shell omits empty chrome and preserves back and actions', (
+  testWidgets('page shell shows titles and preserves back and actions', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -29,13 +29,14 @@ void main() {
         ),
       ),
     );
-    expect(find.byType(AppBar), findsNothing);
+    expect(find.byType(AppBar), findsOneWidget);
+    expect(find.text('根页面'), findsOneWidget);
     await tester.tap(find.text('打开'));
     await tester.pumpAndSettle();
     expect(find.byType(BackButton), findsOneWidget);
     await tester.tap(find.byType(BackButton));
     await tester.pumpAndSettle();
-    expect(find.byType(AppBar), findsNothing);
+    expect(find.byType(AppBar), findsOneWidget);
 
     await tester.pumpWidget(
       MaterialApp(

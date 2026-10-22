@@ -1538,34 +1538,59 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
                       ),
                       Column(
                         children: [
-                          SwitchListTile(
-                            dense: true,
+                          SiteLensCompactRow(
                             title: const Text('启用广告过滤'),
                             subtitle: const Text('根据已启用的规则源和域名列表拦截请求'),
-                            value: app.filterPolicy.enabled,
-                            onChanged: _busy
+                            onTap: _busy
                                 ? null
-                                : (value) => _run(
-                                    () => app.updateFilterPolicy(
-                                      app.filterPolicy.copyWith(enabled: value),
-                                    ),
-                                  ),
-                          ),
-                          const SiteLensPanelDivider(),
-                          SwitchListTile(
-                            dense: true,
-                            title: const Text('隐藏页面广告元素'),
-                            subtitle: const Text('隐藏规则匹配的广告元素'),
-                            value: app.filterPolicy.pageFiltering,
-                            onChanged: _busy
-                                ? null
-                                : (value) => _run(
+                                : () => _run(
                                     () => app.updateFilterPolicy(
                                       app.filterPolicy.copyWith(
-                                        pageFiltering: value,
+                                        enabled: !app.filterPolicy.enabled,
                                       ),
                                     ),
                                   ),
+                            trailing: SiteLensCompactSwitch(
+                              value: app.filterPolicy.enabled,
+                              semanticLabel: '启用广告过滤',
+                              onChanged: _busy
+                                  ? null
+                                  : (value) => _run(
+                                      () => app.updateFilterPolicy(
+                                        app.filterPolicy.copyWith(
+                                          enabled: value,
+                                        ),
+                                      ),
+                                    ),
+                            ),
+                          ),
+                          const SiteLensPanelDivider(),
+                          SiteLensCompactRow(
+                            title: const Text('隐藏页面广告元素'),
+                            subtitle: const Text('隐藏规则匹配的广告元素'),
+                            onTap: _busy
+                                ? null
+                                : () => _run(
+                                    () => app.updateFilterPolicy(
+                                      app.filterPolicy.copyWith(
+                                        pageFiltering:
+                                            !app.filterPolicy.pageFiltering,
+                                      ),
+                                    ),
+                                  ),
+                            trailing: SiteLensCompactSwitch(
+                              value: app.filterPolicy.pageFiltering,
+                              semanticLabel: '隐藏页面广告元素',
+                              onChanged: _busy
+                                  ? null
+                                  : (value) => _run(
+                                      () => app.updateFilterPolicy(
+                                        app.filterPolicy.copyWith(
+                                          pageFiltering: value,
+                                        ),
+                                      ),
+                                    ),
+                            ),
                           ),
                           const SiteLensPanelDivider(),
                           SiteLensActionRow(
@@ -1751,7 +1776,7 @@ class _FilterSourceRow extends StatelessWidget {
         children: [
           Semantics(
             label: '${source.label}规则源',
-            child: Switch(
+            child: SiteLensCompactSwitch(
               key: ValueKey('filter-source-enabled-${source.id}'),
               value: source.enabled,
               onChanged: busy ? null : onEnabledChanged,
@@ -1763,8 +1788,8 @@ class _FilterSourceRow extends StatelessWidget {
             tooltip: '规则源更多',
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(
-              minWidth: SiteLensMetrics.compactIconButtonSize,
-              minHeight: SiteLensMetrics.compactIconButtonSize,
+              minWidth: kMinInteractiveDimension,
+              minHeight: kMinInteractiveDimension,
             ),
             iconSize: SiteLensMetrics.compactIconSize,
             onSelected: (value) {
@@ -1784,7 +1809,10 @@ class _FilterSourceRow extends StatelessWidget {
         ],
       ),
       details: (context) => Padding(
-        padding: const EdgeInsets.only(left: 42, right: 8),
+        padding: const EdgeInsets.only(
+          left: SiteLensMetrics.accordionContentIndent,
+          right: SiteLensMetrics.compactRowHorizontalPadding,
+        ),
         child: DefaultTextStyle.merge(
           style: Theme.of(context).textTheme.bodySmall!
               .copyWith(color: muted ? colors.disabledContent : null),
@@ -2060,8 +2088,11 @@ class _GitHubTokenEntryState extends State<_GitHubTokenEntry> {
   }
 
   @override
-  Widget build(BuildContext context) => ListTile(
-    leading: const Icon(Icons.key_outlined),
+  Widget build(BuildContext context) => SiteLensCompactRow(
+    leading: const Icon(
+      Icons.key_outlined,
+      size: SiteLensMetrics.compactIconSize,
+    ),
     title: const Text('GitHub API Token'),
     subtitle: Text(
       _configured == null

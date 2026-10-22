@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../domain/models.dart';
 import 'app_controller.dart';
+import 'app_theme.dart';
 import 'glass_surface.dart';
 import 'ui_primitives.dart';
 import 'ui_util.dart';
@@ -92,44 +93,101 @@ class _ErrorLogsScreenState extends State<ErrorLogsScreen> {
     body: FutureBuilder<List<AppErrorLog>>(
       future: _logs,
       builder: (context, snapshot) {
-        if (!snapshot.hasData) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
+        }
+        if (snapshot.hasError) {
+          return _logPanel(
+            context,
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(SiteLensMetrics.panelPadding),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.error_outline),
+                    const SizedBox(height: 8),
+                    const Text('读取错误日志失败'),
+                    const SizedBox(height: 10),
+                    FilledButton.tonal(
+                      onPressed: _reload,
+                      child: const Text('重试'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
         }
         final logs = snapshot.data!;
         if (logs.isEmpty) {
-          return const SiteLensEmptyState(
-            icon: Icons.check_circle_outline,
-            title: '暂无错误日志',
-            message: '应用遇到异常时，会在这里保留经过脱敏的诊断记录。',
+          return _logPanel(
+            context,
+            child: const Center(
+              child: SiteLensEmptyState(
+                icon: Icons.check_circle_outline,
+                title: '暂无错误日志',
+                message: '应用遇到异常时，会在这里保留经过脱敏的诊断记录。',
+              ),
+            ),
           );
         }
-        return ListView.separated(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
-          itemCount: logs.length,
-          separatorBuilder: (_, _) => const SizedBox(height: 8),
-          itemBuilder: (context, index) {
-            final log = logs[index];
-            return SiteLensPanel(
-              padding: EdgeInsets.zero,
-              child: ListTile(
-                leading: Icon(
-                  log.level == 'warning'
-                      ? Icons.warning_amber_outlined
-                      : Icons.error_outline,
-                ),
-                title: Text(
-                  log.message,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                subtitle: Text('${log.module} · ${clock(log.happenedAt)}'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => _showDetails(log),
+        return _logPanel(
+          context,
+          child: Column(
+            children: [
+              SiteLensCompactRow(
+                leading: const Icon(Icons.bug_report_outlined, size: 18),
+                title: const Text('错误日志'),
+                subtitle: Text('${logs.length} 条脱敏记录'),
               ),
-            );
-          },
+              const SiteLensPanelDivider(),
+              Expanded(
+                child: ListView.separated(
+                  key: const PageStorageKey('error-logs-scroll'),
+                  padding: const EdgeInsets.fromLTRB(0, 0, 0, 12),
+                  itemCount: logs.length,
+                  separatorBuilder: (_, _) => const SiteLensPanelDivider(),
+                  itemBuilder: (context, index) {
+                    final log = logs[index];
+                    return SiteLensCompactRow(
+                      leading: Icon(
+                        log.level == 'warning'
+                            ? Icons.warning_amber_outlined
+                            : Icons.error_outline,
+                        size: SiteLensMetrics.compactIconSize,
+                      ),
+                      title: Text(
+                        log.message,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        '${log.module} · ${clock(log.happenedAt)}',
+                      ),
+                      trailing: const Icon(
+                        Icons.chevron_right,
+                        size: SiteLensMetrics.compactIconSize,
+                      ),
+                      onTap: () => _showDetails(log),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
         );
       },
+    ),
+  );
+
+  Widget _logPanel(BuildContext context, {required Widget child}) => Padding(
+    padding: const EdgeInsets.all(SiteLensMetrics.pagePadding),
+    child: LayoutBuilder(
+      builder: (context, constraints) => SiteLensPanel(
+        padding: EdgeInsets.zero,
+        child: SizedBox(height: constraints.maxHeight, child: child),
+      ),
     ),
   );
 }

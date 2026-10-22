@@ -30,7 +30,9 @@ class SettingsPage extends StatelessWidget {
             ],
           ),
         ),
+        const SiteLensSettingsDivider(),
         _OpacitySetting(app: app),
+        const SiteLensSettingsDivider(),
         _settingsRowTitle(context, Icons.speed_outlined, '玻璃质量'),
         Padding(
           padding: const EdgeInsets.fromLTRB(14, 0, 14, 6),
@@ -49,10 +51,11 @@ class SettingsPage extends StatelessWidget {
             ],
           ),
         ),
-        SiteLensCompactRow(
-          title: const Text('当前有效质量'),
-          subtitle: Text(app.effectiveGlassQuality.label),
-        ),
+        if (app.settings.glassQualityMode == SiteLensGlassQualityMode.automatic)
+          SiteLensCompactRow(
+            title: const Text('当前有效质量'),
+            subtitle: Text(app.effectiveGlassQuality.label),
+          ),
         if (app.settings.glassQualityMode != SiteLensGlassQualityMode.standard)
           _settingsSwitch(
             context,
@@ -65,6 +68,7 @@ class SettingsPage extends StatelessWidget {
             value: app.settings.highQualityAllSurfaces,
             onChanged: app.setHighQualityAllSurfaces,
           ),
+        const SiteLensSettingsDivider(),
         _ThemePresetRow(app: app),
       ], dividers: false),
       _settingsSection('浏览', [
@@ -249,30 +253,94 @@ class _ThemePresetRow extends StatelessWidget {
   final AppController app;
 
   @override
-  Widget build(BuildContext context) => SiteLensCompactRow(
-    leading: Container(
-      width: 20,
-      height: 20,
-      decoration: BoxDecoration(
-        color: app.themePreset.seed,
-        shape: BoxShape.circle,
-        border: Border.all(
-          color: Theme.of(context).colorScheme.onSurface
-              .withValues(alpha: 0.20),
+  Widget build(BuildContext context) => Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      SiteLensCompactRow(
+        leading: const Icon(Icons.palette_outlined, size: 18),
+        title: const Text('主题色'),
+        subtitle: Text(app.themePreset.label),
+      ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(18, 0, 18, 14),
+        child: Align(
+          alignment: AlignmentDirectional.centerStart,
+          child: Wrap(
+            spacing: SiteLensMetrics.themeSwatchGap,
+            runSpacing: SiteLensMetrics.themeSwatchGap,
+            children: [
+              for (final preset in ThemePresetId.values)
+                _ThemePresetSwatch(
+                  preset: preset,
+                  selected: preset == app.themePreset,
+                  onTap: () =>
+                      safely(context, () => app.setThemePreset(preset)),
+                ),
+            ],
+          ),
         ),
       ),
-    ),
-    title: const Text('主题色'),
-    trailing: SiteLensMenuSelector<ThemePresetId>(
-      label: '选择主题色',
-      value: app.themePreset,
-      onSelected: (value) => safely(context, () => app.setThemePreset(value)),
-      options: [
-        for (final preset in ThemePresetId.values)
-          SiteLensMenuOption(value: preset, label: preset.label),
-      ],
-    ),
+    ],
   );
+}
+
+class _ThemePresetSwatch extends StatelessWidget {
+  const _ThemePresetSwatch({
+    required this.preset,
+    required this.selected,
+    this.onTap,
+  });
+
+  final ThemePresetId preset;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final foreground =
+        ThemeData.estimateBrightnessForColor(preset.seed) == Brightness.dark
+        ? scheme.onPrimary
+        : scheme.onSurface;
+    return Semantics(
+      selected: selected,
+      button: onTap != null,
+      label: '主题色 ${preset.label}',
+      child: Tooltip(
+        message: preset.label,
+        child: InkWell(
+          onTap: onTap,
+          customBorder: const CircleBorder(),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            width: SiteLensMetrics.themeSwatchSize,
+            height: SiteLensMetrics.themeSwatchSize,
+            decoration: BoxDecoration(
+              color: preset.seed,
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: selected ? scheme.primary : scheme.surface,
+                width: selected ? 3 : 2,
+              ),
+              boxShadow: selected
+                  ? [
+                      BoxShadow(
+                        color: scheme.primary.withValues(alpha: 0.24),
+                        blurRadius: 0,
+                        spreadRadius: 1,
+                      ),
+                    ]
+                  : null,
+            ),
+            child: selected
+                ? Icon(Icons.check, size: 22, color: foreground)
+                : null,
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 Widget _settingsSwitch(
@@ -286,12 +354,12 @@ Widget _settingsSwitch(
   title: Text(title),
   subtitle: Text(subtitle),
   onTap: enabled ? () => safely(context, () => onChanged(!value)) : null,
-  trailing: Switch.adaptive(
+  trailing: SiteLensCompactSwitch(
     value: value,
+    semanticLabel: title,
     onChanged: enabled
         ? (next) => safely(context, () => onChanged(next))
         : null,
-    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
   ),
 );
 

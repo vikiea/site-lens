@@ -93,6 +93,75 @@ class SiteLensCompactRow extends StatelessWidget {
   );
 }
 
+/// A switch with the same visual footprint as the other compact row controls.
+/// The row itself remains the larger activation target, so the switch can be
+/// visually quiet without sacrificing an accessible tap area.
+class SiteLensCompactSwitch extends StatelessWidget {
+  const SiteLensCompactSwitch({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    this.semanticLabel,
+  });
+
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+  final String? semanticLabel;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    label: semanticLabel,
+    toggled: value,
+    child: SizedBox(
+      width: kMinInteractiveDimension,
+      height: kMinInteractiveDimension,
+      child: Center(
+        child: Transform.scale(
+          scale: SiteLensMetrics.compactSwitchScale,
+          child: Switch.adaptive(
+            value: value,
+            onChanged: onChanged,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+/// Small visual overflow control used inside a row whose full height remains
+/// the activation target.
+class SiteLensCompactIconButton extends StatelessWidget {
+  const SiteLensCompactIconButton({
+    super.key,
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  final Widget icon;
+  final String tooltip;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: SiteLensMetrics.compactIconButtonSize,
+    height: SiteLensMetrics.compactIconButtonSize,
+    child: IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints.tightFor(
+        width: SiteLensMetrics.compactIconButtonSize,
+        height: SiteLensMetrics.compactIconButtonSize,
+      ),
+      visualDensity: VisualDensity.compact,
+      splashRadius: SiteLensMetrics.compactIconButtonSize / 2,
+      icon: icon,
+    ),
+  );
+}
+
 /// A controlled disclosure; callers own one selected ID per semantic panel.
 /// Details are built only when open, including in lazy lists.
 class SiteLensDisclosure extends StatelessWidget {
@@ -683,11 +752,7 @@ class SiteLensPageScaffold extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar:
-        ModalRoute.of(context)?.impliesAppBarDismissal == true ||
-            actions?.isNotEmpty == true
-        ? AppBar(actions: actions)
-        : null,
+    appBar: AppBar(title: Text(title), actions: actions),
     body: Semantics(
       namesRoute: true,
       label: title,
@@ -821,11 +886,18 @@ class SiteLensActionRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Semantics(
     button: onTap != null,
-    child: ListTile(
-      leading: Icon(icon, size: 20),
-      title: Text(title),
-      subtitle: subtitle == null ? null : Text(subtitle!),
-      trailing: trailing ?? const Icon(Icons.chevron_right),
+    child: SiteLensCompactRow(
+      leading: Icon(icon, size: SiteLensMetrics.compactIconSize),
+      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: subtitle == null
+          ? null
+          : Text(subtitle!, maxLines: 1, overflow: TextOverflow.ellipsis),
+      trailing:
+          trailing ??
+          const Icon(
+            Icons.chevron_right,
+            size: SiteLensMetrics.compactIconSize,
+          ),
       onTap: onTap,
     ),
   );
