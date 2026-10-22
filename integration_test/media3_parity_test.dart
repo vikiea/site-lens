@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -28,6 +29,7 @@ void main() {
         for (final raw in manifest['fixtures'] as List) {
           final fixture = Map<String, Object?>.from(raw as Map);
           final name = fixture['name'] as String;
+          debugPrint('MEDIA3_PARITY_BEGIN fixture=$name');
           final playlist = File('${root.path}/${fixture['playlist']}');
           final output = File('${root.path}/$name.mp4');
           await native.muxHls(
@@ -155,8 +157,12 @@ void main() {
             );
             await player.close(sessionId: session.id);
           }
+          debugPrint('MEDIA3_PARITY_PASS fixture=$name');
         }
       } finally {
+        if (player.active != null) {
+          await player.close(sessionId: player.active!.id);
+        }
         await player.dispose();
         if (await root.exists()) await root.delete(recursive: true);
       }

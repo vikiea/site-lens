@@ -225,17 +225,27 @@ GM_registerMenuCommand('菜单条目', () => {});
         findsOneWidget,
         reason: 'exit is one of the seven fixed controls',
       );
-      // Only three occasional or destructive actions stay in 更多.
+      // The secondary row exposes icon controls by their accessible tooltips.
       final collapsed = await openBrowserMoreIfNeeded(
         tester,
         browserScriptsTooltip,
       );
       expect(collapsed, isTrue, reason: 'these actions live in 更多 now');
-      expect(find.text(browserNewTabTooltip), findsOneWidget);
-      expect(find.text(browserScriptsTooltip), findsOneWidget);
-      expect(find.text(browserCloseTabTooltip), findsOneWidget);
-      expect(find.text(browserExitTooltip), findsNothing);
-      await tester.tap(find.text(browserScriptsTooltip));
+      expect(find.byTooltip(browserNewTabTooltip), findsOneWidget);
+      expect(find.byTooltip(browserScriptsTooltip), findsOneWidget);
+      expect(find.byTooltip(browserCloseTabTooltip), findsOneWidget);
+      final secondary = find.byKey(
+        const ValueKey('browser-secondary-navigation'),
+      );
+      expect(secondary, findsOneWidget);
+      expect(
+        find.descendant(
+          of: secondary,
+          matching: find.byTooltip(browserExitTooltip),
+        ),
+        findsNothing,
+      );
+      await tester.tap(find.byTooltip(browserScriptsTooltip));
       await tester.pumpAndSettle();
       expect(find.text('当前文档脚本菜单'), findsOneWidget);
       expect(find.text('菜单条目'), findsOneWidget);

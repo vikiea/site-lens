@@ -10,6 +10,15 @@
   const staleNodeSources = new WeakMap();
   const observedNodeSources = new WeakMap();
   const staleElementSignatures = new WeakMap();
+  const observedInitialData = new WeakMap();
+  const staleInitialData = new WeakMap();
+  const episodeResponses = new Map();
+  const candidatePriorities = new WeakMap();
+  const latestEpisodeRequests = new Map();
+  const knownForeignSources = new Map();
+  let responseSeries = null;
+  let seriesVisit = 0;
+  let requestSequence = 0;
   const resumeNodes = new Set();
   const contexts = new Set();
   const resumeContexts = new Set();
@@ -123,6 +132,216 @@
     return JSON.stringify([...mediaAttributes, 'data-episode', 'data-episode-index', 'data-num']
       .map(name => element.getAttribute(name)).concat(element.textContent || ''));
   }
+  function elementEpisode(element) {
+    const explicit = element.getAttribute('data-episode') ||
+      element.getAttribute('data-episode-index') || element.getAttribute('data-num');
+    if (explicit) return episodeNumber(explicit);
+    const text = String(element.textContent || '').trim();
+    // A player container may include every episode label in its descendants.
+    // Only a short, single episode label can annotate its own media URL.
+    if (text.length > 120) return null;
+    const matches = [...text.matchAll(/第\s*(\d+)\s*[集话期]/g)];
+    const values = new Set(matches.map(match => episodeNumber(match[1])).filter(value => value != null));
+    return values.size === 1 ? values.values().next().value : null;
+  }
+  function initialDataElement() {
+    return typeof document.getElementById === 'function'
+      ? document.getElementById('videoInitialData')
+      : null;
+  }
+  function explicitMediaUrl(raw) {
+    if (typeof raw !== 'string') return null;
+    try {
+      const url = new URL(raw, document.baseURI);
+      return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password &&
+        looksMedia(url.pathname, '') ? url : null;
+    } catch (_) { return null; }
+  }
+  function readEpisodeSources() {
+    const element = initialDataElement();
+    if (!element || element.getAttribute('type') !== 'application/json') return [];
+    const raw = element.textContent || '';
+    // Read explicit data only; never execute page code, fetch episode pages,
+    // or treat a declared episode count/recommendation list as media URLs.
+    if (raw.length > 256 * 1024) return [];
+    try {
+      const data = JSON.parse(raw);
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return [];
+      const sources = data.epPlaySrcs;
+      if (!sources || typeof sources !== 'object' || Array.isArray(sources)) return [];
+      const entries = Object.entries(sources);
+      if (entries.length > 256) return [];
+      const route = /^\/video\/([1-9]\d{0,11})(?:\/ep-([1-9]\d{0,4}))?\/?$/.exec(new URL(pageUrl()).pathname);
+      if (route && data.id != null && String(data.id) !== route[1]) return [];
+      // A title/counter/like update cannot authorize the previous route's URLs.
+      const identity = JSON.stringify(sources);
+      if (staleInitialData.has(element)) {
+        if (identity === staleInitialData.get(element)) return [];
+        staleInitialData.delete(element);
+      }
+      observedInitialData.set(element, identity);
+      return entries.filter(([number, url]) =>
+        /^[1-9]\d{0,4}$/.test(number) && explicitMediaUrl(url) != null
+      ).map(([number, url]) => ({
+        number: Number(number), url,
+        title: typeof data.title === 'string'
+          ? data.title
+          : (typeof data.videoTitle === 'string' ? data.videoTitle : document.title),
+        poster: typeof data.posterSrc === 'string' ? data.posterSrc : '',
+      }));
+    } catch (_) { return []; }
+  }
+  function routeSeriesContext(raw = pageUrl()) {
+    try {
+      const page = new URL(raw);
+      const match = /^\/video\/([1-9]\d{0,11})(?:\/ep-([1-9]\d{0,4}))?\/?$/.exec(page.pathname);
+      return match ? {series: page.origin + '/video/' + match[1], id: match[1], origin: page.origin} : null;
+    } catch (_) { return null; }
+  }
+  function episodeContext() {
+    try {
+      const route = routeSeriesContext();
+      const element = initialDataElement();
+      if (!route || !element || element.getAttribute('type') !== 'application/json') return null;
+      const raw = element.textContent || '';
+      if (raw.length > 256 * 1024) return null;
+      const data = JSON.parse(raw);
+      if (!data || String(data.id) !== route.id) return null;
+      return route;
+    } catch (_) { return null; }
+  }
+  function belongsToSeries(element, context) {
+    if (!context || typeof element.closest !== 'function') return true;
+    const owner = element.closest('[data-play-id]');
+    if (!owner || typeof owner.getAttribute !== 'function') return true;
+    return owner.getAttribute('data-play-id') === context.id;
+  }
+  function rememberForeignSource(element, raw) {
+    if (typeof element.closest !== 'function') return;
+    const owner = element.closest('[data-play-id]');
+    const id = owner?.getAttribute('data-play-id');
+    const url = explicitMediaUrl(raw);
+    if (!id || !url) return;
+    const key = candidateKey(url);
+    knownForeignSources.delete(key);
+    knownForeignSources.set(key, id);
+    while (knownForeignSources.size > 512) knownForeignSources.delete(knownForeignSources.keys().next().value);
+  }
+  function episodeRequest(raw, method) {
+    if (String(method || 'GET').toUpperCase() !== 'GET' || typeof raw !== 'string') return null;
+    const context = episodeContext();
+    if (!context) return null;
+    try {
+      const url = new URL(raw, document.baseURI);
+      if (url.origin !== context.origin || url.username || url.password ||
+          url.pathname !== '/api/videos/' + context.id + '/play') return null;
+      const values = url.searchParams.getAll('ep');
+      if (values.length !== 1 || !/^[1-9]\d{0,4}$/.test(values[0])) return null;
+      return {...context, episode: Number(values[0]), url: url.href};
+    } catch (_) { return null; }
+  }
+  function syncEpisodeSeries() {
+    const series = episodeContext()?.series || null;
+    if (series !== responseSeries) {
+      responseSeries = series;
+      seriesVisit++;
+      episodeResponses.clear();
+      latestEpisodeRequests.clear();
+    }
+  }
+  function startEpisodeRequest(raw, method) {
+    beginSnapshotIfNeeded();
+    syncEpisodeSeries();
+    const request = episodeRequest(raw, method);
+    if (!request) return null;
+    const sequence = ++requestSequence;
+    latestEpisodeRequests.delete(request.episode);
+    latestEpisodeRequests.set(request.episode, sequence);
+    while (latestEpisodeRequests.size > 256) latestEpisodeRequests.delete(latestEpisodeRequests.keys().next().value);
+    return {...request, visit: seriesVisit, sequence};
+  }
+  function observeEpisodeResponse(request, text, finalUrl) {
+    if (!request || typeof text !== 'string' || text.length > 256 * 1024) return;
+    beginSnapshotIfNeeded();
+    syncEpisodeSeries();
+    const current = episodeContext();
+    const finalRequest = episodeRequest(finalUrl, 'GET');
+    if (request.visit !== seriesVisit || latestEpisodeRequests.get(request.episode) !== request.sequence ||
+        !current || current.series !== request.series || !finalRequest ||
+        finalRequest.episode !== request.episode) return;
+    try {
+      const response = JSON.parse(text);
+      const data = response && response.status === 1 ? response.data : null;
+      if (!data || String(data.id) !== request.id || data.ep_num !== request.episode ||
+          typeof data.video_url !== 'string') return;
+      const url = explicitMediaUrl(data.video_url);
+      if (!url) return;
+      episodeResponses.delete(request.episode);
+      episodeResponses.set(request.episode, {number: request.episode, url: url.href, priority: 2});
+      while (episodeResponses.size > 256) episodeResponses.delete(episodeResponses.keys().next().value);
+      scheduleReport();
+    } catch (_) {}
+  }
+  // Observe only this explicit page-data schema. The page owns every
+  // request; no discovery request, cookie access, or media-source mutation is
+  // performed. A prefetch can finish before a same-series SPA route changes.
+  if (typeof window.XMLHttpRequest === 'function') {
+    const originalOpen = window.XMLHttpRequest.prototype.open;
+    const requests = new WeakMap();
+    const listening = new WeakSet();
+    window.XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+      const result = Reflect.apply(originalOpen, this, [method, url, ...rest]);
+      try {
+        requests.set(this, startEpisodeRequest(url, method));
+        if (!listening.has(this)) {
+          listening.add(this);
+          this.addEventListener('load', () => {
+            try {
+              const request = requests.get(this);
+              if (request && this.status >= 200 && this.status < 300) {
+                if (this.responseType === '' || this.responseType === 'text') {
+                  observeEpisodeResponse(request, this.responseText, this.responseURL);
+                } else if (this.responseType === 'json') {
+                  observeEpisodeResponse(request, JSON.stringify(this.response), this.responseURL);
+                }
+              }
+            } catch (_) {}
+          });
+        }
+      } catch (_) { /* Telemetry must not change the page request's result. */ }
+      return result;
+    };
+  }
+  if (typeof window.fetch === 'function') {
+    const originalFetch = window.fetch;
+    window.fetch = function (input, init) {
+      const result = Reflect.apply(originalFetch, this, arguments);
+      try {
+        const request = startEpisodeRequest(typeof input === 'string' ? input : input?.url, init?.method || input?.method);
+        if (request) Promise.resolve(result).then(async response => {
+          if (!response.ok || !response.body || typeof response.clone !== 'function') return;
+          const reader = response.clone().body.getReader();
+          const decoder = new TextDecoder();
+          let text = '', size = 0;
+          let expired = false;
+          const timer = setTimeout(() => { expired = true; reader.cancel().catch(() => {}); }, 5000);
+          try {
+            while (true) {
+              const part = await reader.read();
+              if (part.done) break;
+              size += part.value.byteLength;
+              if (size > 256 * 1024) return;
+              text += decoder.decode(part.value, {stream: true});
+            }
+            if (expired) return;
+            text += decoder.decode();
+            observeEpisodeResponse(request, text, response.url);
+          } finally { clearTimeout(timer); reader.cancel().catch(() => {}); }
+        }).catch(() => {});
+      } catch (_) { /* Telemetry must not change the page request's result. */ }
+      return result;
+    };
+  }
   function collect() {
     for (const node of nodes) {
       if (node.isConnected) connectedBefore.add(node);
@@ -186,7 +405,11 @@
         /(?:^|\/)(?:segment|chunk|fragment|part)[-_]?\d+/i.test(path);
     } catch (_) { return false; }
   }
-  function addCandidate(output, seen, raw, mime = '', durationMs, force = false, title, poster = '', episode = null, identitySuffix = '') {
+  function candidateFits(candidate) {
+    return JSON.stringify({kind:'candidates', token:config.token, frame:frameId,
+      document:documentId, epoch, candidates:[candidate]}).length <= 4096;
+  }
+  function addCandidate(output, seen, raw, mime = '', durationMs, force = false, title, poster = '', episode = null, identitySuffix = '', priority = 0) {
     if (typeof raw !== 'string' || !raw.trim()) return;
     try {
       const url = new URL(raw, document.baseURI);
@@ -208,6 +431,10 @@
       const number = episodeNumber(episode);
       if (number != null) candidate.episodeNumber = number;
       if (Number.isFinite(durationMs)) candidate.durationMs = Math.round(durationMs);
+      // An unsendable duplicate must not replace a valid playing URL and then
+      // silently disappear at the bridge's message budget.
+      if (!candidateFits(candidate)) return;
+      candidatePriorities.set(candidate, priority);
       const key = candidateKey(url) + identitySuffix;
       const previous = seen.get(key);
       if (previous == null) {
@@ -216,7 +443,8 @@
       } else {
         const existing = output[previous];
         const score = (value) => (value.mime ? 4 : 0) + (value.thumbnail ? 2 : 0) + (value.url.includes('?') ? 2 : 0) + value.url.length / 100000;
-        if (score(candidate) > score(existing)) output[previous] = candidate;
+        const oldPriority = candidatePriorities.get(existing) || 0;
+        if (priority > oldPriority || (priority === oldPriority && score(candidate) > score(existing))) output[previous] = candidate;
       }
     } catch (_) {}
   }
@@ -232,24 +460,53 @@
     const seen = new Map();
     const episodes = [];
     const episodeSeen = new Map();
-    for (const node of nodes) {
+    syncEpisodeSeries();
+    const context = routeSeriesContext();
+    // A recognized page-data schema must catch up with its SPA route before
+    // any source can be rebound. Playback controls keep their existing owner.
+    const awaitingSeriesData = context && initialDataElement() && !episodeContext();
+    const explicit = readEpisodeSources();
+    const mapped = [...explicit.filter(item => !episodeResponses.has(item.number)), ...episodeResponses.values()]
+      .sort((left, right) => left.number - right.number);
+    // Reserve the leading slots for actual media, especially the playing
+    // element. A full episode map must never evict the current stream.
+    const mediaNodes = [...nodes].sort((left, right) =>
+      Number(!right.paused && !right.ended) - Number(!left.paused && !left.ended));
+    for (const node of mediaNodes) {
+      if (!belongsToSeries(node, context)) {
+        rememberForeignSource(node, node.currentSrc || node.src || '');
+        continue;
+      }
+      if (awaitingSeriesData) continue;
       if (!isFreshNode(node)) continue;
       const raw = node.currentSrc || node.src || '';
-      addCandidate(candidates, seen, raw, node.type, Number.isFinite(node.duration) ? node.duration * 1000 : undefined, true, undefined, node.poster || '');
+      addCandidate(candidates, seen, raw, node.type, Number.isFinite(node.duration) ? node.duration * 1000 : undefined,
+        true, undefined, node.poster || '', null, '', 3);
+    }
+    for (const item of mapped) {
+      if (awaitingSeriesData) continue;
+      addCandidate(candidates, seen, item.url, '', undefined, false, item.title, item.poster, item.number, '', item.priority || 1);
+      addCandidate(episodes, episodeSeen, item.url, '', undefined, false, item.title, item.poster,
+        item.number, `|episode=${item.number}`, item.priority || 1);
     }
     const selector = mediaAttributes.map(name => `[${name}]`).join(',');
     document.querySelectorAll(selector).forEach(element => {
       if (!element || typeof element.getAttribute !== 'function') return;
+      if (!belongsToSeries(element, context)) {
+        for (const name of mediaAttributes) {
+          rememberForeignSource(element, element.getAttribute(name));
+        }
+        return;
+      }
+      if (awaitingSeriesData) return;
       if (staleElementSignatures.has(element)) {
         if (staleElementSignatures.get(element) === elementSignature(element)) return;
         staleElementSignatures.delete(element);
       }
       const mime = element.getAttribute('type') || '';
       const poster = element.getAttribute('poster') || element.getAttribute('data-poster') || '';
-      const episode = element.getAttribute('data-episode') ||
-        element.getAttribute('data-episode-index') || element.getAttribute('data-num') ||
-        /第\s*(\d+)\s*[集话期]/.exec(element.textContent || '')?.[1] || '';
-      const number = episodeNumber(episode);
+      const episode = elementEpisode(element);
+      const number = episode;
       for (const name of mediaAttributes) {
         const raw = element.getAttribute(name);
         addCandidate(candidates, seen, raw, mime, undefined, false, undefined, poster, episode);
@@ -272,27 +529,32 @@
     // manifest that the page actually fetched; the identity map removes exact
     // repeats and known signature changes.
     const hasConfirmedPlayback = Array.from(nodes).some(node => {
+      if (!belongsToSeries(node, context) || awaitingSeriesData) return false;
       if (!isFreshNode(node)) return false;
       const raw = node.currentSrc || node.src || '';
       return Boolean(raw) && looksMedia(raw, node.type || '') &&
         !node.paused && !node.ended;
     });
     const hasMeaningfulMediaElement = Array.from(nodes).some(node => {
+      if (!belongsToSeries(node, context) || awaitingSeriesData) return false;
       if (!isFreshNode(node)) return false;
       const raw = node.currentSrc || node.src || '';
       return /^https?:/i.test(raw) && looksMedia(raw, node.type || '') &&
         !/placeholder|loading|blank/i.test(raw);
     });
-    if ((!hasConfirmedPlayback && !hasMeaningfulMediaElement) &&
+    if (!awaitingSeriesData && (!hasConfirmedPlayback && !hasMeaningfulMediaElement) &&
         typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
       for (const entry of performance.getEntriesByType('resource').slice(-256)) {
         if (Number.isFinite(entry.startTime) && entry.startTime < snapshotStartedAt) continue;
         if (isTransportResource(entry.name)) continue;
+        const resourceUrl = explicitMediaUrl(entry.name);
+        const foreignOwner = resourceUrl && knownForeignSources.get(candidateKey(resourceUrl));
+        if (foreignOwner && foreignOwner !== context?.id) continue;
         addCandidate(candidates, seen, entry.name, entry.initiatorType || '');
       }
     }
+    const episodeByUrl = new Map();
     if (episodes.length > 0) {
-      const episodeByUrl = new Map();
       episodes.forEach(item => {
         const number = item.episodeNumber;
         if (number != null) {
@@ -305,7 +567,12 @@
         episodeByUrl.set(key, entries);
       });
       for (const item of candidates) {
-        const matches = episodeByUrl.get(candidateKey(new URL(item.url, document.baseURI))) || [];
+        const original = {...item};
+        const entries = episodeByUrl.get(candidateKey(new URL(item.url, document.baseURI))) || [];
+        // An unlabelled DOM mirror (for example the active slide's data-src)
+        // cannot erase an explicit URL-to-episode mapping from page data.
+        const labelled = entries.filter(entry => entry.episodeNumber != null);
+        const matches = labelled.length ? labelled : entries;
         // Several playlist entries with one normalized URL do not provide
         // enough evidence to choose an episode safely. Keep the stream visible
         // while leaving its episode unknown instead of copying the last label.
@@ -319,14 +586,27 @@
           item.title = item.title.replace(/\s*[-–—|]?\s*(?:第\s*\d+\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*\d+\b)\s*$/gi, '').trim();
           item.title = `${item.title || '媒体'} · 集数未确认`;
         }
+        if (!candidateFits(item)) {
+          // Optional page metadata cannot remove a sendable active stream.
+          for (const key of Object.keys(item)) delete item[key];
+          Object.assign(item, original);
+          if (matches.length > 1) {
+            delete item.episodeNumber;
+            item.title = '媒体 · 集数未确认';
+            if (!candidateFits(item)) {
+              item.title = '';
+            }
+          }
+        }
       }
     }
     // Resource timing can contain ads and manifests; only a page-exposed
     // playlist may advertise episode switching.
-    lastCandidateList = episodes.filter(item => {
-      const key = candidateKey(new URL(item.url, document.baseURI));
-      return episodes.filter(other => candidateKey(new URL(other.url, document.baseURI)) === key).length === 1;
-    });
+    lastCandidateList = Array.from(episodeByUrl.values()).flatMap(entries => {
+      const labelled = entries.filter(entry => entry.episodeNumber != null);
+      const matches = labelled.length ? labelled : entries;
+      return matches.length === 1 ? matches : [];
+    }).sort((left, right) => (left.episodeNumber ?? Infinity) - (right.episodeNumber ?? Infinity));
     if (!connected) { connect(); return; }
     const state = {
       playing,
@@ -377,10 +657,29 @@
     document.querySelectorAll(selector).forEach(element => {
       if (element && typeof element.getAttribute === 'function') staleElementSignatures.set(element, elementSignature(element));
     });
+    const initialData = initialDataElement();
+    if (initialData) {
+      let identity = observedInitialData.get(initialData);
+      if (identity == null) {
+        try {
+          const raw = initialData.textContent || '';
+          if (raw.length <= 256 * 1024) identity = JSON.stringify(JSON.parse(raw).epPlaySrcs);
+        } catch (_) {}
+      }
+      const beforeSeries = routeSeriesContext(previous)?.series;
+      const nextSeries = routeSeriesContext(next)?.series;
+      // Episode navigation within one confirmed series does not invalidate
+      // its explicit complete playlist. Cross-series or unconfirmed routes
+      // still require changed page data before the sources can be rebound.
+      const sameConfirmedSeries = beforeSeries && beforeSeries === nextSeries &&
+        episodeContext()?.series === nextSeries;
+      if (!sameConfirmedSeries) staleInitialData.set(initialData, identity);
+    }
     // Same-document navigation does not stop existing audio/video. Keep its
     // pause/resume ownership while revoking discovery and episode switching.
     lastCandidateList = [];
     lastCandidates = '';
+    syncEpisodeSeries();
     post('clear', {
       reason,
       pageUrl: next,
@@ -688,7 +987,10 @@
     connect();
   });
   if (typeof MutationObserver === 'function') {
-    new MutationObserver(() => scheduleReport()).observe(document, {childList:true,subtree:true});
+    new MutationObserver(() => scheduleReport()).observe(document, {
+      childList: true, subtree: true, characterData: true, attributes: true,
+      attributeFilter: [...mediaAttributes, 'src', 'type', 'data-episode', 'data-episode-index', 'data-num'],
+    });
   }
   document.addEventListener('DOMContentLoaded', () => { collect(); if (blocked) pause(); else scheduleReport(); });
   if (typeof setInterval === 'function') setInterval(() => { connect(); if (connected) scheduleReport(); }, 1500);

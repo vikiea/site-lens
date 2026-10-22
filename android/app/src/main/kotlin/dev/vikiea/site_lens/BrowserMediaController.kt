@@ -16,9 +16,7 @@ class BrowserMediaController(
     private val browsing: Boolean,
     private val onCandidate: ((Map<String, Any?>) -> Unit)? = null,
 ) {
-    val supported = WebViewFeature.isFeatureSupported(WebViewFeature.MUTE_AUDIO) &&
-        WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) &&
-        WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)
+    val supported = NativeWebCapabilityEvaluator.evaluate(activity).mediaControlSupported
     private val token = UUID.randomUUID().toString()
     private val bridge = "lensMedia" + token.replace("-", "")
     private val documentToken = UUID.randomUUID().toString()

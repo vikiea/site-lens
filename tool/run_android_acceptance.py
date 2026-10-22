@@ -55,6 +55,7 @@ INTEGRATION_TARGETS = (
     'integration_test/media_tasks_test.dart',
     'integration_test/media3_parity_test.dart',
     'integration_test/configured_sites_test.dart',
+    'integration_test/real_media_site_test.dart',
     'integration_test/navigation_lease_test.dart',
 )
 PREBUILT_MANIFEST = "acceptance-manifest.json"
@@ -88,6 +89,20 @@ def test_defines() -> list[str]:
     sites = ENV.get('SITE_LENS_TEST_SITES', '').strip()
     if sites:
         values.append(f'--dart-define=SITE_LENS_TEST_SITES={sites}')
+    media_url = ENV.get('SITE_LENS_MEDIA_TEST_URL', '').strip()
+    if media_url:
+        values.append(f'--dart-define=SITE_LENS_MEDIA_TEST_URL={media_url}')
+        expected_episodes = ENV.get('SITE_LENS_MEDIA_EXPECT_EPISODES', '').strip()
+        if expected_episodes:
+            values.append(f'--dart-define=SITE_LENS_MEDIA_EXPECT_EPISODES={expected_episodes}')
+        if ENV.get('SITE_LENS_REAL_MEDIA_DOWNLOAD', '').strip().lower() in {
+            '1', 'true', 'yes', 'on'
+        }:
+            values.append('--dart-define=SITE_LENS_REAL_MEDIA_DOWNLOAD=true')
+    if ENV.get('SITE_LENS_PROXY_FIXTURE', '').strip().lower() in {
+        '1', 'true', 'yes', 'on'
+    }:
+        values.append('--dart-define=SITE_LENS_PROXY_FIXTURE=true')
     return values
 
 
@@ -659,6 +674,7 @@ def main() -> int:
             'integration_test/media_tasks_test.dart',
             'integration_test/media3_parity_test.dart',
             'integration_test/configured_sites_test.dart',
+            'integration_test/real_media_site_test.dart',
             'integration_test/navigation_lease_test.dart',
         ],
         default='integration_test/acceptance_suite_test.dart',

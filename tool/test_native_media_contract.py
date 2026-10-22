@@ -102,7 +102,7 @@ class NativeMediaContractTests(unittest.TestCase):
             method = body.split(f"override fun {name}", 1)[1].split("\n", 2)[1]
             self.assertTrue("throw ExportException" in method, f"{name} must reject creation")
         for token in ("HandlerThread(", ".setLooper(thread.looper)", "DefaultMuxer.Factory()",
-                      "DefaultMediaSourceFactory(localDataSources(allowed))", "terminal.compareAndSet(false, true)"):
+                      "HlsMediaSource.Factory(localDataSources(allowed))", "terminal.compareAndSet(false, true)"):
             self.assertTrue(token in body, f"Missing Transformer lifecycle constraint: {token}")
         cancel = body.split("if (!terminal.get())", 1)[1]
         self.assertLess(cancel.index("transformer?.cancel()"), cancel.index("finish(error ="))

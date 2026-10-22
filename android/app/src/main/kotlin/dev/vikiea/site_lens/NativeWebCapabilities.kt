@@ -11,7 +11,12 @@ data class NativeWebCapabilityFacts(
     val hasStart: Boolean,
     val hasProfiles: Boolean,
     val enhanced: Boolean,
-)
+    val hasMuteAudio: Boolean,
+    val hasDocumentStartScript: Boolean,
+    val hasWebMessageListener: Boolean,
+) {
+    val mediaControlSupported get() = hasMuteAudio && hasDocumentStartScript && hasWebMessageListener
+}
 
 /** One evaluator shared by live hosts and passive diagnostics. */
 object NativeWebCapabilityEvaluator {
@@ -22,9 +27,10 @@ object NativeWebCapabilityEvaluator {
         val hasNavigation = WebViewFeature.isFeatureSupported(
             WebViewFeature.NAVIGATION_LISTENER,
         )
-        val hasStart = hasWorld || WebViewFeature.isFeatureSupported(
+        val hasDocumentStartScript = WebViewFeature.isFeatureSupported(
             WebViewFeature.DOCUMENT_START_SCRIPT,
         )
+        val hasStart = hasWorld || hasDocumentStartScript
         val hasProfiles = WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)
         val provider = runCatching {
             WebViewCompat.getCurrentWebViewPackage(context)?.let { packageInfo ->
@@ -38,6 +44,9 @@ object NativeWebCapabilityEvaluator {
             hasStart = hasStart,
             hasProfiles = hasProfiles,
             enhanced = hasWorld && hasNavigation,
+            hasMuteAudio = WebViewFeature.isFeatureSupported(WebViewFeature.MUTE_AUDIO),
+            hasDocumentStartScript = hasDocumentStartScript,
+            hasWebMessageListener = WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER),
         )
     }
 }

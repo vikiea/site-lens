@@ -11,10 +11,14 @@ import java.net.URI
 
 /** Resolve only the OS policy: an unusable proxy must not silently become DIRECT. */
 object SystemMediaNetwork {
-    fun validateTarget(uri: URI) {
+    private fun validateWebUri(uri: URI) {
         require(uri.scheme in listOf("http", "https") && !uri.host.isNullOrBlank() && uri.userInfo == null) {
             "媒体地址无效"
         }
+    }
+
+    fun validateTarget(uri: URI) {
+        validateWebUri(uri)
         val host = uri.host.lowercase().removePrefix("[").removeSuffix("]")
         require(host != "localhost" && !host.endsWith(".localhost") &&
             !host.endsWith(".local") && !host.endsWith(".internal")) { "禁止本机/私网媒体目标" }
@@ -44,6 +48,11 @@ object SystemMediaNetwork {
 
     fun proxies(uri: URI, selector: ProxySelector? = ProxySelector.getDefault()): List<Proxy> {
         validateTarget(uri)
+        return selectedProxies(uri, selector)
+    }
+
+    private fun selectedProxies(uri: URI, selector: ProxySelector?): List<Proxy> {
+        validateWebUri(uri)
         val selected = selector?.select(uri) ?: listOf(Proxy.NO_PROXY)
         check(selected.isNotEmpty()) { "系统代理配置为空" }
         check(selected.all { it.type() == Proxy.Type.HTTP || it.type() == Proxy.Type.DIRECT }) {
@@ -74,7 +83,17 @@ object SystemMediaNetwork {
         selector: ProxySelector? = ProxySelector.getDefault(),
         attempt: Int = 0,
     ): String {
-        val selected = proxies(uri, selector)
+        return renderConfiguration(proxies(uri, selector), attempt)
+    }
+
+    /** Route lookup grants no connection authority; HttpProbe validates every hop. */
+    fun probeConfiguration(
+        uri: URI,
+        selector: ProxySelector? = ProxySelector.getDefault(),
+        attempt: Int = 0,
+    ): String = renderConfiguration(selectedProxies(uri, selector), attempt)
+
+    private fun renderConfiguration(selected: List<Proxy>, attempt: Int): String {
         val start = Math.floorMod(attempt, selected.size)
         val ordered = selected.drop(start) + selected.take(start)
         return ordered.joinToString("; ") { proxy ->

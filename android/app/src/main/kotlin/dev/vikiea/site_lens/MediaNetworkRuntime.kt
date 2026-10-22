@@ -40,7 +40,9 @@ class MediaNetworkRuntime(
             val outcome = runCatching {
                 val uri = URI(call.argument<String>("url") ?: error("缺少媒体地址"))
                 val attempt = call.argument<Int>("attempt") ?: 0
-                val proxy = SystemMediaNetwork.configuration(uri, attempt = attempt)
+                val proxy = if (call.method == "probeRoute") {
+                    SystemMediaNetwork.probeConfiguration(uri, attempt = attempt)
+                } else SystemMediaNetwork.configuration(uri, attempt = attempt)
                 // This is only a route hint. The connecting transport still
                 // validates DNS for the DIRECT entry actually being used.
                 val vpn = allowsProxyFakeIp(uri)

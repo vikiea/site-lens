@@ -132,7 +132,7 @@ class MediaActionDriver:
         candidates = [
             node for node in root.iter('node')
             if node.get('resource-id', '').endswith(
-                ('/expandableNotificationRow', '/qs_media_controls')
+                ('/expandableNotificationRow', '/qs_media_controls', '/mi_media_controls')
             )
         ]
         # Some OEMs nest the media card in an ordinary row. Keep the inner card

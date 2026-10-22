@@ -86,3 +86,41 @@ Run `make check`, Android native unit tests and `make build` before review. `pyt
 Required runtime matrix includes API below 34, API 34+ with usable Vulkan, API 34+ automatic compatibility, browser/video overlays, transparent/dark/light glass, permission denial, expired SAF grants, background restrictions, codec inventory and Token upgrade preservation. The current workstation emulator reached API 37 boot-complete but was stopped when host swap free dropped below the validation skill's 1 GiB boundary; this proves emulator startup only, not media/HCPP acceptance.
 
 Sources: Android Media3 Inspector, Media3 Transformer supported formats and Media3 1.11.1 source; Flutter platform-views and built-in Kotlin migration; AndroidX release pages; pub.dev publisher APIs. Dependency updates should rerun the snapshot rather than assuming this audit remains current.
+
+
+## HLS timeline and episode regression validation (2026-10-22)
+
+The Media3 1.11.1 adapter preserves complete TS PES output at segment EOF,
+normalizes only whole-timeline fMP4 edit-list translations, and restores the first
+video PTS when the Transformer mux wrapper zeroes that sample while retaining
+leading audio. The official readers, Transformer and application muxer still
+own encoded samples and MP4 writing. Unsupported clipping edits and arithmetic
+overflow fail before an output is accepted.
+
+Candidate discovery retains a confirmed explicit playlist during same-series SPA
+episode navigation. A new series must establish matching page data; old visits,
+out-of-order responses and recommendation owners cannot bind media to it.
+Recommendation identities remain bounded across DOM removal so Resource Timing
+does not reintroduce a known foreign stream. A timing-only URL reused by several
+series can be conservatively omitted rather than assigned an invented episode.
+
+Completed checks for this revision:
+
+- `make check`: 523 Flutter tests, analyzer and JS/Python contracts passed.
+- `./gradlew :app:testDebugUnitTest`: passed, including timestamp, complete edit
+  list, overflow and WebView media-feature combinations.
+- `python3 tool/verify_level.py --level L4 --device DEVICE`: passed on Android 16
+  / WebView 155, including 30 combined integration cases, database SHA-256
+  restoration, formal package identity and fixed signing-certificate validation.
+- Five H.264/H.265, TS/fMP4, AES-128 fixtures preserved AAC counts, B-frame PTS,
+  EOS, metadata/thumbnails and playback/seek behavior.
+- A real-page test with locally supplied URL and expected episode numbers
+  confirmed only explicitly mapped episodes were shown. No private test URL is
+  stored in source or the formal APK.
+
+The optional system-proxy fixture requires `SITE_LENS_PROXY_FIXTURE=true` and a
+separately prepared local proxy. Ordinary acceptance never changes system proxy
+settings and does not assume that a user's proxy serves the fixture domain.
+Passive diagnostics share the same three WebView media-feature predicates as
+BrowserMediaController, reporting missing capabilities separately from query
+failure or an actual playback observation.

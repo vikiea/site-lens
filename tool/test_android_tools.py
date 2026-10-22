@@ -65,11 +65,45 @@ class AndroidToolsTests(unittest.TestCase):
         return product, test, manifest, receipts, fingerprint
 
     def test_configured_sites_only_enter_integration_defines(self):
-        with patch.dict(acceptance.ENV, {'SITE_LENS_TEST_SITES': 'https://test.example/'}):
+        with patch.dict(
+            acceptance.ENV,
+            {'SITE_LENS_TEST_SITES': 'https://test.example/', 'SITE_LENS_PROXY_FIXTURE': ''},
+            clear=True,
+        ):
             self.assertIn('--dart-define=SITE_LENS_TEST_SITES=https://test.example/',
                           acceptance.test_defines())
-        with patch.dict(acceptance.ENV, {'SITE_LENS_TEST_SITES': ''}):
+        with patch.dict(
+            acceptance.ENV,
+            {'SITE_LENS_TEST_SITES': '', 'SITE_LENS_PROXY_FIXTURE': ''},
+            clear=True,
+        ):
             self.assertEqual(acceptance.test_defines(), [acceptance.NETWORK_DEFINE])
+
+    def test_real_media_url_is_only_forwarded_when_explicitly_injected(self):
+        with patch.dict(
+            acceptance.ENV,
+            {
+                'SITE_LENS_TEST_SITES': '',
+                'SITE_LENS_MEDIA_TEST_URL': 'https://test.example/video/1',
+                'SITE_LENS_REAL_MEDIA_DOWNLOAD': 'true',
+                'SITE_LENS_PROXY_FIXTURE': '',
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                acceptance.test_defines(),
+                [
+                    acceptance.NETWORK_DEFINE,
+                    '--dart-define=SITE_LENS_MEDIA_TEST_URL=https://test.example/video/1',
+                    '--dart-define=SITE_LENS_REAL_MEDIA_DOWNLOAD=true',
+                ],
+            )
+
+    def test_proxy_fixture_define_requires_explicit_opt_in(self):
+        with patch.dict(acceptance.ENV, {}, clear=True):
+            self.assertNotIn('--dart-define=SITE_LENS_PROXY_FIXTURE=true', acceptance.test_defines())
+        with patch.dict(acceptance.ENV, {'SITE_LENS_PROXY_FIXTURE': 'true'}):
+            self.assertIn('--dart-define=SITE_LENS_PROXY_FIXTURE=true', acceptance.test_defines())
 
     def test_prebuilt_arguments_require_pair_single_suite_and_no_test_name(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -478,6 +512,24 @@ class AndroidToolsTests(unittest.TestCase):
         with patch('android_media_actions.time.sleep'):
             driver._stop_notification()
         self.assertIn(('shell', 'input', 'tap', '60', '70'), calls)
+
+    def test_xiaomi_media_card_keeps_stop_scoped_to_fixture(self):
+        own = '<node package="com.android.systemui" resource-id="com.android.systemui:id/mi_media_controls"><node text="Site Lens debug media acceptance"/><node package="com.android.systemui" content-desc="停止" bounds="[343,779][563,962]"/></node>'
+        other = '<node resource-id="com.android.systemui:id/mi_media_controls"><node text="Other media"/><node package="com.android.systemui" content-desc="停止" bounds="[1,1][99,99]"/></node>'
+        driver = MediaActionDriver('adb', 'real-test', 'dev.vikiea.site_lens.debug')
+        calls = []
+
+        def command(*args, **kwargs):
+            calls.append(args)
+            if args[:3] == ('shell', 'dumpsys', 'notification'):
+                return b'NotificationRecord(pkg=dev.vikiea.site_lens.debug)\n  android.title=Site Lens debug media acceptance\n'
+            return ('<hierarchy>' + own + other + '</hierarchy>').encode() if args[0] == 'exec-out' else b''
+
+        driver.command = command
+        with patch('android_media_actions.time.sleep'):
+            driver._stop_notification()
+        self.assertIn(('shell', 'input', 'tap', '453', '870'), calls)
+        self.assertNotIn(('shell', 'input', 'tap', '50', '50'), calls)
 
     def test_missing_owner_notification_refuses_to_tap(self):
         driver = MediaActionDriver('adb','emulator-test','dev.vikiea.site_lens.debug')

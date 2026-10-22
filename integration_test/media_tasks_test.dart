@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:drift/native.dart';
 import 'package:flutter/widgets.dart';
@@ -16,6 +17,7 @@ import 'package:site_lens/network/transport.dart';
 import 'package:site_lens/ui/app_controller.dart';
 
 import 'media3_fixture.dart';
+import 'video_fixture.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -65,6 +67,117 @@ void main() {
   );
 
   testWidgets(
+    'download deletion preserves indexed MP4 and independent seek playback',
+    (tester) async {
+      final support = await getApplicationSupportDirectory();
+      final root = await Directory(
+        '${support.path}/media-ownership-${DateTime.now().microsecondsSinceEpoch}',
+      ).create();
+      final db = AppDatabase(NativeDatabase.memory());
+      final tasks = MediaTaskStore(directoryProvider: () async => root, db: db);
+      final player = NativeMediaRuntime();
+      final native = NativeExportRuntime();
+      final library = MediaLibrary(db: db, tasks: tasks, native: native);
+      try {
+        final bytes = base64Decode(videoFixtureBase64);
+        for (final legacy in [false, true]) {
+          final candidate = MediaCandidate(
+            id: 'ownership-$legacy',
+            hostId: 1,
+            generation: 1,
+            sourceUrl: Uri.parse('https://example.org/watch/$legacy'),
+            mediaUrl: Uri.parse('https://example.org/$legacy.mp4'),
+            title: 'Ownership $legacy',
+            mime: 'video/mp4',
+            source: MediaCandidateSource.dom,
+          );
+          await db.saveMediaCandidate(candidate);
+          final task = tasks.create(candidate);
+          tasks.transition(task.id, MediaTaskState.downloading);
+          final directory = await tasks.cacheDirectory(
+            storageDirectory: task.storageDirectoryName,
+          );
+          final cache = await File('${directory.path}/${task.cacheKey}.media')
+              .writeAsBytes(bytes);
+          final export = File('${root.path}/media_exports/$legacy.mp4');
+          await export.parent.create(recursive: true);
+          await export.writeAsBytes(bytes);
+          tasks.setLocalRef(task.id, legacy ? export.path : cache.path);
+          tasks.transition(task.id, MediaTaskState.playable);
+          final artifact = await library.register(task, export.path);
+          final service = MediaDownloadService(tasks: tasks);
+          tasks.retain(task.id);
+          await expectLater(service.delete(task.id), throwsStateError);
+          tasks.release(task.id);
+          await service.delete(task.id);
+          expect(await cache.exists(), isFalse);
+          expect(tasks.task(task.id), isNull);
+          expect(await export.readAsBytes(), bytes);
+          final reopened = MediaLibrary(db: db, tasks: tasks, native: native);
+          try {
+            await reopened.restore();
+            expect(reopened.item(task.id), isNotNull);
+            final local = await reopened.localFile(task.id);
+            expect(local, isNotNull);
+            final session = await player.openLocal(
+              reopened.presentationTask(artifact),
+              local!,
+            );
+            await player.pause(sessionId: session.id);
+            await player.seek(
+              const Duration(milliseconds: 800),
+              sessionId: session.id,
+            );
+            final seekDeadline = DateTime.now().add(
+              const Duration(seconds: 10),
+            );
+            while (DateTime.now().isBefore(seekDeadline)) {
+              await tester.pump(const Duration(milliseconds: 100));
+              if ((await player.state(sessionId: session.id)).positionMs >=
+                  750) {
+                break;
+              }
+            }
+            expect(
+              (await player.state(sessionId: session.id)).positionMs,
+              inInclusiveRange(750, 850),
+              reason: 'Paused seek must move to the requested position',
+            );
+            await player.play(sessionId: session.id);
+            final deadline = DateTime.now().add(const Duration(seconds: 10));
+            while (DateTime.now().isBefore(deadline)) {
+              await tester.pump(const Duration(milliseconds: 100));
+              final state = await player.state(sessionId: session.id);
+              expect(
+                state.state,
+                isNot(NativePlaybackState.failed),
+                reason: state.errorCode,
+              );
+              if (state.positionMs >= 900) break;
+            }
+            expect(
+              (await player.state(sessionId: session.id)).positionMs,
+              greaterThanOrEqualTo(900),
+            );
+            await player.close(sessionId: session.id);
+          } finally {
+            if (player.active != null) {
+              await player.close(sessionId: player.active!.id);
+            }
+            reopened.dispose();
+          }
+          debugPrint('DOWNLOAD_DELETE_EXPORT_RETAINED_PASS legacy=$legacy');
+        }
+      } finally {
+        await player.dispose();
+        library.dispose();
+        await db.close();
+        if (await root.exists()) await root.delete(recursive: true);
+      }
+    },
+  );
+
+  testWidgets(
     'native HLS remux plays continuously and task deletion removes cache',
     (tester) async {
       final support = await getApplicationSupportDirectory();
@@ -95,8 +208,16 @@ void main() {
         );
         final cache = await Directory('${parent.path}/${task.cacheKey}.hls')
             .create();
-        await unpackMedia3Fixtures(cache);
-        final playlist = File('${cache.path}/h264_ts/index.m3u8');
+        final fixtures = Directory('${root.path}/media-fixtures')
+          ..createSync(recursive: true);
+        await unpackMedia3Fixtures(fixtures);
+        final fixture = Directory('${fixtures.path}/h264_ts');
+        await for (final file in fixture.list()) {
+          if (file is File) {
+            await file.copy('${cache.path}/${file.uri.pathSegments.last}');
+          }
+        }
+        final playlist = File('${cache.path}/index.m3u8');
         tasks.setLocalRef(task.id, playlist.path);
         tasks.transition(task.id, MediaTaskState.playable);
         var expected = 0;
@@ -145,8 +266,18 @@ void main() {
           sessionId: session.id,
         );
         await player.play(sessionId: session.id);
-        await tester.pump(const Duration(milliseconds: 600));
-        final resumed = await player.state(sessionId: session.id);
+        final resumeDeadline = DateTime.now().add(const Duration(seconds: 12));
+        var resumed = await player.state(sessionId: session.id);
+        while (DateTime.now().isBefore(resumeDeadline) &&
+            resumed.positionMs <= 350) {
+          expect(
+            resumed.state,
+            isNot(NativePlaybackState.failed),
+            reason: resumed.errorCode,
+          );
+          await tester.pump(const Duration(milliseconds: 100));
+          resumed = await player.state(sessionId: session.id);
+        }
         expect(resumed.positionMs, greaterThan(350));
         await player.close(sessionId: session.id);
         debugPrint('NATIVE_MP4_CONTINUOUS_PLAY_PASS');

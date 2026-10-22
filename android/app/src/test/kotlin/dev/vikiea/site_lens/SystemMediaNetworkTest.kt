@@ -118,6 +118,38 @@ class SystemMediaNetworkTest {
     }
 
     @Test
+    fun probeLookupCanReadLocalExclusionsWithoutGrantingMediaAccess() {
+        val visited = mutableListOf<URI>()
+        val policy = selector { uri -> visited.add(uri); listOf(Proxy.NO_PROXY) }
+        val local = URI("http://127.0.0.2:8080/ready")
+        assertEquals("DIRECT", SystemMediaNetwork.probeConfiguration(local, policy))
+        assertEquals(listOf(local), visited)
+        assertThrows(IllegalArgumentException::class.java) {
+            SystemMediaNetwork.configuration(local, selector { error("must not select proxy") })
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            SystemMediaNetwork.openConnection(local,
+                selector = selector { error("must not select proxy") },
+                resolve = { error("must not resolve") },
+                open = { _, _ -> error("must not connect") },
+            )
+        }
+        for (raw in listOf("https://user:password@cdn.example/a", "file:///tmp/video", "ftp://cdn.example/a")) {
+            assertThrows(IllegalArgumentException::class.java) {
+                SystemMediaNetwork.probeConfiguration(URI(raw), selector { error("must not select proxy") })
+            }
+        }
+        assertThrows(IllegalStateException::class.java) {
+            SystemMediaNetwork.probeConfiguration(local, selector { emptyList() })
+        }
+        assertThrows(IllegalStateException::class.java) {
+            SystemMediaNetwork.probeConfiguration(local, selector {
+                listOf(Proxy(Proxy.Type.SOCKS, InetSocketAddress.createUnresolved("127.0.0.1", 7890)))
+            })
+        }
+    }
+
+    @Test
     fun httpProxyAndExclusionsAreResolvedForEachOrigin() {
         val visited = mutableListOf<URI>()
         val policy = selector { uri ->

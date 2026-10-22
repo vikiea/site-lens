@@ -133,6 +133,22 @@ class NativeDeviceDiagnostics(
             now = now,
         )
         rows += row(
+            id = "webview.mediaControl",
+            state = stateFor(web?.mediaControlSupported),
+            configured = true,
+            effective = web?.mediaControlSupported,
+            reason = if (web == null) "WebView 能力查询失败" else if (web.mediaControlSupported) {
+                "网页媒体识别与后台控制所需能力可用；实际播放由会话观测确认"
+            } else "缺少原生静音、文档开始注入或消息监听能力，网页媒体识别与后台控制停用；更新系统 WebView 后重试",
+            source = "NativeWebCapabilityEvaluator / BrowserMediaController",
+            now = now,
+            detailsJson = JSONObject()
+                .put("muteAudio", web?.hasMuteAudio ?: JSONObject.NULL)
+                .put("documentStart", web?.hasDocumentStartScript ?: JSONObject.NULL)
+                .put("webMessageListener", web?.hasWebMessageListener ?: JSONObject.NULL)
+                .toString(),
+        )
+        rows += row(
             id = "webview.privateProbes",
             state = stateFor(web?.hasProfiles),
             effective = web?.hasProfiles,

@@ -17,6 +17,7 @@ import androidx.media3.datasource.ContentDataSource
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.FileDataSource
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.inspector.MediaExtractorCompat
 import androidx.media3.inspector.MetadataRetriever
@@ -300,7 +301,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             val normalized = writeTransformerPlaylist(segments, workDir)
             val allowed = (segments.flatMap { listOfNotNull(it.file, it.key, it.init, it.initKey) } + normalized)
                 .map { it.canonicalPath }.toSet()
-            val export = transformHls(normalized, temp, allowed, cancelled)
+            val export = transformHls(normalized, temp, allowed, cancelled, inputTimeline)
             require(export.videoConversionProcess == ExportResult.CONVERSION_PROCESS_TRANSMUXED &&
                 export.audioConversionProcess == if (audioSegments == 0) ExportResult.CONVERSION_PROCESS_NA
                     else ExportResult.CONVERSION_PROCESS_TRANSMUXED) { "HLS 导出不允许转码" }
@@ -310,7 +311,10 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             val outputSamples = readSamples(Uri.fromFile(temp), cancelled)
             require(outputSamples.keys == inputCounts.keys && outputSamples.all { (kind, track) ->
                 track.pts.size == inputCounts[kind]
-            }) { "导出文件音视频样本不完整" }
+            }) {
+                "导出文件音视频样本不完整 " +
+                    "expected=${inputCounts.toSortedMap()} actual=${outputSamples.mapValues { it.value.pts.size }.toSortedMap()}"
+            }
             validateSampleParity(inputSamples, outputSamples)
             require(validateOutput(temp.path, inputCounts)) { "导出文件音视频样本不完整" }
             checkActive(cancelled)
@@ -354,7 +358,10 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         }
     }
 
-    private fun transformHls(playlist: File, output: File, allowed: Set<String>, cancelled: AtomicBoolean): ExportResult {
+    private fun transformHls(
+        playlist: File, output: File, allowed: Set<String>, cancelled: AtomicBoolean,
+        inputTimeline: Map<String, Media3SampleTrace>,
+    ): ExportResult {
         val thread = HandlerThread("site-lens-transformer").apply { start() }
         val handler = Handler(thread.looper)
         val settled = CountDownLatch(1)
@@ -372,7 +379,9 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         handler.post {
             try {
                 checkActive(cancelled)
-                val sources = DefaultMediaSourceFactory(localDataSources(allowed))
+                val sources = HlsMediaSource.Factory(localDataSources(allowed))
+                    .setExtractorFactory(createCompleteHlsExtractorFactory(
+                        inputTimeline.values.minOf { it.presentationTimesUs.min() }))
                 val encoders = object : Codec.EncoderFactory {
                     override fun createForAudioEncoding(format: Format, logSessionId: android.media.metrics.LogSessionId?): Codec =
                         throw ExportException.createForUnexpected(IllegalStateException("HLS 导出禁止音频转码"))
@@ -385,7 +394,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                     .setAssetLoaderFactory(ExoPlayerAssetLoader.Factory(
                         context, DefaultDecoderFactory.Builder(context).build(), Clock.DEFAULT, sources))
                     .setEncoderFactory(encoders)
-                    .setMuxerFactory(DefaultMuxer.Factory()) // 1.11.1 delegates to InAppMp4Muxer.
+                    .setMuxerFactory(PreserveFirstVideoPtsMuxerFactory(DefaultMuxer.Factory(), inputTimeline))
                     .setEnsureFileStartsOnVideoFrameEnabled(false)
                     .addListener(object : Transformer.Listener {
                         override fun onCompleted(composition: Composition, result: ExportResult) { finish(value = result) }

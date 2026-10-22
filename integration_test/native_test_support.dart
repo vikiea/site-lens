@@ -44,8 +44,14 @@ Future<void> tapBrowserAction(WidgetTester tester, String actionTooltip) async {
   await tester.tap(more);
   await tester.pumpAndSettle();
   final menuItem = find.text(actionTooltip);
-  expect(menuItem, findsOneWidget);
-  await tester.tap(menuItem);
+  final revealed = find.byTooltip(actionTooltip);
+  if (revealed.evaluate().isNotEmpty) {
+    expect(revealed, findsOneWidget);
+    await tester.tap(revealed);
+  } else {
+    expect(menuItem, findsOneWidget);
+    await tester.tap(menuItem);
+  }
 }
 
 Future<bool> openBrowserMoreIfNeeded(
