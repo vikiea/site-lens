@@ -224,7 +224,9 @@
     if (!alive) return;
     beginSnapshotIfNeeded();
     collect();
-    const playing = Array.from(nodes).some(node => isFreshNode(node) && !node.paused && !node.ended) ||
+    // Playback control follows actual elements, even when their old source
+    // must not be authorized as a candidate for a new SPA page.
+    const playing = Array.from(nodes).some(node => !node.paused && !node.ended) ||
       Array.from(contexts).some(ctx => ctx.state === 'running');
     const candidates = [];
     const seen = new Map();
@@ -329,7 +331,7 @@
     const state = {
       playing,
       resumable: resumeNodes.size > 0 || resumeContexts.size > 0 ||
-        (lastActiveNode != null && isFreshNode(lastActiveNode) && nodes.has(lastActiveNode) && !lastActiveNode.ended),
+        (lastActiveNode != null && nodes.has(lastActiveNode) && !lastActiveNode.ended),
       canSkip: canSwitchCandidate(),
       title: (document.title || '').slice(0, 512),
     };
@@ -375,8 +377,8 @@
     document.querySelectorAll(selector).forEach(element => {
       if (element && typeof element.getAttribute === 'function') staleElementSignatures.set(element, elementSignature(element));
     });
-    resumeNodes.clear();
-    lastActiveNode = null;
+    // Same-document navigation does not stop existing audio/video. Keep its
+    // pause/resume ownership while revoking discovery and episode switching.
     lastCandidateList = [];
     lastCandidates = '';
     post('clear', {

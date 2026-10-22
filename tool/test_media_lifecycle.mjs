@@ -246,6 +246,9 @@ assert.ok(redirectedCandidates[0].url.includes('/play/series/1.m3u8'));
 console.log('Meaningful media element suppresses redirected Resource Timing duplicates PASS.');
 
 const oldConnectedPlayer = nodes[0];
+await oldConnectedPlayer.play();
+handlers.get('playing')?.({target: oldConnectedPlayer});
+await waitForReport();
 dataElements.length = 0;
 performanceEntries.length = 0;
 const beforeRoute = outbound.length;
@@ -258,7 +261,20 @@ for (const type of ['play', 'playing', 'loadedmetadata', 'emptied']) {
 await oldConnectedPlayer.play();
 await waitForReport();
 assert.equal(outbound.slice(beforeRoute).filter(value => value.kind === 'candidates').length, 0);
+assert.equal(outbound.filter(value => value.kind === 'state').at(-1).playing, true);
+assert.equal(outbound.filter(value => value.kind === 'state').at(-1).resumable, true);
+await native('pause');
+await waitForReport();
+assert.equal(oldConnectedPlayer.paused, true);
+assert.equal(outbound.filter(value => value.kind === 'state').at(-1).playing, false);
+assert.equal(outbound.filter(value => value.kind === 'state').at(-1).resumable, true);
+await native('resume');
+await waitForReport();
+assert.equal(oldConnectedPlayer.paused, false);
+assert.equal(outbound.filter(value => value.kind === 'state').at(-1).playing, true);
+assert.equal(outbound.slice(beforeRoute).filter(value => value.kind === 'candidates').length, 0);
 console.log('SPA route does not rebind a still-connected old player to the new episode PASS.');
+console.log('SPA candidate isolation preserves actual playback state and notification pause/resume PASS.');
 
 oldConnectedPlayer.currentSrc = 'https://example.test/play/series/2.m3u8';
 oldConnectedPlayer.src = oldConnectedPlayer.currentSrc;
