@@ -5,21 +5,26 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../settings/app_settings.dart';
+import '../update/github_token_store.dart';
 import '../update/update_controller.dart';
+import 'app_controller.dart';
 import 'app_theme.dart';
 import 'glass_surface.dart';
 import 'ui_primitives.dart';
+import 'ui_util.dart';
 
 class SoftwareUpdateScreen extends ConsumerStatefulWidget {
   /// Test seam: production reads [updateControllerProvider] so one download
   /// survives the page.
   final UpdateController? controller;
   final UpdateChannel channel;
+  final AppController? app;
 
   const SoftwareUpdateScreen({
     super.key,
     this.controller,
     this.channel = UpdateChannel.stable,
+    this.app,
   });
 
   @override
@@ -32,14 +37,31 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
       widget.controller ?? ref.read(updateControllerProvider);
   UpdateDownloadState? _lastState;
   String? _autoInstalledTag;
+  late UpdateChannel _channel;
 
   @override
   void initState() {
     super.initState();
+    _channel = widget.channel;
     _controller.setUpdateScreenVisible(true);
     _controller.addListener(_onControllerChanged);
     _lastState = _controller.downloadState;
     unawaited(_initializeUpdatePage());
+  }
+
+  Future<void> _changeChannel(UpdateChannel value) async {
+    if (value == _channel || _controller.busy) return;
+    try {
+      await _controller.setChannel(value);
+      if (!mounted) return;
+      setState(() => _channel = value);
+      final app = widget.app;
+      if (app != null) {
+        await app.updateSettings({'updateChannel': value.name});
+      }
+    } catch (error) {
+      if (mounted) showError(context, error);
+    }
   }
 
   Future<void> _initializeUpdatePage() async {
@@ -93,6 +115,12 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
           32,
         ),
         children: [
+          _UpdatePreferencesPanel(
+            app: widget.app,
+            channel: _channel,
+            busy: _controller.busy,
+            onChannelChanged: _changeChannel,
+          ),
           SiteLensSectionHeader(
             title: '当前版本',
             subtitle: _controller.currentVersion == null
@@ -345,4 +373,204 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
           .showSnackBar(const SnackBar(content: Text('无法打开发布页')));
     }
   }
+}
+
+class _UpdatePreferencesPanel extends StatefulWidget {
+  const _UpdatePreferencesPanel({
+    required this.app,
+    required this.channel,
+    required this.busy,
+    required this.onChannelChanged,
+  });
+
+  final AppController? app;
+  final UpdateChannel channel;
+  final bool busy;
+  final ValueChanged<UpdateChannel> onChannelChanged;
+
+  @override
+  State<_UpdatePreferencesPanel> createState() =>
+      _UpdatePreferencesPanelState();
+}
+
+class _UpdatePreferencesPanelState extends State<_UpdatePreferencesPanel> {
+  final _accordion = SiteLensAccordionController();
+
+  @override
+  Widget build(BuildContext context) => SiteLensPanel(
+    padding: EdgeInsets.zero,
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SiteLensAccordion(
+          id: 'update-preferences',
+          controller: _accordion,
+          initiallyExpanded: true,
+          title: const Text('更新设置'),
+          subtitle: Text(widget.channel.description),
+          leading: const Icon(Icons.tune_outlined, size: 18),
+          details: (context) => Padding(
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SegmentedButton<UpdateChannel>(
+                  segments: const [
+                    ButtonSegment(
+                      value: UpdateChannel.stable,
+                      label: Text('稳定版'),
+                      icon: Icon(Icons.verified_outlined),
+                    ),
+                    ButtonSegment(
+                      value: UpdateChannel.beta,
+                      label: Text('测试版'),
+                      icon: Icon(Icons.science_outlined),
+                    ),
+                  ],
+                  selected: {widget.channel},
+                  onSelectionChanged: widget.busy
+                      ? null
+                      : (values) {
+                          if (values.isNotEmpty) {
+                            widget.onChannelChanged(values.first);
+                          }
+                        },
+                ),
+                if (widget.channel == UpdateChannel.beta) ...[
+                  const SizedBox(height: 8),
+                  _UpdateGitHubTokenEntry(),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _UpdateGitHubTokenEntry extends StatefulWidget {
+  const _UpdateGitHubTokenEntry();
+
+  @override
+  State<_UpdateGitHubTokenEntry> createState() =>
+      _UpdateGitHubTokenEntryState();
+}
+
+class _UpdateGitHubTokenEntryState extends State<_UpdateGitHubTokenEntry> {
+  final _store = GitHubTokenStore();
+  bool? _configured;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    final configured = await _store.hasToken();
+    if (mounted) setState(() => _configured = configured);
+  }
+
+  Future<void> _edit() async {
+    final controller = TextEditingController();
+    final result = await showDialog<_UpdateTokenResult>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('GitHub API Token'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          obscureText: true,
+          autocorrect: false,
+          enableSuggestions: false,
+          decoration: const InputDecoration(
+            hintText: '粘贴 ghp_ 或 github_pat_ Token',
+            helperText: '仅保存在系统安全存储，不会进入备份或日志。',
+          ),
+        ),
+        actions: [
+          if (_configured == true)
+            TextButton(
+              onPressed: () =>
+                  Navigator.pop(context, const _UpdateTokenResult.clear()),
+              child: const Text('清除'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(
+              context,
+              _UpdateTokenResult.save(controller.text),
+            ),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (result == null || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      if (result.clear) {
+        await _store.clear();
+      } else {
+        await _store.save(result.value!);
+      }
+      if (mounted) {
+        setState(() {
+          _configured = !result.clear;
+          _busy = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              result.clear ? 'GitHub Token 已清除' : 'GitHub Token 已安全保存',
+            ),
+          ),
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _busy = false);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Token 未保存：$error')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => SiteLensCompactRow(
+    leading: const Icon(Icons.key_outlined, size: 18),
+    title: const Text('GitHub API Token'),
+    subtitle: Text(
+      _configured == null
+          ? '读取安全存储中…'
+          : _configured == true
+          ? '已配置，用于提高测试渠道查询额度'
+          : '未配置，测试渠道可能受 GitHub 匿名限流影响',
+    ),
+    trailing: _busy
+        ? const SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        : TextButton(
+            onPressed: _edit,
+            child: Text(_configured == true ? '管理' : '设置'),
+          ),
+    onTap: _busy ? null : _edit,
+  );
+}
+
+class _UpdateTokenResult {
+  const _UpdateTokenResult.save(this.value) : clear = false;
+  const _UpdateTokenResult.clear() : value = null, clear = true;
+
+  final String? value;
+  final bool clear;
 }

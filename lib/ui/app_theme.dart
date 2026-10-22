@@ -74,6 +74,13 @@ abstract final class SiteLensMetrics {
   static const panelRadius = 22.0;
   static const panelPadding = 18.0;
   static const inputRadius = 14.0;
+  static const compactRowHorizontalPadding = 12.0;
+  static const compactRowVerticalPadding = 3.0;
+  static const compactRowMinHeight = 52.0;
+  static const compactIconSize = 18.0;
+  static const compactIconButtonSize = 36.0;
+  static const compactDividerIndent = 12.0;
+  static const accordionContentIndent = 42.0;
 
   /// Fixed bottom navigation: one compact labelled row, never wraps. The
   /// outer surface is narrower than the screen so it reads as a floating iOS
@@ -175,6 +182,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
     required this.panelBorder,
     required this.divider,
     required this.sectionLabel,
+    required this.disabledContent,
     required this.ok,
     required this.warning,
     required this.danger,
@@ -203,6 +211,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
   final Color panelBorder;
   final Color divider;
   final Color sectionLabel;
+  final Color disabledContent;
   final Color ok;
   final Color warning;
   final Color danger;
@@ -222,6 +231,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
         panelBorder: const Color(0x3218202c),
         divider: const Color(0x1FFFFFFF),
         sectionLabel: const Color(0xffb9c6d8),
+        disabledContent: const Color(0xff778293),
         ok: const Color(0xff57d68f),
         warning: const Color(0xffe8b155),
         danger: const Color(0xffff8f86),
@@ -238,6 +248,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
       panelBorder: const Color(0x45f0f4fa),
       divider: const Color(0x1F000000),
       sectionLabel: const Color(0xff4a5568),
+      disabledContent: const Color(0xff8b93a1),
       ok: const Color(0xff1c8a56),
       warning: const Color(0xff9a6400),
       danger: const Color(0xffb3261e),
@@ -260,6 +271,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
     Color? panelBorder,
     Color? divider,
     Color? sectionLabel,
+    Color? disabledContent,
     Color? ok,
     Color? warning,
     Color? danger,
@@ -274,6 +286,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
     panelBorder: panelBorder ?? this.panelBorder,
     divider: divider ?? this.divider,
     sectionLabel: sectionLabel ?? this.sectionLabel,
+    disabledContent: disabledContent ?? this.disabledContent,
     ok: ok ?? this.ok,
     warning: warning ?? this.warning,
     danger: danger ?? this.danger,
@@ -293,6 +306,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
       panelBorder: Color.lerp(panelBorder, other.panelBorder, t)!,
       divider: Color.lerp(divider, other.divider, t)!,
       sectionLabel: Color.lerp(sectionLabel, other.sectionLabel, t)!,
+      disabledContent: Color.lerp(disabledContent, other.disabledContent, t)!,
       ok: Color.lerp(ok, other.ok, t)!,
       warning: Color.lerp(warning, other.warning, t)!,
       danger: Color.lerp(danger, other.danger, t)!,

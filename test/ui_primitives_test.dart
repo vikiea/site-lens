@@ -126,6 +126,42 @@ void main() {
     );
   });
 
+  testWidgets('accordion keeps one detail open per controller', (tester) async {
+    final controller = SiteLensAccordionController();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SiteLensPanel(
+          padding: EdgeInsets.zero,
+          child: Column(
+            children: [
+              SiteLensAccordion(
+                id: 'one',
+                controller: controller,
+                title: const Text('第一项'),
+                details: (_) => const Text('第一项详情'),
+              ),
+              const Divider(height: 1),
+              SiteLensAccordion(
+                id: 'two',
+                controller: controller,
+                title: const Text('第二项'),
+                details: (_) => const Text('第二项详情'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('第一项'));
+    await tester.pumpAndSettle();
+    expect(find.text('第一项详情'), findsOneWidget);
+    expect(find.text('第二项详情'), findsNothing);
+    await tester.tap(find.text('第二项'));
+    await tester.pumpAndSettle();
+    expect(find.text('第一项详情'), findsNothing);
+    expect(find.text('第二项详情'), findsOneWidget);
+  });
+
   testWidgets('glass alert dialog keeps Material dialog semantics', (
     tester,
   ) async {

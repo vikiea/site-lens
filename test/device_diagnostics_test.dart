@@ -398,27 +398,24 @@ void main() {
           expect(find.text('test.codec.0'), findsNothing);
           final position = tester.state<ScrollableState>(viewport).position;
           final previous = position.pixels;
-          await tester.tap(find.text('test.codec.299'));
+          await tester.tap(find.byKey(const ValueKey('codec-299')));
           await tester.pumpAndSettle();
-          expect(find.byType(BottomSheet), findsOneWidget);
-          final details = find.descendant(
-            of: find.byType(BottomSheet),
-            matching: find.byType(Scrollable),
-          );
+          expect(find.byType(BottomSheet), findsNothing);
           await tester.scrollUntilVisible(
             find.textContaining('Profile/Level'),
             100,
-            scrollable: details,
+            scrollable: viewport,
             maxScrolls: 30,
           );
-          await tester.pumpAndSettle();
           expect(
-            find.textContaining('[{"profile":1,"level":64}]').hitTestable(),
+            find.textContaining('[{"profile":1,"level":64}]'),
             findsOneWidget,
           );
-          Navigator.of(tester.element(find.byType(BottomSheet))).pop();
+          final expandedPosition = position.pixels;
+          await tester.tap(find.text('test.codec.299'));
           await tester.pumpAndSettle();
-          expect(position.pixels, previous);
+          expect(position.pixels, lessThanOrEqualTo(expandedPosition));
+          expect(position.pixels, greaterThanOrEqualTo(previous));
           expect(api.codecReads, 1);
           await tester.scrollUntilVisible(
             find.byKey(const ValueKey('codec-list-end')),
@@ -474,7 +471,7 @@ void main() {
         );
         await tester.tap(find.text('存储与权限'));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('应用安装授权'));
+        await tester.tap(find.text('应用安装授权').first);
         await tester.pumpAndSettle();
         expect(find.text('当前有效：否'), findsOneWidget);
         api.rows = [
@@ -497,9 +494,9 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text('当前快照中无此能力记录'), findsOneWidget);
         expect(find.text('当前有效：未知'), findsOneWidget);
-        Navigator.of(tester.element(find.byType(BottomSheet))).pop();
+        await tester.tap(find.text('应用安装授权').first);
         await tester.pumpAndSettle();
-        expect(find.text('应用安装授权'), findsNothing);
+        expect(find.text('当前有效：未知'), findsNothing);
         expect(api.codecReads, 0);
         expect(web.created, isEmpty);
         await tester.pumpWidget(const SizedBox());
@@ -528,25 +525,21 @@ void main() {
       );
       await tester.tap(find.text('存储与权限'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('应用安装授权'));
+      await tester.tap(
+        find.byKey(const ValueKey('capability-permissions.installPackages')),
+      );
       await tester.pumpAndSettle();
       expect(find.text('应用配置：是'), findsOneWidget);
       expect(find.text('当前有效：否'), findsOneWidget);
       expect(find.text('实际观测：无观测记录'), findsOneWidget);
-      await tester.scrollUntilVisible(
-        find.text('安装授权：否'),
-        100,
-        scrollable: find.descendant(
-          of: find.byType(BottomSheet),
-          matching: find.byType(Scrollable),
-        ),
-      );
       expect(find.text('安装授权：否').hitTestable(), findsOneWidget);
-      Navigator.of(tester.element(find.byType(BottomSheet))).pop();
-      await tester.pumpAndSettle();
-      await tester.pageBack();
+      await tester.tap(
+        find.byKey(const ValueKey('capability-permissions.installPackages')),
+      );
       await tester.pumpAndSettle();
       final before = api.reads;
+      await tester.pageBack();
+      await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('刷新'));
       await tester.pumpAndSettle();
       expect(api.reads, before + 1);

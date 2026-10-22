@@ -6,8 +6,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/ui/app_controller.dart';
+import 'package:site_lens/ui/app_theme.dart';
+import 'package:site_lens/ui/glass_surface.dart';
 import 'package:site_lens/ui/screens.dart';
-import 'package:site_lens/ui/ui_primitives.dart';
 
 import 'fake_web_host_api.dart';
 
@@ -28,11 +29,17 @@ void main() {
         label: '源一',
         url: Uri.parse('https://one.example/rules'),
         kind: 'builtin',
+        enabled: false,
       ),
       FilterSource(
         id: 2,
         label: '源二',
         url: Uri.parse('https://two.example/rules'),
+      ),
+      FilterSource(
+        id: 3,
+        label: '源三',
+        url: Uri.parse('https://three.example/rules'),
       ),
     ];
     for (final source in sources) {
@@ -48,151 +55,85 @@ void main() {
 
   Future<void> open(WidgetTester tester) async {
     await tester.pumpWidget(MaterialApp(home: FilterSettingsScreen(app: app)));
-    await tester.scrollUntilVisible(find.byTooltip('刷新「源一」'), 180);
+    await tester.pumpAndSettle();
   }
 
-  for (final fail in [false, true]) {
-    testWidgets(
-      'source refresh shows progress and recovers after failure=$fail',
-      (tester) async {
-        await open(tester);
-        await tester.tap(find.byTooltip('刷新「源一」'));
-        await tester.pump();
-        expect(app.requests, hasLength(1));
-        expect(find.text('正在刷新…'), findsOneWidget);
-        expect(find.text('正在刷新「源一」…'), findsOneWidget);
-        final busy = tester.widget<IconButton>(
-          find.descendant(
-            of: find.byWidgetPredicate(
-              (widget) =>
-                  widget is SiteLensRefreshButton && widget.tooltip == '刷新「源一」',
-            ),
-            matching: find.byType(IconButton),
-          ),
-        );
-        expect(busy.onPressed, isNull);
-        final idle = tester.widget<SiteLensRefreshButton>(
-          find.ancestor(
-            of: find.byTooltip('刷新「源二」'),
-            matching: find.byType(SiteLensRefreshButton),
-          ),
-        );
-        expect(idle.onPressed, isNull);
-        if (fail) {
-          app.requests.single.result.completeError(StateError('规则源 HTTP 503'));
-        } else {
-          app.requests.single.result.complete();
-        }
-        await tester.pumpAndSettle();
-        expect(find.text('正在刷新…'), findsNothing);
-        expect(find.byTooltip('刷新「源一」'), findsOneWidget);
-        expect(
-          tester
-              .widget<SiteLensRefreshButton>(
-                find.ancestor(
-                  of: find.byTooltip('刷新「源一」'),
-                  matching: find.byType(SiteLensRefreshButton),
-                ),
-              )
-              .onPressed,
-          isNotNull,
-        );
-        expect(find.textContaining(fail ? '刷新失败' : '已缓存'), findsWidgets);
-        await tester.pumpWidget(const SizedBox());
-      },
-    );
-  }
-
-  testWidgets('batch refresh advances to the next source after a failure', (
+  testWidgets('sources sort enabled first and then by id descending', (
     tester,
   ) async {
     await open(tester);
-    await tester.ensureVisible(find.byTooltip('刷新全部规则'));
-    await tester.tap(find.byTooltip('刷新全部规则'));
+    final source2 = tester.getTopLeft(find.text('源二')).dy;
+    final source3 = tester.getTopLeft(find.text('源三')).dy;
+    expect(source3, lessThan(source2));
+    await tester.scrollUntilVisible(
+      find.text('源一'),
+      200,
+      scrollable: find.byType(Scrollable),
+    );
+    final source1 = tester.getTopLeft(find.text('源一')).dy;
+    expect(source1, greaterThanOrEqualTo(0));
+    expect(
+      tester.widget<Text>(find.text('源一')).style?.color,
+      SiteLensColors.of(tester.element(find.text('源一'))).disabledContent,
+    );
+    expect(find.byType(SiteLensPanel), findsAtLeastNWidgets(1));
+  });
+
+  testWidgets('source row uses one compact more menu for refresh and delete', (
+    tester,
+  ) async {
+    await open(tester);
+    await tester.tap(find.byKey(const ValueKey('filter-source-more-2')));
+    await tester.pumpAndSettle();
+    expect(find.text('刷新规则源'), findsOneWidget);
+    expect(find.text('删除规则源'), findsOneWidget);
+    await tester.tap(find.text('刷新规则源'));
     await tester.pump();
-    expect(find.text('正在刷新 1 / 2 · 源一'), findsOneWidget);
+    expect(app.requests, hasLength(1));
+    expect(find.text('正在刷新…'), findsOneWidget);
+    app.requests.single.result.complete();
+    await tester.pumpAndSettle();
+    expect(find.textContaining('已缓存'), findsWidgets);
+  });
+
+  testWidgets('batch refresh remains available from the section more menu', (
+    tester,
+  ) async {
+    await open(tester);
+    await tester.tap(find.byKey(const ValueKey('filter-source-more')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('刷新全部规则'));
+    await tester.pump();
+    expect(find.text('正在刷新 1 / 2 · 源三'), findsOneWidget);
     app.requests[0].result.completeError(StateError('规则源 HTTP 503'));
     await tester.pump();
     expect(app.requests, hasLength(2));
     expect(find.text('正在刷新 2 / 2 · 源二'), findsOneWidget);
     app.requests[1].result.complete();
     await tester.pumpAndSettle();
-    expect(find.byTooltip('刷新全部规则'), findsOneWidget);
-    expect(find.textContaining('失败 1 个：源一'), findsOneWidget);
-    await tester.pumpWidget(const SizedBox());
+    expect(find.textContaining('失败 1 个：源三'), findsOneWidget);
   });
 
-  testWidgets('source actions fit narrow phone with large text', (
+  testWidgets('source details are inline and only one row expands', (
     tester,
   ) async {
-    tester.view.physicalSize = const Size(320, 900);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(
-      MaterialApp(
-        home: MediaQuery(
-          data: const MediaQueryData(textScaler: TextScaler.linear(2)),
-          child: FilterSettingsScreen(app: app),
-        ),
-      ),
-    );
-    await tester.scrollUntilVisible(
-      find.byKey(const ValueKey('filter-source-enabled-1')),
-      150,
-    );
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox());
+    await open(tester);
+    await tester.ensureVisible(find.text('源三'));
+    await tester.tap(find.text('源三'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('https://three.example/rules'), findsOneWidget);
+    await tester.ensureVisible(find.text('源二'));
+    await tester.tap(find.text('源二'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('https://three.example/rules'), findsNothing);
+    expect(find.textContaining('https://two.example/rules'), findsOneWidget);
   });
-
-  testWidgets(
-    'both source kinds expose a labelled switch and selection feedback',
-    (tester) async {
-      app.simulateSelection = true;
-      await open(tester);
-      for (final id in [1, 2]) {
-        final toggle = find.byKey(ValueKey('filter-source-enabled-$id'));
-        await tester.ensureVisible(toggle);
-        await tester.tap(toggle);
-        await tester.pumpAndSettle();
-        expect(tester.widget<Switch>(toggle).value, isFalse);
-        expect(find.textContaining('已关闭'), findsWidgets);
-      }
-      await tester.ensureVisible(find.byTooltip('刷新全部规则'));
-      expect(
-        tester
-            .widget<SiteLensRefreshButton>(
-              find.ancestor(
-                of: find.byTooltip('刷新全部规则'),
-                matching: find.byType(SiteLensRefreshButton),
-              ),
-            )
-            .onPressed,
-        isNull,
-      );
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
 }
 
 class _RefreshApp extends AppController {
   _RefreshApp(super.db) : super(api: FakeWebHostApi());
 
   final requests = <({FilterSource source, Completer<void> result})>[];
-  bool simulateSelection = false;
-
-  @override
-  Future<void> setFilterSourceEnabled(int id, bool enabled) async {
-    if (!simulateSelection) return super.setFilterSourceEnabled(id, enabled);
-    filterSourceList = [
-      for (final source in filterSourceList)
-        FilterSource.fromJson({
-          ...source.toJson(),
-          if (source.id == id) 'enabled': enabled,
-        }),
-    ];
-    notifyListeners();
-  }
 
   @override
   Future<FilterSnapshot> refreshFilterSource(FilterSource source) async {

@@ -7,6 +7,271 @@ import 'glass_surface.dart';
 
 enum SiteLensNoticeTone { info, warning, error }
 
+/// A bounded glass viewport: one material and one lazy page scroll owner.
+/// Long lists must not size their glass layer to the full content extent.
+class SiteLensListPanel extends StatelessWidget {
+  const SiteLensListPanel({
+    super.key,
+    required this.slivers,
+    this.controller,
+    this.scrollKey,
+  });
+
+  final List<Widget> slivers;
+  final ScrollController? controller;
+  final Key? scrollKey;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.all(SiteLensMetrics.pagePadding),
+    child: SiteLensPanel(
+      padding: EdgeInsets.zero,
+      child: CustomScrollView(
+        key: scrollKey,
+        controller: controller,
+        slivers: slivers,
+      ),
+    ),
+  );
+}
+
+class SiteLensPanelDivider extends StatelessWidget {
+  const SiteLensPanelDivider({super.key});
+
+  @override
+  Widget build(BuildContext context) => const Divider(
+    height: 1,
+    indent: SiteLensMetrics.compactDividerIndent,
+    endIndent: SiteLensMetrics.compactDividerIndent,
+  );
+}
+
+/// Compact visuals retain a complete row activation target and text scaling.
+class SiteLensCompactRow extends StatelessWidget {
+  const SiteLensCompactRow({
+    super.key,
+    required this.title,
+    this.subtitle,
+    this.leading,
+    this.trailing,
+    this.onTap,
+  });
+
+  final Widget title;
+  final Widget? subtitle;
+  final Widget? leading;
+  final Widget? trailing;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) => ListTile(
+    dense: true,
+    minTileHeight: SiteLensMetrics.compactRowMinHeight,
+    minLeadingWidth: SiteLensMetrics.compactIconSize,
+    horizontalTitleGap: 8,
+    minVerticalPadding: SiteLensMetrics.compactRowVerticalPadding,
+    contentPadding: const EdgeInsets.symmetric(
+      horizontal: SiteLensMetrics.compactRowHorizontalPadding,
+      vertical: SiteLensMetrics.compactRowVerticalPadding,
+    ),
+    leading: leading,
+    title: title,
+    subtitle: subtitle,
+    trailing: trailing,
+    onTap: onTap,
+  );
+}
+
+/// A controlled disclosure; callers own one selected ID per semantic panel.
+/// Details are built only when open, including in lazy lists.
+class SiteLensDisclosure extends StatelessWidget {
+  const SiteLensDisclosure({
+    super.key,
+    required this.title,
+    required this.expanded,
+    required this.onToggle,
+    required this.details,
+    this.subtitle,
+    this.leading,
+    this.trailing,
+    this.trailingBuilder,
+  });
+
+  final Widget title;
+  final Widget? subtitle;
+  final Widget? leading;
+  final Widget? trailing;
+  final Widget Function(BuildContext context, bool expanded)? trailingBuilder;
+  final bool expanded;
+  final VoidCallback onToggle;
+  final WidgetBuilder details;
+
+  @override
+  Widget build(BuildContext context) => SiteLensFoldable(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Semantics(
+          expanded: expanded,
+          child: SiteLensCompactRow(
+            title: title,
+            subtitle: subtitle,
+            leading: leading,
+            trailing:
+                trailingBuilder?.call(context, expanded) ??
+                trailing ??
+                Icon(
+                  expanded ? Icons.expand_less : Icons.expand_more,
+                  size: SiteLensMetrics.compactIconSize,
+                ),
+            onTap: onToggle,
+          ),
+        ),
+        if (expanded)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              SiteLensMetrics.compactRowHorizontalPadding,
+              0,
+              SiteLensMetrics.compactRowHorizontalPadding,
+              SiteLensMetrics.formGap,
+            ),
+            child: details(context),
+          ),
+      ],
+    ),
+  );
+}
+
+class SiteLensAccordionController extends ChangeNotifier {
+  Object? _openId;
+
+  Object? get openId => _openId;
+
+  void toggle(Object id) {
+    _openId = _openId == id ? null : id;
+    notifyListeners();
+  }
+
+  void close(Object id) {
+    if (_openId != id) return;
+    _openId = null;
+    notifyListeners();
+  }
+}
+
+class SiteLensAccordion extends StatefulWidget {
+  const SiteLensAccordion({
+    super.key,
+    required this.id,
+    required this.controller,
+    required this.title,
+    required this.details,
+    this.subtitle,
+    this.leading,
+    this.trailing,
+    this.trailingBuilder,
+    this.initiallyExpanded = false,
+  });
+
+  final Object id;
+  final SiteLensAccordionController controller;
+  final Widget title;
+  final WidgetBuilder details;
+  final Widget? subtitle;
+  final Widget? leading;
+  final Widget? trailing;
+  final Widget Function(BuildContext context, bool expanded)? trailingBuilder;
+  final bool initiallyExpanded;
+
+  @override
+  State<SiteLensAccordion> createState() => _SiteLensAccordionState();
+}
+
+class _SiteLensAccordionState extends State<SiteLensAccordion> {
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_changed);
+    if (widget.initiallyExpanded && widget.controller.openId == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && widget.controller.openId == null) {
+          widget.controller.toggle(widget.id);
+        }
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant SiteLensAccordion oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_changed);
+      widget.controller.addListener(_changed);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_changed);
+    super.dispose();
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final expanded = widget.controller.openId == widget.id;
+    return SiteLensDisclosure(
+      title: widget.title,
+      subtitle: widget.subtitle,
+      leading: widget.leading,
+      trailingBuilder: widget.trailingBuilder,
+      trailing: widget.trailing,
+      expanded: expanded,
+      onToggle: () => widget.controller.toggle(widget.id),
+      details: widget.details,
+    );
+  }
+}
+
+/// Finite settings groups keep their controls alive when the group is folded.
+class SiteLensSettingsPanel extends StatelessWidget {
+  const SiteLensSettingsPanel({
+    super.key,
+    required this.title,
+    required this.icon,
+    required this.child,
+    this.subtitle,
+    this.initiallyExpanded = false,
+  });
+
+  final String title;
+  final IconData icon;
+  final String? subtitle;
+  final bool initiallyExpanded;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => SiteLensPanel(
+    padding: EdgeInsets.zero,
+    child: SiteLensFoldable(
+      child: ExpansionTile(
+        key: PageStorageKey('settings-panel-$title'),
+        initiallyExpanded: initiallyExpanded,
+        maintainState: true,
+        leading: Icon(icon, size: SiteLensMetrics.compactIconSize),
+        title: Text(title),
+        subtitle: subtitle == null ? null : Text(subtitle!),
+        childrenPadding: EdgeInsets.zero,
+        children: [child],
+      ),
+    ),
+  );
+}
+
 @immutable
 class SiteLensMenuOption<T> {
   const SiteLensMenuOption({

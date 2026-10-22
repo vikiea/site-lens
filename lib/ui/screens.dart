@@ -13,6 +13,7 @@ import 'package:re_highlight/styles/atom-one-dark.dart';
 import 'package:re_highlight/styles/atom-one-light.dart';
 
 import '../domain/models.dart';
+import '../backup/backup_service.dart';
 import '../network/transport.dart';
 import '../scripts/metadata.dart';
 import '../update/update_controller.dart';
@@ -20,12 +21,15 @@ import '../update/github_token_store.dart';
 import '../web_host/native_hosts.dart';
 import 'app_controller.dart';
 import 'navigation_observer.dart';
-import 'data_management_screen.dart';
 import 'about_screen.dart';
 import 'software_update_screen.dart';
 import 'app_theme.dart';
 import '../settings/app_settings.dart'
-    show AppPolicy, SiteLensGlassQualityMode, UpdateChannel, UpdateChannelLabel;
+    show
+        AppPolicy,
+        PlayerVerticalGestureMode,
+        PlayerVerticalGestureModeLabel,
+        SiteLensGlassQualityMode;
 import 'glass_surface.dart';
 import 'help_notice.dart';
 import 'browser_entry.dart';
@@ -1373,6 +1377,7 @@ class FilterSettingsScreen extends StatefulWidget {
 class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
   AppController get app => widget.app;
   bool _busy = false;
+  final _sourceAccordion = SiteLensAccordionController();
   FilterSource? _refreshingSource;
   bool _refreshingAll = false;
   int _refreshIndex = 0;
@@ -1453,9 +1458,7 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
   }
 
   Future<void> _refreshAllSources() async {
-    final sources = app.filterSourceList
-        .where((source) => source.enabled)
-        .toList();
+    final sources = _sortedSources().where((source) => source.enabled).toList();
     if (sources.isEmpty) return;
     await _run(() async {
       setState(() {
@@ -1485,6 +1488,12 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
     });
   }
 
+  List<FilterSource> _sortedSources() =>
+      [...app.filterSourceList]..sort((a, b) {
+        if (a.enabled != b.enabled) return b.enabled ? 1 : -1;
+        return b.id.compareTo(a.id);
+      });
+
   Future<void> _deleteSource(FilterSource source) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1510,137 +1519,138 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: app,
-    builder: (context, _) => SiteLensPageScaffold(
-      title: '广告与反跟踪',
-      body: CustomScrollView(
-        slivers: [
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(
-              SiteLensMetrics.pagePadding,
-              12,
-              SiteLensMetrics.pagePadding,
-              32,
-            ),
-            sliver: SliverList.list(
-              children: [
-                SiteLensHelpNotice(
-                  app: app,
-                  noticeId: 'filters.overview',
-                  text: '规则只处理网页请求和页面元素，不读取 Cookie、账号密码或站点存储。旧的 512 KiB 通道限制不再作为规则总上限；大型规则源会自动加载，网络规则仍受 32 MiB 和 30 万条资源保护，页面元素规则按 document-start 预算运行。超出保护上限时会提示减少启用源。内置推荐源只保存来源地址，点击刷新后才下载、校验并编译规则；不支持的语法会显示为降级状态。',
-                ),
-                SiteLensPanel(
-                  padding: EdgeInsets.zero,
-                  child: Column(
+    builder: (context, _) {
+      final sources = _sortedSources();
+      return SiteLensPageScaffold(
+        title: '广告与反跟踪',
+        body: Padding(
+          padding: const EdgeInsets.all(SiteLensMetrics.pagePadding),
+          child: SiteLensPanel(
+            padding: EdgeInsets.zero,
+            child: CustomScrollView(
+              key: const PageStorageKey('filter-settings-scroll'),
+              slivers: [
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(0, 12, 0, 0),
+                  sliver: SliverList.list(
                     children: [
-                      SwitchListTile(
-                        title: const Text('启用广告过滤'),
-                        subtitle: const Text('按规则源和下方域名列表拦截请求'),
-                        value: app.filterPolicy.enabled,
-                        onChanged: _busy
-                            ? null
-                            : (value) => _run(
-                                () => app.updateFilterPolicy(
-                                  app.filterPolicy.copyWith(enabled: value),
-                                ),
-                              ),
+                      SiteLensHelpNotice(
+                        app: app,
+                        noticeId: 'filters.overview',
+                        text: '规则只处理网页请求和页面元素，不读取 Cookie、账号密码或站点存储。旧的 512 KiB 通道限制不再作为规则总上限；大型规则源会自动加载，网络规则仍受 32 MiB 和 30 万条资源保护，页面元素规则按 document-start 预算运行。超出保护上限时会提示减少启用源。内置推荐源只保存来源地址，点击刷新后才下载、校验并编译规则；不支持的语法会显示为降级状态。',
                       ),
-                      Divider(height: 1, indent: 18, endIndent: 18),
-                      SwitchListTile(
-                        title: const Text('隐藏页面广告元素'),
-                        subtitle: const Text('应用规则源中的 CSS 隐藏规则'),
-                        value: app.filterPolicy.pageFiltering,
-                        onChanged: _busy
-                            ? null
-                            : (value) => _run(
-                                () => app.updateFilterPolicy(
-                                  app.filterPolicy.copyWith(
-                                    pageFiltering: value,
+                      Column(
+                        children: [
+                          SwitchListTile(
+                            dense: true,
+                            title: const Text('启用广告过滤'),
+                            subtitle: const Text('按规则源和下方域名列表拦截请求'),
+                            value: app.filterPolicy.enabled,
+                            onChanged: _busy
+                                ? null
+                                : (value) => _run(
+                                    () => app.updateFilterPolicy(
+                                      app.filterPolicy.copyWith(enabled: value),
+                                    ),
                                   ),
-                                ),
-                              ),
+                          ),
+                          const SiteLensPanelDivider(),
+                          SwitchListTile(
+                            dense: true,
+                            title: const Text('隐藏页面广告元素'),
+                            subtitle: const Text('应用规则源中的 CSS 隐藏规则'),
+                            value: app.filterPolicy.pageFiltering,
+                            onChanged: _busy
+                                ? null
+                                : (value) => _run(
+                                    () => app.updateFilterPolicy(
+                                      app.filterPolicy.copyWith(
+                                        pageFiltering: value,
+                                      ),
+                                    ),
+                                  ),
+                          ),
+                          const SiteLensPanelDivider(),
+                          SiteLensActionRow(
+                            icon: Icons.block_outlined,
+                            title: '拦截域名',
+                            subtitle: app.filterPolicy.blockedDomains.isEmpty
+                                ? '未添加自定义拦截域名'
+                                : '${app.filterPolicy.blockedDomains.length} 个域名',
+                            onTap: _busy
+                                ? null
+                                : () => _editDomains(blocked: true),
+                          ),
+                          const SiteLensPanelDivider(),
+                          SiteLensActionRow(
+                            icon: Icons.check_circle_outline,
+                            title: '例外域名',
+                            subtitle: app.filterPolicy.domainExceptions.isEmpty
+                                ? '未添加例外域名'
+                                : '${app.filterPolicy.domainExceptions.length} 个域名，优先放行',
+                            onTap: _busy
+                                ? null
+                                : () => _editDomains(blocked: false),
+                          ),
+                        ],
                       ),
-                      Divider(height: 1, indent: 18, endIndent: 18),
-                      SiteLensActionRow(
-                        icon: Icons.block_outlined,
-                        title: '拦截域名',
-                        subtitle: app.filterPolicy.blockedDomains.isEmpty
-                            ? '未添加自定义拦截域名'
-                            : '${app.filterPolicy.blockedDomains.length} 个域名',
-                        onTap: _busy ? null : () => _editDomains(blocked: true),
-                      ),
-                      Divider(height: 1, indent: 18, endIndent: 18),
-                      SiteLensActionRow(
-                        icon: Icons.check_circle_outline,
-                        title: '例外域名',
-                        subtitle: app.filterPolicy.domainExceptions.isEmpty
-                            ? '未添加例外域名'
-                            : '${app.filterPolicy.domainExceptions.length} 个域名，优先放行',
-                        onTap: _busy
-                            ? null
-                            : () => _editDomains(blocked: false),
+                      SiteLensSectionHeader(
+                        title: '规则源',
+                        subtitle: _refreshingSource != null
+                            ? _refreshingAll
+                                  ? '正在刷新 $_refreshIndex / $_refreshTotal · ${_refreshingSource!.label}'
+                                  : '正在刷新「${_refreshingSource!.label}」…'
+                            : '内置与自定义源可分别启停；仅刷新已启用源。修改后重新加载页面生效，关闭源保留缓存。',
+                        action: PopupMenuButton<String>(
+                          key: const ValueKey('filter-source-more'),
+                          tooltip: '规则源更多',
+                          onSelected: (value) {
+                            if (value == 'add') {
+                              unawaited(_addSource());
+                            } else if (value == 'refresh') {
+                              unawaited(_refreshAllSources());
+                            }
+                          },
+                          itemBuilder: (_) => [
+                            const PopupMenuItem(
+                              value: 'add',
+                              child: Text('添加规则源'),
+                            ),
+                            PopupMenuItem(
+                              value: 'refresh',
+                              enabled:
+                                  !_busy &&
+                                  app.filterSourceList.any(
+                                    (source) => source.enabled,
+                                  ),
+                              child: const Text('刷新全部规则'),
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
                 ),
-                SiteLensSectionHeader(
-                  title: '规则源',
-                  subtitle: _refreshingSource != null
-                      ? _refreshingAll
-                            ? '正在刷新 $_refreshIndex / $_refreshTotal · ${_refreshingSource!.label}'
-                            : '正在刷新「${_refreshingSource!.label}」…'
-                      : '内置与自定义源可分别启停；仅刷新已启用源。修改后重新加载页面生效，关闭源保留缓存。',
-                  action: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SiteLensRefreshButton(
-                        tooltip: '刷新全部规则',
-                        refreshing: _refreshingAll || _refreshingSource != null,
-                        onPressed:
-                            _busy ||
-                                !app.filterSourceList.any(
-                                  (source) => source.enabled,
-                                )
-                            ? null
-                            : _refreshAllSources,
-                      ),
-                      IconButton(
-                        tooltip: '添加规则源',
-                        onPressed: _busy ? null : _addSource,
-                        icon: const Icon(Icons.add),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(
-              SiteLensMetrics.pagePadding,
-              0,
-              SiteLensMetrics.pagePadding,
-              32,
-            ),
-            sliver: app.filterSourceList.isEmpty
-                ? const SliverToBoxAdapter(
-                    child: SiteLensPanel(
-                      child: Text('还没有规则源。点击右上角添加公开的规则列表 URL。'),
+                if (sources.isEmpty)
+                  const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(14, 0, 14, 24),
+                      child: Text('还没有规则源。点击右上角更多按钮添加公开的规则列表 URL。'),
                     ),
                   )
-                : SliverList.builder(
-                    itemCount: app.filterSourceList.length,
+                else
+                  SliverList.builder(
+                    itemCount: sources.length,
                     itemBuilder: (context, index) {
-                      final source = app.filterSourceList[index];
-                      return Padding(
-                        padding: const EdgeInsets.only(
-                          bottom: SiteLensMetrics.itemGap,
-                        ),
-                        child: SiteLensPanel(
-                          padding: EdgeInsets.zero,
-                          child: _FilterSourceRow(
+                      final source = sources[index];
+                      return Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _FilterSourceRow(
                             source: source,
                             busy: _busy,
                             refreshing: _refreshingSource?.id == source.id,
+                            accordion: _sourceAccordion,
                             onRefresh: () => _run(() => _refreshSource(source)),
                             onEnabledChanged: (value) => _run(
                               () =>
@@ -1648,14 +1658,19 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
                             ),
                             onDelete: () => _deleteSource(source),
                           ),
-                        ),
+                          if (index < sources.length - 1)
+                            const SiteLensPanelDivider(),
+                        ],
                       );
                     },
                   ),
+                const SliverToBoxAdapter(child: SizedBox(height: 24)),
+              ],
+            ),
           ),
-        ],
-      ),
-    ),
+        ),
+      );
+    },
   );
 }
 
@@ -1680,6 +1695,7 @@ class _FilterSourceRow extends StatelessWidget {
     required this.source,
     required this.busy,
     required this.refreshing,
+    required this.accordion,
     required this.onRefresh,
     required this.onDelete,
     required this.onEnabledChanged,
@@ -1688,58 +1704,111 @@ class _FilterSourceRow extends StatelessWidget {
   final FilterSource source;
   final bool busy;
   final bool refreshing;
+  final SiteLensAccordionController accordion;
   final VoidCallback onRefresh;
   final VoidCallback onDelete;
   final ValueChanged<bool> onEnabledChanged;
 
   @override
-  Widget build(BuildContext context) => ListTile(
-    leading: Icon(
-      source.status == FilterSourceStatus.failed
-          ? Icons.error_outline
-          : source.status == FilterSourceStatus.degraded
-          ? Icons.warning_amber_outlined
-          : Icons.rule_folder_outlined,
-    ),
-    title: Text(source.label, maxLines: 2, overflow: TextOverflow.ellipsis),
-    subtitle: Text(
-      refreshing
-          ? '正在刷新…'
-          : source.error == null
-          ? '${source.enabled ? '已启用' : '已关闭'} · ${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)} · ${source.url}'
-          : '${source.enabled ? '已启用' : '已关闭'} · ${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)}\n${friendlyError(source.error!)}',
-      maxLines: 3,
-      overflow: TextOverflow.ellipsis,
-    ),
-    trailing: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Semantics(
-          label: '${source.label}规则源',
-          child: Switch(
-            key: ValueKey('filter-source-enabled-${source.id}'),
-            value: source.enabled,
-            onChanged: busy ? null : onEnabledChanged,
+  Widget build(BuildContext context) {
+    final colors = SiteLensColors.of(context);
+    final muted = !source.enabled;
+    final statusIcon = switch (source.status) {
+      FilterSourceStatus.failed => Icons.error_outline,
+      FilterSourceStatus.degraded => Icons.warning_amber_outlined,
+      _ => Icons.rule_folder_outlined,
+    };
+    final statusColor = muted
+        ? colors.disabledContent
+        : source.status == FilterSourceStatus.failed
+        ? colors.danger
+        : source.status == FilterSourceStatus.degraded
+        ? colors.warning
+        : Theme.of(context).colorScheme.onSurfaceVariant;
+    return SiteLensAccordion(
+      id: source.id,
+      controller: accordion,
+      leading: Icon(
+        statusIcon,
+        size: SiteLensMetrics.compactIconSize,
+        color: statusColor,
+      ),
+      title: Text(
+        source.label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: Theme.of(context).textTheme.titleSmall
+            ?.copyWith(color: muted ? colors.disabledContent : null),
+      ),
+      subtitle: Text(
+        refreshing
+            ? '正在刷新…'
+            : '${source.enabled ? '已启用' : '已关闭'} · ${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)}',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: Theme.of(context).textTheme.bodySmall
+            ?.copyWith(color: muted ? colors.disabledContent : null),
+      ),
+      trailingBuilder: (context, expanded) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Semantics(
+            label: '${source.label}规则源',
+            child: Switch(
+              key: ValueKey('filter-source-enabled-${source.id}'),
+              value: source.enabled,
+              onChanged: busy ? null : onEnabledChanged,
+            ),
+          ),
+          PopupMenuButton<String>(
+            key: ValueKey('filter-source-more-${source.id}'),
+            enabled: !busy,
+            tooltip: '规则源更多',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(
+              minWidth: SiteLensMetrics.compactIconButtonSize,
+              minHeight: SiteLensMetrics.compactIconButtonSize,
+            ),
+            iconSize: SiteLensMetrics.compactIconSize,
+            onSelected: (value) {
+              if (value == 'refresh') onRefresh();
+              if (value == 'delete') onDelete();
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'refresh', child: Text('刷新规则源')),
+              PopupMenuItem(value: 'delete', child: Text('删除规则源')),
+            ],
+          ),
+          Icon(
+            expanded ? Icons.expand_less : Icons.expand_more,
+            size: SiteLensMetrics.compactIconSize,
+            color: muted ? colors.disabledContent : null,
+          ),
+        ],
+      ),
+      details: (context) => Padding(
+        padding: const EdgeInsets.only(left: 42, right: 8),
+        child: DefaultTextStyle.merge(
+          style: Theme.of(context).textTheme.bodySmall!
+              .copyWith(color: muted ? colors.disabledContent : null),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('地址：${source.url}'),
+              if (source.version.trim().isNotEmpty)
+                Text('版本：${source.version}'),
+              if (source.license.trim().isNotEmpty)
+                Text('许可证：${source.license}'),
+              if (source.refreshedAt != null)
+                Text('最近刷新：${source.refreshedAt!.toLocal()}'),
+              if (source.error != null)
+                Text('错误：${friendlyError(source.error!)}'),
+            ],
           ),
         ),
-        SiteLensRefreshButton(
-          tooltip: '刷新「${source.label}」',
-          refreshing: refreshing,
-          onPressed: busy ? null : onRefresh,
-        ),
-        PopupMenuButton<String>(
-          enabled: !busy,
-          tooltip: '规则源操作',
-          onSelected: (value) {
-            if (value == 'delete') onDelete();
-          },
-          itemBuilder: (_) => const [
-            PopupMenuItem(value: 'delete', child: Text('删除规则源')),
-          ],
-        ),
-      ],
-    ),
-  );
+      ),
+    );
+  }
 }
 
 String _filterSourceStatusLabel(FilterSourceStatus status) => switch (status) {
@@ -2043,8 +2112,10 @@ class _UpdateEntryRow extends ConsumerWidget {
         subtitle: updateEntrySubtitle(controller),
         onTap: () => Navigator.of(context).push(
           MaterialPageRoute<void>(
-            builder: (_) =>
-                SoftwareUpdateScreen(channel: app.settings.updateChannel),
+            builder: (_) => SoftwareUpdateScreen(
+              app: app,
+              channel: app.settings.updateChannel,
+            ),
           ),
         ),
       ),
@@ -2245,7 +2316,7 @@ class SiteLensSegmented<T> extends StatelessWidget {
     required this.options,
   });
   final T value;
-  final ValueChanged<T> onChanged;
+  final ValueChanged<T>? onChanged;
   final List<(T, String, IconData)> options;
 
   @override
@@ -2272,10 +2343,10 @@ class SiteLensSegmented<T> extends StatelessWidget {
             Expanded(
               child: Semantics(
                 selected: option == value,
-                button: true,
+                button: onChanged != null,
                 label: label,
                 child: InkWell(
-                  onTap: () => onChanged(option),
+                  onTap: onChanged == null ? null : () => onChanged!(option),
                   borderRadius: BorderRadius.circular(
                     (SiteLensMetrics.segmentedHeight -
                             SiteLensMetrics.segmentedInset * 2) /
@@ -2328,39 +2399,6 @@ class SiteLensSegmented<T> extends StatelessWidget {
       ),
     );
   }
-}
-
-/// A collapsed "详情" disclosure used for long safety and diagnostic text: the
-/// row stays short, and the full wording is one tap away instead of gone.
-class _Details extends StatelessWidget {
-  const _Details({
-    super.key,
-    required this.text,
-    this.title = '详情',
-    this.startsOpen = false,
-  });
-  final String text;
-  final String title;
-  final bool startsOpen;
-
-  @override
-  Widget build(BuildContext context) => Theme(
-    data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-    child: SiteLensFoldable(
-      child: ExpansionTile(
-        initiallyExpanded: startsOpen,
-        tilePadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 2),
-        childrenPadding: const EdgeInsets.fromLTRB(18, 0, 18, 14),
-        title: Text(title, style: Theme.of(context).textTheme.labelMedium),
-        children: [
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Text(text, style: Theme.of(context).textTheme.bodySmall),
-          ),
-        ],
-      ),
-    ),
-  );
 }
 
 class BrowserScreen extends StatefulWidget {

@@ -222,8 +222,7 @@ void main() {
           Brightness.light,
         ).colorScheme.primary,
       );
-      await tester.tap(find.text('外观与玻璃'));
-      await tester.pumpAndSettle();
+      expect(find.text('外观'), findsOneWidget);
       expect(find.text('主题色'), findsOneWidget);
       expect(find.text('玻璃质量'), findsOneWidget);
       expect(find.text('自动'), findsOneWidget);

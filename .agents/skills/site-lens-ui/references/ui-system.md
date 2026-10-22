@@ -34,6 +34,8 @@ Use `SiteLensMetrics`, `SiteLensColors`, `Theme.of(context).colorScheme`, and `T
 - Page padding: `SiteLensMetrics.pagePadding`.
 - Panel radius and padding: `SiteLensMetrics.panelRadius` and `SiteLensMetrics.panelPadding`.
 - Input/control radius: `SiteLensMetrics.inputRadius`.
+- Compact rows: `compactRowHorizontalPadding`, `compactRowVerticalPadding`, `compactRowMinHeight`, `compactIconSize`, and `compactIconButtonSize`.
+- Foldable details: `compactDividerIndent` and `accordionContentIndent`; use the shared accordion controller for one-open detail behavior.
 - Bottom navigation: `SiteLensMetrics.navBarHeight`, `navRadius`, `navHorizontalInset`, and `navCapsuleInset`. Keep the rendered capsule radius at or below half its post-inset height; an oversized superellipse radius produces a visibly jagged anti-aliased edge.
 - Browser toolbar: `toolbarHeight`, `toolbarIconSize`, `toolbarInset`, and `toolbarRadius`.
 
@@ -45,8 +47,11 @@ Use `SiteLensColors.of(context)` for backdrop, panel, navigation, divider, secti
 - Browser toolbar: fixed equal-width row using `SiteLensSurfaceRole.platformView`; no wrapping or per-button surfaces.
 - Panels: `SiteLensPanel` or `SiteLensGlassSurface`, with content padding from tokens. Segmented tracks inside a light glass panel use the recessed well tint so the track and selected pill remain distinct from a white panel surface.
 - Composite information panels: related sections such as detection results, backup addresses, and history may share one `SiteLensPanel`; separate sections use `Divider(height: 1)` and foldable `ExpansionTile` rows inside that single glass boundary. Use `SiteLensMetrics.itemGap` only between separate semantic panels, never between sections that have been intentionally merged.
+- Settings: finite related controls stay in one foldable semantic panel. Keep the first useful panel expanded by default, keep the others collapsed, and place complex workflows behind a direct row. About and update are separate direct entries; do not add a combined intermediate page.
 - Foldable panels use the shared theme/primitive and remain shadow-free in every interaction state. Expansion must not add Material elevation, a drop shadow, an opaque slab, or a pressed shadow; use the existing glass tint, overlay and shape tokens for feedback.
-- Rows: use shared action/status row primitives when several pages need the same icon-title-description-trailing layout.
+- Rows: use shared compact action/status row primitives when several pages need the same icon-title-description-trailing layout. Keep the primary label to one line where possible and move secondary actions into a compact overflow menu.
+- Long lists: preserve a single lazy `CustomScrollView` or `SliverList` owner. A shared glass viewport is preferred when it remains bounded and does not force the list into a `Column`; otherwise keep the list page-level and remove only the per-item glass boundaries. Never trade virtualization for a visually uniform panel.
+- Disabled rows: mute the icon, title, subtitle, and secondary controls through the disabled content token while retaining readable status and accessible toggles.
 - Feedback: use the shared notice/error surface for persistent page feedback; reserve snack bars for short-lived confirmation.
 - Dialogs and sheets: keep Material semantics and actions, but use the themed opaque overlay or a liquid-glass wrapper. Do not restore default elevation or default opaque blue/grey surfaces.
 - Empty states: use one icon, one title, optional explanation, and one action with shared spacing.
@@ -62,6 +67,7 @@ Use `SiteLensColors.of(context)` for backdrop, panel, navigation, divider, secti
 - Are focus, semantics, hit targets, and dismiss actions preserved?
 - Does the same screen read correctly in light mode, dark mode, and a non-default seed preset?
 - Do foldable panels remain shadow-free and visually stable before, during, and after expansion in light mode, dark mode, and a non-default seed preset?
+- Does every long list stay lazy with one scroll owner and a bounded glass render area?
 
 ## Compact choice menus
 
@@ -76,6 +82,7 @@ Use `SiteLensMenuSelector<T>` with typed `SiteLensMenuOption<T>` values for an i
 
 - Consecutive semantic rows inside a panel use `SiteLensMetrics.listGap` when they are separate surfaces or tiles. Do not rely on incidental `ListView` spacing or omit the gap on recommendation/result lists.
 - A result row that contains a URL should use `SiteLensCopyableText` for the URL so long press copies the address without copying status labels or explanatory text.
+- A list of related records uses one panel boundary and internal dividers only when its row count and viewport strategy remain efficient. Keep row actions compact and expandable details lazy; the panel count is secondary to scroll performance.
 
 ## Glass surface opacity
 

@@ -7,14 +7,21 @@ import 'glass_surface.dart';
 import 'ui_primitives.dart';
 import 'ui_util.dart';
 
-class PlayerGesturesScreen extends StatelessWidget {
+class PlayerGesturesScreen extends StatefulWidget {
   const PlayerGesturesScreen({super.key, required this.app});
 
   final AppController app;
 
   @override
+  State<PlayerGesturesScreen> createState() => _PlayerGesturesScreenState();
+}
+
+class _PlayerGesturesScreenState extends State<PlayerGesturesScreen> {
+  final _accordion = SiteLensAccordionController();
+
+  @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: app,
+    listenable: widget.app,
     builder: (context, _) => SiteLensPageScaffold(
       title: '播放器手势',
       body: ListView(
@@ -27,38 +34,48 @@ class PlayerGesturesScreen extends StatelessWidget {
               children: [
                 ListTile(
                   leading: const Icon(Icons.swipe_vertical_outlined, size: 20),
-                  title: _VerticalGestureSetting(app: app),
+                  title: _VerticalGestureSetting(app: widget.app),
                 ),
                 _GestureDetails(
+                  id: 'vertical',
+                  controller: _accordion,
                   text:
-                      app.playerVerticalGesture ==
+                      widget.app.playerVerticalGesture ==
                           PlayerVerticalGestureMode.brightnessVolume
                       ? '在画面左半侧上下滑动调节亮度，右半侧调节媒体音量。向上增加，向下减少；从当前亮度和音量开始调节。'
                       : '向上滑动切换下一集，向下滑动切换上一集。滑动超过画面高度的十分之一才会切换；播放列表首尾不再继续切换。',
                 ),
                 const Divider(height: 1),
-                const _GestureHelp(
+                _GestureHelp(
+                  id: 'horizontal',
+                  controller: _accordion,
                   icon: Icons.swipe_outlined,
                   title: '左右滑动',
                   summary: '快进 / 快退',
                   details: '向右滑动快进，向左滑动快退。滑动时预览目标时间，松手后跳转；横向距离按视频总时长换算。尚未取得总时长时不可拖动定位。',
                 ),
                 const Divider(height: 1),
-                const _GestureHelp(
+                _GestureHelp(
+                  id: 'long-press',
+                  controller: _accordion,
                   icon: Icons.touch_app_outlined,
                   title: '长按',
                   summary: '临时 2 倍速',
                   details: '长按播放画面临时使用 2 倍速，松开后恢复长按前的播放速度。',
                 ),
                 const Divider(height: 1),
-                const _GestureHelp(
+                _GestureHelp(
+                  id: 'double-tap',
+                  controller: _accordion,
                   icon: Icons.ads_click_outlined,
                   title: '双击',
                   summary: '播放 / 暂停',
                   details: '双击播放画面切换播放与暂停；缓冲中仍以播放器实际状态为准。',
                 ),
                 const Divider(height: 1),
-                const _GestureHelp(
+                _GestureHelp(
+                  id: 'tap',
+                  controller: _accordion,
                   icon: Icons.pan_tool_alt_outlined,
                   title: '单击',
                   summary: '显示 / 隐藏控制栏',
@@ -136,6 +153,8 @@ class _VerticalGestureSetting extends StatelessWidget {
 
 class _GestureHelp extends StatelessWidget {
   const _GestureHelp({
+    required this.id,
+    required this.controller,
     required this.icon,
     required this.title,
     required this.summary,
@@ -143,6 +162,8 @@ class _GestureHelp extends StatelessWidget {
   });
 
   final IconData icon;
+  final String id;
+  final SiteLensAccordionController controller;
   final String title;
   final String summary;
   final String details;
@@ -166,25 +187,29 @@ class _GestureHelp extends StatelessWidget {
           ),
         ),
       ),
-      _GestureDetails(text: details),
+      _GestureDetails(id: id, controller: controller, text: details),
     ],
   );
 }
 
 class _GestureDetails extends StatelessWidget {
-  const _GestureDetails({required this.text});
+  const _GestureDetails({
+    required this.id,
+    required this.controller,
+    required this.text,
+  });
+  final String id;
+  final SiteLensAccordionController controller;
   final String text;
 
   @override
-  Widget build(BuildContext context) => SiteLensFoldable(
-    child: ExpansionTile(
-      title: Text('详情', style: Theme.of(context).textTheme.labelMedium),
-      children: [
-        Align(
-          alignment: Alignment.centerLeft,
-          child: Text(text, style: Theme.of(context).textTheme.bodySmall),
-        ),
-      ],
+  Widget build(BuildContext context) => SiteLensAccordion(
+    id: id,
+    controller: controller,
+    title: Text('详情', style: Theme.of(context).textTheme.labelMedium),
+    details: (context) => Align(
+      alignment: Alignment.centerLeft,
+      child: Text(text, style: Theme.of(context).textTheme.bodySmall),
     ),
   );
 }
