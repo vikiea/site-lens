@@ -7,6 +7,9 @@
   const nodes = new Set();
   const connectedBefore = new WeakSet();
   const watched = new WeakSet();
+  const staleNodeSources = new WeakMap();
+  const observedNodeSources = new WeakMap();
+  const staleElementSignatures = new WeakMap();
   const resumeNodes = new Set();
   const contexts = new Set();
   const resumeContexts = new Set();
@@ -77,6 +80,11 @@
   let lastActiveNode = null;
   let lastCandidates = '';
   let lastCandidateList = [];
+  let lastPageUrl = pageUrl();
+  let snapshotStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : 0;
+  let snapshotSequence = 0;
   let reportScheduled = false;
   let reportAgain = false;
   let lastReportAt = 0;
@@ -88,16 +96,32 @@
     if (node.isConnected) connectedBefore.add(node);
     if (!watched.has(node) && typeof node.addEventListener === 'function') {
       watched.add(node);
-      for (const type of ['play','playing','pause','ended','emptied']) {
+      for (const type of ['play','playing','pause','ended','emptied','loadedmetadata']) {
         node.addEventListener(type, () => mediaEvent(type,node));
       }
     }
   }
   function mediaEvent(type,node) {
+    beginSnapshotIfNeeded();
     track(node);
+    // Buffered playback can emit these events after a SPA route change.
+    // Only a changed source (or a new media element) can bind to the new page.
     if ((type === 'play' || type === 'playing') && !node.paused && !node.ended) lastActiveNode = node;
     if (['ended','emptied'].includes(type) || (['play','playing'].includes(type) && !node.paused && !node.ended)) resumeNodes.delete(node);
     if (blocked && type!=='pause' && type!=='ended') pause(); else scheduleReport();
+  }
+  function isFreshNode(node) {
+    const raw = node.currentSrc || node.src || '';
+    if (staleNodeSources.has(node)) {
+      if (raw === staleNodeSources.get(node)) return false;
+      staleNodeSources.delete(node);
+    }
+    observedNodeSources.set(node, raw);
+    return true;
+  }
+  function elementSignature(element) {
+    return JSON.stringify([...mediaAttributes, 'data-episode', 'data-episode-index', 'data-num']
+      .map(name => element.getAttribute(name)).concat(element.textContent || ''));
   }
   function collect() {
     for (const node of nodes) {
@@ -142,7 +166,9 @@
     return Number.isFinite(value) && value > 0 && value < 100000 ? value : null;
   }
   function candidateKey(url) {
-    const volatile = /^(?:auth|auth_key|expires?|exp|hmac|line|sig(?:nature)?|sign|t|time|timestamp|token|via|via_bm)$/i;
+    // `line` can select an episode or a stream variant. It is content
+    // identity, not authorization rotation, and must survive discovery.
+    const volatile = /^(?:auth|auth_key|expires?|exp|hmac|sig(?:nature)?|sign|t|time|timestamp|token|via|via_bm)$/i;
     for (const key of Array.from(url.searchParams.keys())) {
       if (volatile.test(key)) url.searchParams.delete(key);
     }
@@ -160,7 +186,7 @@
         /(?:^|\/)(?:segment|chunk|fragment|part)[-_]?\d+/i.test(path);
     } catch (_) { return false; }
   }
-  function addCandidate(output, seen, raw, mime = '', durationMs, force = false, title, poster = '', episode = null) {
+  function addCandidate(output, seen, raw, mime = '', durationMs, force = false, title, poster = '', episode = null, identitySuffix = '') {
     if (typeof raw !== 'string' || !raw.trim()) return;
     try {
       const url = new URL(raw, document.baseURI);
@@ -175,13 +201,14 @@
         url: url.href,
         title: String(title ?? document.title ?? '').slice(0, 512),
         mime: resolvedMime.slice(0, 128),
+        pageUrl: pageUrl(),
       };
       const thumbnail = thumbnailUrl(poster);
       if (thumbnail) candidate.thumbnail = thumbnail;
       const number = episodeNumber(episode);
       if (number != null) candidate.episodeNumber = number;
       if (Number.isFinite(durationMs)) candidate.durationMs = Math.round(durationMs);
-      const key = candidateKey(url);
+      const key = candidateKey(url) + identitySuffix;
       const previous = seen.get(key);
       if (previous == null) {
         seen.set(key, output.length);
@@ -195,29 +222,47 @@
   }
   function report() {
     if (!alive) return;
+    beginSnapshotIfNeeded();
     collect();
-    const playing = Array.from(nodes).some(node => !node.paused && !node.ended) ||
+    const playing = Array.from(nodes).some(node => isFreshNode(node) && !node.paused && !node.ended) ||
       Array.from(contexts).some(ctx => ctx.state === 'running');
     const candidates = [];
     const seen = new Map();
     const episodes = [];
     const episodeSeen = new Map();
     for (const node of nodes) {
+      if (!isFreshNode(node)) continue;
       const raw = node.currentSrc || node.src || '';
       addCandidate(candidates, seen, raw, node.type, Number.isFinite(node.duration) ? node.duration * 1000 : undefined, true, undefined, node.poster || '');
     }
     const selector = mediaAttributes.map(name => `[${name}]`).join(',');
     document.querySelectorAll(selector).forEach(element => {
       if (!element || typeof element.getAttribute !== 'function') return;
+      if (staleElementSignatures.has(element)) {
+        if (staleElementSignatures.get(element) === elementSignature(element)) return;
+        staleElementSignatures.delete(element);
+      }
       const mime = element.getAttribute('type') || '';
       const poster = element.getAttribute('poster') || element.getAttribute('data-poster') || '';
       const episode = element.getAttribute('data-episode') ||
         element.getAttribute('data-episode-index') || element.getAttribute('data-num') ||
         /第\s*(\d+)\s*[集话期]/.exec(element.textContent || '')?.[1] || '';
+      const number = episodeNumber(episode);
       for (const name of mediaAttributes) {
         const raw = element.getAttribute(name);
         addCandidate(candidates, seen, raw, mime, undefined, false, undefined, poster, episode);
-        addCandidate(episodes, episodeSeen, raw, mime, undefined, false, undefined, poster, episode);
+        addCandidate(
+          episodes,
+          episodeSeen,
+          raw,
+          mime,
+          undefined,
+          false,
+          undefined,
+          poster,
+          episode,
+          number == null ? '' : `|episode=${number}`,
+        );
       }
     });
     // Resource timing is a fallback until a media element has confirmed real
@@ -225,11 +270,13 @@
     // manifest that the page actually fetched; the identity map removes exact
     // repeats and known signature changes.
     const hasConfirmedPlayback = Array.from(nodes).some(node => {
+      if (!isFreshNode(node)) return false;
       const raw = node.currentSrc || node.src || '';
       return Boolean(raw) && looksMedia(raw, node.type || '') &&
         !node.paused && !node.ended;
     });
     const hasMeaningfulMediaElement = Array.from(nodes).some(node => {
+      if (!isFreshNode(node)) return false;
       const raw = node.currentSrc || node.src || '';
       return /^https?:/i.test(raw) && looksMedia(raw, node.type || '') &&
         !/placeholder|loading|blank/i.test(raw);
@@ -237,45 +284,63 @@
     if ((!hasConfirmedPlayback && !hasMeaningfulMediaElement) &&
         typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
       for (const entry of performance.getEntriesByType('resource').slice(-256)) {
+        if (Number.isFinite(entry.startTime) && entry.startTime < snapshotStartedAt) continue;
         if (isTransportResource(entry.name)) continue;
         addCandidate(candidates, seen, entry.name, entry.initiatorType || '');
       }
     }
-    if (episodes.length > 1) {
+    if (episodes.length > 0) {
       const episodeByUrl = new Map();
-      episodes.forEach((item, index) => {
+      episodes.forEach(item => {
         const number = item.episodeNumber;
         if (number != null) {
           const series = item.title.replace(/\s*[-–—|]?\s*(?:第\s*\d+\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*\d+\b)\s*$/gi, '').trim();
           item.title = `${series} - 第${number}集`;
         }
-        episodeByUrl.set(item.url, item);
+        const key = candidateKey(new URL(item.url, document.baseURI));
+        const entries = episodeByUrl.get(key) || [];
+        entries.push(item);
+        episodeByUrl.set(key, entries);
       });
       for (const item of candidates) {
-        const episode = episodeByUrl.get(item.url);
-        if (episode) {
+        const matches = episodeByUrl.get(candidateKey(new URL(item.url, document.baseURI))) || [];
+        // Several playlist entries with one normalized URL do not provide
+        // enough evidence to choose an episode safely. Keep the stream visible
+        // while leaving its episode unknown instead of copying the last label.
+        if (matches.length === 1) {
+          const episode = matches[0];
           item.title = episode.title;
           item.episodeNumber = episode.episodeNumber;
           if (!item.thumbnail && episode.thumbnail) item.thumbnail = episode.thumbnail;
+        } else if (matches.length > 1) {
+          delete item.episodeNumber;
+          item.title = item.title.replace(/\s*[-–—|]?\s*(?:第\s*\d+\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*\d+\b)\s*$/gi, '').trim();
+          item.title = `${item.title || '媒体'} · 集数未确认`;
         }
       }
     }
     // Resource timing can contain ads and manifests; only a page-exposed
     // playlist may advertise episode switching.
-    lastCandidateList = episodes;
+    lastCandidateList = episodes.filter(item => {
+      const key = candidateKey(new URL(item.url, document.baseURI));
+      return episodes.filter(other => candidateKey(new URL(other.url, document.baseURI)) === key).length === 1;
+    });
     if (!connected) { connect(); return; }
     const state = {
       playing,
       resumable: resumeNodes.size > 0 || resumeContexts.size > 0 ||
-        (lastActiveNode != null && nodes.has(lastActiveNode) && !lastActiveNode.ended),
+        (lastActiveNode != null && isFreshNode(lastActiveNode) && nodes.has(lastActiveNode) && !lastActiveNode.ended),
       canSkip: canSwitchCandidate(),
       title: (document.title || '').slice(0, 512),
     };
     const stateKey = JSON.stringify(state);
     if (stateKey !== lastState) { lastState = stateKey; post('state', state); }
-    const candidateKey = JSON.stringify(candidates);
-    if (candidateKey === lastCandidates) return;
-    lastCandidates = candidateKey;
+    const candidatePayloadKey = JSON.stringify(candidates);
+    if (candidatePayloadKey === lastCandidates) return;
+    lastCandidates = candidatePayloadKey;
+    // Replace this frame's snapshot, including the empty set. A stream that
+    // disappears without navigation must not remain authorized in the picker.
+    post('clear', {reason: 'snapshot', pageUrl: pageUrl(), snapshot: snapshotSequence});
     // Discovery must never make playback state exceed the native message limit.
     let batch = [];
     for (const candidate of candidates.slice(0, 256)) {
@@ -287,6 +352,45 @@
       if (JSON.stringify({...message,candidates:[candidate]}).length <= 4096) batch.push(candidate);
     }
     if (batch.length) post('candidates', {candidates:batch});
+  }
+
+  function pageUrl() {
+    try {
+      const value = window.location && window.location.href;
+      return typeof value === 'string' ? value.slice(0, 2048) : '';
+    } catch (_) { return ''; }
+  }
+
+  function beginSnapshotIfNeeded(reason = 'route') {
+    const next = pageUrl();
+    if (!next || next === lastPageUrl) return false;
+    const previous = lastPageUrl;
+    lastPageUrl = next;
+    snapshotSequence += 1;
+    snapshotStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : 0;
+    for (const node of nodes) staleNodeSources.set(node, observedNodeSources.get(node) ?? (node.currentSrc || node.src || ''));
+    const selector = mediaAttributes.map(name => `[${name}]`).join(',');
+    document.querySelectorAll(selector).forEach(element => {
+      if (element && typeof element.getAttribute === 'function') staleElementSignatures.set(element, elementSignature(element));
+    });
+    resumeNodes.clear();
+    lastActiveNode = null;
+    lastCandidateList = [];
+    lastCandidates = '';
+    post('clear', {
+      reason,
+      pageUrl: next,
+      previousPageUrl: previous,
+      snapshot: snapshotSequence,
+    });
+    return true;
+  }
+
+  function routeChanged(reason) {
+    beginSnapshotIfNeeded(reason);
+    scheduleReport();
   }
 
   // Video pages often mutate their player DOM hundreds of times per second.
@@ -317,7 +421,7 @@
   // a URL or performs a network request itself.
   function canSwitchCandidate() {
     const node = lastActiveNode;
-    if (!node || !node.isConnected || lastCandidateList.length < 2) return false;
+    if (!node || !isFreshNode(node) || !node.isConnected || lastCandidateList.length < 2) return false;
     try {
       const current = new URL(node.currentSrc || node.src || '', document.baseURI);
       // Never replace a MediaSource/blob player with a raw manifest URL.
@@ -507,7 +611,7 @@
     lastActiveNode = this;
     return originalPlay.apply(this, args);
   };
-  for (const type of ['play', 'playing', 'pause', 'ended', 'emptied']) {
+  for (const type of ['play', 'playing', 'pause', 'ended', 'emptied', 'loadedmetadata']) {
     document.addEventListener(type,event => {
       if (event.target instanceof HTMLMediaElement) mediaEvent(type,event.target);
     },true);
@@ -539,6 +643,19 @@
       },
     });
   }
+  if (window.history) {
+    for (const name of ['pushState', 'replaceState']) {
+      const original = window.history[name];
+      if (typeof original !== 'function') continue;
+      window.history[name] = function (...args) {
+        const result = original.apply(this, args);
+        routeChanged(name);
+        return result;
+      };
+    }
+    window.addEventListener('popstate', () => routeChanged('popstate'));
+    window.addEventListener('hashchange', () => routeChanged('hashchange'));
+  }
   window.addEventListener('pagehide', () => {
     if (window.parent !== window) {
       try {
@@ -560,6 +677,11 @@
       parentFrameId = null;
       epoch = -1; commandSequence = -1;
       connected = false; alive = true; lastState = ''; lastCandidates = '';
+      lastPageUrl = pageUrl();
+      lastCandidateList = [];
+      snapshotStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : 0;
     }
     connect();
   });

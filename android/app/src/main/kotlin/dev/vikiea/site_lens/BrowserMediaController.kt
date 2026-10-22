@@ -1,6 +1,7 @@
 package dev.vikiea.site_lens
 
 import android.app.Activity
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.webkit.WebView
@@ -63,12 +64,12 @@ class BrowserMediaController(
     init {
         mute(true)
         if (supported && browsing) {
-            WebViewCompat.addWebMessageListener(view, bridge, setOf("*")) { sourceView, message, _, main, proxy ->
+            WebViewCompat.addWebMessageListener(view, bridge, setOf("*")) { sourceView, message, sourceOrigin, main, proxy ->
                 if (!disposed && sourceView === view) {
                     try {
                         val text = message.data ?: ""
                         if (text.length > 4096) { diagnostic("oversize"); return@addWebMessageListener }
-                        receive(JSONObject(text), main, proxy)
+                        receive(JSONObject(text), main, proxy, sourceOrigin)
                     } catch (_: Exception) { /* Untrusted page telemetry. */ }
                 }
             }
@@ -76,7 +77,7 @@ class BrowserMediaController(
         }
     }
 
-    private fun receive(data: JSONObject, main: Boolean, proxy: JavaScriptReplyProxy) {
+    private fun receive(data: JSONObject, main: Boolean, proxy: JavaScriptReplyProxy, sourceOrigin: Uri) {
         if (data.optString("token") != documentToken) return
         val id = data.optString("frame")
         val document = data.optString("document")
@@ -136,6 +137,9 @@ class BrowserMediaController(
                 !childFrame.main && childFrame.document == document && childFrame.parent == childParent &&
                 parentOwnedBySender
             ) {
+                val removed = frames.values.filter { it.id == child || isDescendant(it.id, child) }.toList()
+                removed.forEach { publishClear(it, "gone") }
+                removed.forEach { frames.remove(it.id); resumeFrames.remove(it.id); retire(it.id) }
                 frames.remove(child)
                 pendingFrames.remove(child)
                 resumeFrames.remove(child)
@@ -148,9 +152,22 @@ class BrowserMediaController(
             return
         }
         when (data.optString("kind")) {
+            "clear" -> {
+                val page = observedPage(data.optString("pageUrl"), sourceOrigin) ?: return
+                onCandidate?.invoke(mapOf(
+                    "kind" to "clear",
+                    "reason" to data.optString("reason", "route"),
+                    "pageUrl" to page,
+                    "previousPageUrl" to observedPage(data.optString("previousPageUrl"), sourceOrigin),
+                    "frame" to id,
+                    "document" to document,
+                    "main" to main,
+                    "snapshot" to if (data.has("snapshot")) data.optLong("snapshot") else null,
+                ))
+            }
             "gone" -> {
                 if (main) resetFrames()
-                else { frames.remove(id); resumeFrames.remove(id); retire(id) }
+                else { publishClear(frame, "gone"); frames.remove(id); resumeFrames.remove(id); retire(id) }
                 updateNotification()
             }
             "state" -> {
@@ -168,11 +185,17 @@ class BrowserMediaController(
                 val candidates = data.optJSONArray("candidates") ?: return
                 for (index in 0 until candidates.length()) {
                     val candidate = candidates.optJSONObject(index) ?: continue
+                    val page = observedPage(candidate.optString("pageUrl"), sourceOrigin) ?: continue
                     onCandidate?.invoke(mapOf(
+                        "kind" to "candidate",
                         "url" to candidate.optString("url"),
                         "title" to candidate.optString("title"),
                         "mime" to candidate.optString("mime"),
                         "thumbnail" to candidate.optString("thumbnail"),
+                        "pageUrl" to page,
+                        "frame" to id,
+                        "document" to document,
+                        "main" to main,
                         "episodeNumber" to if (candidate.has("episodeNumber")) candidate.optInt("episodeNumber") else null,
                         "durationMs" to if (candidate.has("durationMs")) candidate.optLong("durationMs") else null,
                     ))
@@ -186,6 +209,23 @@ class BrowserMediaController(
                 if (!data.optBoolean("ok")) diagnostic("command_failed", expected.second)
             }
         }
+    }
+
+    private fun observedPage(raw: String, sourceOrigin: Uri): String? {
+        if (raw.isBlank()) return sourceOrigin.toString()
+        if (raw.length > 2048) return null
+        val page = runCatching { Uri.parse(raw) }.getOrNull() ?: return null
+        if (page.scheme !in setOf("http", "https") || page.host.isNullOrEmpty() || page.userInfo != null) return null
+        fun port(uri: Uri) = if (uri.port >= 0) uri.port else if (uri.scheme == "https") 443 else 80
+        return raw.takeIf {
+            page.scheme == sourceOrigin.scheme && page.host.equals(sourceOrigin.host, ignoreCase = true) &&
+                port(page) == port(sourceOrigin)
+        }
+    }
+
+    private fun publishClear(frame: Frame, reason: String) {
+        onCandidate?.invoke(mapOf("kind" to "clear", "reason" to reason,
+            "frame" to frame.id, "document" to frame.document, "main" to frame.main))
     }
 
     private fun retire(id: String) {
@@ -204,6 +244,7 @@ class BrowserMediaController(
     }
     private fun resetFrames() {
         stopService()
+        frames.values.forEach { publishClear(it, "document") }
         ownerToken = UUID.randomUUID().toString()
         activeDocument?.let {
             retiredDocuments.add(it)

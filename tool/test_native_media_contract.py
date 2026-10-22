@@ -59,6 +59,12 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn("post('candidates'", LIFECYCLE)
         self.assertIn("raw.length <= 4096", LIFECYCLE)
 
+    def test_media_snapshot_carries_frame_and_previous_page_identity(self):
+        self.assertIn('previousPageUrl', LIFECYCLE)
+        self.assertIn('"frame" to id', CONTROLLER)
+        self.assertIn('"document" to document', CONTROLLER)
+        self.assertIn('"main" to main', CONTROLLER)
+
     def test_native_transfer_keeps_range_validator_and_partial_bytes(self):
         self.assertIn('setRequestProperty("Range", "bytes=$offset-")', TRANSFER)
         self.assertIn('setRequestProperty("If-Range", validator)', TRANSFER)

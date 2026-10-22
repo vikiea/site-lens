@@ -3883,9 +3883,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                       authorized,
                       hostId: current.id,
                       generation: current.generation,
-                      sourceUrl: current.url.isEmpty
-                          ? authorized.sourceUrl
-                          : Uri.parse(current.url),
+                      sourceUrl: authorized.sourceUrl,
                       sessionId: 'candidate_${candidate.id}',
                     );
                     if (mounted) {

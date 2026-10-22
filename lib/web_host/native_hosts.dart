@@ -36,6 +36,8 @@ class HostSession {
   final menus = <String, ScriptMenu>{};
   final registered = <String, String>{};
   final mediaCandidates = <String, MediaCandidate>{};
+  final mediaCandidateFrames =
+      <String, ({String frame, String document, bool main})>{};
   FilterEngine? filterEngine;
   FilterPolicy filterPolicy = const FilterPolicy();
   FilterSnapshot? filterSnapshot;
@@ -59,14 +61,20 @@ class ScriptMenu {
 }
 
 class NativeHosts extends WebHostEvents {
-  NativeHosts(this.db, this.scripts, this.http, {WebHostApi? api})
-    : api = api ?? WebHostApi() {
+  NativeHosts(
+    this.db,
+    this.scripts,
+    this.http, {
+    WebHostApi? api,
+    this.probeRoute,
+  }) : api = api ?? WebHostApi() {
     WebHostEvents.setUp(this);
   }
   final AppDatabase db;
   final ScriptService scripts;
   final ControlledHttp http;
   final WebHostApi api;
+  final Future<MediaNetworkRoute> Function(Uri)? probeRoute;
   final _filterPayloads = FilterPayloadStore();
   final sessions = <int, HostSession>{};
   FilterEngine? filterEngine;
@@ -217,7 +225,9 @@ class NativeHosts extends WebHostEvents {
       // Keep the newest observation for signed HLS URLs. This collapses
       // repeated DOM/player callbacks before they reach the bottom sheet,
       // while preserving the full URL that the user can authorize.
-      grouped[mediaCandidateDisplayGroupKey(candidate)] = candidate;
+      final source = candidate.sourceUrl.removeFragment().toString();
+      grouped['$source\u0000${mediaCandidateDisplayGroupKey(candidate)}'] =
+          candidate;
     }
     return List.unmodifiable(grouped.values);
   }
@@ -245,9 +255,9 @@ class NativeHosts extends WebHostEvents {
       candidate,
       hostId: hostId,
       generation: session.generation,
-      sourceUrl: webUri(
-        session.url.isEmpty ? candidate.sourceUrl.toString() : session.url,
-      ),
+      // A DOM candidate may belong to a cross-origin iframe. Its observed
+      // document is the source identity used for playback/download auth.
+      sourceUrl: candidate.sourceUrl,
     );
     if (session.filterEngine?.evaluate(
           candidate.mediaUrl,
@@ -265,6 +275,7 @@ class NativeHosts extends WebHostEvents {
     session.cancellation.cancel();
     session.menus.clear();
     session.mediaCandidates.clear();
+    session.mediaCandidateFrames.clear();
     _aborted.removeWhere((key) => key.startsWith('${session.id}:'));
     sessions.remove(session.id);
     await api.destroy(session.id);
@@ -299,6 +310,7 @@ class NativeHosts extends WebHostEvents {
       session.cancellation = Cancellation();
       session.menus.clear();
       session.mediaCandidates.clear();
+      session.mediaCandidateFrames.clear();
       session.generation = event.generation;
       session.filterBlocked = 0;
       session.filterAllowed = 0;
@@ -331,13 +343,57 @@ class NativeHosts extends WebHostEvents {
       final target = event.detail.isEmpty ? event.url : event.detail;
       if (target.isNotEmpty) onNewWindow?.call(event.hostId, target);
     }
+    if (event.kind == 'mediaCandidatesClear' &&
+        session.purpose == HostPurpose.browsing) {
+      try {
+        final raw = jsonDecode(event.detail) as Map<String, dynamic>;
+        final frame = (raw['frame'] as String? ?? '').trim();
+        final document = (raw['document'] as String? ?? '').trim();
+        final main = raw['main'] == true && raw['reason'] != 'snapshot';
+        final previousPage = (raw['previousPageUrl'] as String? ?? '').trim();
+        final remove = <String>{};
+        for (final entry in session.mediaCandidateFrames.entries) {
+          final identity = entry.value;
+          if (document.isNotEmpty &&
+              (main
+                  ? identity.document == document
+                  : identity.frame == frame)) {
+            remove.add(entry.key);
+          }
+        }
+        if (main && previousPage.isNotEmpty) {
+          final page = webUri(previousPage).removeFragment();
+          remove.addAll(
+            session.mediaCandidates.entries
+                .where(
+                  (entry) => entry.value.sourceUrl.removeFragment() == page,
+                )
+                .map((entry) => entry.key),
+          );
+        }
+        for (final id in remove) {
+          session.mediaCandidates.remove(id);
+          session.mediaCandidateFrames.remove(id);
+        }
+      } catch (_) {
+        // Invalid page telemetry must not clear unrelated media candidates.
+      }
+      changed.value++;
+    }
     if (event.kind == 'mediaCandidate' &&
         session.purpose == HostPurpose.browsing) {
       try {
         final raw = jsonDecode(event.detail) as Map<String, dynamic>;
-        final source = webUri(session.url);
+        final observedPage = (raw['pageUrl'] as String? ?? '').trim();
+        final source = webUri(
+          observedPage.isEmpty ? session.url : observedPage,
+        );
         final media = webUri(raw['url'] as String? ?? '');
         final key = mediaCandidateKey(media);
+        final frame = (raw['frame'] as String? ?? '').trim();
+        final document = (raw['document'] as String? ?? '').trim();
+        final main = raw['main'] == true;
+        final frameKey = frame.isEmpty ? 'host:${session.id}' : frame;
         final rawMime = (raw['mime'] as String? ?? '').trim();
         final thumbnailUrl = optionalMediaUri(raw['thumbnail'] as String?);
         final episodeNumber = (raw['episodeNumber'] as num?)?.toInt();
@@ -349,7 +405,7 @@ class NativeHosts extends WebHostEvents {
             ? mediaTitleForEpisode(rawTitle, episodeNumber)
             : rawTitle;
         final candidate = MediaCandidate(
-          id: 'dom:${session.id}:${session.generation}:$key',
+          id: 'dom:${session.id}:${session.generation}:$frameKey:${source.toString()}:$key',
           hostId: session.id,
           generation: session.generation,
           sourceUrl: source,
@@ -382,9 +438,18 @@ class NativeHosts extends WebHostEvents {
           session.mediaCandidates.removeWhere(
             (_, value) =>
                 value.id != candidate.id &&
+                session.mediaCandidateFrames[value.id]?.frame == frameKey &&
                 mediaCandidateDisplayGroupKey(value) == groupKey,
           );
+          session.mediaCandidateFrames.removeWhere(
+            (id, _) => !session.mediaCandidates.containsKey(id),
+          );
           session.mediaCandidates[candidate.id] = candidate;
+          session.mediaCandidateFrames[candidate.id] = (
+            frame: frameKey,
+            document: document,
+            main: main,
+          );
           unawaited(db.saveMediaCandidate(candidate));
           changed.value++;
         }
@@ -400,6 +465,8 @@ class NativeHosts extends WebHostEvents {
       session.cancellation.cancel();
       session.menus.clear();
       session.registered.clear();
+      session.mediaCandidates.clear();
+      session.mediaCandidateFrames.clear();
       sessions.remove(session.id);
       onInvalidated?.call(session);
       await api.destroy(session.id);
@@ -458,7 +525,19 @@ class NativeHosts extends WebHostEvents {
     // effect on the next navigation and never changes an active page's rules.
     await _applyFilter(session, url: url);
     if (session.purpose != HostPurpose.browsing) {
-      await NetworkPolicy.publicNavigation(webUri(url));
+      final uri = webUri(url);
+      final route = await session.cancellation.waitFor(
+        (probeRoute?.call(uri) ?? Future.value(const MediaNetworkRoute()))
+            .timeout(const Duration(seconds: 6)),
+      );
+      await NetworkPolicy.publicNavigation(
+        uri,
+        route: route,
+        cancel: session.cancellation,
+      );
+      if (session.disposed || session.generation != generation) {
+        throw const Cancelled();
+      }
       return [];
     }
     await Future.wait(
@@ -698,9 +777,15 @@ class NativeHosts extends WebHostEvents {
         session.mediaCandidates.removeWhere(
           (_, value) =>
               value.id != candidate.id &&
+              value.sourceUrl.removeFragment() == sourceUrl.removeFragment() &&
               mediaCandidateDisplayGroupKey(value) == groupKey,
         );
         session.mediaCandidates[candidate.id] = candidate;
+        session.mediaCandidateFrames[candidate.id] = (
+          frame: 'host:${session.id}',
+          document: sourceUrl.toString(),
+          main: true,
+        );
         await db.saveMediaCandidate(candidate);
         changed.value++;
         value = candidate.toJson();

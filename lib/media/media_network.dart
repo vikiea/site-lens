@@ -91,18 +91,31 @@ class MediaNetwork {
   }
 
   Future<MediaNetworkRoute> route(Uri uri, {int attempt = 0}) async {
-    if (!Platform.isAndroid) return const MediaNetworkRoute();
-    final value = await _channel.invokeMapMethod<String, Object?>('route', {
-      'url': uri.toString(),
-      'attempt': attempt,
-    });
+    return _route(uri, attempt: attempt, media: true);
+  }
+
+  /// Site probes share OS proxy/VPN policy without reading browser cookies.
+  Future<MediaNetworkRoute> probeRoute(Uri uri, {int attempt = 0}) async {
+    return _route(uri, attempt: attempt, media: false);
+  }
+
+  Future<MediaNetworkRoute> _route(
+    Uri uri, {
+    required int attempt,
+    required bool media,
+  }) async {
+    if (!_nativeAvailable) return const MediaNetworkRoute();
+    final value = await _channel.invokeMapMethod<String, Object?>(
+      media ? 'route' : 'probeRoute',
+      {'url': uri.toString(), 'attempt': attempt},
+    );
     if (value == null) throw StateError('无法读取系统代理设置，请重试');
     return MediaNetworkRoute(
       proxy: value['proxy'] as String? ?? 'DIRECT',
       allowProxyFakeIp: value['vpn'] == true,
       userAgent:
           value['userAgent'] as String? ?? MediaNetworkRoute.defaultUserAgent,
-      cookie: value['cookie'] as String?,
+      cookie: media ? value['cookie'] as String? : null,
     );
   }
 }

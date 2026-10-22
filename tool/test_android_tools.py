@@ -1,6 +1,9 @@
 """Read-only regressions for package isolation in Android acceptance tooling."""
+import hashlib
+import io
 import unittest
 import subprocess
+import sys
 from pathlib import Path
 from android_artifact import FORMAL_CERT_SHA256
 import tempfile
@@ -11,12 +14,340 @@ import run_android_acceptance as acceptance
 from android_media_actions import MediaActionDriver
 
 class AndroidToolsTests(unittest.TestCase):
+    def _proof_bundle(self, directory, target=acceptance.DEFAULT_INTEGRATION_TARGET):
+        root = Path(directory)
+        product = root / 'product-debug.apk'
+        test = root / 'integration-debug.apk'
+        product.write_bytes(b'product-artifact')
+        test.write_bytes(b'test-artifact')
+        fingerprint = {'worktree': 'worktree-proof', 'source': 'source-proof'}
+        platform = 'android-arm64'
+        manifest = {
+            'schema': 1,
+            'producer': 'prepare_android_acceptance',
+            'fingerprint': fingerprint,
+            'target_platform': platform,
+            'artifacts': {
+                'product': {
+                    'role': 'product',
+                    'entrypoint': acceptance.PRODUCT_ENTRYPOINT,
+                    'integration_target': None,
+                    'file': product.name,
+                    'sha256': acceptance.apk_sha256(product),
+                    'command': acceptance.prepared_build_command(
+                        acceptance.PRODUCT_ENTRYPOINT, platform, []),
+                },
+                'test': {
+                    'role': 'test',
+                    'entrypoint': target,
+                    'integration_target': target,
+                    'file': test.name,
+                    'sha256': acceptance.apk_sha256(test),
+                    'command': acceptance.prepared_build_command(
+                        target, platform, acceptance.test_defines()),
+                },
+            },
+        }
+        manifest_path = root / acceptance.PREBUILT_MANIFEST
+        payload = acceptance.manifest_bytes(manifest)
+        manifest_path.write_bytes(payload)
+        receipts = root / 'receipts'
+        receipts.mkdir()
+        (receipts / (hashlib.sha256(payload).hexdigest() + '.json')).write_bytes(payload)
+        return product, test, manifest_path, receipts, fingerprint
+
+    def _validate_bundle(self, directory, **kwargs):
+        product, test, manifest, receipts, fingerprint = self._proof_bundle(directory, **kwargs)
+        with patch.object(acceptance, 'prebuilt_receipt_directory', return_value=receipts), \
+             patch.object(acceptance, 'prebuilt_source_fingerprint', return_value=fingerprint), \
+             patch.object(acceptance, 'verify_apk_package'):
+            acceptance.validate_prebuilt_apks(product, test, manifest, kwargs.get('target', acceptance.DEFAULT_INTEGRATION_TARGET))
+        return product, test, manifest, receipts, fingerprint
+
     def test_configured_sites_only_enter_integration_defines(self):
         with patch.dict(acceptance.ENV, {'SITE_LENS_TEST_SITES': 'https://test.example/'}):
             self.assertIn('--dart-define=SITE_LENS_TEST_SITES=https://test.example/',
                           acceptance.test_defines())
         with patch.dict(acceptance.ENV, {'SITE_LENS_TEST_SITES': ''}):
             self.assertEqual(acceptance.test_defines(), [acceptance.NETWORK_DEFINE])
+
+    def test_prebuilt_arguments_require_pair_single_suite_and_no_test_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            product = Path(directory) / 'product.apk'
+            test = Path(directory) / 'test.apk'
+            product.write_bytes(b'product')
+            test.write_bytes(b'test')
+            cases = [
+                ['--prebuilt-product-apk', str(product)],
+                [
+                    '--prebuilt-product-apk', str(product),
+                    '--prebuilt-test-apk', str(test),
+                ],
+                [
+                    '--single-suite',
+                    '--prebuilt-product-apk', str(product),
+                    '--prebuilt-test-apk', str(test),
+                    '--test-name', 'contract',
+                ],
+            ]
+            for options in cases:
+                with self.subTest(options=options), \
+                     patch.object(acceptance, 'require_device') as require_device, \
+                     patch.object(acceptance, 'verify_apk_package') as verify:
+                    with patch.object(
+                        sys,
+                        'argv',
+                        ['run_android_acceptance.py', 'emulator-test', *options],
+                    ), self.assertRaises(SystemExit):
+                        acceptance.main()
+                    require_device.assert_not_called()
+                    verify.assert_not_called()
+
+    def test_prebuilt_missing_apk_fails_before_device_backup_or_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            product = Path(directory) / 'missing-product.apk'
+            test = Path(directory) / 'test.apk'
+            test.write_bytes(b'test')
+            with patch.object(acceptance, 'require_device') as require_device, \
+                 patch.object(acceptance, 'backup_database') as backup, \
+                 patch.object(acceptance, 'install') as install:
+                with patch.object(
+                    sys,
+                    'argv',
+                    [
+                        'run_android_acceptance.py', 'emulator-test',
+                        '--single-suite',
+                        '--prebuilt-product-apk', str(product),
+                        '--prebuilt-test-apk', str(test),
+                        '--prebuilt-manifest', str(Path(directory) / 'missing-manifest.json'),
+                    ],
+                ), self.assertRaisesRegex(RuntimeError, 'prebuilt product APK does not exist'):
+                    acceptance.main()
+            require_device.assert_not_called()
+            backup.assert_not_called()
+            install.assert_not_called()
+
+    def test_prebuilt_missing_proof_fails_before_device_backup_or_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            product = Path(directory) / 'product.apk'
+            test = Path(directory) / 'test.apk'
+            product.write_bytes(b'product')
+            test.write_bytes(b'test')
+            with patch.object(acceptance, 'require_device') as require_device, \
+                 patch.object(acceptance, 'backup_database') as backup, \
+                 patch.object(acceptance, 'install') as install:
+                with patch.object(
+                    sys,
+                    'argv',
+                    [
+                        'run_android_acceptance.py', 'emulator-test',
+                        '--single-suite',
+                        '--prebuilt-product-apk', str(product),
+                        '--prebuilt-test-apk', str(test),
+                        '--prebuilt-manifest', str(Path(directory) / 'missing.json'),
+                    ],
+                ), self.assertRaisesRegex(RuntimeError, 'missing or invalid prebuilt proof'):
+                    acceptance.main()
+            require_device.assert_not_called()
+            backup.assert_not_called()
+            install.assert_not_called()
+
+    def test_prebuilt_proof_rejects_wrong_package_before_any_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            product, test, manifest, receipts, fingerprint = self._proof_bundle(directory)
+            def verify(path, expected, environment):
+                if path == test:
+                    raise RuntimeError('unexpected APK package: formal package')
+
+            with patch.object(acceptance, 'prebuilt_receipt_directory', return_value=receipts), \
+                 patch.object(acceptance, 'prebuilt_source_fingerprint', return_value=fingerprint), \
+                 patch.object(acceptance, 'verify_apk_package', side_effect=verify) as verify_mock, \
+                 patch.object(acceptance, 'require_device') as require_device, \
+                 patch.object(acceptance, 'backup_database') as backup, \
+                 patch.object(acceptance, 'install') as install:
+                with self.assertRaisesRegex(RuntimeError, 'prebuilt test APK must be the debug package'):
+                    acceptance.validate_prebuilt_apks(product, test, manifest)
+            require_device.assert_not_called()
+            backup.assert_not_called()
+            install.assert_not_called()
+            self.assertEqual(verify_mock.call_count, 2)
+
+    def test_prebuilt_proof_rejects_same_artifact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / 'same.apk'
+            artifact.write_bytes(b'same-artifact')
+            with self.assertRaisesRegex(RuntimeError, 'different artifacts'):
+                acceptance.validate_prebuilt_apks(artifact, artifact)
+
+    def test_prebuilt_proof_rejects_role_swap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            product, test, manifest, receipts, fingerprint = self._proof_bundle(directory)
+            product_bytes, test_bytes = product.read_bytes(), test.read_bytes()
+            product.write_bytes(test_bytes)
+            test.write_bytes(product_bytes)
+            with patch.object(acceptance, 'prebuilt_receipt_directory', return_value=receipts), \
+                 patch.object(acceptance, 'prebuilt_source_fingerprint', return_value=fingerprint), \
+                 patch.object(acceptance, 'verify_apk_package'):
+                with self.assertRaisesRegex(RuntimeError, 'prebuilt product SHA-256 mismatch'):
+                    acceptance.validate_prebuilt_apks(product, test, manifest)
+
+    def test_prebuilt_proof_rejects_suite_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            product, test, manifest, receipts, fingerprint = self._proof_bundle(directory)
+            with patch.object(acceptance, 'prebuilt_receipt_directory', return_value=receipts), \
+                 patch.object(acceptance, 'prebuilt_source_fingerprint', return_value=fingerprint), \
+                 patch.object(acceptance, 'verify_apk_package'):
+                with self.assertRaisesRegex(RuntimeError, 'entrypoint/integration suite mismatch'):
+                    acceptance.validate_prebuilt_apks(
+                        product, test, manifest, 'integration_test/host_contract_test.dart')
+
+    def test_prebuilt_proof_rejects_digest_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            product, test, manifest, receipts, fingerprint = self._proof_bundle(directory)
+            test.write_bytes(b'altered-test-artifact')
+            with patch.object(acceptance, 'prebuilt_receipt_directory', return_value=receipts), \
+                 patch.object(acceptance, 'prebuilt_source_fingerprint', return_value=fingerprint), \
+                 patch.object(acceptance, 'verify_apk_package'):
+                with self.assertRaisesRegex(RuntimeError, 'SHA-256 mismatch'):
+                    acceptance.validate_prebuilt_apks(product, test, manifest)
+
+    def test_prebuilt_proof_rejects_old_source_worktree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            product, test, manifest, receipts, fingerprint = self._proof_bundle(directory)
+            with patch.object(acceptance, 'prebuilt_receipt_directory', return_value=receipts), \
+                 patch.object(acceptance, 'prebuilt_source_fingerprint', return_value={'worktree': 'new', 'source': 'new'}), \
+                 patch.object(acceptance, 'verify_apk_package'):
+                with self.assertRaisesRegex(RuntimeError, 'stale source/worktree fingerprint'):
+                    acceptance.validate_prebuilt_apks(product, test, manifest)
+
+    def test_prebuilt_entry_alignment_uses_compiled_target_from_proof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            product, test, manifest, receipts, fingerprint = self._proof_bundle(
+                directory, target='integration_test/host_contract_test.dart')
+            with patch.object(acceptance, 'prebuilt_receipt_directory', return_value=receipts), \
+                 patch.object(acceptance, 'prebuilt_source_fingerprint', return_value=fingerprint), \
+                 patch.object(acceptance, 'verify_apk_package'):
+                acceptance.validate_prebuilt_apks(
+                    product, test, manifest, 'integration_test/host_contract_test.dart')
+            command = acceptance.prebuilt_drive_command('emulator-test', test, Path('/tmp/driver.dart'))
+            self.assertNotIn('--target', command)
+            self.assertIn('--use-application-binary', command)
+
+    def test_prebuilt_mode_uses_drive_without_build_and_restores_product_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            product = Path(directory) / 'product.apk'
+            test = Path(directory) / 'test.apk'
+            driver = Path(directory) / 'integration_test.dart'
+            product.write_bytes(b'product')
+            test.write_bytes(b'test')
+            driver.write_text('driver')
+            commands = []
+
+            with patch.object(acceptance, 'require_device'), \
+                 patch.object(acceptance, 'verify_apk_package'), \
+                 patch.object(acceptance, 'integration_driver_path', return_value=driver), \
+                 patch.object(acceptance, 'ensure_debug_install', return_value=False) as ensure_debug_install, \
+                 patch.object(acceptance, 'backup_database', return_value={}), \
+                 patch.object(acceptance, 'adb', return_value=SimpleNamespace(stdout=b'', stderr=b'')), \
+                 patch.object(
+                     acceptance,
+                     'run_single_suite_with_media_driver',
+                     side_effect=lambda command, device, timeout=1800: commands.append(command),
+                 ), \
+                 patch.object(acceptance, 'run_flutter') as run_flutter, \
+                 patch.object(acceptance, 'verify_formal_apk') as verify_formal, \
+                 patch.object(acceptance, 'install') as install, \
+                 patch.object(acceptance, 'restore_database') as restore_database:
+                with patch.object(
+                    sys,
+                    'argv',
+                    [
+                        'run_android_acceptance.py', 'emulator-test',
+                        '--skip-check', '--skip-build', '--single-suite',
+                        '--integration-target', 'integration_test/host_contract_test.dart',
+                        '--prebuilt-product-apk', str(product),
+                        '--prebuilt-test-apk', str(test),
+                        '--prebuilt-manifest', str(Path(directory) / 'manifest.json'),
+                    ],
+                ):
+                    with patch.object(acceptance, 'validate_prebuilt_apks', return_value=(product, test)):
+                        self.assertEqual(acceptance.main(), 0)
+                        self.assertEqual(acceptance.validate_prebuilt_apks.call_count, 2)
+
+            run_flutter.assert_not_called()
+            verify_formal.assert_not_called()
+            ensure_debug_install.assert_called_once_with('emulator-test', product)
+            restore_database.assert_called_once()
+            backup_dir = restore_database.call_args.args[1]
+            self.assertEqual((backup_dir / 'product-debug.apk').read_bytes(), b'product')
+            self.assertEqual(install.call_args.args[1].read_bytes(), b'product')
+            self.assertEqual(len(commands), 1)
+            command = commands[0]
+            self.assertEqual(command[:2], ['flutter', 'drive'])
+            for flag in ('--no-pub', '--no-dds', '--keep-app-running'):
+                self.assertIn(flag, command)
+            self.assertIn('--use-application-binary', command)
+            self.assertIn(str(test), command)
+            self.assertNotIn('--target', command)
+
+    def test_prebuilt_primary_failure_is_preserved_when_restore_also_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            product = Path(directory) / 'product.apk'
+            test = Path(directory) / 'test.apk'
+            driver = Path(directory) / 'integration_test.dart'
+            product.write_bytes(b'product')
+            test.write_bytes(b'test')
+            driver.write_text('driver')
+            with patch.object(acceptance, 'require_device'), \
+                 patch.object(acceptance, 'verify_apk_package'), \
+                 patch.object(acceptance, 'integration_driver_path', return_value=driver), \
+                 patch.object(acceptance, 'ensure_debug_install', return_value=False), \
+                 patch.object(acceptance, 'backup_database', return_value={}), \
+                 patch.object(acceptance, 'adb', return_value=SimpleNamespace(stdout=b'', stderr=b'')), \
+                 patch.object(
+                     acceptance,
+                     'run_single_suite_with_media_driver',
+                     side_effect=RuntimeError('primary test failure'),
+                 ), \
+                 patch.object(
+                     acceptance,
+                     'restore_and_launch_debug',
+                     side_effect=RuntimeError('restore failure'),
+                 ), \
+                 patch.object(acceptance, 'run_flutter') as run_flutter, \
+                 patch('sys.stderr', new_callable=io.StringIO) as stderr:
+                with patch.object(
+                    sys,
+                    'argv',
+                    [
+                        'run_android_acceptance.py', 'emulator-test',
+                        '--skip-check', '--skip-build', '--single-suite',
+                        '--prebuilt-product-apk', str(product),
+                        '--prebuilt-test-apk', str(test),
+                        '--prebuilt-manifest', str(Path(directory) / 'manifest.json'),
+                    ],
+                ):
+                    with patch.object(acceptance, 'validate_prebuilt_apks', return_value=(product, test)):
+                        self.assertEqual(acceptance.main(), 1)
+            run_flutter.assert_not_called()
+            self.assertIn('database restore failed: restore failure', stderr.getvalue())
+            self.assertIn('Android acceptance FAIL: primary test failure', stderr.getvalue())
+
+    def test_prebuilt_restore_never_rebuilds_when_product_copy_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(acceptance, 'adb'), \
+                 patch.object(acceptance, 'run_flutter') as run_flutter, \
+                 patch.object(acceptance, 'verify_apk_package'), \
+                 patch.object(acceptance, 'install'):
+                with self.assertRaisesRegex(RuntimeError, 'prebuilt product APK backup is missing'):
+                    acceptance.restore_and_launch_debug(
+                        'emulator-test',
+                        Path(directory),
+                        {},
+                        [],
+                        allow_rebuild=False,
+                    )
+            run_flutter.assert_not_called()
 
     def test_restore_footer_only_installs_and_starts_debug(self):
         with patch.object(acceptance, 'adb') as adb, patch.object(acceptance, 'install') as install, \

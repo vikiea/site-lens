@@ -55,13 +55,19 @@ object SystemMediaNetwork {
     fun hasDirectRoute(uri: URI, selector: ProxySelector? = ProxySelector.getDefault()): Boolean =
         proxies(uri, selector).any { it.type() == Proxy.Type.DIRECT }
 
+    fun fakeIpRouteEligible(
+        vpnTransport: Boolean,
+        explicitlyNotVpn: Boolean?,
+        directRoute: Boolean,
+    ): Boolean = (vpnTransport || explicitlyNotVpn == false) && directRoute
+
     fun fakeIpRouteAllowed(
         vpnTransport: Boolean,
         explicitlyNotVpn: Boolean?,
         directRoute: Boolean,
         dnsContainsFakeIp: Boolean,
     ): Boolean =
-        (vpnTransport || explicitlyNotVpn == false) && directRoute && dnsContainsFakeIp
+        fakeIpRouteEligible(vpnTransport, explicitlyNotVpn, directRoute) && dnsContainsFakeIp
 
     fun configuration(
         uri: URI,

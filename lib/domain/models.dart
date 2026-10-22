@@ -833,14 +833,9 @@ Uri? optionalMediaUri(String? raw) {
 /// task/cache identity continues to use [mediaCandidateGroupKey].
 String mediaCandidateDisplayGroupKey(MediaCandidate candidate) {
   final clean = candidate.mediaUrl.removeFragment();
-  if (clean.queryParameters.isEmpty) return clean.toString();
-  final retained = <String, String>{};
-  for (final entry in clean.queryParameters.entries) {
-    if (entry.key.toLowerCase() != 'line') retained[entry.key] = entry.value;
-  }
-  return mediaCandidateAuthorizationKey(
-    clean.replace(queryParameters: retained),
-  );
+  // Keep content-selection parameters such as `line`; only authorization
+  // rotation may collapse into the same display item.
+  return mediaCandidateAuthorizationKey(clean);
 }
 
 enum MediaTaskState {

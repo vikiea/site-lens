@@ -114,12 +114,32 @@ class Cancellation {
     if (cancelled) throw const Cancelled();
   }
 
-  void onCancel(void Function() callback) {
+  void Function() onCancel(void Function() callback) {
     if (cancelled) {
       callback();
     } else {
       _callbacks.add(callback);
     }
+    return () => _callbacks.remove(callback);
+  }
+
+  Future<T> waitFor<T>(Future<T> future) {
+    check();
+    final settled = Completer<T>();
+    void abort() {
+      if (!settled.isCompleted) settled.completeError(const Cancelled());
+    }
+
+    onCancel(abort);
+    future.then(
+      (value) {
+        if (!settled.isCompleted) settled.complete(value);
+      },
+      onError: (Object error, StackTrace stack) {
+        if (!settled.isCompleted) settled.completeError(error, stack);
+      },
+    );
+    return settled.future.whenComplete(() => _callbacks.remove(abort));
   }
 
   void cancel() {
@@ -171,8 +191,8 @@ class NetworkPolicy {
 
   static String blockedAddressReason(List<InternetAddress> addresses) =>
       addresses.any(proxyFakeIp)
-      ? 'DNS 返回代理 Fake-IP（198.18.0.0/15）；自动检测不使用系统代理，请关闭代理/Fake-IP 或改用直连后重试'
-      : 'DNS 包含本机/私网地址；若启用了代理或 Fake-IP，自动检测需要公共直连';
+      ? 'DNS 返回代理 Fake-IP（198.18.0.0/15）；当前直连路由未确认 VPN/TUN，请检查系统代理设置'
+      : 'DNS 包含本机/私网地址；请检查目标地址与系统代理设置';
 
   static bool hostAllowed(Uri url, Set<String> connect, Uri document) =>
       connect.any(
@@ -202,13 +222,30 @@ class NetworkPolicy {
     }
   }
 
-  static Future<void> publicNavigation(Uri uri) async {
+  static Future<void> publicNavigation(
+    Uri uri, {
+    MediaNetworkRoute route = const MediaNetworkRoute(),
+    Cancellation? cancel,
+    Future<List<InternetAddress>> Function(String) resolve =
+        InternetAddress.lookup,
+  }) async {
     webUri(uri.toString());
     if (allowLocalTestPages) return;
     validateTarget(uri, {'*'}, uri);
-    final addresses = await InternetAddress.lookup(uri.host)
+    cancel?.check();
+    // WebView follows the OS route. Resolve the origin only when DIRECT is
+    // selected, never merely because PAC lists it after an HTTP proxy.
+    final first = route.proxy.split(';').first.trim();
+    if (first.startsWith('PROXY ')) return;
+    if (first != 'DIRECT') throw StateError('系统代理没有可用路由');
+    final addresses = await resolve(uri.host)
         .timeout(const Duration(seconds: 5));
-    if (addresses.isEmpty || addresses.any((a) => !publicAddress(a))) {
+    cancel?.check();
+    if (addresses.isEmpty ||
+        addresses.any(
+          (a) =>
+              !publicAddress(a) && !(route.allowProxyFakeIp && proxyFakeIp(a)),
+        )) {
       throw AddressPolicyException(blockedAddressReason(addresses));
     }
   }
@@ -337,8 +374,8 @@ class FetchFileResponse {
   final bool appended;
 }
 
-/// Routing for an explicitly selected media download only. Probes and GM
-/// requests keep their direct-only policy, even when sharing the same client.
+/// Ephemeral OS routing for media downloads and site probes. GM requests keep
+/// their direct-only policy and never read browser cookies.
 class MediaNetworkRoute {
   const MediaNetworkRoute({
     this.proxy = 'DIRECT',
@@ -356,17 +393,49 @@ class MediaNetworkRoute {
   final String? cookie;
 }
 
+/// Owns one connection pool at a time. A redirect can change the OS/PAC route
+/// even when host and port stay the same; reusing a client can otherwise reuse
+/// a tunnel established for the preceding hop without consulting its route.
+class _HttpHopClients {
+  _HttpHopClients(this.timeout, {this.autoUncompress = true});
+
+  final Duration timeout;
+  final bool autoUncompress;
+  HttpClient? _current;
+  bool _closed = false;
+
+  HttpClient next() {
+    if (_closed) throw const Cancelled();
+    _current?.close(force: true);
+    return _current = HttpClient()
+      ..connectionTimeout = timeout
+      ..autoUncompress = autoUncompress;
+  }
+
+  void close() {
+    _closed = true;
+    _current?.close(force: true);
+    _current = null;
+  }
+}
+
 class ControlledHttp {
   ControlledHttp({
     this.resolve = InternetAddress.lookup,
     this.allowLocal = false,
     this.mediaRoute,
     this.mediaRouteForAttempt,
+    this.routeForAttempt,
   });
   final bool allowLocal;
   final Future<List<InternetAddress>> Function(String) resolve;
   final Future<MediaNetworkRoute> Function(Uri)? mediaRoute;
   final Future<MediaNetworkRoute> Function(Uri, int)? mediaRouteForAttempt;
+
+  /// Supplies the OS route for non-media requests such as site discovery.
+  /// The route is deliberately resolved per redirect so PAC/proxy changes do
+  /// not cause the next hop to fall back to a direct origin connection.
+  final Future<MediaNetworkRoute> Function(Uri, int)? routeForAttempt;
 
   Future<MediaNetworkRoute> _configureRoute(
     HttpClient client,
@@ -375,19 +444,25 @@ class ControlledHttp {
     Cancellation cancel,
     int routeAttempt,
   ) async {
-    final route =
-        mediaRequest && (mediaRouteForAttempt != null || mediaRoute != null)
-        ? await (mediaRouteForAttempt?.call(uri, routeAttempt) ??
-              mediaRoute!(uri))
-        : const MediaNetworkRoute();
+    final pendingRoute = routeForAttempt != null
+        ? routeForAttempt!(uri, routeAttempt)
+        : mediaRequest && (mediaRouteForAttempt != null || mediaRoute != null)
+        ? (mediaRouteForAttempt?.call(uri, routeAttempt) ?? mediaRoute!(uri))
+        : Future.value(const MediaNetworkRoute());
+    final route = await cancel.waitFor(
+      pendingRoute.timeout(
+        client.connectionTimeout ?? const Duration(seconds: 15),
+      ),
+    );
     cancel.check();
     client.findProxy = (_) => route.proxy;
     client.connectionFactory = (target, host, port) {
       // HttpClient owns CONNECT and verified TLS inside a proxy tunnel.
       // Resolve the proxy only: origin DNS may intentionally return Fake-IP.
-      if (host != null &&
-          mediaRequest &&
-          (mediaRoute != null || mediaRouteForAttempt != null)) {
+      // Dart supplies proxyHost/proxyPort only for the PAC entry currently
+      // being attempted; DIRECT receives null even when later entries proxy.
+      final proxyConnection = host != null;
+      if (proxyConnection) {
         return Socket.startConnect(host, port!).then((task) {
           cancel.onCancel(task.cancel);
           if (cancel.cancelled) task.cancel();
@@ -401,7 +476,7 @@ class ControlledHttp {
         cancel: cancel,
         resolve: resolve,
         allowLocal: allowLocal,
-        allowProxyFakeIp: mediaRequest && route.allowProxyFakeIp,
+        allowProxyFakeIp: route.allowProxyFakeIp,
       );
     };
     return route;
@@ -420,24 +495,16 @@ class ControlledHttp {
     int maxBytes = 1024 * 1024,
     int routeAttempt = 0,
   }) async {
-    final client = HttpClient()
-      ..connectionTimeout = timeout
-      ..findProxy = ((_) => 'DIRECT')
-      ..connectionFactory = (uri, host, port) => NetworkPolicy.connect(
-        uri,
-        host,
-        port,
-        cancel: cancel,
-        resolve: resolve,
-        allowLocal: allowLocal,
-      );
-    cancel.onCancel(() => client.close(force: true));
+    final clients = _HttpHopClients(timeout);
+    final requestCancel = Cancellation();
+    final detach = cancel.onCancel(requestCancel.cancel);
+    requestCancel.onCancel(clients.close);
     final task = _fetch(
-      client,
+      clients,
       url,
       connect,
       document,
-      cancel,
+      requestCancel,
       method.toUpperCase(),
       headers,
       mediaRequest,
@@ -447,8 +514,13 @@ class ControlledHttp {
     );
     try {
       return await task.timeout(timeout);
+    } on TimeoutException {
+      requestCancel.cancel();
+      rethrow;
     } finally {
-      client.close(force: true);
+      detach();
+      requestCancel.cancel();
+      clients.close();
     }
   }
 
@@ -475,25 +547,16 @@ class ControlledHttp {
     int routeAttempt = 0,
   }) async {
     if (resumeOffset < 0) throw RangeError('续传偏移无效');
-    final client = HttpClient()
-      ..autoUncompress = false
-      ..connectionTimeout = timeout
-      ..findProxy = ((_) => 'DIRECT')
-      ..connectionFactory = (uri, host, port) => NetworkPolicy.connect(
-        uri,
-        host,
-        port,
-        cancel: cancel,
-        resolve: resolve,
-        allowLocal: allowLocal,
-      );
-    cancel.onCancel(() => client.close(force: true));
+    final clients = _HttpHopClients(timeout, autoUncompress: false);
+    final requestCancel = Cancellation();
+    final detach = cancel.onCancel(requestCancel.cancel);
+    requestCancel.onCancel(clients.close);
     final task = _fetchToFile(
-      client,
+      clients,
       url,
       connect,
       document,
-      cancel,
+      requestCancel,
       headers,
       mediaRequest,
       destination,
@@ -506,16 +569,21 @@ class ControlledHttp {
     );
     try {
       return await task;
+    } on TimeoutException {
+      requestCancel.cancel();
+      rethrow;
     } catch (_) {
       if (cancel.cancelled) throw const Cancelled();
       rethrow;
     } finally {
-      client.close(force: true);
+      detach();
+      requestCancel.cancel();
+      clients.close();
     }
   }
 
   Future<FetchResponse> _fetch(
-    HttpClient client,
+    _HttpHopClients clients,
     Uri uri,
     Set<String> connect,
     Uri document,
@@ -542,6 +610,7 @@ class ControlledHttp {
     for (var redirects = 0; redirects <= 5; redirects++) {
       cancel.check();
       if (!allowLocal) NetworkPolicy.validateTarget(uri, connect, document);
+      final client = clients.next();
       final route = await _configureRoute(
         client,
         uri,
@@ -618,7 +687,7 @@ class ControlledHttp {
   }
 
   Future<FetchFileResponse> _fetchToFile(
-    HttpClient client,
+    _HttpHopClients clients,
     Uri uri,
     Set<String> connect,
     Uri document,
@@ -637,6 +706,7 @@ class ControlledHttp {
     for (var redirects = 0; redirects <= 5; redirects++) {
       cancel.check();
       if (!allowLocal) NetworkPolicy.validateTarget(uri, connect, document);
+      final client = clients.next();
       final route = await _configureRoute(
         client,
         uri,
@@ -819,25 +889,29 @@ class ControlledHttp {
 }
 
 class HttpProbe {
-  HttpProbe({this.allowLocal = allowLocalTestPages});
+  HttpProbe({
+    this.allowLocal = allowLocalTestPages,
+    this.routeForAttempt,
+    this.resolve = InternetAddress.lookup,
+  });
   final bool allowLocal;
+  final Future<MediaNetworkRoute> Function(Uri, int)? routeForAttempt;
+  final Future<List<InternetAddress>> Function(String) resolve;
   Future<ProbeResult> run(
     Candidate candidate,
     int round,
     Cancellation cancel,
   ) async {
     final watch = Stopwatch()..start();
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 6)
-      ..findProxy = ((_) => 'DIRECT')
-      ..connectionFactory = (uri, host, port) => NetworkPolicy.connect(
-        uri,
-        host,
-        port,
-        allowLocal: allowLocal,
-        cancel: cancel,
-      );
-    cancel.onCancel(() => client.close(force: true));
+    final clients = _HttpHopClients(const Duration(seconds: 6));
+    final requestCancel = Cancellation();
+    final detach = cancel.onCancel(requestCancel.cancel);
+    final transport = ControlledHttp(
+      allowLocal: allowLocal,
+      routeForAttempt: routeForAttempt,
+      resolve: resolve,
+    );
+    requestCancel.onCancel(clients.close);
     Uri current = candidate.url;
     ProbeResult result(ProbeStatus s, [String? reason]) => ProbeResult(
       round: round,
@@ -853,7 +927,18 @@ class HttpProbe {
     try {
       return await (() async {
         for (var i = 0; i <= 5; i++) {
-          cancel.check();
+          requestCancel.check();
+          if (!allowLocal) {
+            NetworkPolicy.validateTarget(current, const {'*'}, current);
+          }
+          final client = clients.next();
+          await transport._configureRoute(
+            client,
+            current,
+            false,
+            requestCancel,
+            0,
+          );
           final request = await client.getUrl(current);
           request.followRedirects = false;
           request.headers.set('Range', 'bytes=0-1023');
@@ -869,7 +954,7 @@ class HttpProbe {
             current = next;
             continue;
           }
-          cancel.check();
+          requestCancel.check();
           if (response.statusCode >= 200 && response.statusCode < 300) {
             return result(ProbeStatus.reachable, 'HTTP 初筛通过，首页尚未验证');
           }
@@ -885,6 +970,7 @@ class HttpProbe {
     } on Cancelled {
       return result(ProbeStatus.cancelled);
     } on TimeoutException {
+      requestCancel.cancel();
       return result(ProbeStatus.timeout, 'HTTP 初筛超时');
     } on HandshakeException {
       return result(ProbeStatus.certificateError, 'TLS/证书验证失败');
@@ -897,7 +983,7 @@ class HttpProbe {
       );
     } catch (e) {
       final text = e.toString();
-      final policy = text.contains('Fake-IP') || text.contains('私网地址');
+      final policy = text.contains('Fake-IP') || text.contains('私网');
       return result(
         cancel.cancelled
             ? ProbeStatus.cancelled
@@ -905,7 +991,9 @@ class HttpProbe {
         policy ? readableError(e) : '网络请求失败，请稍后重试',
       );
     } finally {
-      client.close(force: true);
+      detach();
+      requestCancel.cancel();
+      clients.close();
     }
   }
 }

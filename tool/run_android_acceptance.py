@@ -23,7 +23,9 @@ run from the retained backup without replaying the suites.
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -33,7 +35,7 @@ import time
 from pathlib import Path
 from android_artifact import FORMAL_PACKAGE, verify_apk_package, verify_formal_apk
 from android_media_actions import MediaActionDriver
-from validation_runner import is_tcp_endpoint
+from validation_runner import content_fingerprint, is_tcp_endpoint, worktree_fingerprint
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = "dev.vikiea.site_lens.debug"
@@ -41,6 +43,21 @@ ACTIVITY = "dev.vikiea.site_lens.MainActivity"
 DEBUG_APK = ROOT / "build/app/outputs/flutter-apk/app-debug.apk"
 RELEASE_APK = ROOT / "build/app/outputs/flutter-apk/app-release.apk"
 NETWORK_DEFINE = "--dart-define=ALLOW_LOCAL_TEST_PAGES=true"
+PRODUCT_ENTRYPOINT = "lib/main.dart"
+DEFAULT_INTEGRATION_TARGET = "integration_test/acceptance_suite_test.dart"
+INTEGRATION_TARGETS = (
+    DEFAULT_INTEGRATION_TARGET,
+    'integration_test/app_flow_test.dart',
+    'integration_test/browser_tabs_test.dart',
+    'integration_test/host_contract_test.dart',
+    'integration_test/modernization_test.dart',
+    'integration_test/script_import_test.dart',
+    'integration_test/media_tasks_test.dart',
+    'integration_test/media3_parity_test.dart',
+    'integration_test/configured_sites_test.dart',
+    'integration_test/navigation_lease_test.dart',
+)
+PREBUILT_MANIFEST = "acceptance-manifest.json"
 DATABASE_FILES = (
     "site_lens.sqlite",
     "site_lens.sqlite-wal",
@@ -72,6 +89,169 @@ def test_defines() -> list[str]:
     if sites:
         values.append(f'--dart-define=SITE_LENS_TEST_SITES={sites}')
     return values
+
+
+def integration_driver_path() -> Path:
+    # Keep the driver inside this project so its package import resolves from
+    # this pubspec. The SDK example driver lives in a different package root,
+    # so passing it directly to `flutter drive` cannot resolve this project's
+    # integration_test dependency.
+    directory = ROOT / ".dart_tool/site-lens-acceptance"
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, raw_path = tempfile.mkstemp(
+        prefix=".site-lens-integration-driver-",
+        suffix=".dart",
+        dir=directory,
+    )
+    os.close(fd)
+    path = Path(raw_path)
+    path.write_text(
+        "import 'package:integration_test/integration_test_driver.dart';\n"
+        "\n"
+        "Future<void> main() => integrationDriver("
+        "writeResponseOnFailure: true);\n",
+        encoding="utf-8",
+    )
+    atexit.register(path.unlink, missing_ok=True)
+    return path
+
+
+def apk_sha256(path: Path) -> str:
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def acceptance_source_paths() -> list[str]:
+    output = subprocess.check_output(
+        ['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'],
+        cwd=ROOT,
+    )
+    return sorted(set(os.fsdecode(path) for path in output.split(b'\0') if path))
+
+
+def prebuilt_source_fingerprint() -> dict[str, str]:
+    # Include dirty and untracked contents, rather than certifying HEAD alone.
+    return {
+        'worktree': worktree_fingerprint(root=ROOT),
+        'source': content_fingerprint(acceptance_source_paths(), root=ROOT),
+    }
+
+
+def prebuilt_receipt_directory() -> Path:
+    value = subprocess.check_output(
+        ['git', 'rev-parse', '--git-path', 'site-lens-android-acceptance'], cwd=ROOT,
+    ).decode().strip()
+    path = Path(value)
+    return path if path.is_absolute() else ROOT / path
+
+
+def manifest_bytes(manifest: dict) -> bytes:
+    return json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()
+
+
+def prepared_build_command(
+    entrypoint: str, target_platform: str, defines: list[str],
+) -> list[str]:
+    return [
+        'flutter', 'build', 'apk', '--debug', '--no-pub',
+        f'--target={entrypoint}', f'--target-platform={target_platform}', *defines,
+    ]
+
+
+def validate_prebuilt_apks(
+    product_apk: Path | None,
+    test_apk: Path | None,
+    manifest_path: Path | None = None,
+    integration_target: str = DEFAULT_INTEGRATION_TARGET,
+) -> tuple[Path, Path] | None:
+    if product_apk is None and test_apk is None:
+        return None
+    if product_apk is None or test_apk is None:
+        raise RuntimeError(
+            "--prebuilt-product-apk and --prebuilt-test-apk must be supplied together"
+        )
+
+    for role, path in (("product", product_apk), ("test", test_apk)):
+        if not path.is_file():
+            raise RuntimeError(f"prebuilt {role} APK does not exist: {path}")
+    product_digest, test_digest = apk_sha256(product_apk), apk_sha256(test_apk)
+    if product_digest == test_digest:
+        raise RuntimeError('prebuilt product and test must be different artifacts')
+
+    manifest_path = manifest_path or product_apk.parent / PREBUILT_MANIFEST
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        if not isinstance(manifest, dict):
+            raise ValueError('manifest must be an object')
+    except (OSError, ValueError) as error:
+        raise RuntimeError(
+            'missing or invalid prebuilt proof; run tool/prepare_android_acceptance.py '
+            '(existing APKs cannot be certified)'
+        ) from error
+    payload = manifest_bytes(manifest)
+    receipt = prebuilt_receipt_directory() / (hashlib.sha256(payload).hexdigest() + '.json')
+    # The manifest is descriptive, not an authority. Only prepare writes this
+    # Git-local receipt after both controlled builds and drift checks succeed.
+    if not receipt.is_file() or receipt.read_bytes() != payload:
+        raise RuntimeError('prebuilt proof has no matching controlled-build receipt; rerun prepare')
+    if manifest.get('schema') != 1 or manifest.get('producer') != 'prepare_android_acceptance':
+        raise RuntimeError('unsupported prebuilt proof')
+    if manifest.get('fingerprint') != prebuilt_source_fingerprint():
+        raise RuntimeError('prebuilt proof has stale source/worktree fingerprint; rerun prepare')
+    platform = manifest.get('target_platform')
+    if platform not in ('android-arm', 'android-arm64', 'android-x64'):
+        raise RuntimeError('invalid prebuilt target platform')
+    records = manifest.get('artifacts')
+    if not isinstance(records, dict) or set(records) != {'product', 'test'}:
+        raise RuntimeError('invalid prebuilt artifact roles')
+    if manifest_path.resolve().parent != product_apk.resolve().parent \
+            or manifest_path.resolve().parent != test_apk.resolve().parent:
+        raise RuntimeError('prebuilt APKs and proof must come from one prepared bundle')
+    for role, path, digest, entrypoint, defines in (
+        ('product', product_apk, product_digest, PRODUCT_ENTRYPOINT, []),
+        ('test', test_apk, test_digest, integration_target, test_defines()),
+    ):
+        record = records[role]
+        expected_target = None if role == 'product' else integration_target
+        if not isinstance(record, dict) or record.get('role') != role:
+            raise RuntimeError(f'prebuilt {role} role mismatch')
+        if record.get('file') != path.name:
+            raise RuntimeError(f'prebuilt {role} file/role mismatch')
+        if (record.get('entrypoint') != entrypoint
+                or record.get('integration_target') != expected_target):
+            raise RuntimeError(f'prebuilt {role} entrypoint/integration suite mismatch')
+        if record.get('command') != prepared_build_command(entrypoint, platform, defines):
+            raise RuntimeError(f'prebuilt {role} build command/defines mismatch')
+        if record.get('sha256') != digest:
+            raise RuntimeError(f'prebuilt {role} SHA-256 mismatch (wrong role or altered APK)')
+        try:
+            verify_apk_package(path, PACKAGE, ENV)
+        except Exception as error:
+            raise RuntimeError(
+                f"prebuilt {role} APK must be the debug package "
+                f"{PACKAGE}: {error}"
+            ) from error
+    return product_apk, test_apk
+
+
+def prebuilt_drive_command(
+    device: str,
+    test_apk: Path,
+    driver: Path,
+) -> list[str]:
+    return [
+        "flutter",
+        "drive",
+        "--no-pub",
+        "--no-dds",
+        "--keep-app-running",
+        "--driver",
+        str(driver),
+        "--use-application-binary",
+        str(test_apk),
+        "-d",
+        device,
+    ]
 
 # Set from --restart-adb: kill and restart the local adb server on every
 # reconnect, the workaround for this device answering `No route to host`.
@@ -207,7 +387,7 @@ def debug_data_readable(device: str) -> bool:
     )
 
 
-def ensure_debug_install(device: str) -> bool:
+def ensure_debug_install(device: str, apk: Path = DEBUG_APK) -> bool:
     """Install the debug APK only when the private data is unreadable.
 
     Debug and formal installs have separate identities and certificates.
@@ -216,8 +396,8 @@ def ensure_debug_install(device: str) -> bool:
     """
     if debug_data_readable(device):
         return False
-    verify_apk_package(DEBUG_APK, PACKAGE, ENV)
-    install(device, DEBUG_APK, PACKAGE)
+    verify_apk_package(apk, PACKAGE, ENV)
+    install(device, apk, PACKAGE)
     return True
 
 
@@ -388,12 +568,21 @@ def normal_debug_build(device: str) -> list[str]:
 
 
 def restore_and_launch_debug(
-    device: str, directory: Path, backup: dict[str, str], installs: list[str]
+    device: str,
+    directory: Path,
+    backup: dict[str, str],
+    installs: list[str],
+    *,
+    allow_rebuild: bool = True,
 ) -> None:
     """Restore only the debug test package, then launch the restored debug build."""
     adb(device, "shell", "am", "force-stop", PACKAGE, check=False)
     product = directory / "product-debug.apk"
     if not product.is_file():
+        if not allow_rebuild:
+            raise RuntimeError(
+                f"prebuilt product APK backup is missing: {product}"
+            )
         run_flutter(normal_debug_build(device), timeout=600)
         product = DEBUG_APK
     # Flutter integration_test overwrites app-debug.apk with its test entrypoint.
@@ -475,7 +664,49 @@ def main() -> int:
         default='integration_test/acceptance_suite_test.dart',
     )
     parser.add_argument('--test-name', help='Optional Flutter test-name regex for a targeted device regression')
+    parser.add_argument(
+        '--prebuilt-product-apk',
+        type=Path,
+        help='prebuilt normal debug APK; requires --prebuilt-test-apk and --single-suite',
+    )
+    parser.add_argument(
+        '--prebuilt-test-apk',
+        type=Path,
+        help='prebuilt integration-test debug APK; requires --prebuilt-product-apk and --single-suite',
+    )
+    parser.add_argument(
+        '--prebuilt-manifest',
+        type=Path,
+        help='manifest emitted by tool/prepare_android_acceptance.py',
+    )
     args = parser.parse_args()
+
+    prebuilt_requested = (
+        args.prebuilt_product_apk is not None
+        or args.prebuilt_test_apk is not None
+        or args.prebuilt_manifest is not None
+    )
+    if prebuilt_requested:
+        if args.prebuilt_product_apk is None or args.prebuilt_test_apk is None:
+            parser.error(
+                '--prebuilt-product-apk and --prebuilt-test-apk must be supplied together'
+            )
+        if args.prebuilt_manifest is None:
+            parser.error('--prebuilt-manifest is required for prebuilt APKs')
+        if not args.single_suite:
+            parser.error('prebuilt APKs require --single-suite')
+        if args.test_name:
+            parser.error('--test-name cannot be used with prebuilt APKs')
+        if args.restore_from:
+            parser.error('--restore-from cannot be used with prebuilt APKs')
+
+    prebuilt_apks = validate_prebuilt_apks(
+        args.prebuilt_product_apk,
+        args.prebuilt_test_apk,
+        args.prebuilt_manifest,
+        args.integration_target,
+    )
+    prebuilt_driver = integration_driver_path() if prebuilt_apks else None
 
     global RESTART_ADB
     RESTART_ADB = args.restart_adb
@@ -486,29 +717,56 @@ def main() -> int:
 
     if not args.skip_check:
         run_flutter(["./tool/check.sh"], timeout=300)
-    # Always capture a normal product APK; previous integration runs replace the build output.
-    run_flutter(normal_debug_build(args.device), timeout=600)
-    if not args.skip_build:
-        run_flutter(["flutter", "build", "apk", "--release"], timeout=600)
+    if prebuilt_apks is None:
+        # Always capture a normal product APK; previous integration runs replace the build output.
+        run_flutter(normal_debug_build(args.device), timeout=600)
+        if not args.skip_build:
+            run_flutter(["flutter", "build", "apk", "--release"], timeout=600)
 
-    verify_apk_package(DEBUG_APK, PACKAGE, ENV)
-    if not args.skip_build:
-        verify_formal_apk(RELEASE_APK, ENV)
+        product_apk = DEBUG_APK
+        verify_apk_package(product_apk, PACKAGE, ENV)
+        if not args.skip_build:
+            verify_formal_apk(RELEASE_APK, ENV)
+    else:
+        product_apk, test_apk = prebuilt_apks
+        # The first proof check happens before the strict device preflight and
+        # local checks. Recheck after those steps and immediately before any
+        # backup/install so a source or APK change during preparation cannot
+        # turn into device evidence for a different worktree.
+        prebuilt_apks = validate_prebuilt_apks(
+            args.prebuilt_product_apk,
+            args.prebuilt_test_apk,
+            args.prebuilt_manifest,
+            args.integration_target,
+        )
+        assert prebuilt_apks is not None
+        product_apk, test_apk = prebuilt_apks
 
     backup_dir = Path(tempfile.mkdtemp(prefix="site-lens-android-backup-"))
-    shutil.copy2(DEBUG_APK, backup_dir / "product-debug.apk")
+    shutil.copy2(product_apk, backup_dir / "product-debug.apk")
     backup: dict[str, str] = {}
     installs: list[str] = []
     error: Exception | None = None
     try:
         adb(args.device, "shell", "am", "force-stop", PACKAGE, check=False)
         adb(args.device, "shell", "am", "force-stop", FORMAL_PACKAGE, check=False)
-        if ensure_debug_install(args.device):
+        if ensure_debug_install(args.device, product_apk):
             installs.append("debug for backup/restore")
         backup = backup_database(args.device, backup_dir)
         print(f"backup: {backup_dir} files={sorted(backup)}", flush=True)
 
-        if args.single_suite:
+        if prebuilt_apks is not None:
+            print("acceptance mode: prebuilt single-suite (one app install)", flush=True)
+            run_single_suite_with_media_driver(
+                prebuilt_drive_command(
+                    args.device,
+                    test_apk,
+                    prebuilt_driver,
+                ),
+                args.device,
+                timeout=1800,
+            )
+        elif args.single_suite:
             print("acceptance mode: single-suite (one app install)", flush=True)
             run_single_suite_with_media_driver(
                 [
@@ -557,7 +815,13 @@ def main() -> int:
         error = exc
     finally:
         try:
-            restore_and_launch_debug(args.device, backup_dir, backup, installs)
+            restore_and_launch_debug(
+                args.device,
+                backup_dir,
+                backup,
+                installs,
+                allow_rebuild=prebuilt_apks is None,
+            )
         except Exception as restore_error:
             # Never let this read as a clean run: the user database is still
             # only in the retained backup at this point.
@@ -602,7 +866,11 @@ def main() -> int:
     print(
         "script-driven installs: "
         + (", ".join(installs) if installs else "none")
-        + " (flutter test installs the debug APK itself)",
+        + (
+            " (prebuilt flutter drive installs the test APK itself)"
+            if prebuilt_apks is not None
+            else " (flutter test installs the debug APK itself)"
+        ),
         flush=True,
     )
     print(f"backup retained at {backup_dir}")

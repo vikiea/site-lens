@@ -177,6 +177,32 @@ void main() {
     );
     expect(r.status, ProbeStatus.cancelled);
   });
+
+  test(
+    'cancelling while reading the system route prevents a late connection',
+    () async {
+      final started = Completer<void>();
+      final release = Completer<MediaNetworkRoute>();
+      final cancel = Cancellation();
+      final future =
+          ControlledHttp(
+            allowLocal: true,
+            routeForAttempt: (_, _) async {
+              started.complete();
+              return release.future;
+            },
+          ).fetch(
+            Uri.parse('http://origin.example/'),
+            connect: const {'*'},
+            document: Uri.parse('http://origin.example/'),
+            cancel: cancel,
+          );
+      await started.future;
+      cancel.cancel();
+      release.complete(const MediaNetworkRoute());
+      await expectLater(future, throwsA(isA<Cancelled>()));
+    },
+  );
   test('custom pinned HTTPS factory performs TLS and rejects untrusted certificates', () async {
     final directory = await Directory.systemTemp.createTemp('site-lens-tls-');
     addTearDown(() async {
@@ -265,6 +291,139 @@ void main() {
           Cancellation(),
         );
         expect(result.verified, false);
+        expect(result.status, ProbeStatus.offline);
+        expect(result.reason, contains('私网'));
+        expect(hits, 0);
+      } finally {
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test(
+    'HTTP screening uses the system proxy before resolving the origin',
+    () async {
+      final proxy = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => proxy.close(force: true));
+      var resolutions = 0;
+      proxy.listen((request) async {
+        request.response.statusCode = HttpStatus.ok;
+        request.response.write('proxied');
+        await request.response.close();
+      });
+      final probe = HttpProbe(
+        resolve: (_) async {
+          resolutions++;
+          return [InternetAddress('198.18.0.1')];
+        },
+        routeForAttempt: (_, attempt) async =>
+            MediaNetworkRoute(proxy: 'PROXY 127.0.0.1:${proxy.port}'),
+      );
+
+      final result = await probe.run(
+        Candidate(
+          id: 1,
+          url: Uri.parse('http://cdn.example/watch'),
+          label: 'proxy',
+        ),
+        1,
+        Cancellation(),
+      );
+
+      expect(result.status, ProbeStatus.reachable);
+      expect(resolutions, 0);
+    },
+  );
+
+  test(
+    'navigation policy does not resolve the origin behind an HTTP proxy',
+    () async {
+      var resolutions = 0;
+      await NetworkPolicy.publicNavigation(
+        Uri.parse('https://site.example/watch'),
+        route: const MediaNetworkRoute(proxy: 'PROXY 127.0.0.1:7890'),
+        resolve: (_) async {
+          resolutions++;
+          return [InternetAddress('198.18.0.1')];
+        },
+      );
+      expect(resolutions, 0);
+    },
+  );
+
+  test(
+    'redirects rebuild the connection when the route changes per hop',
+    () async {
+      final origin = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final proxy = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      var originHits = 0;
+      var proxyHits = 0;
+      addTearDown(() async {
+        await proxy.close(force: true);
+        await origin.close(force: true);
+      });
+      origin.listen((request) async {
+        originHits++;
+        if (request.uri.path == '/entry') {
+          request.response.statusCode = HttpStatus.found;
+          request.response.headers.set(HttpHeaders.locationHeader, '/landing');
+        } else {
+          request.response.write('direct');
+        }
+        await request.response.close();
+      });
+      proxy.listen((request) async {
+        proxyHits++;
+        request.response.statusCode = HttpStatus.found;
+        request.response.headers.set(HttpHeaders.locationHeader, '/landing');
+        await request.response.close();
+      });
+
+      final result =
+          await ControlledHttp(
+            allowLocal: true,
+            resolve: (_) async => [InternetAddress.loopbackIPv4],
+            routeForAttempt: (uri, _) async => uri.path == '/entry'
+                ? MediaNetworkRoute(proxy: 'PROXY 127.0.0.1:${proxy.port}')
+                : const MediaNetworkRoute(proxy: 'DIRECT'),
+          ).fetch(
+            Uri.parse('http://origin.test:${origin.port}/entry'),
+            connect: const {'*'},
+            document: Uri.parse('http://origin.test:${origin.port}/'),
+            cancel: Cancellation(),
+          );
+
+      expect(result.status, HttpStatus.ok);
+      expect(String.fromCharCodes(result.bytes), 'direct');
+      expect(proxyHits, 1);
+      expect(originHits, 1);
+    },
+  );
+
+  test(
+    'DIRECT route callbacks retain DNS private-address protection',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      var hits = 0;
+      server.listen((request) async {
+        hits++;
+        await request.response.close();
+      });
+      try {
+        final result =
+            await HttpProbe(
+              routeForAttempt: (_, _) async =>
+                  const MediaNetworkRoute(proxy: 'DIRECT'),
+              resolve: (_) async => [InternetAddress.loopbackIPv4],
+            ).run(
+              Candidate(
+                id: 1,
+                url: Uri.parse('http://public.example:${server.port}/'),
+                label: 'private DNS',
+              ),
+              1,
+              Cancellation(),
+            );
         expect(result.status, ProbeStatus.offline);
         expect(result.reason, contains('私网'));
         expect(hits, 0);

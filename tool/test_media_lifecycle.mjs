@@ -49,6 +49,7 @@ const document = {
 };
 const window = {
   document,
+  location: {href: 'https://example.test/video/episode-1'},
   frames: [],
   crypto: { randomUUID: () => 'frame-main' },
   AudioContext: Audio,
@@ -56,6 +57,10 @@ const window = {
   lensMedia: bridge,
 };
 window.parent = window;
+window.history = {
+  pushState(_state, _title, url) { window.location.href = new URL(url, window.location.href).href; },
+  replaceState(_state, _title, url) { window.location.href = new URL(url, window.location.href).href; },
+};
 
 let mutation;
 class Observer { constructor(callback) { mutation = callback; } observe() {} }
@@ -82,7 +87,7 @@ const source = fs.readFileSync(new URL('../web_assets/media_lifecycle.js', impor
   }));
 vm.runInContext(source, scope);
 
-const waitForReport = () => new Promise(resolve => setTimeout(resolve, 150));
+const waitForReport = () => new Promise(resolve => setTimeout(resolve, 1000));
 
 const hello = outbound.find(value => value.kind === 'hello');
 assert.ok(hello, 'each frame must establish an explicit native handshake');
@@ -133,8 +138,43 @@ dataElements.push(
 mutation();
 await waitForReport();
 const lineCandidates = outbound.filter(value => value.kind === 'candidates').at(-1).candidates;
-assert.equal(lineCandidates.length, 1);
-console.log('Temporary line parameters collapse one page candidate PASS.');
+assert.equal(lineCandidates.length, 2);
+assert.ok(lineCandidates.every(value => value.url.includes('line=')));
+console.log('Episode selection parameters remain distinct page candidates PASS.');
+
+dataElements.length = 0;
+dataElements.push(
+  new DataElement({'data-play-src': '/assets/same.m3u8', 'data-episode': '1'}),
+  new DataElement({'data-play-src': '/assets/same.m3u8', 'data-episode': '2'}),
+);
+mutation();
+await waitForReport();
+const conflictingCandidates = outbound
+  .filter(value => value.kind === 'candidates')
+  .findLast(value => value.candidates.some(item => /集数未确认/.test(item.title)))
+  ?.candidates || [];
+assert.equal(conflictingCandidates.length, 1);
+assert.equal(conflictingCandidates[0].episodeNumber, undefined);
+assert.match(conflictingCandidates[0].title, /集数未确认/);
+console.log('Conflicting episode labels for one normalized URL remain unconfirmed PASS.');
+
+dataElements.length = 0;
+nodes.forEach(node => { node.isConnected = false; });
+nodes.length = 0;
+const singlePlaylist = new Media();
+singlePlaylist.currentSrc = 'https://cdn.example.test/one.m3u8?line=77&t=live';
+singlePlaylist.src = singlePlaylist.currentSrc;
+nodes.push(singlePlaylist);
+dataElements.push(new DataElement({
+  'data-play-src': 'https://cdn.example.test/one.m3u8?line=77&t=playlist',
+  'data-episode': '7',
+}));
+mutation();
+await waitForReport();
+const mappedEpisode = outbound.filter(value => value.kind === 'candidates').at(-1).candidates;
+assert.equal(mappedEpisode.length, 1);
+assert.equal(mappedEpisode[0].episodeNumber, 7);
+console.log('Single playlist entry binds the explicit episode marker PASS.');
 
 nodes.push(new Media());
 await nodes[0].play();
@@ -170,6 +210,7 @@ await waitForReport();
 assert.equal(outbound.filter(value => value.kind === 'state').at(-1).playing, true);
 console.log('Large candidate set keeps state telemetry and chunks candidates under the native limit PASS.');
 
+for (let index = 1; index < nodes.length; index++) nodes[index].isConnected = false;
 nodes[0].paused = true;
 nodes[0].ended = false;
 nodes[0].currentSrc = 'https://example.test/placeholder.m3u8?token=placeholder';
@@ -203,6 +244,40 @@ const redirectedCandidates = outbound.filter(value => value.kind === 'candidates
 assert.equal(redirectedCandidates.length, 1);
 assert.ok(redirectedCandidates[0].url.includes('/play/series/1.m3u8'));
 console.log('Meaningful media element suppresses redirected Resource Timing duplicates PASS.');
+
+const oldConnectedPlayer = nodes[0];
+dataElements.length = 0;
+performanceEntries.length = 0;
+const beforeRoute = outbound.length;
+window.history.pushState({}, '', '/video/episode-2');
+await waitForReport();
+assert.equal(outbound.slice(beforeRoute).filter(value => value.kind === 'candidates').length, 0);
+for (const type of ['play', 'playing', 'loadedmetadata', 'emptied']) {
+  handlers.get(type)?.({target: oldConnectedPlayer});
+}
+await oldConnectedPlayer.play();
+await waitForReport();
+assert.equal(outbound.slice(beforeRoute).filter(value => value.kind === 'candidates').length, 0);
+console.log('SPA route does not rebind a still-connected old player to the new episode PASS.');
+
+oldConnectedPlayer.currentSrc = 'https://example.test/play/series/2.m3u8';
+oldConnectedPlayer.src = oldConnectedPlayer.currentSrc;
+mutation();
+await waitForReport();
+const newRouteCandidates = outbound.filter(value => value.kind === 'candidates').at(-1).candidates;
+assert.equal(newRouteCandidates[0].pageUrl, 'https://example.test/video/episode-2');
+assert.ok(newRouteCandidates[0].url.includes('/2.m3u8'));
+const cleared = outbound.filter(value => value.kind === 'clear').at(-1);
+assert.equal(cleared?.pageUrl, 'https://example.test/video/episode-2');
+console.log('SPA route changes clear the previous media snapshot PASS.');
+
+nodes.forEach(node => { node.isConnected = false; });
+nodes.length = 0;
+mutation();
+await waitForReport();
+const emptySnapshot = outbound.filter(value => value.kind === 'clear').at(-1);
+assert.equal(emptySnapshot?.reason, 'snapshot');
+console.log('Empty media snapshots revoke the previous frame candidates PASS.');
 
 handlers.get('pagehide')?.({});
 assert.notEqual(outbound.at(-1)?.kind, 'gone');

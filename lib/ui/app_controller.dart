@@ -78,7 +78,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     glassQualityCacheRepository = SiteLensGlassQualityCacheRepository(db);
     this.sessionStore = sessionStore ?? BrowserSessionStore(db);
     scripts = ScriptService(db, ControlledHttp());
-    hosts = NativeHosts(db, scripts, ControlledHttp(), api: api);
+    hosts = NativeHosts(
+      db,
+      scripts,
+      ControlledHttp(),
+      api: api,
+      probeRoute: Platform.isAndroid ? MediaNetwork().probeRoute : null,
+    );
     filterSnapshots = FilterSnapshotStore();
     filterSources = FilterSourceManager(store: filterSnapshots, db: db);
     mediaTasks = MediaTaskStore(db: db);
@@ -143,7 +149,14 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     packs = ProfilePacks(db);
     probes = ProbeCoordinator(
       candidates: _enabledCandidates,
-      httpProbe: httpProbe ?? HttpProbe(),
+      httpProbe:
+          httpProbe ??
+          HttpProbe(
+            routeForAttempt: Platform.isAndroid
+                ? (uri, attempt) =>
+                      MediaNetwork().probeRoute(uri, attempt: attempt)
+                : null,
+          ),
       verifier: homepageVerifier ?? NativeHomepageVerifier(hosts),
       save: db.saveProbe,
     )..addListener(notifyListeners);
@@ -785,9 +798,6 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     if (session != null &&
         !session.disposed &&
         session.generation == task.generation &&
-        session.url.isNotEmpty &&
-        Uri.parse(session.url).removeFragment() ==
-            task.sourceUrl.removeFragment() &&
         stored != null) {
       for (final candidate in hosts.mediaCandidatesForHost(
         task.hostId,
@@ -837,10 +847,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     if (session == null || session.disposed) {
       throw StateError('下载地址已失效，请返回播放页重新选择媒体');
     }
-    if (session.generation != task.generation ||
-        session.url.isEmpty ||
-        Uri.parse(session.url).removeFragment() !=
-            task.sourceUrl.removeFragment()) {
+    if (session.generation != task.generation) {
       throw StateError('页面已更新，请返回播放页重新选择媒体');
     }
     final current = hosts.authorizeMediaCandidate(task.hostId, candidate.id);

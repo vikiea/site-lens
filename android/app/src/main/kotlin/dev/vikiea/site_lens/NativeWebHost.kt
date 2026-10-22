@@ -480,8 +480,12 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         webView,
         purpose == HostPurpose.BROWSING,
     ) { candidate ->
-        val url = candidate["url"] as? String
-        if (url != null && url.isNotBlank()) event("mediaCandidate", JSONObject(candidate).toString())
+        if (candidate["kind"] == "clear") {
+            event("mediaCandidatesClear", JSONObject(candidate).toString())
+        } else {
+            val url = candidate["url"] as? String
+            if (url != null && url.isNotBlank()) event("mediaCandidate", JSONObject(candidate).toString())
+        }
     }
     var preferences: HostPreferences = initialPreferences
         private set

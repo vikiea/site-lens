@@ -522,7 +522,7 @@ void main() {
     );
   });
 
-  test('temporary line parameters collapse display duplicates only', () {
+  test('line parameters remain distinct display identities', () {
     final first = Uri.parse(
       'https://cdn.example/live/index.m3u8?line=54&t=one',
     );
@@ -539,7 +539,7 @@ void main() {
     );
     expect(
       mediaCandidateDisplayGroupKey(candidate(url: first.toString())),
-      mediaCandidateDisplayGroupKey(candidate(url: second.toString())),
+      isNot(mediaCandidateDisplayGroupKey(candidate(url: second.toString()))),
     );
     expect(
       mediaCandidateGroupKey(Uri.parse('https://cdn.example/live/index.m3u8')),

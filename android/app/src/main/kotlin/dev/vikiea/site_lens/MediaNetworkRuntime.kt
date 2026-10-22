@@ -10,7 +10,6 @@ import android.webkit.CookieManager
 import android.webkit.WebSettings
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
-import java.net.InetAddress
 import java.net.URI
 import java.util.concurrent.Executors
 import java.io.File
@@ -36,16 +35,20 @@ class MediaNetworkRuntime(
             enqueueTransfer(call, result)
             return
         }
-        if (call.method != "route") { result.notImplemented(); return }
+        if (call.method != "route" && call.method != "probeRoute") { result.notImplemented(); return }
         executor.execute {
             val outcome = runCatching {
                 val uri = URI(call.argument<String>("url") ?: error("缺少媒体地址"))
                 val attempt = call.argument<Int>("attempt") ?: 0
                 val proxy = SystemMediaNetwork.configuration(uri, attempt = attempt)
+                // This is only a route hint. The connecting transport still
+                // validates DNS for the DIRECT entry actually being used.
                 val vpn = allowsProxyFakeIp(uri)
-                val cookie = runCatching {
-                    CookieManager.getInstance().getCookie(uri.toString())
-                }.getOrNull()
+                val cookie = if (call.method == "route") {
+                    runCatching {
+                        CookieManager.getInstance().getCookie(uri.toString())
+                    }.getOrNull()
+                } else null
                 mapOf(
                     "proxy" to proxy,
                     "vpn" to vpn,
@@ -86,24 +89,15 @@ class MediaNetworkRuntime(
         result.error(code, error.message ?: "媒体连接失败，已保留缓存，可重试", null)
     }
 
-    /**
-     * TUN/VPN implementations do not all expose TRANSPORT_VPN on Android.
-     * Fake-IP DNS is still a positive signal that the direct socket is meant
-     * to be intercepted by the system network path, so allow it through the
-     * media route policy in that case.
-     */
+    /** Never resolve origin DNS while selecting a route, including PAC fallbacks. */
     private fun allowsProxyFakeIp(uri: URI): Boolean {
         val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
         val directRoute = runCatching { SystemMediaNetwork.hasDirectRoute(uri) }
             .getOrDefault(false)
-        val fakeIp = runCatching {
-            InetAddress.getAllByName(uri.host).any(SystemMediaNetwork::fakeIp)
-        }.getOrDefault(false)
-        return SystemMediaNetwork.fakeIpRouteAllowed(
+        return SystemMediaNetwork.fakeIpRouteEligible(
             vpnTransport = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true,
             explicitlyNotVpn = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN),
             directRoute = directRoute,
-            dnsContainsFakeIp = fakeIp,
         )
     }
 

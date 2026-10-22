@@ -95,6 +95,15 @@ class SystemMediaNetworkTest {
     }
 
     @Test
+    fun fakeIpRouteHintRequiresConfirmedVpnAndDirectEntry() {
+        assertEquals(true, SystemMediaNetwork.fakeIpRouteEligible(true, true, true))
+        assertEquals(true, SystemMediaNetwork.fakeIpRouteEligible(false, false, true))
+        assertEquals(false, SystemMediaNetwork.fakeIpRouteEligible(false, null, true))
+        assertEquals(false, SystemMediaNetwork.fakeIpRouteEligible(false, true, true))
+        assertEquals(false, SystemMediaNetwork.fakeIpRouteEligible(true, false, false))
+    }
+
+    @Test
     fun fakeIpRequiresVpnOrExplicitNonVpnCapabilityAndDirectRoute() {
         assertEquals(true, SystemMediaNetwork.fakeIpRouteAllowed(true, true, true, true))
         assertEquals(true, SystemMediaNetwork.fakeIpRouteAllowed(false, false, true, true))
