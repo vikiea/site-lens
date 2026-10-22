@@ -127,11 +127,9 @@ class SiteLensGlassSurface extends StatelessWidget {
       );
     }
 
-    if (!scrollingContent &&
-        (role != SiteLensSurfaceRole.panel ||
-            plan.quality != GlassQuality.premium)) {
-      return surface(content);
-    }
+    // Material quality must not add a second scrolling owner. Ordinary pages
+    // split long settings into smaller panels; only an explicit viewport opts in.
+    if (!scrollingContent) return surface(content);
     return LayoutBuilder(
       builder: (context, constraints) {
         final media = MediaQuery.of(context);

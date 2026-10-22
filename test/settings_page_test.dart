@@ -12,6 +12,9 @@ import 'package:site_lens/settings/settings_repository.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/glass_quality_cache.dart';
+import 'package:site_lens/ui/glass_surface.dart';
+import 'package:site_lens/ui/media_tasks_screen.dart';
+import 'package:site_lens/ui/player_gestures_screen.dart';
 import 'package:site_lens/ui/app_theme.dart';
 import 'package:site_lens/ui/screens.dart';
 import 'package:site_lens/web_host/web_host.g.dart';
@@ -36,13 +39,46 @@ UpdateController quietUpdateController() {
 
 Widget settingsApp(AppController app, UpdateController update) => ProviderScope(
   overrides: [updateControllerProvider.overrideWithValue(update)],
-  child: MaterialApp(
-    home: ListenableBuilder(
-      listenable: app,
-      builder: (context, _) => Scaffold(body: SettingsPage(app: app)),
+  child: ListenableBuilder(
+    listenable: app,
+    builder: (context, _) => MaterialApp(
+      theme: buildSiteLensTheme(
+        app.themePreset,
+        Brightness.light,
+        glassOpacity: app.settings.glassOpacity,
+      ),
+      darkTheme: buildSiteLensTheme(
+        app.themePreset,
+        Brightness.dark,
+        glassOpacity: app.settings.glassOpacity,
+      ),
+      themeMode: toThemeMode(app.themeModePreference),
+      builder: (context, child) => SiteLensGlassPolicyScope(
+        strategy: SiteLensGlassQualityStrategy(
+          mode: app.settings.glassQualityMode,
+          allSurfacesHighQuality: app.settings.highQualityAllSurfaces,
+          adaptiveQualityOverride: app.effectiveGlassQuality,
+          shaderSupported: true,
+        ),
+        child: SiteLensBackdrop(child: child!),
+      ),
+      home: Scaffold(
+        body: SiteLensGlassGroup(child: SettingsPage(app: app)),
+      ),
     ),
   ),
 );
+
+Future<void> openSettingsEntry(WidgetTester tester, String title) async {
+  final row = find.text(title);
+  await tester.scrollUntilVisible(
+    row,
+    250,
+    scrollable: find.byType(Scrollable),
+  );
+  await tester.tap(row);
+  await tester.pumpAndSettle();
+}
 
 Future<void> pumpSettings(
   WidgetTester tester,
@@ -84,6 +120,7 @@ void main() {
 
   testWidgets('明暗模式 switches inline, without a bottom sheet', (tester) async {
     await pumpSettings(tester, app);
+    await openSettingsEntry(tester, '外观与玻璃');
     expect(find.text('明暗模式'), findsOneWidget);
     expect(find.text('不透明度'), findsOneWidget);
     expect(find.textContaining('只影响面板背景填充'), findsNothing);
@@ -98,6 +135,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(
       find.byKey(const ValueKey('default-glass-opacity-marker')),
+      warnIfMissed:
+          false, // Visual marker intentionally lets the slider receive the tap.
     );
     await tester.pumpAndSettle();
     expect(app.settings.glassOpacity, 55);
@@ -135,18 +174,17 @@ void main() {
     expect(app.themeModePreference, ThemeModePreference.light);
   });
 
-  testWidgets('主题色 stays folded until asked for, then selects inline', (
-    tester,
-  ) async {
+  testWidgets('主题色 opens a third page and persists selection', (tester) async {
     await pumpSettings(tester, app);
+    await openSettingsEntry(tester, '外观与玻璃');
     // Folded: the swatches are not in the built tree yet.
     expect(find.text('雾松绿'), findsNothing);
 
-    await tester.tap(find.text('主题色'));
+    await openSettingsEntry(tester, '主题色');
     await tester.pumpAndSettle();
     expect(find.text('雾松绿'), findsNothing);
     expect(find.bySemanticsLabel('主题色 雾松绿'), findsOneWidget);
-    // Still no sheet: the choice happens inside the section.
+    // Theme selection owns its route; the overview and appearance stay mounted.
     expect(find.byType(BottomSheet), findsNothing);
 
     await tester.tap(find.bySemanticsLabel('主题色 雾松绿'));
@@ -156,20 +194,32 @@ void main() {
       (await SettingsRepository(db).read()).themePreset,
       ThemePresetId.mistPine,
     );
-    // Selecting does not fold the block again.
-    expect(find.text('雾松绿'), findsWidgets);
+    // The selected theme remains visible until the route is left.
+    expect(
+      tester
+          .widget<Semantics>(find.bySemanticsLabel('主题色 雾松绿'))
+          .properties
+          .selected,
+      isTrue,
+    );
   });
 
   testWidgets('rows are separated and glass quality is an explicit mode', (
     tester,
   ) async {
     await pumpSettings(tester, app);
+    await openSettingsEntry(tester, '外观与玻璃');
     expect(find.text('玻璃质量'), findsOneWidget);
     expect(find.text('自动'), findsOneWidget);
     // Every setting-sized surface is gone: rows live in one panel per section.
     expect(find.byType(Card), findsNothing);
 
     final appearance = tester.getRect(find.text('明暗模式'));
+    await tester.scrollUntilVisible(
+      find.text('主题色'),
+      250,
+      scrollable: find.byType(Scrollable),
+    );
     final themeRow = tester.getRect(find.text('主题色'));
     expect(
       themeRow.top - appearance.bottom,
@@ -182,6 +232,7 @@ void main() {
     tester,
   ) async {
     await pumpSettings(tester, app);
+    await openSettingsEntry(tester, '外观与玻璃');
     await tester.tap(find.text('高质量'));
     await tester.pumpAndSettle();
 
@@ -258,6 +309,7 @@ void main() {
       await tester.tap(find.text('设备能力与平台策略'));
       await tester.pumpAndSettle();
       expect(find.text('当前环境'), findsOneWidget);
+      await openSettingsEntry(tester, '其他能力');
       expect(find.textContaining('原生只读查询未完成'), findsOneWidget);
       expect(
         app.deviceDiagnostics.snapshot!.capabilities.single.state,
@@ -276,6 +328,7 @@ void main() {
     tester,
   ) async {
     await pumpSettings(tester, app);
+    await openSettingsEntry(tester, '后台与诊断');
     await tester.scrollUntilVisible(
       find.text('后台存活检查'),
       300,
@@ -299,28 +352,29 @@ void main() {
   });
 
   testWidgets(
-    'removed duplicate entries and new tab policy are visible in one settings page',
+    'overview links preserve navigation, tab policy and player gestures',
     (tester) async {
       await pumpSettings(tester, app);
-      expect(find.text('入口跨域跳转后保留脚本'), findsNothing);
       expect(find.text('全局关闭脚本'), findsNothing);
-      await tester.scrollUntilVisible(
-        find.text('脚本管理'),
-        300,
-        scrollable: find.byType(Scrollable),
-      );
-      expect(find.text('脚本管理'), findsOneWidget);
-      await tester.scrollUntilVisible(
-        find.text('同站点标签页互相替换'),
-        500,
-        scrollable: find.byType(Scrollable),
-      );
-      expect(find.text('同站点标签页互相替换'), findsOneWidget);
-      expect(find.text('设备能力与平台策略'), findsOneWidget);
-      expect(
-        find.byKey(const ValueKey('details-host-capabilities')),
-        findsNothing,
-      );
+      expect(find.text('同站点标签页互相替换'), findsNothing);
+      await openSettingsEntry(tester, '浏览设置');
+      expect(find.byType(Scrollable), findsOneWidget);
+      await tester.tap(find.text('同站点标签页互相替换'));
+      await tester.pumpAndSettle();
+      expect((await SettingsRepository(db).read()).replaceSameSiteTabs, isTrue);
+      expect(find.text('入口跨域跳转后保留脚本'), findsNothing);
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      await openSettingsEntry(tester, '媒体管理');
+      expect(find.byType(MediaManagementScreen), findsOneWidget);
+      await openSettingsEntry(tester, '播放器手势');
+      expect(find.byType(PlayerGesturesScreen), findsOneWidget);
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.text('外观与玻璃'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
     },
   );
 
@@ -328,6 +382,7 @@ void main() {
     tester,
   ) async {
     await pumpSettings(tester, app);
+    await openSettingsEntry(tester, '浏览设置');
     await tester.scrollUntilVisible(
       find.text('广告与反跟踪'),
       300,
@@ -358,6 +413,7 @@ void main() {
     tester,
   ) async {
     await pumpSettings(tester, app);
+    await openSettingsEntry(tester, '关于与更新');
     await tester.scrollUntilVisible(
       find.text('关于 Site Lens'),
       300,
@@ -367,10 +423,67 @@ void main() {
     expect(find.text('软件更新'), findsOneWidget);
   });
 
+  for (final dark in [false, true]) {
+    for (final opacity in [0, 55, 100]) {
+      testWidgets(
+        'settings keep one scroll with large text, dark=$dark opacity=$opacity',
+        (tester) async {
+          tester.view.physicalSize = const Size(320, 640);
+          tester.view.devicePixelRatio = 1;
+          tester.platformDispatcher.textScaleFactorTestValue = 2;
+          addTearDown(tester.view.reset);
+          addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+          await app.updateSettings({
+            'themeMode': dark ? 'dark' : 'light',
+            'themePreset': ThemePresetId.sunsetCoral.wireId,
+            'glassOpacity': opacity,
+            'glassQualityMode': 'high',
+            'highQualityAllSurfaces': true,
+          });
+          await pumpSettings(tester, app);
+          expect(find.byType(Scrollable), findsOneWidget);
+          await openSettingsEntry(tester, '外观与玻璃');
+          expect(find.byType(Scrollable), findsOneWidget);
+          final surfaces = tester.widgetList<AdaptiveGlass>(
+            find.byType(AdaptiveGlass),
+          );
+          expect(surfaces, isNotEmpty);
+          expect(
+            surfaces.every(
+              (surface) => surface.quality == GlassQuality.premium,
+            ),
+            isTrue,
+          );
+          await tester.scrollUntilVisible(
+            find.text('主题色'),
+            300,
+            scrollable: find.byType(Scrollable),
+          );
+          await tester.tap(find.text('主题色'));
+          await tester.pumpAndSettle();
+          expect(find.byType(Scrollable), findsOneWidget);
+          await tester.scrollUntilVisible(
+            find.bySemanticsLabel('主题色 雾松绿'),
+            250,
+            scrollable: find.byType(Scrollable),
+          );
+          await tester.tap(find.bySemanticsLabel('主题色 雾松绿'));
+          await tester.pumpAndSettle();
+          await tester.pageBack();
+          await tester.pumpAndSettle();
+          expect(app.themePreset, ThemePresetId.mistPine);
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox());
+        },
+      );
+    }
+  }
+
   testWidgets('GitHub token entry is only shown for the beta channel', (
     tester,
   ) async {
     await pumpSettings(tester, app);
+    await openSettingsEntry(tester, '关于与更新');
     await tester.scrollUntilVisible(
       find.text('更新渠道'),
       300,

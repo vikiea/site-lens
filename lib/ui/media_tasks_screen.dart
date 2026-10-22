@@ -18,6 +18,7 @@ import 'help_notice.dart';
 import 'ui_primitives.dart';
 import 'ui_util.dart';
 import 'app_theme.dart';
+import 'player_gestures_screen.dart';
 
 enum _VideoFitMode { contain, cover, fill }
 
@@ -1533,7 +1534,6 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
       ),
       children: [
         SiteLensPanel(
-          scrollingContent: true,
           padding: EdgeInsets.zero,
           child: Column(
             children: [
@@ -1548,6 +1548,24 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
                 ),
               ),
               const Divider(height: 1, indent: 18, endIndent: 18),
+              SiteLensActionRow(
+                icon: Icons.swipe_vertical_outlined,
+                title: '播放器手势',
+                subtitle: app.playerVerticalGesture.label,
+                onTap: () => Navigator.of(context).push<void>(
+                  MaterialPageRoute(
+                    builder: (_) => PlayerGesturesScreen(app: app),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: SiteLensMetrics.itemGap),
+        SiteLensPanel(
+          padding: EdgeInsets.zero,
+          child: Column(
+            children: [
               SwitchListTile(
                 title: const Text('下载完成自动导出 MP4'),
                 subtitle: const Text('保留原始 HLS，MP4 只保存一份到媒体库或指定目录'),

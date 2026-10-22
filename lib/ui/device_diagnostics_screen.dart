@@ -21,8 +21,6 @@ class DeviceDiagnosticsScreen extends StatefulWidget {
 class _DeviceDiagnosticsScreenState extends State<DeviceDiagnosticsScreen>
     with WidgetsBindingObserver {
   bool _refreshing = false;
-  bool _showCodecs = false;
-  Future<List<CodecDescriptor>>? _codecs;
 
   AppController get app => widget.app;
 
@@ -48,13 +46,6 @@ class _DeviceDiagnosticsScreenState extends State<DeviceDiagnosticsScreen>
     }
   }
 
-  void _loadCodecs() {
-    setState(() {
-      _showCodecs = !_showCodecs;
-      if (_showCodecs) _codecs = app.deviceDiagnostics.readCodecInventory();
-    });
-  }
-
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -69,7 +60,7 @@ class _DeviceDiagnosticsScreenState extends State<DeviceDiagnosticsScreen>
 
   Widget _buildPage(BuildContext context) {
     final snapshot = app.deviceDiagnostics.snapshot;
-    final records = _resolvedRecords(context);
+    final records = _resolvedRecords(context, app);
     return SiteLensPageScaffold(
       title: '设备能力与平台策略',
       actions: [
@@ -105,18 +96,20 @@ class _DeviceDiagnosticsScreenState extends State<DeviceDiagnosticsScreen>
             const SizedBox(height: SiteLensMetrics.itemGap),
             SiteLensPanel(
               padding: EdgeInsets.zero,
-              scrollingContent: true,
               child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  for (var i = 0; i < records.length; i++) ...[
-                    _CapabilityRow(record: records[i]),
-                    if (i != records.length - 1)
-                      const Divider(height: 1, indent: 18, endIndent: 18),
-                  ],
-                  if (records.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.all(SiteLensMetrics.panelPadding),
-                      child: Text('等待原生能力查询结果'),
+                  for (final group in _capabilityGroups(records))
+                    SiteLensActionRow(
+                      icon: Icons.fact_check_outlined,
+                      title: group.$1,
+                      subtitle: '${group.$2.length} 项能力与策略',
+                      onTap: () => Navigator.of(context).push<void>(
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              _CapabilityGroupScreen(title: group.$1, app: app),
+                        ),
+                      ),
                     ),
                 ],
               ),
@@ -124,66 +117,24 @@ class _DeviceDiagnosticsScreenState extends State<DeviceDiagnosticsScreen>
             const SizedBox(height: SiteLensMetrics.itemGap),
             if (app.deviceDiagnostics.platform == 'android')
               SiteLensPanel(
-                scrollingContent: true,
-                scrollContent: false,
-                child: _CodecList(
-                  future: _showCodecs ? _codecs : null,
-                  onToggle: _loadCodecs,
+                padding: EdgeInsets.zero,
+                child: SiteLensActionRow(
+                  icon: Icons.video_settings_outlined,
+                  title: '编解码器清单',
+                  subtitle: '按需读取，窗口化浏览完整清单',
+                  onTap: () => Navigator.of(context).push<void>(
+                    MaterialPageRoute(
+                      builder: (_) => CodecInventoryScreen(app: app),
+                    ),
+                  ),
                 ),
               )
             else
-              SiteLensPanel(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '编解码器清单',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '不适用：当前 iOS 版本不提供此编解码器清单。',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ],
-                ),
-              ),
+              const SiteLensPanel(child: Text('不适用：当前 iOS 版本不提供此编解码器清单。')),
           ],
         ),
       ),
     );
-  }
-
-  List<CapabilityRecord> _resolvedRecords(BuildContext context) {
-    final strategy = SiteLensGlassPolicyScope.of(context);
-    final plans = {
-      for (final role in SiteLensSurfaceRole.values)
-        role.name: strategy.resolve(context, role: role),
-    };
-    return [
-      for (final row in app.deviceDiagnosticRecords)
-        if (row.id != 'glass.policy') row,
-      CapabilityRecord(
-        id: 'glass.policy',
-        state: CapabilityState.supported,
-        configured: true,
-        effective: !plans['panel']!.useCompatibilityFallback,
-        reason: '按当前实际角色策略解析；平台视图控件保留背板，网页像素采样受限',
-        source: 'SiteLensGlassQualityStrategy.resolve',
-        capturedAtMs: DateTime.now().millisecondsSinceEpoch,
-        detailsJson: jsonEncode({
-          'requested': app.settings.glassQualityMode.name,
-          'allSurfacesHighQuality': app.settings.highQualityAllSurfaces,
-          'adaptiveQuality': app.effectiveGlassQuality.name,
-          for (final entry in plans.entries)
-            entry.key: {
-              'resolvedQuality': entry.value.quality.name,
-              'compatibilityFallback': entry.value.useCompatibilityFallback,
-              'nativePixelBackdrop': entry.value.platformViewBackdrop,
-            },
-        }),
-      ),
-    ];
   }
 
   String _environmentSummary(DeviceDiagnosticsSnapshot? snapshot) {
@@ -197,15 +148,125 @@ class _DeviceDiagnosticsScreenState extends State<DeviceDiagnosticsScreen>
   }
 }
 
+List<CapabilityRecord> _resolvedRecords(
+  BuildContext context,
+  AppController app,
+) {
+  final strategy = SiteLensGlassPolicyScope.of(context);
+  final plans = {
+    for (final role in SiteLensSurfaceRole.values)
+      role.name: strategy.resolve(context, role: role),
+  };
+  return [
+    for (final row in app.deviceDiagnosticRecords)
+      if (row.id != 'glass.policy') row,
+    CapabilityRecord(
+      id: 'glass.policy',
+      state: CapabilityState.supported,
+      configured: true,
+      effective: !plans['panel']!.useCompatibilityFallback,
+      reason: '按当前实际角色策略解析；平台视图控件保留背板，网页像素采样受限',
+      source: 'SiteLensGlassQualityStrategy.resolve',
+      capturedAtMs: DateTime.now().millisecondsSinceEpoch,
+      detailsJson: jsonEncode({
+        'requested': app.settings.glassQualityMode.name,
+        'allSurfacesHighQuality': app.settings.highQualityAllSurfaces,
+        'adaptiveQuality': app.effectiveGlassQuality.name,
+        for (final entry in plans.entries)
+          entry.key: {
+            'resolvedQuality': entry.value.quality.name,
+            'compatibilityFallback': entry.value.useCompatibilityFallback,
+            'nativePixelBackdrop': entry.value.platformViewBackdrop,
+          },
+      }),
+    ),
+  ];
+}
+
+class _CapabilityGroupScreen extends StatelessWidget {
+  const _CapabilityGroupScreen({required this.title, required this.app});
+  final String title;
+  final AppController app;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: app,
+    builder: (context, _) {
+      final groups = _capabilityGroups(_resolvedRecords(context, app));
+      final records = groups
+          .where((group) => group.$1 == title)
+          .expand((group) => group.$2)
+          .toList();
+      return SiteLensPageScaffold(
+        title: title,
+        body: SiteLensGlassGroup(
+          child: ListView.separated(
+            key: PageStorageKey('capabilities-$title'),
+            padding: const EdgeInsets.all(SiteLensMetrics.pagePadding),
+            itemCount: records.length,
+            itemBuilder: (_, index) => SiteLensPanel(
+              padding: EdgeInsets.zero,
+              child: _CapabilityRow(app: app, record: records[index]),
+            ),
+            separatorBuilder: (_, _) =>
+                const SizedBox(height: SiteLensMetrics.itemGap),
+          ),
+        ),
+      );
+    },
+  );
+}
+
 class _CapabilityRow extends StatelessWidget {
-  const _CapabilityRow({required this.record});
+  const _CapabilityRow({required this.record, required this.app});
+
+  final AppController app;
 
   final CapabilityRecord record;
 
   @override
   Widget build(BuildContext context) {
     final color = _statusColor(context, record.state);
-    final detailLines = [
+    return ListTile(
+      leading: Icon(_statusIcon(record.state), color: color),
+      title: Text(_label(record.id)),
+      subtitle: Text(
+        '${_statusLabel(record.state)} · ${record.reason}',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        builder: (_) => ListenableBuilder(
+          listenable: app,
+          builder: (context, _) {
+            final current = _resolvedRecords(
+              context,
+              app,
+            ).where((row) => row.id == record.id).firstOrNull;
+            return _capabilityDetails(
+              context,
+              current ??
+                  CapabilityRecord(
+                    id: record.id,
+                    state: CapabilityState.unknown,
+                    reason: '当前快照中无此能力记录',
+                    source: 'DeviceDiagnosticsSnapshot',
+                    capturedAtMs:
+                        app.deviceDiagnostics.snapshot?.capturedAtMs ?? 0,
+                  ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _capabilityDetails(BuildContext context, CapabilityRecord record) {
+    final lines = [
+      '平台支持：${_statusLabel(record.state)}',
       '应用配置：${_flag(record.configured)}',
       '当前有效：${_flag(record.effective)}',
       '实际观测：${record.observed ?? "无观测记录"}',
@@ -214,20 +275,30 @@ class _CapabilityRow extends StatelessWidget {
       '来源：${record.source}',
       ..._details(record.detailsJson),
     ];
-    return SiteLensFoldable(
-      child: ExpansionTile(
-        leading: Icon(_statusIcon(record.state), color: color),
-        title: Text(_label(record.id)),
-        subtitle: Text('${_statusLabel(record.state)} · ${record.reason}'),
-        childrenPadding: const EdgeInsets.fromLTRB(18, 0, 18, 16),
-        expandedCrossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          for (final line in detailLines)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Text(line, style: Theme.of(context).textTheme.bodySmall),
+    return SafeArea(
+      child: DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.7,
+        minChildSize: 0.3,
+        maxChildSize: 0.95,
+        builder: (context, controller) => ListView.builder(
+          controller: controller,
+          padding: const EdgeInsets.all(SiteLensMetrics.pagePadding),
+          itemCount: lines.length + 2,
+          itemBuilder: (context, index) => Padding(
+            padding: const EdgeInsets.only(bottom: SiteLensMetrics.itemGap),
+            child: Text(
+              index == 0
+                  ? _label(record.id)
+                  : index == 1
+                  ? record.reason
+                  : lines[index - 2],
+              style: index == 0
+                  ? Theme.of(context).textTheme.titleMedium
+                  : null,
             ),
-        ],
+          ),
+        ),
       ),
     );
   }
@@ -401,94 +472,217 @@ class _CapabilityRow extends StatelessWidget {
           .first;
 }
 
-class _CodecList extends StatelessWidget {
-  const _CodecList({required this.future, required this.onToggle});
+List<(String, List<CapabilityRecord>)> _capabilityGroups(
+  List<CapabilityRecord> records,
+) {
+  String category(String id) {
+    if (id.startsWith('platform.') || id.startsWith('glass.')) return '渲染与外观';
+    if (id.startsWith('webview.')) return '网页能力';
+    if (id.startsWith('media.') || id.startsWith('native.')) return '媒体能力';
+    if (id.startsWith('storage.') || id.startsWith('permissions.')) {
+      return '存储与权限';
+    }
+    if (id.startsWith('background.') ||
+        id.startsWith('notifications.') ||
+        id.startsWith('settings.')) {
+      return '后台与系统策略';
+    }
+    if (id.startsWith('network.')) return '网络与投屏';
+    return '其他能力';
+  }
 
-  final Future<List<CodecDescriptor>>? future;
-  final VoidCallback onToggle;
+  final grouped = <String, List<CapabilityRecord>>{};
+  for (final record in records) {
+    (grouped[category(record.id)] ??= []).add(record);
+  }
+  return [for (final entry in grouped.entries) (entry.key, entry.value)];
+}
+
+/// The full codec inventory has exactly one scroll viewport, owned by this page.
+class CodecInventoryScreen extends StatefulWidget {
+  const CodecInventoryScreen({super.key, required this.app});
+  final AppController app;
+  @override
+  State<CodecInventoryScreen> createState() => _CodecInventoryScreenState();
+}
+
+class _CodecInventoryScreenState extends State<CodecInventoryScreen> {
+  Future<List<CodecDescriptor>>? _future;
+  final _scroll = ScrollController();
+
+  void _read() => setState(() {
+    _future = widget.app.deviceDiagnostics.readCodecInventory();
+    // FutureBuilder subscribes on the next frame; an immediate host failure
+    // must already have an error listener while that frame is pending.
+    _future!.ignore();
+  });
 
   @override
-  Widget build(BuildContext context) => FutureBuilder<List<CodecDescriptor>>(
-    future: future,
-    builder: (context, snapshot) {
-      final codecs = snapshot.data ?? const <CodecDescriptor>[];
-      return CustomScrollView(
-        key: const ValueKey('device-codec-list'),
-        primary: false,
-        shrinkWrap: true,
-        slivers: [
-          const SliverToBoxAdapter(child: _CodecHeader()),
-          SliverToBoxAdapter(
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: onToggle,
-                icon: Icon(
-                  future == null ? Icons.expand_more : Icons.expand_less,
-                ),
-                label: Text(future == null ? '读取清单' : '收起清单'),
-              ),
-            ),
-          ),
-          if (future == null)
-            const SliverToBoxAdapter(child: SizedBox.shrink())
-          else if (snapshot.connectionState != ConnectionState.done)
-            const SliverToBoxAdapter(
-              child: Padding(
-                padding: EdgeInsets.all(8),
-                child: LinearProgressIndicator(),
-              ),
-            )
-          else if (snapshot.hasError)
-            const SliverToBoxAdapter(child: Text('读取 codec 清单失败，请收起后再次读取。'))
-          else if (codecs.isEmpty)
-            const SliverToBoxAdapter(child: Text('系统没有返回 codec 描述。'))
-          else
-            SliverList(
-              delegate: SliverChildBuilderDelegate((context, index) {
-                final codec = codecs[index];
-                return ListTile(
-                  dense: true,
-                  title: Text(codec.name),
-                  subtitle: Text(
-                    '${codec.mimeType ?? "MIME 未知"} · ${codec.encoder ? "编码器" : "解码器"}\n'
-                    '${codec.hardwareAccelerated == null
-                        ? "硬件属性未知"
-                        : codec.hardwareAccelerated!
-                        ? "硬件"
-                        : "非硬件"}'
-                    '${codec.vendor == null ? "" : " · 厂商实现：${codec.vendor}"}\n'
-                    '纯软件：${codec.softwareOnly == null
-                        ? "未知"
-                        : codec.softwareOnly!
-                        ? "是"
-                        : "否"}\n'
-                    'Profile/Level：${codec.profileLevelsJson ?? "未知"}'
-                    '${codec.error == null ? "" : "\n${codec.error}"}',
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => SiteLensPageScaffold(
+    title: '编解码器清单',
+    body: SiteLensGlassGroup(
+      child: FutureBuilder<List<CodecDescriptor>>(
+        future: _future,
+        builder: (context, snapshot) {
+          final codecs = snapshot.data ?? const <CodecDescriptor>[];
+          return CustomScrollView(
+            key: const PageStorageKey('device-codec-list'),
+            controller: _scroll,
+            slivers: [
+              SliverPadding(
+                padding: const EdgeInsets.all(SiteLensMetrics.pagePadding),
+                sliver: SliverToBoxAdapter(
+                  child: SiteLensPanel(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          '编解码器清单',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 8),
+                        const Text('只读取系统描述，不实例化编解码器。'),
+                        TextButton.icon(
+                          onPressed:
+                              snapshot.connectionState ==
+                                  ConnectionState.waiting
+                              ? null
+                              : _read,
+                          icon: const Icon(Icons.list_alt),
+                          label: Text(
+                            _future == null
+                                ? '读取清单'
+                                : snapshot.hasError
+                                ? '重试'
+                                : '读取已缓存清单',
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  isThreeLine: true,
-                );
-              }, childCount: codecs.length),
-            ),
-        ],
-      );
-    },
+                ),
+              ),
+              if (snapshot.connectionState == ConnectionState.waiting)
+                const SliverToBoxAdapter(child: LinearProgressIndicator())
+              else if (snapshot.hasError)
+                const SliverToBoxAdapter(child: Center(child: Text('读取失败，请重试')))
+              else if (_future != null && codecs.isEmpty)
+                const SliverToBoxAdapter(
+                  child: Center(child: Text('系统没有返回编解码器描述')),
+                ),
+              SliverPadding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: SiteLensMetrics.pagePadding,
+                ),
+                sliver: SliverList.builder(
+                  itemCount: codecs.length,
+                  itemBuilder: (context, index) {
+                    final codec = codecs[index];
+                    return Padding(
+                      padding: const EdgeInsets.only(
+                        bottom: SiteLensMetrics.itemGap,
+                      ),
+                      child: SiteLensPanel(
+                        key: ValueKey('codec-$index'),
+                        padding: EdgeInsets.zero,
+                        child: ListTile(
+                          title: Text(
+                            codec.name,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            '${codec.mimeType ?? "MIME 未知"} · ${codec.encoder ? "编码器" : "解码器"} · '
+                            '${codec.hardwareAccelerated == null
+                                ? "硬件属性未知"
+                                : codec.hardwareAccelerated!
+                                ? "硬件"
+                                : "非硬件"}',
+                          ),
+                          trailing: const Icon(Icons.chevron_right),
+                          onTap: () => showModalBottomSheet<void>(
+                            context: context,
+                            isScrollControlled: true,
+                            builder: (_) => _CodecDetailsSheet(codec: codec),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              if (snapshot.connectionState == ConnectionState.done &&
+                  !snapshot.hasError)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.all(SiteLensMetrics.pagePadding),
+                    child: Text(
+                      '清单结束，共 ${codecs.length} 项',
+                      key: const ValueKey('codec-list-end'),
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    ),
   );
 }
 
-class _CodecHeader extends StatelessWidget {
-  const _CodecHeader();
+class _CodecDetailsSheet extends StatelessWidget {
+  const _CodecDetailsSheet({required this.codec});
+
+  final CodecDescriptor codec;
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Text('编解码器清单', style: Theme.of(context).textTheme.titleMedium),
-      const SizedBox(height: 4),
-      Text(
-        '按需读取系统已注册的 codec 描述，不实例化 codec。',
-        style: Theme.of(context).textTheme.bodySmall,
+  Widget build(BuildContext context) {
+    final lines = [
+      'MIME：${codec.mimeType ?? "未知"}',
+      '类型：${codec.encoder ? "编码器" : "解码器"}',
+      '硬件加速：${codec.hardwareAccelerated == null
+          ? "未知"
+          : codec.hardwareAccelerated!
+          ? "是"
+          : "否"}',
+      '厂商实现：${codec.vendor ?? "未知"}',
+      '纯软件：${codec.softwareOnly == null
+          ? "未知"
+          : codec.softwareOnly!
+          ? "是"
+          : "否"}',
+      'Profile/Level：${codec.profileLevelsJson ?? "未知"}',
+      if (codec.error != null) '错误：${codec.error}',
+    ];
+    return SafeArea(
+      child: DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.6,
+        minChildSize: 0.3,
+        maxChildSize: 0.95,
+        builder: (context, controller) => ListView.builder(
+          controller: controller,
+          key: const PageStorageKey('codec-details-scroll'),
+          padding: const EdgeInsets.all(SiteLensMetrics.pagePadding),
+          itemCount: lines.length + 1,
+          itemBuilder: (context, index) => Padding(
+            padding: const EdgeInsets.only(bottom: SiteLensMetrics.itemGap),
+            child: Text(
+              index == 0 ? codec.name : lines[index - 1],
+              style: index == 0
+                  ? Theme.of(context).textTheme.titleMedium
+                  : null,
+            ),
+          ),
+        ),
       ),
-    ],
-  );
+    );
+  }
 }

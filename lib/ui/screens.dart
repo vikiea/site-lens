@@ -25,23 +25,19 @@ import 'about_screen.dart';
 import 'software_update_screen.dart';
 import 'app_theme.dart';
 import '../settings/app_settings.dart'
-    show
-        AppPolicy,
-        SiteLensGlassQualityMode,
-        UpdateChannel,
-        UpdateChannelLabel,
-        PlayerVerticalGestureModeLabel;
+    show AppPolicy, SiteLensGlassQualityMode, UpdateChannel, UpdateChannelLabel;
 import 'glass_surface.dart';
 import 'help_notice.dart';
 import 'browser_entry.dart';
 import 'profile_panel.dart';
 import 'media_tasks_screen.dart';
-import 'player_gestures_screen.dart';
 import 'error_logs_screen.dart';
 import 'device_diagnostics_screen.dart';
 import 'filter_diagnostics_panel.dart';
 import 'ui_util.dart';
 import 'ui_primitives.dart';
+
+part 'settings_pages.dart';
 
 enum AppDestination { sites, browser, media, settings }
 
@@ -1516,132 +1512,145 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
     listenable: app,
     builder: (context, _) => SiteLensPageScaffold(
       title: '广告与反跟踪',
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(
-          SiteLensMetrics.pagePadding,
-          12,
-          SiteLensMetrics.pagePadding,
-          32,
-        ),
-        children: [
-          SiteLensHelpNotice(
-            app: app,
-            noticeId: 'filters.overview',
-            text: '规则只处理网页请求和页面元素，不读取 Cookie、账号密码或站点存储。旧的 512 KiB 通道限制不再作为规则总上限；大型规则源会自动加载，网络规则仍受 32 MiB 和 30 万条资源保护，页面元素规则按 document-start 预算运行。超出保护上限时会提示减少启用源。内置推荐源只保存来源地址，点击刷新后才下载、校验并编译规则；不支持的语法会显示为降级状态。',
-          ),
-          SiteLensPanel(
-            padding: EdgeInsets.zero,
-            child: Column(
-              children: [
-                SwitchListTile(
-                  title: const Text('启用广告过滤'),
-                  subtitle: const Text('按规则源和下方域名列表拦截请求'),
-                  value: app.filterPolicy.enabled,
-                  onChanged: _busy
-                      ? null
-                      : (value) => _run(
-                          () => app.updateFilterPolicy(
-                            app.filterPolicy.copyWith(enabled: value),
-                          ),
-                        ),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                SwitchListTile(
-                  title: const Text('隐藏页面广告元素'),
-                  subtitle: const Text('应用规则源中的 CSS 隐藏规则'),
-                  value: app.filterPolicy.pageFiltering,
-                  onChanged: _busy
-                      ? null
-                      : (value) => _run(
-                          () => app.updateFilterPolicy(
-                            app.filterPolicy.copyWith(pageFiltering: value),
-                          ),
-                        ),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                SiteLensActionRow(
-                  icon: Icons.block_outlined,
-                  title: '拦截域名',
-                  subtitle: app.filterPolicy.blockedDomains.isEmpty
-                      ? '未添加自定义拦截域名'
-                      : '${app.filterPolicy.blockedDomains.length} 个域名',
-                  onTap: _busy ? null : () => _editDomains(blocked: true),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                SiteLensActionRow(
-                  icon: Icons.check_circle_outline,
-                  title: '例外域名',
-                  subtitle: app.filterPolicy.domainExceptions.isEmpty
-                      ? '未添加例外域名'
-                      : '${app.filterPolicy.domainExceptions.length} 个域名，优先放行',
-                  onTap: _busy ? null : () => _editDomains(blocked: false),
-                ),
-              ],
+      body: CustomScrollView(
+        slivers: [
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(
+              SiteLensMetrics.pagePadding,
+              12,
+              SiteLensMetrics.pagePadding,
+              32,
             ),
-          ),
-          SiteLensSectionHeader(
-            title: '规则源',
-            subtitle: _refreshingSource != null
-                ? _refreshingAll
-                      ? '正在刷新 $_refreshIndex / $_refreshTotal · ${_refreshingSource!.label}'
-                      : '正在刷新「${_refreshingSource!.label}」…'
-                : '内置与自定义源可分别启停；仅刷新已启用源。修改后重新加载页面生效，关闭源保留缓存。',
-            action: Row(
-              mainAxisSize: MainAxisSize.min,
+            sliver: SliverList.list(
               children: [
-                SiteLensRefreshButton(
-                  tooltip: '刷新全部规则',
-                  refreshing: _refreshingAll || _refreshingSource != null,
-                  onPressed:
-                      _busy ||
-                          !app.filterSourceList.any((source) => source.enabled)
-                      ? null
-                      : _refreshAllSources,
+                SiteLensHelpNotice(
+                  app: app,
+                  noticeId: 'filters.overview',
+                  text: '规则只处理网页请求和页面元素，不读取 Cookie、账号密码或站点存储。旧的 512 KiB 通道限制不再作为规则总上限；大型规则源会自动加载，网络规则仍受 32 MiB 和 30 万条资源保护，页面元素规则按 document-start 预算运行。超出保护上限时会提示减少启用源。内置推荐源只保存来源地址，点击刷新后才下载、校验并编译规则；不支持的语法会显示为降级状态。',
                 ),
-                IconButton(
-                  tooltip: '添加规则源',
-                  onPressed: _busy ? null : _addSource,
-                  icon: const Icon(Icons.add),
-                ),
-              ],
-            ),
-          ),
-          SiteLensPanel(
-            padding: EdgeInsets.zero,
-            child: app.filterSourceList.isEmpty
-                ? const Padding(
-                    padding: EdgeInsets.all(18),
-                    child: Text('还没有规则源。点击右上角添加公开的规则列表 URL。'),
-                  )
-                : Column(
+                SiteLensPanel(
+                  padding: EdgeInsets.zero,
+                  child: Column(
                     children: [
-                      for (
-                        var index = 0;
-                        index < app.filterSourceList.length;
-                        index++
-                      ) ...[
-                        if (index > 0)
-                          const Divider(height: 1, indent: 18, endIndent: 18),
-                        _FilterSourceRow(
-                          source: app.filterSourceList[index],
-                          busy: _busy,
-                          refreshing:
-                              _refreshingSource?.id ==
-                              app.filterSourceList[index].id,
-                          onRefresh: () => _run(
-                            () => _refreshSource(app.filterSourceList[index]),
-                          ),
-                          onEnabledChanged: (value) => _run(
-                            () => app.setFilterSourceEnabled(
-                              app.filterSourceList[index].id,
-                              value,
-                            ),
-                          ),
-                          onDelete: () =>
-                              _deleteSource(app.filterSourceList[index]),
-                        ),
-                      ],
+                      SwitchListTile(
+                        title: const Text('启用广告过滤'),
+                        subtitle: const Text('按规则源和下方域名列表拦截请求'),
+                        value: app.filterPolicy.enabled,
+                        onChanged: _busy
+                            ? null
+                            : (value) => _run(
+                                () => app.updateFilterPolicy(
+                                  app.filterPolicy.copyWith(enabled: value),
+                                ),
+                              ),
+                      ),
+                      Divider(height: 1, indent: 18, endIndent: 18),
+                      SwitchListTile(
+                        title: const Text('隐藏页面广告元素'),
+                        subtitle: const Text('应用规则源中的 CSS 隐藏规则'),
+                        value: app.filterPolicy.pageFiltering,
+                        onChanged: _busy
+                            ? null
+                            : (value) => _run(
+                                () => app.updateFilterPolicy(
+                                  app.filterPolicy.copyWith(
+                                    pageFiltering: value,
+                                  ),
+                                ),
+                              ),
+                      ),
+                      Divider(height: 1, indent: 18, endIndent: 18),
+                      SiteLensActionRow(
+                        icon: Icons.block_outlined,
+                        title: '拦截域名',
+                        subtitle: app.filterPolicy.blockedDomains.isEmpty
+                            ? '未添加自定义拦截域名'
+                            : '${app.filterPolicy.blockedDomains.length} 个域名',
+                        onTap: _busy ? null : () => _editDomains(blocked: true),
+                      ),
+                      Divider(height: 1, indent: 18, endIndent: 18),
+                      SiteLensActionRow(
+                        icon: Icons.check_circle_outline,
+                        title: '例外域名',
+                        subtitle: app.filterPolicy.domainExceptions.isEmpty
+                            ? '未添加例外域名'
+                            : '${app.filterPolicy.domainExceptions.length} 个域名，优先放行',
+                        onTap: _busy
+                            ? null
+                            : () => _editDomains(blocked: false),
+                      ),
                     ],
+                  ),
+                ),
+                SiteLensSectionHeader(
+                  title: '规则源',
+                  subtitle: _refreshingSource != null
+                      ? _refreshingAll
+                            ? '正在刷新 $_refreshIndex / $_refreshTotal · ${_refreshingSource!.label}'
+                            : '正在刷新「${_refreshingSource!.label}」…'
+                      : '内置与自定义源可分别启停；仅刷新已启用源。修改后重新加载页面生效，关闭源保留缓存。',
+                  action: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SiteLensRefreshButton(
+                        tooltip: '刷新全部规则',
+                        refreshing: _refreshingAll || _refreshingSource != null,
+                        onPressed:
+                            _busy ||
+                                !app.filterSourceList.any(
+                                  (source) => source.enabled,
+                                )
+                            ? null
+                            : _refreshAllSources,
+                      ),
+                      IconButton(
+                        tooltip: '添加规则源',
+                        onPressed: _busy ? null : _addSource,
+                        icon: const Icon(Icons.add),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(
+              SiteLensMetrics.pagePadding,
+              0,
+              SiteLensMetrics.pagePadding,
+              32,
+            ),
+            sliver: app.filterSourceList.isEmpty
+                ? const SliverToBoxAdapter(
+                    child: SiteLensPanel(
+                      child: Text('还没有规则源。点击右上角添加公开的规则列表 URL。'),
+                    ),
+                  )
+                : SliverList.builder(
+                    itemCount: app.filterSourceList.length,
+                    itemBuilder: (context, index) {
+                      final source = app.filterSourceList[index];
+                      return Padding(
+                        padding: const EdgeInsets.only(
+                          bottom: SiteLensMetrics.itemGap,
+                        ),
+                        child: SiteLensPanel(
+                          padding: EdgeInsets.zero,
+                          child: _FilterSourceRow(
+                            source: source,
+                            busy: _busy,
+                            refreshing: _refreshingSource?.id == source.id,
+                            onRefresh: () => _run(() => _refreshSource(source)),
+                            onEnabledChanged: (value) => _run(
+                              () =>
+                                  app.setFilterSourceEnabled(source.id, value),
+                            ),
+                            onDelete: () => _deleteSource(source),
+                          ),
+                        ),
+                      );
+                    },
                   ),
           ),
         ],
@@ -1692,7 +1701,7 @@ class _FilterSourceRow extends StatelessWidget {
           ? Icons.warning_amber_outlined
           : Icons.rule_folder_outlined,
     ),
-    title: Text(source.label),
+    title: Text(source.label, maxLines: 2, overflow: TextOverflow.ellipsis),
     subtitle: Text(
       refreshing
           ? '正在刷新…'
@@ -1887,429 +1896,6 @@ class _FilterSourceDialogState extends State<_FilterSourceDialog> {
       FilledButton(onPressed: _submit, child: const Text('添加并刷新')),
     ],
   );
-}
-
-class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key, required this.app});
-  final AppController app;
-  @override
-  State<SettingsPage> createState() => _SettingsPageState();
-}
-
-class _SettingsPageState extends State<SettingsPage> {
-  AppController get app => widget.app;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = SiteLensColors.of(context);
-    return ScrollConfiguration(
-      behavior: ScrollConfiguration.of(context).copyWith(overscroll: false),
-      child: ListView(
-        physics: const ClampingScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(
-          SiteLensMetrics.pagePadding,
-          12,
-          SiteLensMetrics.pagePadding,
-          32,
-        ),
-        children: [
-          _sectionLabel(context, '外观'),
-          SiteLensPanel(
-            padding: EdgeInsets.zero,
-            child: Column(
-              children: [
-                _rowTitle(context, Icons.brightness_6_outlined, '明暗模式'),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-                  child: SiteLensSegmented<ThemeModePreference>(
-                    value: app.themeModePreference,
-                    onChanged: (value) => safely(
-                      context,
-                      () => app.setThemeModePreference(value),
-                    ),
-                    options: const [
-                      (
-                        ThemeModePreference.system,
-                        '系统',
-                        Icons.brightness_auto_outlined,
-                      ),
-                      (
-                        ThemeModePreference.light,
-                        '浅色',
-                        Icons.light_mode_outlined,
-                      ),
-                      (
-                        ThemeModePreference.dark,
-                        '深色',
-                        Icons.dark_mode_outlined,
-                      ),
-                    ],
-                  ),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                ListTile(
-                  leading: const Icon(Icons.opacity_outlined, size: 20),
-                  title: const Text('不透明度'),
-                  subtitle: Text('${app.settings.glassOpacity} / 100'),
-                  trailing: _GlassOpacitySlider(app: app),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                _rowTitle(context, Icons.speed_outlined, '玻璃质量'),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-                  child: SiteLensSegmented<SiteLensGlassQualityMode>(
-                    value: app.settings.glassQualityMode,
-                    onChanged: (value) =>
-                        safely(context, () => app.setGlassQualityMode(value)),
-                    options: const [
-                      (
-                        SiteLensGlassQualityMode.automatic,
-                        '自动',
-                        Icons.auto_awesome_outlined,
-                      ),
-                      (
-                        SiteLensGlassQualityMode.standard,
-                        '标准',
-                        Icons.tune_outlined,
-                      ),
-                      (SiteLensGlassQualityMode.high, '高质量', Icons.hd_outlined),
-                    ],
-                  ),
-                ),
-                ListTile(
-                  dense: true,
-                  contentPadding: const EdgeInsets.fromLTRB(18, 0, 18, 4),
-                  leading: const SizedBox(width: 20),
-                  title: const Text('当前有效质量'),
-                  subtitle: Text(app.effectiveGlassQuality.label),
-                ),
-                if (app.settings.glassQualityMode !=
-                    SiteLensGlassQualityMode.standard)
-                  SwitchListTile(
-                    title: const Text('高质量覆盖全部面板'),
-                    subtitle: Text(
-                      app.settings.glassQualityMode ==
-                              SiteLensGlassQualityMode.automatic
-                          ? '自动选择高质量时应用于内容面板'
-                          : '应用于内容面板、弹窗和卡片',
-                    ),
-                    value: app.settings.highQualityAllSurfaces,
-                    onChanged: (value) => safely(
-                      context,
-                      () => app.setHighQualityAllSurfaces(value),
-                    ),
-                  ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                // The presets stay out of the way until asked for: one collapsed
-                // block instead of a bottom sheet over the page.
-                SiteLensFoldable(
-                  child: ExpansionTile(
-                    key: const PageStorageKey<String>('theme-presets'),
-                    leading: const Icon(Icons.palette_outlined, size: 20),
-                    title: const Text('主题色'),
-                    subtitle: Text(app.themePreset.label),
-                    initiallyExpanded: false,
-                    childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-                    children: [
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          for (final preset in ThemePresetId.values)
-                            _ThemePresetChip(
-                              preset: preset,
-                              selected: preset == app.themePreset,
-                              onTap: () => safely(
-                                context,
-                                () => app.setThemePreset(preset),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          _sectionLabel(context, '浏览'),
-          SiteLensPanel(
-            padding: EdgeInsets.zero,
-            child: Column(
-              children: [
-                SwitchListTile(
-                  title: const Text('恢复上次标签'),
-                  subtitle: const Text('重启后恢复列表，选择标签时加载'),
-                  value: app.restoreBrowserSessions,
-                  onChanged: (value) => safely(
-                    context,
-                    () => app.setRestoreBrowserSessions(value),
-                  ),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                SiteLensActionRow(
-                  icon: Icons.shield_outlined,
-                  title: '广告与反跟踪',
-                  subtitle: app.filterPolicy.enabled
-                      ? '${app.filterSourceList.length} 个规则源 · 已启用'
-                      : '配置规则源、拦截域名和例外域名',
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => FilterSettingsScreen(app: app),
-                    ),
-                  ),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                ListTile(
-                  leading: const Icon(Icons.code, size: 20),
-                  title: const Text('脚本管理'),
-                  subtitle: Text('${app.installed.length} 个脚本 · 管理权限与启用状态'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => ScriptManagementScreen(app: app),
-                    ),
-                  ),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                ListTile(
-                  leading: const Icon(Icons.storage_outlined, size: 20),
-                  title: const Text('数据管理'),
-                  subtitle: const Text('完整备份、恢复与默认偏好'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => DataManagementScreen(app: app),
-                    ),
-                  ),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                SiteLensActionRow(
-                  icon: Icons.video_library_outlined,
-                  title: '媒体管理',
-                  subtitle: '下载、播放、导出和媒体相关设置',
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => MediaManagementScreen(app: app),
-                    ),
-                  ),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                SiteLensActionRow(
-                  icon: Icons.swipe_vertical_outlined,
-                  title: '播放器手势',
-                  subtitle: app.playerVerticalGesture.label,
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => PlayerGesturesScreen(app: app),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          _sectionLabel(context, '高级与诊断'),
-          SiteLensPanel(
-            padding: EdgeInsets.zero,
-            child: Column(
-              children: [
-                SiteLensActionRow(
-                  icon: Icons.bug_report_outlined,
-                  title: '错误日志',
-                  subtitle: '查看经过脱敏的应用错误记录，便于反馈问题',
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => ErrorLogsScreen(app: app),
-                    ),
-                  ),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                SwitchListTile(
-                  title: const Text('当前标签后台播放（Android）'),
-                  subtitle: Text(
-                    app.mediaSupported
-                        ? '离开浏览页后继续播放，可从系统媒体通知暂停或停止'
-                        : '打开网页后检查播放能力；默认离开即暂停',
-                  ),
-                  value: app.allowBackgroundPlayback,
-                  onChanged: (app.mediaSupported || app.allowBackgroundPlayback)
-                      ? (value) => safely(
-                          context,
-                          () => app.setAllowBackgroundPlayback(value),
-                        )
-                      : null,
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                SwitchListTile(
-                  title: const Text('自动隐藏浏览控件'),
-                  subtitle: const Text('停止操作 3 秒后收起，点击浮动把手展开'),
-                  value: app.settings.autoHideBrowserControls,
-                  onChanged: (value) => safely(
-                    context,
-                    () =>
-                        app.updateSettings({'autoHideBrowserControls': value}),
-                  ),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                SwitchListTile(
-                  title: const Text('后台存活检查'),
-                  subtitle: const Text('仅充电 + WiFi，每天最多两次；只做 HTTP 初筛'),
-                  value: app.backgroundHealthCheck,
-                  onChanged: (value) => safely(
-                    context,
-                    () => app.setBackgroundHealthCheck(value),
-                  ),
-                ),
-                _Details(
-                  key: const ValueKey('details-background-health'),
-                  text:
-                      '只做 HTTP 初筛，不启动 WebView，因此不会干扰登录状态与用户脚本。'
-                      '触发条件需要同时满足充电与 WiFi，并且每天最多两次。'
-                      '这是尽力而为的后台任务：系统可能延迟或跳过，结果不保证时效。',
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                SwitchListTile(
-                  title: const Text('浏览页下拉刷新（Android）'),
-                  subtitle: const Text('默认关闭：下拉手势属于页面和用户脚本'),
-                  value: app.pullToRefresh,
-                  onChanged: (value) =>
-                      safely(context, () => app.setPullToRefresh(value)),
-                ),
-                _Details(
-                  key: const ValueKey('details-pull-refresh'),
-                  text: '打开后，页面处于顶部时下拉即刷新当前页。关闭时下拉手势完全交给页面。',
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                SwitchListTile(
-                  title: const Text('同站点标签页互相替换'),
-                  subtitle: const Text('打开同一档案的新落点时复用已有标签；默认允许多标签'),
-                  value: app.settings.replaceSameSiteTabs,
-                  onChanged: (value) => safely(
-                    context,
-                    () => app.updateSettings({'replaceSameSiteTabs': value}),
-                  ),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                ListTile(
-                  leading: const Icon(
-                    Icons.health_and_safety_outlined,
-                    size: 20,
-                  ),
-                  title: const Text('设备能力与平台策略'),
-                  subtitle: const Text('查看实际能力、授权状态和当前策略'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.of(context).push<void>(
-                    MaterialPageRoute(
-                      builder: (_) => DeviceDiagnosticsScreen(app: app),
-                    ),
-                  ),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                _Details(
-                  key: const ValueKey('details-support-boundary'),
-                  title: '支持边界',
-                  text:
-                      'Android 8.0+ / iOS 15+，实际增强能力以运行时检查为准。浏览保留各域名登录；'
-                      '发现与检测无用户脚本、独立 Cookie 和存储。\n\n'
-                      '没有代理、没有破解、不忽略 TLS 错误、不接管播放器、不承诺视频质量。'
-                      'GM 支持应用声明的子集及固定资源；脚本授权仅作用于主框架。'
-                      '脚本市场、自动更新不支持。\n\n'
-                      'unsafeWindow 只在没有 GM 特权权限的脚本里支持：这类脚本运行在网页环境，'
-                      'unsafeWindow 就是页面自己的 window，但同时也失去原生存储与网络权限。'
-                      'unsafeWindow 与 GM 特权权限混用仍会阻止启用。\n\n'
-                      'iOS 真机需要签名与设备验证；工程可编译不代表真机兼容。数据仅存本机。',
-                  startsOpen: false,
-                ),
-              ],
-            ),
-          ),
-          _sectionLabel(context, '关于与更新'),
-          SiteLensPanel(
-            padding: EdgeInsets.zero,
-            child: Column(
-              children: [
-                SiteLensActionRow(
-                  icon: Icons.info_outline,
-                  title: '关于 Site Lens',
-                  subtitle: '版本、许可证与项目链接',
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const AboutScreen(),
-                    ),
-                  ),
-                ),
-                if (app.settings.updateChannel == UpdateChannel.beta) ...[
-                  Divider(height: 1, indent: 18, endIndent: 18),
-                  const _GitHubTokenEntry(),
-                  Divider(height: 1, indent: 18, endIndent: 18),
-                ],
-                ListTile(
-                  leading: const Icon(Icons.alt_route_outlined),
-                  title: const Text('更新渠道'),
-                  subtitle: Text(app.settings.updateChannel.description),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-                  child: SiteLensSegmented<UpdateChannel>(
-                    value: app.settings.updateChannel,
-                    onChanged: (value) => safely(
-                      context,
-                      () => app.updateSettings({'updateChannel': value.name}),
-                    ),
-                    options: const [
-                      (UpdateChannel.stable, '稳定版', Icons.verified_outlined),
-                      (UpdateChannel.beta, '测试版', Icons.science_outlined),
-                    ],
-                  ),
-                ),
-                Divider(height: 1, indent: 18, endIndent: 18),
-                _UpdateEntryRow(app: app),
-              ],
-            ),
-          ),
-          const SizedBox(height: SiteLensMetrics.sectionGap),
-          Center(
-            child: Text(
-              '择站 · Site Lens',
-              style: Theme.of(context).textTheme.labelMedium
-                  ?.copyWith(color: colors.sectionLabel),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _sectionLabel(BuildContext context, String text) => Padding(
-    padding: const EdgeInsets.fromLTRB(6, SiteLensMetrics.sectionGap, 6, 8),
-    child: Text(
-      text,
-      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-        fontSize: 13.5,
-        color: SiteLensColors.of(context).sectionLabel,
-        letterSpacing: 0.4,
-      ),
-    ),
-  );
-
-  Widget _rowTitle(BuildContext context, IconData icon, String title) =>
-      Padding(
-        padding: const EdgeInsets.fromLTRB(18, 16, 18, 12),
-        child: Row(
-          children: [
-            Icon(
-              icon,
-              size: 20,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(title, style: Theme.of(context).textTheme.titleSmall),
-            ),
-          ],
-        ),
-      );
 }
 
 class _GitHubTokenEntry extends StatefulWidget {
@@ -2538,9 +2124,10 @@ class _ThemePresetChip extends StatelessWidget {
 /// rather than as a Material box: a translucent track with a pill for the
 /// current value, equal widths and no inner dividers.
 class _GlassOpacitySlider extends StatefulWidget {
-  const _GlassOpacitySlider({required this.app});
+  const _GlassOpacitySlider({required this.app, this.width = 170});
 
   final AppController app;
+  final double width;
 
   @override
   State<_GlassOpacitySlider> createState() => _GlassOpacitySliderState();
@@ -2553,7 +2140,7 @@ class _GlassOpacitySliderState extends State<_GlassOpacitySlider> {
 
   @override
   Widget build(BuildContext context) => SizedBox(
-    width: 170,
+    width: widget.width,
     child: LayoutBuilder(
       builder: (context, constraints) {
         const markerWidth = 24.0;

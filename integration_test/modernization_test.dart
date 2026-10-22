@@ -553,7 +553,9 @@ window.addEventListener('resize', () => state(null));
         await tester.pumpAndSettle();
         await tester.tap(find.text('设置'));
         await tester.pumpAndSettle();
-        expect(find.text('脚本管理'), findsOneWidget);
+        expect(find.text('浏览设置'), findsOneWidget);
+        await tester.tap(find.text('外观与玻璃'));
+        await tester.pumpAndSettle();
         expect(find.text('不透明度'), findsOneWidget);
         for (final preset in ThemePresetId.values) {
           await app.setThemePreset(preset);

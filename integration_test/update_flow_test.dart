@@ -80,6 +80,13 @@ void main() {
         await tester.tap(find.text('设置'));
         await tester.pumpAndSettle();
         await tester.scrollUntilVisible(
+          find.text('关于与更新'),
+          200,
+          scrollable: find.byType(Scrollable),
+        );
+        await tester.tap(find.text('关于与更新'));
+        await tester.pumpAndSettle();
+        await tester.scrollUntilVisible(
           find.text('软件更新'),
           200,
           scrollable: find.byType(Scrollable),

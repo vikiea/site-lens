@@ -6,6 +6,7 @@ class FakeDeviceDiagnosticsApi extends DeviceDiagnosticsApi {
   bool fail = false;
   int apiLevel = 36;
   List<CapabilityRecord> rows = [];
+  List<CodecDescriptor>? codecs;
 
   @override
   Future<DeviceDiagnosticsSnapshot> readSnapshot() async {
@@ -25,12 +26,13 @@ class FakeDeviceDiagnosticsApi extends DeviceDiagnosticsApi {
   Future<List<CodecDescriptor>> readCodecInventory() async {
     codecReads++;
     if (fail) throw StateError('unavailable');
-    return [
-      CodecDescriptor(
-        name: 'test.codec',
-        mimeType: 'video/avc',
-        encoder: false,
-      ),
-    ];
+    return codecs ??
+        [
+          CodecDescriptor(
+            name: 'test.codec',
+            mimeType: 'video/avc',
+            encoder: false,
+          ),
+        ];
   }
 }

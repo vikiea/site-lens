@@ -30,7 +30,10 @@ void main() {
                 children: [
                   SizedBox(
                     height: scenario == 'zero' ? 0 : 1000,
-                    child: const SiteLensPanel(child: SizedBox(height: 3000)),
+                    child: const SiteLensPanel(
+                      scrollingContent: true,
+                      child: SizedBox(height: 3000),
+                    ),
                   ),
                 ],
               ),
@@ -52,6 +55,56 @@ void main() {
       }
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
+    });
+  }
+
+  for (final mode in SiteLensGlassQualityMode.values) {
+    testWidgets('ordinary $mode panels have one page scroll owner', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(360, 640);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SiteLensGlassPolicyScope(
+            strategy: SiteLensGlassQualityStrategy(
+              mode: mode,
+              allSurfacesHighQuality: true,
+              shaderSupported: true,
+              adaptiveQualityOverride: GlassQuality.premium,
+            ),
+            child: Scaffold(
+              body: ListView(
+                children: [
+                  for (var i = 0; i < 6; i++)
+                    SiteLensPanel(
+                      child: SizedBox(height: 180, child: Text('面板 $i')),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(Scrollable), findsOneWidget);
+      final position = tester
+          .state<ScrollableState>(find.byType(Scrollable))
+          .position;
+      await tester.drag(find.text('面板 0'), const Offset(0, -300));
+      await tester.pumpAndSettle();
+      expect(position.pixels, greaterThan(200));
+      await tester.scrollUntilVisible(
+        find.text('面板 5'),
+        250,
+        scrollable: find.byType(Scrollable),
+      );
+      expect(find.text('面板 5').hitTestable(), findsOneWidget);
+      await tester.drag(find.byType(Scrollable), const Offset(0, 300));
+      await tester.pumpAndSettle();
+      expect(position.pixels, lessThan(position.maxScrollExtent));
+      expect(tester.takeException(), isNull);
     });
   }
 
