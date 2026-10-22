@@ -46,6 +46,17 @@ class SiteLensPanelDivider extends StatelessWidget {
   );
 }
 
+class SiteLensSettingsDivider extends StatelessWidget {
+  const SiteLensSettingsDivider({super.key});
+
+  @override
+  Widget build(BuildContext context) => const Divider(
+    height: 1,
+    indent: SiteLensMetrics.settingsDividerIndent,
+    endIndent: SiteLensMetrics.settingsDividerIndent,
+  );
+}
+
 /// Compact visuals retain a complete row activation target and text scaling.
 class SiteLensCompactRow extends StatelessWidget {
   const SiteLensCompactRow({
@@ -237,7 +248,9 @@ class _SiteLensAccordionState extends State<SiteLensAccordion> {
   }
 }
 
-/// Finite settings groups keep their controls alive when the group is folded.
+/// A titled settings group uses one glass boundary and keeps its controls
+/// visible. Detail disclosure belongs to rows inside a group, not to the
+/// category surface itself.
 class SiteLensSettingsPanel extends StatelessWidget {
   const SiteLensSettingsPanel({
     super.key,
@@ -245,29 +258,31 @@ class SiteLensSettingsPanel extends StatelessWidget {
     required this.icon,
     required this.child,
     this.subtitle,
-    this.initiallyExpanded = false,
   });
 
   final String title;
   final IconData icon;
   final String? subtitle;
-  final bool initiallyExpanded;
   final Widget child;
 
   @override
   Widget build(BuildContext context) => SiteLensPanel(
     padding: EdgeInsets.zero,
-    child: SiteLensFoldable(
-      child: ExpansionTile(
-        key: PageStorageKey('settings-panel-$title'),
-        initiallyExpanded: initiallyExpanded,
-        maintainState: true,
-        leading: Icon(icon, size: SiteLensMetrics.compactIconSize),
-        title: Text(title),
-        subtitle: subtitle == null ? null : Text(subtitle!),
-        childrenPadding: EdgeInsets.zero,
-        children: [child],
-      ),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SiteLensCompactRow(
+          leading: Icon(icon, size: SiteLensMetrics.compactIconSize),
+          title: Text(title),
+          subtitle: subtitle == null ? null : Text(subtitle!),
+        ),
+        const Divider(
+          height: 1,
+          indent: SiteLensMetrics.settingsDividerIndent,
+          endIndent: SiteLensMetrics.settingsDividerIndent,
+        ),
+        child,
+      ],
     ),
   );
 }
@@ -760,7 +775,12 @@ class SiteLensSectionHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(6, SiteLensMetrics.sectionGap, 6, 8),
+    padding: const EdgeInsets.fromLTRB(
+      SiteLensMetrics.settingsSectionLabelHorizontalPadding,
+      SiteLensMetrics.sectionGap,
+      SiteLensMetrics.settingsSectionLabelHorizontalPadding,
+      SiteLensMetrics.settingsSectionLabelBottom,
+    ),
     child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [

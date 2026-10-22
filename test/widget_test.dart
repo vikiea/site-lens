@@ -213,8 +213,6 @@ void main() {
       );
       expect(find.text('数据与诊断'), findsOneWidget);
       expect(find.text('全局关闭脚本'), findsNothing);
-      await tester.tap(find.text('数据与诊断'));
-      await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
         find.text('后台存活检查'),
         200,

@@ -53,7 +53,7 @@ void main() {
       ),
     );
 
-    expect(find.textContaining('当前宿主未提供过滤接口'), findsOneWidget);
+    expect(find.textContaining('当前环境的过滤能力受限'), findsOneWidget);
     expect(
       find.text('https://example.com/watch?token=%E2%80%A6'),
       findsOneWidget,

@@ -45,7 +45,7 @@ class FilterDiagnosticsPanel extends StatelessWidget {
             Text('过滤诊断', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 4),
             Text(
-              reason ?? (policy.enabled ? '当前文档使用过滤策略' : '过滤策略已关闭'),
+              reason ?? (policy.enabled ? '过滤开关已开启' : '过滤开关已关闭'),
               style: Theme.of(context).textTheme.bodyMedium,
             ),
             const SizedBox(height: 14),
@@ -92,21 +92,21 @@ class FilterDiagnosticsPanel extends StatelessWidget {
   String? _degradedReason() {
     final current = session;
     if (current?.errorKind == 'filterSnapshotLoadFailed') {
-      return '过滤快照装载失败，保留上一有效规则：${friendlyError(current?.error ?? '未知原因')}';
+      return '规则加载失败：${friendlyError(current?.error ?? '未知原因')}，继续使用原有规则。';
     }
     if (current?.errorKind == 'filterUnavailable') {
-      return '当前宿主未提供过滤接口，已降级并保留可证明的请求策略';
+      return '当前环境的过滤能力受限，部分请求可能无法拦截。';
     }
     if (current != null && !current.capabilities.documentStart) {
-      return '宿主不支持 document-start，页面规则和脚本化页面过滤已关闭';
+      return '当前环境不支持页面过滤。';
     }
     if (snapshot?.state == FilterSnapshotState.degraded) {
       final count = snapshot?.unsupportedRuleCount ?? 0;
-      return '当前使用安全兼容编译器；基础请求和页面规则继续生效，$count 条高级 uBlock 语法未执行。完整支持需要接入完整 uBlock 解析器和脚本运行时。';
+      return '已跳过 $count 条暂不支持的规则。';
     }
     if (snapshot?.state == FilterSnapshotState.failed ||
         snapshot?.state == FilterSnapshotState.corrupt) {
-      return '快照不可用，继续使用上一有效快照或放行策略';
+      return '规则不可用，继续使用原有规则。';
     }
     return null;
   }

@@ -13,7 +13,6 @@ import 'package:re_highlight/styles/atom-one-dark.dart';
 import 'package:re_highlight/styles/atom-one-light.dart';
 
 import '../domain/models.dart';
-import '../backup/backup_service.dart';
 import '../network/transport.dart';
 import '../scripts/metadata.dart';
 import '../update/update_controller.dart';
@@ -25,16 +24,14 @@ import 'about_screen.dart';
 import 'software_update_screen.dart';
 import 'app_theme.dart';
 import '../settings/app_settings.dart'
-    show
-        AppPolicy,
-        PlayerVerticalGestureMode,
-        PlayerVerticalGestureModeLabel,
-        SiteLensGlassQualityMode;
+    show AppPolicy, PlayerVerticalGestureModeLabel, SiteLensGlassQualityMode;
 import 'glass_surface.dart';
 import 'help_notice.dart';
 import 'browser_entry.dart';
 import 'profile_panel.dart';
 import 'media_tasks_screen.dart';
+import 'player_gestures_screen.dart';
+import 'data_management_screen.dart';
 import 'error_logs_screen.dart';
 import 'device_diagnostics_screen.dart';
 import 'filter_diagnostics_panel.dart';
@@ -1537,14 +1534,14 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
                       SiteLensHelpNotice(
                         app: app,
                         noticeId: 'filters.overview',
-                        text: '规则只处理网页请求和页面元素，不读取 Cookie、账号密码或站点存储。旧的 512 KiB 通道限制不再作为规则总上限；大型规则源会自动加载，网络规则仍受 32 MiB 和 30 万条资源保护，页面元素规则按 document-start 预算运行。超出保护上限时会提示减少启用源。内置推荐源只保存来源地址，点击刷新后才下载、校验并编译规则；不支持的语法会显示为降级状态。',
+                        text: '按规则拦截广告和跟踪请求。首次使用请刷新规则源。',
                       ),
                       Column(
                         children: [
                           SwitchListTile(
                             dense: true,
                             title: const Text('启用广告过滤'),
-                            subtitle: const Text('按规则源和下方域名列表拦截请求'),
+                            subtitle: const Text('根据已启用的规则源和域名列表拦截请求'),
                             value: app.filterPolicy.enabled,
                             onChanged: _busy
                                 ? null
@@ -1558,7 +1555,7 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
                           SwitchListTile(
                             dense: true,
                             title: const Text('隐藏页面广告元素'),
-                            subtitle: const Text('应用规则源中的 CSS 隐藏规则'),
+                            subtitle: const Text('隐藏规则匹配的广告元素'),
                             value: app.filterPolicy.pageFiltering,
                             onChanged: _busy
                                 ? null
@@ -1600,7 +1597,7 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
                             ? _refreshingAll
                                   ? '正在刷新 $_refreshIndex / $_refreshTotal · ${_refreshingSource!.label}'
                                   : '正在刷新「${_refreshingSource!.label}」…'
-                            : '内置与自定义源可分别启停；仅刷新已启用源。修改后重新加载页面生效，关闭源保留缓存。',
+                            : '只刷新已启用的规则源，重新加载网页后生效。',
                         action: PopupMenuButton<String>(
                           key: const ValueKey('filter-source-more'),
                           tooltip: '规则源更多',
@@ -1635,7 +1632,7 @@ class _FilterSettingsScreenState extends State<FilterSettingsScreen> {
                   const SliverToBoxAdapter(
                     child: Padding(
                       padding: EdgeInsets.fromLTRB(14, 0, 14, 24),
-                      child: Text('还没有规则源。点击右上角更多按钮添加公开的规则列表 URL。'),
+                      child: Text('暂无规则源，请先添加。'),
                     ),
                   )
                 else
@@ -1814,9 +1811,9 @@ class _FilterSourceRow extends StatelessWidget {
 String _filterSourceStatusLabel(FilterSourceStatus status) => switch (status) {
   FilterSourceStatus.missing => '未刷新',
   FilterSourceStatus.downloading => '下载中',
-  FilterSourceStatus.compiling => '编译中',
-  FilterSourceStatus.valid => '已缓存',
-  FilterSourceStatus.degraded => '已缓存（部分语法未支持）',
+  FilterSourceStatus.compiling => '处理中',
+  FilterSourceStatus.valid => '已下载',
+  FilterSourceStatus.degraded => '已下载 · 部分规则不支持',
   FilterSourceStatus.failed => '刷新失败',
 };
 
@@ -1908,7 +1905,7 @@ class _FilterSourceDialogState extends State<_FilterSourceDialog> {
 
   void _submit() {
     if (url.text.trim().isEmpty) {
-      showError(context, const FormatException('请输入规则列表 URL'));
+      showError(context, const FormatException('请输入规则列表地址'));
       return;
     }
     Navigator.pop(
@@ -1941,9 +1938,9 @@ class _FilterSourceDialogState extends State<_FilterSourceDialog> {
             keyboardType: TextInputType.url,
             autocorrect: false,
             decoration: const InputDecoration(
-              labelText: '规则列表 URL',
+              labelText: '规则列表地址',
               hintText: 'https://…',
-              helperText: '只支持 HTTP(S)，不会执行规则中的 JavaScript。',
+              helperText: '支持公开的 HTTP(S) 地址。',
             ),
           ),
           TextField(
@@ -2117,74 +2114,6 @@ class _UpdateEntryRow extends ConsumerWidget {
               channel: app.settings.updateChannel,
             ),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ThemePresetChip extends StatelessWidget {
-  const _ThemePresetChip({
-    required this.preset,
-    required this.selected,
-    required this.onTap,
-  });
-  final ThemePresetId preset;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final label = '主题色 ${preset.label}';
-    return Semantics(
-      selected: selected,
-      button: true,
-      label: label,
-      child: Tooltip(
-        message: preset.label,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            InkWell(
-              onTap: onTap,
-              customBorder: const CircleBorder(),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 180),
-                curve: Curves.easeOut,
-                width: 46,
-                height: 46,
-                decoration: BoxDecoration(
-                  color: preset.seed,
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: selected ? scheme.primary : Colors.white,
-                    width: selected ? 3 : 2,
-                  ),
-                  boxShadow: selected
-                      ? [
-                          BoxShadow(
-                            color: scheme.primary.withValues(alpha: 0.24),
-                            blurRadius: 0,
-                            spreadRadius: 1,
-                          ),
-                        ]
-                      : null,
-                ),
-                child: selected
-                    ? Icon(
-                        Icons.check,
-                        size: 22,
-                        color:
-                            ThemeData.estimateBrightnessForColor(preset.seed) ==
-                                Brightness.dark
-                            ? Colors.white
-                            : Colors.black,
-                      )
-                    : null,
-              ),
-            ),
-          ],
         ),
       ),
     );

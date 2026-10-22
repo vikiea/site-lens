@@ -93,7 +93,7 @@ void main() {
     expect(find.text('正在刷新…'), findsOneWidget);
     app.requests.single.result.complete();
     await tester.pumpAndSettle();
-    expect(find.textContaining('已缓存'), findsWidgets);
+    expect(find.textContaining('已下载'), findsWidgets);
   });
 
   testWidgets('batch refresh remains available from the section more menu', (

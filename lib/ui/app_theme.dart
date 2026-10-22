@@ -81,6 +81,9 @@ abstract final class SiteLensMetrics {
   static const compactIconButtonSize = 36.0;
   static const compactDividerIndent = 12.0;
   static const accordionContentIndent = 42.0;
+  static const settingsDividerIndent = 18.0;
+  static const settingsSectionLabelHorizontalPadding = 6.0;
+  static const settingsSectionLabelBottom = 8.0;
 
   /// Fixed bottom navigation: one compact labelled row, never wraps. The
   /// outer surface is narrower than the screen so it reads as a floating iOS

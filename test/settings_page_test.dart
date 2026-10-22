@@ -11,8 +11,10 @@ import 'package:site_lens/settings/settings_repository.dart';
 import 'package:site_lens/ui/about_screen.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/app_theme.dart';
+import 'package:site_lens/ui/data_management_screen.dart';
 import 'package:site_lens/ui/glass_quality_cache.dart';
 import 'package:site_lens/ui/glass_surface.dart';
+import 'package:site_lens/ui/player_gestures_screen.dart';
 import 'package:site_lens/ui/screens.dart';
 import 'package:site_lens/ui/software_update_screen.dart';
 import 'package:site_lens/update/update_controller.dart';
@@ -112,11 +114,24 @@ void main() {
     },
   );
 
-  testWidgets('settings home uses semantic foldable panels', (tester) async {
+  testWidgets('settings home keeps categories visible in one page', (
+    tester,
+  ) async {
     await pumpSettings(tester, app);
 
     expect(find.text('外观'), findsOneWidget);
+    expect(find.byType(ExpansionTile), findsNothing);
+    await tester.scrollUntilVisible(
+      find.text('浏览'),
+      200,
+      scrollable: find.byType(Scrollable),
+    );
     expect(find.text('浏览'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('媒体'),
+      200,
+      scrollable: find.byType(Scrollable),
+    );
     expect(find.text('媒体'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('数据与诊断'),
@@ -125,20 +140,17 @@ void main() {
     );
     expect(find.text('数据与诊断'), findsOneWidget);
     await tester.scrollUntilVisible(
-      find.text('关于'),
+      find.text('应用'),
       200,
       scrollable: find.byType(Scrollable),
     );
+    expect(find.text('应用'), findsOneWidget);
     expect(find.text('关于'), findsOneWidget);
     expect(find.text('软件更新'), findsOneWidget);
-    expect(find.text('明暗模式'), findsOneWidget);
-    expect(find.text('不透明度'), findsOneWidget);
-    expect(find.text('主题色'), findsOneWidget);
-    expect(find.text('雾松绿'), findsNothing);
     expect(find.byType(Scrollable), findsOneWidget);
   });
 
-  testWidgets('appearance keeps opacity compact and theme colors inline', (
+  testWidgets('appearance keeps opacity compact and theme color in a menu', (
     tester,
   ) async {
     await pumpSettings(tester, app);
@@ -147,13 +159,19 @@ void main() {
       find.byKey(const ValueKey('default-glass-opacity-marker')),
       findsOneWidget,
     );
+    final opacityValue = tester.getRect(find.textContaining('55 / 100'));
+    final opacitySlider = tester.getRect(find.byType(Slider));
+    expect(
+      (opacityValue.center.dy - opacitySlider.center.dy).abs(),
+      lessThan(18),
+    );
     expect(find.byType(BottomSheet), findsNothing);
 
-    await tester.tap(find.text('主题色'));
+    await tester.tap(find.byTooltip('选择主题色'));
     await tester.pumpAndSettle();
-    expect(find.bySemanticsLabel('主题色 雾松绿'), findsOneWidget);
+    expect(find.text('雾松绿'), findsOneWidget);
 
-    await tester.tap(find.bySemanticsLabel('主题色 雾松绿'));
+    await tester.tap(find.text('雾松绿'));
     await tester.pumpAndSettle();
     expect(app.themePreset, ThemePresetId.mistPine);
     expect(
@@ -199,6 +217,35 @@ void main() {
     expect(find.text('更新设置'), findsOneWidget);
     expect(find.text('稳定版'), findsOneWidget);
     await tester.pageBack();
+  });
+
+  testWidgets('complex settings stay on direct second-level pages', (
+    tester,
+  ) async {
+    await pumpSettings(tester, app);
+    await tester.scrollUntilVisible(
+      find.text('播放器手势'),
+      200,
+      scrollable: find.byType(Scrollable),
+    );
+    await tester.ensureVisible(find.text('播放器手势'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('播放器手势'));
+    await tester.pumpAndSettle();
+    expect(find.byType(PlayerGesturesScreen), findsOneWidget);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('备份与恢复'),
+      200,
+      scrollable: find.byType(Scrollable),
+    );
+    await tester.ensureVisible(find.text('备份与恢复'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('备份与恢复'));
+    await tester.pumpAndSettle();
+    expect(find.byType(DataManagementScreen), findsOneWidget);
   });
 
   testWidgets('beta token stays on the direct software update page', (

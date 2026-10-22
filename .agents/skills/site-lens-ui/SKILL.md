@@ -15,8 +15,9 @@ Use this skill for UI work in this repository. Read [references/ui-system.md](re
 - Foldable panels keep the same no-shadow hierarchy while collapsed, pressed, focused, hovered, and expanded; interaction feedback comes from glass tint/overlay and shape, never elevation or a drop shadow.
 - The bottom navigation is a floating, narrow glass chrome surface. It must use the liquid-glass path, keep one row of icon-plus-label destinations, and use a tinted selected capsule without a solid navigation slab.
 - Prefer shared UI primitives and theme tokens over one-off `Container`, `BoxDecoration`, `Card`, `TextStyle`, `BorderRadius`, or hard-coded colors in screens.
-- Keep related settings in one semantic foldable panel when the group is finite; do not add a route only to hold two or three controls. Use at most the second route level for ordinary settings flows.
-- Use one accordion controller per semantic panel so opening a detail closes the previous detail in that panel. Keep top-level settings panels independently collapsible.
+- Group ordinary settings by category in one always-visible semantic panel. Category panels are separated by section labels; they do not fold. Do not add a route only to hold two or three simple controls.
+- Keep complex workflows such as backups, gestures, media management, filtering, and scripts on direct second-level pages. Use inline disclosure only for secondary explanation or a long list row that benefits from one-open details.
+- Use one accordion controller per detail list or secondary page so opening a detail closes the previous detail in that list. A settings category itself remains visible.
 - Treat rendering cost as a hard constraint: long lists must remain lazily built with one page scroll owner and a bounded glass viewport. Remove per-row glass surfaces only when the shared viewport preserves virtualization and stable layout.
 - Use `SiteLensMenuSelector` for compact single-choice menus; follow the sizing, interaction, and accessibility rules in [Compact choice menus](references/ui-system.md#compact-choice-menus).
 - Foldable panels use the shared foldable-panel primitive/theme; do not introduce raw `ExpansionTile` defaults with elevation, pressed shadows, opaque backgrounds, or page-local shape overrides.

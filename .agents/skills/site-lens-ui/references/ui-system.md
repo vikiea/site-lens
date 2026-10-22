@@ -35,6 +35,7 @@ Use `SiteLensMetrics`, `SiteLensColors`, `Theme.of(context).colorScheme`, and `T
 - Panel radius and padding: `SiteLensMetrics.panelRadius` and `SiteLensMetrics.panelPadding`.
 - Input/control radius: `SiteLensMetrics.inputRadius`.
 - Compact rows: `compactRowHorizontalPadding`, `compactRowVerticalPadding`, `compactRowMinHeight`, `compactIconSize`, and `compactIconButtonSize`.
+- Settings groups: `settingsDividerIndent`, `settingsSectionLabelHorizontalPadding`, and `settingsSectionLabelBottom`; use these for the category label and internal row dividers.
 - Foldable details: `compactDividerIndent` and `accordionContentIndent`; use the shared accordion controller for one-open detail behavior.
 - Bottom navigation: `SiteLensMetrics.navBarHeight`, `navRadius`, `navHorizontalInset`, and `navCapsuleInset`. Keep the rendered capsule radius at or below half its post-inset height; an oversized superellipse radius produces a visibly jagged anti-aliased edge.
 - Browser toolbar: `toolbarHeight`, `toolbarIconSize`, `toolbarInset`, and `toolbarRadius`.
@@ -47,7 +48,7 @@ Use `SiteLensColors.of(context)` for backdrop, panel, navigation, divider, secti
 - Browser toolbar: fixed equal-width row using `SiteLensSurfaceRole.platformView`; no wrapping or per-button surfaces.
 - Panels: `SiteLensPanel` or `SiteLensGlassSurface`, with content padding from tokens. Segmented tracks inside a light glass panel use the recessed well tint so the track and selected pill remain distinct from a white panel surface.
 - Composite information panels: related sections such as detection results, backup addresses, and history may share one `SiteLensPanel`; separate sections use `Divider(height: 1)` and foldable `ExpansionTile` rows inside that single glass boundary. Use `SiteLensMetrics.itemGap` only between separate semantic panels, never between sections that have been intentionally merged.
-- Settings: finite related controls stay in one foldable semantic panel. Keep the first useful panel expanded by default, keep the others collapsed, and place complex workflows behind a direct row. About and update are separate direct entries; do not add a combined intermediate page.
+- Settings: ordinary controls use one always-visible glass panel per category, with the category label outside the panel. Keep related controls together and use internal dividers only between distinct rows. Place complex workflows behind direct second-level rows. About and update are separate direct entries; do not add a combined intermediate page.
 - Foldable panels use the shared theme/primitive and remain shadow-free in every interaction state. Expansion must not add Material elevation, a drop shadow, an opaque slab, or a pressed shadow; use the existing glass tint, overlay and shape tokens for feedback.
 - Rows: use shared compact action/status row primitives when several pages need the same icon-title-description-trailing layout. Keep the primary label to one line where possible and move secondary actions into a compact overflow menu.
 - Long lists: preserve a single lazy `CustomScrollView` or `SliverList` owner. A shared glass viewport is preferred when it remains bounded and does not force the list into a `Column`; otherwise keep the list page-level and remove only the per-item glass boundaries. Never trade virtualization for a visually uniform panel.
@@ -66,7 +67,7 @@ Use `SiteLensColors.of(context)` for backdrop, panel, navigation, divider, secti
 - Are long Chinese labels readable and safely truncated?
 - Are focus, semantics, hit targets, and dismiss actions preserved?
 - Does the same screen read correctly in light mode, dark mode, and a non-default seed preset?
-- Do foldable panels remain shadow-free and visually stable before, during, and after expansion in light mode, dark mode, and a non-default seed preset?
+- Are ordinary settings categories always visible, with folding reserved for useful row details and long-list disclosure?
 - Does every long list stay lazy with one scroll owner and a bounded glass render area?
 
 ## Compact choice menus
