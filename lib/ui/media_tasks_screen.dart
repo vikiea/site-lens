@@ -10,6 +10,7 @@ import '../diagnostics/error_log.dart';
 import '../domain/models.dart';
 import '../media/media_service.dart';
 import '../media/media_library.dart';
+import '../media/media_organization.dart';
 import '../settings/app_settings.dart';
 import 'app_controller.dart';
 import 'dlna_cast_screen.dart';
@@ -19,6 +20,7 @@ import 'ui_primitives.dart';
 import 'ui_util.dart';
 import 'app_theme.dart';
 import 'player_gestures_screen.dart';
+import 'media_browser.dart';
 
 enum _VideoFitMode { contain, cover, fill }
 
@@ -1000,24 +1002,74 @@ class MediaLibraryScreen extends StatefulWidget {
 
 class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
   AppController get app => widget.app;
+  late final MediaOrganizationService _organization = MediaOrganizationService(
+    db: app.db,
+    collection: 'library',
+  );
+  late final MediaBrowserController _browser = MediaBrowserController(
+    organization: _organization,
+  );
   String? _error;
-  String? _folder;
   bool _scanning = false;
 
   @override
   void initState() {
     super.initState();
-    // Restoring artifacts notifies AppController. Defer it until this route
-    // has completed its first frame so switching to the Media tab cannot
-    // notify a parent while the destination tree is still being built.
+    _organization.addListener(_changed);
+    _browser.addListener(_changed);
+    app.addListener(_changed);
+    app.mediaLibrary.addListener(_libraryChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_load());
     });
   }
 
+  @override
+  void dispose() {
+    _organization.removeListener(_changed);
+    _browser.removeListener(_changed);
+    app.removeListener(_changed);
+    app.mediaLibrary.removeListener(_libraryChanged);
+    _browser.dispose();
+    super.dispose();
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  void _libraryChanged() {
+    _changed();
+    if (mounted) unawaited(_syncLibraryOrganization());
+  }
+
+  Future<void> _syncLibraryOrganization() async {
+    try {
+      await _organization.restoreAndSync(
+        app.mediaLibrary.items.map(
+          (item) => MediaOrganizationSeed(
+            itemId: item.taskId,
+            legacyFolder: app.mediaLibrary.folderFor(item),
+          ),
+        ),
+      );
+      _changed();
+    } catch (error) {
+      if (mounted) setState(() => _error = friendlyError(error));
+    }
+  }
+
   Future<void> _load() async {
     try {
       await app.mediaLibrary.restore();
+      await _organization.restoreAndSync(
+        app.mediaLibrary.items.map(
+          (item) => MediaOrganizationSeed(
+            itemId: item.taskId,
+            legacyFolder: app.mediaLibrary.folderFor(item),
+          ),
+        ),
+      );
     } catch (error) {
       if (mounted) setState(() => _error = friendlyError(error));
     }
@@ -1029,6 +1081,14 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
     try {
       final result = await app.mediaLibrary.rescan(
         directory: app.mp4ExportDirectory,
+      );
+      await _organization.restoreAndSync(
+        app.mediaLibrary.items.map(
+          (item) => MediaOrganizationSeed(
+            itemId: item.taskId,
+            legacyFolder: app.mediaLibrary.folderFor(item),
+          ),
+        ),
       );
       if (!mounted) return;
       showShortToast(
@@ -1047,74 +1107,96 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
     }
   }
 
-  Future<void> _action(MediaArtifact item, String action) async {
-    final linkedTask = app.mediaTasks.task(item.taskId);
-    final task =
-        app.mediaTasks.referenceTask(item.taskId) ??
-        app.mediaLibrary.presentationTask(item);
+  MediaBrowserOperations get _operations => MediaBrowserOperations(
+    renameItem: (id, name) => app.mediaLibrary.rename(id, name),
+    moveItem: (id, folderId) => _organization.moveItems([id], folderId),
+    copyItem: (id) async => (await app.mediaLibrary.copy(id)).taskId,
+    deleteItem: (id) => app.deleteMediaArtifact(id),
+    preflightDelete: (id) async =>
+        app.mediaTasks.canDelete(id) ? null : '媒体正在播放、导出或投屏，请先停止',
+    preflightCopy: (id) async =>
+        app.mediaTasks.canDelete(id) ? null : '媒体正在播放、导出或投屏，请先停止',
+  );
+
+  Future<void> _createFolder() async {
+    final name = await showMediaBrowserNameDialog(
+      context,
+      title: '新建文件夹',
+      initial: '',
+      label: '文件夹名称',
+    );
+    if (name == null || name.trim().isEmpty || !mounted) return;
+    await safely(
+      context,
+      () => _organization.createFolder(name, parentId: _browser.folderId),
+    );
+  }
+
+  Future<void> _fileAction(String action, MediaArtifact item) async {
     switch (action) {
       case 'details':
+        final task =
+            app.mediaTasks.referenceTask(item.taskId) ??
+            app.mediaLibrary.presentationTask(item);
         await showMediaTaskDetails(context, app, task, artifact: item);
       case 'play':
+        final task =
+            app.mediaTasks.referenceTask(item.taskId) ??
+            app.mediaLibrary.presentationTask(item);
         await openMediaTaskPlayer(context, app, task, preferExported: true);
       case 'cast':
-        if (linkedTask == null) {
-          throw StateError('该 MP4 没有对应媒体任务，暂不支持投屏');
-        }
+        final task = app.mediaTasks.task(item.taskId);
+        if (task == null) throw StateError('该 MP4 没有对应媒体任务，暂不支持投屏');
         await castMediaTask(context, app, task);
       case 'regenerate':
-        if (linkedTask == null) throw StateError('原下载任务已不存在，请重新下载 HLS 后导出');
-        await app.exportMediaTask(linkedTask, forceRegenerate: true);
+        final task = app.mediaTasks.task(item.taskId);
+        if (task == null) throw StateError('原下载任务已不存在，请重新下载 HLS 后导出');
+        await app.exportMediaTask(task, forceRegenerate: true);
         if (mounted) showShortToast(context, 'MP4 已重新导出');
       case 'rename':
-        final controller = TextEditingController(
-          text: item.name.replaceFirst(
+        final name = await showMediaBrowserNameDialog(
+          context,
+          title: '重命名文件',
+          initial: item.name.replaceFirst(
             RegExp(r'\.mp4$', caseSensitive: false),
             '',
           ),
+          label: '文件名',
+          suffix: '.mp4',
         );
-        String? name;
-        try {
-          name = await showDialog<String>(
-            context: context,
-            builder: (dialogContext) => SiteLensAlertDialog(
-              title: const Text('重命名文件'),
-              content: TextField(
-                controller: controller,
-                autofocus: true,
-                maxLength: 180,
-                decoration: const InputDecoration(
-                  labelText: '文件名',
-                  suffixText: '.mp4',
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(dialogContext),
-                  child: const Text('取消'),
-                ),
-                FilledButton(
-                  onPressed: () =>
-                      Navigator.pop(dialogContext, controller.text),
-                  child: const Text('保存'),
-                ),
-              ],
-            ),
-          );
-        } finally {
-          controller.dispose();
-        }
         if (name != null && name.trim().isNotEmpty) {
           await app.mediaLibrary.rename(item.taskId, name);
         }
       case 'move':
+        final choice = await showMediaBrowserFolderPicker(
+          context,
+          _organization,
+        );
+        if (choice.confirmed) {
+          await _organization.moveItems([item.taskId], choice.folderId);
+        }
+      case 'movePhysical':
         final directory = Platform.isAndroid && app.nativeExports != null
             ? await app.nativeExports!.pickDirectory()
             : await FilePicker.getDirectoryPath(dialogTitle: '移动媒体文件到目录');
         if (directory != null && directory.isNotEmpty) {
           await app.mediaLibrary.move(item.taskId, directory);
         }
+      case 'copy':
+        final choice = await showMediaBrowserFolderPicker(
+          context,
+          _organization,
+        );
+        if (choice.confirmed) {
+          final copied = await app.mediaLibrary.copy(item.taskId);
+          await _organization.clonePlacement(
+            item.taskId,
+            copied.taskId,
+            folderId: choice.folderId,
+          );
+        }
       case 'delete':
+        final linkedTask = app.mediaTasks.task(item.taskId);
         var deleteTaskCache = false;
         final confirmed = await showDialog<bool>(
           context: context,
@@ -1156,29 +1238,154 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
             item.taskId,
             deleteTaskCache: linkedTask != null && deleteTaskCache,
           );
+          await _organization.removeItems([item.taskId]);
         }
     }
   }
 
-  @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: Listenable.merge([app, app.mediaLibrary]),
-    builder: (context, _) {
-      final allExports = app.mediaLibrary.items;
-      final folders = <String, int>{};
-      for (final item in allExports) {
-        final folder = app.mediaLibrary.folderFor(item);
-        if (folder != null) {
-          folders.update(folder, (count) => count + 1, ifAbsent: () => 1);
+  Future<void> _folderAction(
+    MediaOrganizationFolder folder,
+    String action,
+  ) async {
+    switch (action) {
+      case 'rename':
+        final name = await showMediaBrowserNameDialog(
+          context,
+          title: '重命名文件夹',
+          initial: folder.name,
+          label: '文件夹名称',
+        );
+        if (name != null && name.trim().isNotEmpty) {
+          await _organization.renameFolder(folder.id, name);
         }
+      case 'move':
+        final choice = await showMediaBrowserFolderPicker(
+          context,
+          _organization,
+          excludedFolderIds: {
+            folder.id,
+            ..._organization.descendantsOf(folder.id),
+          },
+        );
+        if (choice.confirmed) {
+          await _organization.moveFolder(folder.id, choice.folderId);
+        }
+      case 'copy':
+        final result = await runMediaBrowserFolderCopy(
+          context,
+          organization: _organization,
+          operations: _operations,
+          folderId: folder.id,
+        );
+        if (mounted && result.failed.isNotEmpty) {
+          showShortToast(
+            context,
+            '已复制 ${result.succeeded.length} 项，${result.failed.length} 项失败',
+          );
+        }
+      case 'delete':
+        final result = await runMediaBrowserDelete(
+          context,
+          organization: _organization,
+          operations: _operations,
+          itemIds: _organization.itemIdsInFolder(folder.id),
+          title: '删除文件夹内容',
+          message: '删除“${folder.name}”中的所有媒体文件？文件夹会保留。',
+        );
+        if (mounted && result.failed.isNotEmpty) {
+          showShortToast(
+            context,
+            '已删除 ${result.succeeded.length} 项，${result.failed.length} 项失败',
+          );
+        }
+    }
+  }
+
+  Future<void> _batchAction(String action) async {
+    if (_browser.busy) return;
+    _browser.busy = true;
+    _browser.refresh();
+    final itemIds = _browser.selectedItemIds.toList();
+    final folderIds = _browser.selectedFolderIds.toList();
+    try {
+      switch (action) {
+        case 'move':
+          await runMediaBrowserMove(
+            context: context,
+            organization: _organization,
+            itemIds: itemIds,
+            folderIds: folderIds,
+            currentFolderId: _browser.folderId,
+          );
+        case 'copy':
+          final choice = await showMediaBrowserFolderPicker(
+            context,
+            _organization,
+          );
+          if (!mounted || !choice.confirmed) return;
+          {
+            final result = await runMediaBrowserCopySelection(
+              context,
+              organization: _organization,
+              operations: _operations,
+              itemIds: itemIds,
+              folderIds: folderIds,
+              destination: choice.folderId,
+            );
+            if (mounted && result.failed.isNotEmpty) {
+              showShortToast(
+                context,
+                '已复制 ${result.succeeded.length} 项，${result.failed.length} 项失败',
+              );
+            }
+          }
+        case 'delete':
+          final result = await runMediaBrowserDeleteSelection(
+            context,
+            organization: _organization,
+            operations: _operations,
+            itemIds: itemIds,
+            folderIds: folderIds,
+            title: '删除选中的媒体',
+            message: '删除选中的 ${itemIds.length} 个媒体文件？已关联任务缓存默认保留。',
+          );
+          if (mounted && result.failed.isNotEmpty) {
+            showShortToast(
+              context,
+              '已删除 ${result.succeeded.length} 项，${result.failed.length} 项失败',
+            );
+          }
       }
-      final folderEntries = folders.entries.toList();
-      final exports = allExports
-          .where((item) => app.mediaLibrary.folderFor(item) == _folder)
-          .toList();
-      return SiteLensPageScaffold(
-        title: '媒体',
-        actions: [
+    } finally {
+      _browser.busy = false;
+      _browser.refresh();
+      if (mounted) _browser.exitSelection();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final allExports = app.mediaLibrary.items;
+    final visible = allExports
+        .where(
+          (item) => _organization.folderFor(item.taskId) == _browser.folderId,
+        )
+        .toList();
+    final folders = _browser.folders;
+    _browser.pruneSelection(
+      itemIds: visible.map((item) => item.taskId),
+      folderIds: folders.map((folder) => folder.id),
+    );
+    final current = _browser.currentFolder;
+    return SiteLensPageScaffold(
+      title: _browser.selectionMode ? '已选 ${_browser.selectedCount} 项' : '媒体',
+      actions: [
+        if (!_browser.selectionMode) ...[
+          IconButton(
+            tooltip: '新建文件夹',
+            icon: const Icon(Icons.create_new_folder_outlined),
+            onPressed: _createFolder,
+          ),
           SiteLensRefreshButton(
             tooltip: '重新扫描媒体文件',
             refreshing: _scanning,
@@ -1191,6 +1398,11 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
               onPressed: () => showDlnaCastControls(context, app),
             ),
           IconButton(
+            tooltip: '选择媒体',
+            icon: const Icon(Icons.checklist),
+            onPressed: _browser.enterSelection,
+          ),
+          IconButton(
             tooltip: '媒体任务',
             icon: const Icon(Icons.download_for_offline_outlined),
             onPressed: () => Navigator.of(context).push(
@@ -1199,22 +1411,17 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
               ),
             ),
           ),
-        ],
-        body: Column(
-          children: [
-            if (_error != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(
-                  SiteLensMetrics.pagePadding,
-                  12,
-                  SiteLensMetrics.pagePadding,
-                  0,
-                ),
-                child: SiteLensErrorBanner(
-                  text: _error!,
-                  onDismiss: () => setState(() => _error = null),
-                ),
-              ),
+        ] else
+          MediaBrowserSelectionActions(
+            controller: _browser,
+            visibleItemIds: visible.map((item) => item.taskId),
+            visibleFolderIds: folders.map((folder) => folder.id),
+            onAction: (action) => unawaited(_batchAction(action)),
+          ),
+      ],
+      body: Column(
+        children: [
+          if (_error != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(
                 SiteLensMetrics.pagePadding,
@@ -1222,83 +1429,117 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
                 SiteLensMetrics.pagePadding,
                 0,
               ),
-              child: SiteLensHelpNotice(
-                app: app,
-                noticeId: 'media.library',
-                text: '这里是已导出的 MP4。下载和批量操作请打开“媒体任务”。',
+              child: SiteLensErrorBanner(
+                text: _error!,
+                onDismiss: () => setState(() => _error = null),
               ),
             ),
-            Expanded(
-              child: SiteLensListPanel(
-                scrollKey: const PageStorageKey('media-library-scroll'),
-                slivers: [
-                  if (_folder != null)
-                    SliverToBoxAdapter(
-                      child: _MediaFolderRow(
-                        title: _folder!,
-                        count: exports.length,
-                        onOpen: () => setState(() => _folder = null),
-                        parent: true,
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              SiteLensMetrics.pagePadding,
+              12,
+              SiteLensMetrics.pagePadding,
+              0,
+            ),
+            child: SiteLensHelpNotice(
+              app: app,
+              noticeId: 'media.library',
+              text: '这里是已导出的 MP4。下载和批量操作请打开“媒体任务”。',
+            ),
+          ),
+          Expanded(
+            child: SiteLensListPanel(
+              scrollKey: const PageStorageKey('media-library-scroll'),
+              slivers: [
+                if (current != null)
+                  SliverToBoxAdapter(
+                    child: MediaBrowserFolderRow(
+                      folder: current,
+                      itemCount: visible.length,
+                      parent: true,
+                      onOpen: _browser.goUp,
+                      onAction: (_) {},
+                    ),
+                  ),
+                if (folders.isNotEmpty)
+                  SliverList.builder(
+                    itemCount: folders.length * 2 - 1,
+                    itemBuilder: (_, index) {
+                      if (index.isOdd) return const SiteLensPanelDivider();
+                      final folder = folders[index ~/ 2];
+                      return MediaBrowserFolderRow(
+                        folder: folder,
+                        itemCount: _organization
+                            .itemIdsInFolder(folder.id)
+                            .length,
+                        selectionMode: _browser.selectionMode,
+                        selected: _browser.selectedFolderIds.contains(
+                          folder.id,
+                        ),
+                        onSelected: (_) => _browser.toggleFolder(folder.id),
+                        onOpen: () => _browser.openFolder(folder.id),
+                        onAction: (action) => safely(
+                          context,
+                          () => _folderAction(folder, action),
+                        ),
+                      );
+                    },
+                  ),
+                if (visible.isEmpty &&
+                    (current != null ||
+                        (folders.isEmpty && allExports.isEmpty)))
+                  SliverToBoxAdapter(
+                    child: SiteLensCompactRow(
+                      leading: Icon(
+                        current == null
+                            ? Icons.video_library_outlined
+                            : Icons.folder_open_outlined,
+                        size: 18,
+                      ),
+                      title: Text(current == null ? '暂无导出的 MP4' : '文件夹为空'),
+                      subtitle: Text(
+                        current == null
+                            ? '在媒体任务中完成下载并导出后，媒体会出现在这里；文件仍在目录时可重新扫描。'
+                            : '可以移动或复制媒体到这里。',
                       ),
                     ),
-                  if (_folder == null && folders.isNotEmpty)
-                    SliverList.builder(
-                      itemCount: folderEntries.length * 2 - 1,
-                      itemBuilder: (context, index) {
-                        if (index.isOdd) {
-                          return const SiteLensPanelDivider();
-                        }
-                        final folder = folderEntries[index ~/ 2];
-                        return _MediaFolderRow(
-                          title: folder.key,
-                          count: folder.value,
-                          onOpen: () => setState(() => _folder = folder.key),
-                        );
-                      },
-                    ),
-                  if (allExports.isEmpty || exports.isEmpty)
-                    const SliverToBoxAdapter(
-                      child: SiteLensCompactRow(
-                        leading: Icon(Icons.video_library_outlined, size: 18),
-                        title: Text('暂无导出的 MP4'),
-                        subtitle: Text('在媒体任务中完成下载并导出后，媒体会出现在这里；文件仍在目录时可重新扫描。'),
-                      ),
-                    ),
-                  if (exports.isNotEmpty)
-                    SliverList.builder(
-                      itemCount: exports.length,
-                      itemBuilder: (context, index) => Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          _MediaLibraryTile(
-                            key: ValueKey(exports[index].taskId),
-                            app: app,
-                            item: exports[index],
-                            task: app.mediaLibrary.presentationTask(
-                              exports[index],
-                            ),
-                            onAction: (action) => safely(
-                              context,
-                              () => _action(
-                                app.mediaLibrary.item(exports[index].taskId) ??
-                                    exports[index],
-                                action,
-                              ),
-                            ),
+                  ),
+                if (visible.isNotEmpty)
+                  SliverList.builder(
+                    itemCount: visible.length,
+                    itemBuilder: (_, index) => Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _MediaLibraryTile(
+                          key: ValueKey(visible[index].taskId),
+                          app: app,
+                          item: visible[index],
+                          task: app.mediaLibrary.presentationTask(
+                            visible[index],
                           ),
-                          if (index < exports.length - 1)
-                            const SiteLensPanelDivider(),
-                        ],
-                      ),
+                          onAction: (action) => safely(
+                            context,
+                            () => _fileAction(action, visible[index]),
+                          ),
+                          selectionMode: _browser.selectionMode,
+                          selected: _browser.selectedItemIds.contains(
+                            visible[index].taskId,
+                          ),
+                          onSelected: (_) =>
+                              _browser.toggleItem(visible[index].taskId),
+                        ),
+                        if (index < visible.length - 1)
+                          const SiteLensPanelDivider(),
+                      ],
                     ),
-                ],
-              ),
+                  ),
+              ],
             ),
-          ],
-        ),
-      );
-    },
-  );
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _MediaLibraryTile extends StatefulWidget {
@@ -1308,11 +1549,17 @@ class _MediaLibraryTile extends StatefulWidget {
     required this.item,
     required this.task,
     required this.onAction,
+    this.selectionMode = false,
+    this.selected = false,
+    this.onSelected,
   });
   final AppController app;
   final MediaArtifact item;
   final MediaTask task;
   final Future<void> Function(String) onAction;
+  final bool selectionMode;
+  final bool selected;
+  final ValueChanged<bool?>? onSelected;
 
   @override
   State<_MediaLibraryTile> createState() => _MediaLibraryTileState();
@@ -1348,48 +1595,49 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
         if ((item.width ?? 0) > 0 && (item.height ?? 0) > 0)
           '${item.width}×${item.height}',
       ];
-      return SiteLensCompactRow(
-        leading: SizedBox(
-          width: 68,
-          height: 48,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(SiteLensMetrics.inputRadius),
-            child: thumbnail != null
-                ? Image.file(
-                    File(thumbnail),
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) =>
-                        const Icon(Icons.video_file_outlined),
-                  )
-                : FutureBuilder<MediaCandidate?>(
-                    future: _candidate,
-                    builder: (_, data) =>
-                        _TaskThumbnail(task: widget.task, candidate: data.data),
-                  ),
-          ),
+      final preview = SizedBox(
+        width: 68,
+        height: 48,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(SiteLensMetrics.inputRadius),
+          child: thumbnail != null
+              ? Image.file(
+                  File(thumbnail),
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, _, _) =>
+                      const Icon(Icons.video_file_outlined),
+                )
+              : FutureBuilder<MediaCandidate?>(
+                  future: _candidate,
+                  builder: (_, data) =>
+                      _TaskThumbnail(task: widget.task, candidate: data.data),
+                ),
         ),
+      );
+      return SiteLensCompactRow(
+        leading: widget.selectionMode
+            ? Checkbox(
+                value: widget.selected,
+                onChanged: widget.onSelected,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              )
+            : preview,
         title: SiteLensLeadingEllipsisText(
           item.name.replaceFirst(RegExp(r'\.mp4$', caseSensitive: false), ''),
         ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SizedBox(height: 4),
-            Text(
-              details.join(' · '),
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
-            if (snapshot.hasError)
-              Text(
-                '文件暂不可用，请查看详情',
-                style: Theme.of(context).textTheme.labelSmall,
-              ),
-          ],
+        subtitle: Text(
+          '${details.join(' · ')}${snapshot.hasError ? ' · 文件暂不可用' : ''}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.labelSmall
+              ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
         ),
-        onTap: () => widget.onAction('play'),
-        trailing: widget.app.mediaLibrary.busy(item.taskId)
+        onTap: widget.selectionMode
+            ? () => widget.onSelected?.call(!widget.selected)
+            : () => widget.onAction('play'),
+        trailing: widget.selectionMode
+            ? null
+            : widget.app.mediaLibrary.busy(item.taskId)
             ? const SizedBox(
                 width: 20,
                 height: 20,
@@ -1399,16 +1647,29 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
                 tooltip: '媒体文件操作',
                 onSelected: widget.onAction,
                 itemBuilder: (_) => [
-                  PopupMenuItem(value: 'details', child: Text('查看详情')),
-                  PopupMenuItem(value: 'play', child: Text('原生播放')),
-                  if (widget.app.mediaTasks.task(item.taskId) !=
-                      null) ...const [
-                    PopupMenuItem(value: 'cast', child: Text('DLNA 投屏')),
-                    PopupMenuItem(value: 'regenerate', child: Text('重新导出 MP4')),
-                  ],
-                  PopupMenuItem(value: 'move', child: Text('移动到目录')),
-                  PopupMenuItem(value: 'rename', child: Text('重命名')),
-                  PopupMenuItem(value: 'delete', child: Text('删除文件')),
+                  ...mediaBrowserFileMenu(
+                    extra: [
+                      const PopupMenuItem(
+                        value: 'details',
+                        child: Text('查看详情'),
+                      ),
+                      const PopupMenuItem(value: 'play', child: Text('原生播放')),
+                      if (widget.app.mediaTasks.task(item.taskId) != null)
+                        const PopupMenuItem(
+                          value: 'cast',
+                          child: Text('DLNA 投屏'),
+                        ),
+                      if (widget.app.mediaTasks.task(item.taskId) != null)
+                        const PopupMenuItem(
+                          value: 'regenerate',
+                          child: Text('重新导出 MP4'),
+                        ),
+                      const PopupMenuItem(
+                        value: 'movePhysical',
+                        child: Text('移动文件到系统目录'),
+                      ),
+                    ],
+                  ),
                 ],
               ),
       );
@@ -1595,7 +1856,7 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
             children: [
               SiteLensCompactRow(
                 title: const Text('下载完成自动导出 MP4'),
-                subtitle: const Text('保留原始 HLS，MP4 只保存一份到媒体库或指定目录'),
+                subtitle: const Text('保留原生HLS，MP4另存一份到媒体库'),
                 onTap: () => safely(
                   context,
                   () => app.setAutoConvertToMp4(!app.autoConvertToMp4),
@@ -1650,15 +1911,22 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   bool _polling = false;
   StreamSubscription<NativePlaybackSession>? _mediaStates;
   final _operations = <String>{};
-  bool _selectionMode = false;
   bool _batchBusy = false;
-  String? _folder;
-  final _selectedTaskIds = <String>{};
+  late final MediaOrganizationService _organization = MediaOrganizationService(
+    db: widget.app.db,
+    collection: 'tasks',
+  );
+  late final MediaBrowserController _browser = MediaBrowserController(
+    organization: _organization,
+  );
 
   @override
   void initState() {
     super.initState();
     widget.app.mediaTasks.addListener(_tasksChanged);
+    _organization.addListener(_tasksChanged);
+    _browser.addListener(_tasksChanged);
+    unawaited(_syncOrganization());
     _mediaStates = widget.app.nativeMedia.states.listen((_) {
       if (mounted) setState(() {});
     });
@@ -1673,6 +1941,9 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   @override
   void dispose() {
     widget.app.mediaTasks.removeListener(_tasksChanged);
+    _organization.removeListener(_tasksChanged);
+    _browser.removeListener(_tasksChanged);
+    _browser.dispose();
     _poller?.cancel();
     _mediaStates?.cancel();
     super.dispose();
@@ -1680,6 +1951,219 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
 
   void _tasksChanged() {
     if (mounted) setState(() {});
+    unawaited(_syncOrganization());
+  }
+
+  Future<void> _syncOrganization() async {
+    await _organization.restoreAndSync(
+      widget.app.mediaTasks.tasks.map(
+        (task) => MediaOrganizationSeed(
+          itemId: task.id,
+          legacyFolder: task.batchDirectory,
+        ),
+      ),
+    );
+  }
+
+  MediaBrowserOperations get _browserOperations => MediaBrowserOperations(
+    renameItem: (id, name) => _organization.renameItem(id, name),
+    moveItem: (id, folderId) => _organization.moveItems([id], folderId),
+    copyItem: (id) async => (await widget.app.mediaTasks.copyCompleted(id)).id,
+    deleteItem: widget.app.deleteMediaTask,
+    preflightDelete: (id) async =>
+        widget.app.mediaTasks.canDelete(id) ? null : '媒体正在播放、导出或投屏，请先停止',
+    preflightCopy: (id) async {
+      final task = widget.app.mediaTasks.task(id);
+      if (task == null) return '媒体任务不存在';
+      if (!widget.app.mediaTasks.canDelete(id)) {
+        return '媒体正在播放、导出或投屏，请先停止';
+      }
+      if (!_isBatchExportable(task) ||
+          task.totalBytes != null && task.bytesDownloaded < task.totalBytes!) {
+        return '任务尚未完整下载，无法复制';
+      }
+      return null;
+    },
+  );
+
+  Future<void> _createTaskFolder() async {
+    final name = await showMediaBrowserNameDialog(
+      context,
+      title: '新建文件夹',
+      initial: '',
+      label: '文件夹名称',
+    );
+    if (name == null || name.trim().isEmpty || !mounted) return;
+    await safely(
+      context,
+      () => _organization.createFolder(name, parentId: _browser.folderId),
+    );
+  }
+
+  Future<void> _taskFolderAction(
+    MediaOrganizationFolder folder,
+    String action,
+  ) async {
+    switch (action) {
+      case 'rename':
+        final name = await showMediaBrowserNameDialog(
+          context,
+          title: '重命名文件夹',
+          initial: folder.name,
+          label: '文件夹名称',
+        );
+        if (name != null && name.trim().isNotEmpty) {
+          await _organization.renameFolder(folder.id, name);
+        }
+      case 'move':
+        final choice = await showMediaBrowserFolderPicker(
+          context,
+          _organization,
+          excludedFolderIds: {
+            folder.id,
+            ..._organization.descendantsOf(folder.id),
+          },
+        );
+        if (choice.confirmed) {
+          await _organization.moveFolder(folder.id, choice.folderId);
+        }
+      case 'copy':
+        final result = await runMediaBrowserFolderCopy(
+          context,
+          organization: _organization,
+          operations: _browserOperations,
+          folderId: folder.id,
+        );
+        if (mounted && result.failed.isNotEmpty) {
+          showShortToast(
+            context,
+            '已复制 ${result.succeeded.length} 项，${result.failed.length} 项失败',
+          );
+        }
+      case 'delete':
+        final result = await runMediaBrowserDelete(
+          context,
+          organization: _organization,
+          operations: _browserOperations,
+          itemIds: _organization.itemIdsInFolder(folder.id),
+          title: '删除文件夹内容',
+          message: '删除“${folder.name}”中的媒体任务？已导出的 MP4 保留。',
+        );
+        if (mounted && result.failed.isNotEmpty) {
+          showShortToast(
+            context,
+            '已删除 ${result.succeeded.length} 项，${result.failed.length} 项失败',
+          );
+        }
+    }
+  }
+
+  Future<void> _taskFileManagement(String action, MediaTask task) async {
+    switch (action) {
+      case 'rename':
+        final name = await showMediaBrowserNameDialog(
+          context,
+          title: '重命名媒体任务',
+          initial: _organization.nameFor(task.id, task.displayName),
+          label: '显示名称',
+        );
+        if (name != null && name.trim().isNotEmpty) {
+          await _organization.renameItem(task.id, name);
+        }
+      case 'move':
+        final choice = await showMediaBrowserFolderPicker(
+          context,
+          _organization,
+        );
+        if (choice.confirmed) {
+          await _organization.moveItems([task.id], choice.folderId);
+        }
+      case 'copy':
+        final choice = await showMediaBrowserFolderPicker(
+          context,
+          _organization,
+        );
+        if (choice.confirmed) {
+          final copied = await widget.app.mediaTasks.copyCompleted(task.id);
+          await _organization.clonePlacement(
+            task.id,
+            copied.id,
+            folderId: choice.folderId,
+          );
+        }
+      case 'delete':
+        final result = await runMediaBrowserDelete(
+          context,
+          organization: _organization,
+          operations: _browserOperations,
+          itemIds: [task.id],
+          title: '删除媒体任务',
+          message: '删除“${task.displayName}”的任务和下载缓存？已导出的 MP4 保留。',
+        );
+        if (mounted && result.failed.isNotEmpty) {
+          showShortToast(context, '删除失败：${result.failed.values.first}');
+        }
+    }
+  }
+
+  Future<void> _taskSharedBatchAction(String action) async {
+    if (_browser.busy) return;
+    _browser.busy = true;
+    _browser.refresh();
+    final itemIds = _browser.selectedItemIds.toList();
+    final folderIds = _browser.selectedFolderIds.toList();
+    try {
+      switch (action) {
+        case 'move':
+          await runMediaBrowserMove(
+            context: context,
+            organization: _organization,
+            itemIds: itemIds,
+            folderIds: folderIds,
+            currentFolderId: _browser.folderId,
+          );
+        case 'copy':
+          final choice = await showMediaBrowserFolderPicker(
+            context,
+            _organization,
+          );
+          if (!mounted || !choice.confirmed) return;
+          final result = await runMediaBrowserCopySelection(
+            context,
+            organization: _organization,
+            operations: _browserOperations,
+            itemIds: itemIds,
+            folderIds: folderIds,
+            destination: choice.folderId,
+          );
+          if (mounted && result.failed.isNotEmpty) {
+            showShortToast(
+              context,
+              '已复制 ${result.succeeded.length} 项，${result.failed.length} 项失败',
+            );
+          }
+        case 'delete':
+          final result = await runMediaBrowserDeleteSelection(
+            context,
+            organization: _organization,
+            operations: _browserOperations,
+            itemIds: itemIds,
+            folderIds: folderIds,
+            title: '删除选中的媒体任务',
+            message: '删除选中的 ${itemIds.length} 个任务和下载缓存？已导出的 MP4 保留。',
+          );
+          if (mounted && result.failed.isNotEmpty) {
+            showShortToast(
+              context,
+              '已删除 ${result.succeeded.length} 项，${result.failed.length} 项失败',
+            );
+          }
+      }
+    } finally {
+      _browser.busy = false;
+      _browser.refresh();
+      if (mounted) _browser.exitSelection();
+    }
   }
 
   Future<void> _refreshCachedFiles() async {
@@ -1804,11 +2288,18 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
 
   Future<void> _runBatch(_MediaBatchAction action) async {
     if (_batchBusy || !mounted) return;
+    final selectedIds = <String>{..._browser.selectedItemIds};
+    for (final folderId in _browser.selectedFolderIds) {
+      selectedIds.addAll(_organization.itemIdsInFolder(folderId));
+    }
     final selected = widget.app.mediaTasks.tasks
-        .where((task) => _selectedTaskIds.contains(task.id))
+        .where((task) => selectedIds.contains(task.id))
         .toList();
     if (selected.isEmpty) return;
-    setState(() => _batchBusy = true);
+    setState(() {
+      _batchBusy = true;
+      _browser.busy = true;
+    });
     final failedIds = <String>{};
     var succeeded = 0;
     var skipped = 0;
@@ -1870,12 +2361,13 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         }
       }
       if (!mounted) return;
-      setState(() {
-        _selectedTaskIds
+      if (mounted) {
+        _browser.selectedItemIds
           ..clear()
           ..addAll(failedIds);
-        _selectionMode = failedIds.isNotEmpty;
-      });
+        _browser.selectionMode = failedIds.isNotEmpty;
+        setState(() {});
+      }
       final verb = switch (action) {
         _MediaBatchAction.retry => '已重试',
         _MediaBatchAction.refresh => '已刷新',
@@ -1891,95 +2383,61 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         ].join('，'),
       );
     } finally {
-      if (mounted) setState(() => _batchBusy = false);
+      if (mounted) {
+        setState(() {
+          _batchBusy = false;
+          _browser.busy = false;
+        });
+      }
     }
-  }
-
-  void _toggleSelection(String taskId) {
-    setState(() {
-      if (!_selectedTaskIds.add(taskId)) _selectedTaskIds.remove(taskId);
-    });
-  }
-
-  void _selectAll(List<MediaTask> tasks) {
-    setState(() {
-      _selectedTaskIds
-        ..clear()
-        ..addAll(tasks.where(_isBatchSelectable).map((task) => task.id));
-    });
   }
 
   @override
   Widget build(BuildContext context) {
     final allTasks = widget.app.mediaTasks.tasks;
-    final folders = <String, int>{};
-    for (final task in allTasks) {
-      final folder = task.batchDirectory;
-      if (folder != null) {
-        folders.update(folder, (count) => count + 1, ifAbsent: () => 1);
-      }
-    }
-    final folderEntries = folders.entries.toList();
-    final tasks = allTasks
-        .where((task) => task.batchDirectory == _folder)
+    final visibleTasks = allTasks
+        .where((task) => _organization.folderFor(task.id) == _browser.folderId)
         .toList();
+    final folders = _browser.folders;
+    _browser.pruneSelection(
+      itemIds: visibleTasks.map((task) => task.id),
+      folderIds: folders.map((folder) => folder.id),
+    );
     final activePlayback = widget.app.nativeMedia.active;
+    final current = _browser.currentFolder;
+    final selectionExtras = <PopupMenuEntry<String>>[
+      const PopupMenuItem(value: 'retry', child: Text('批量重试下载')),
+      const PopupMenuItem(value: 'refresh', child: Text('批量刷新后台状态')),
+      const PopupMenuItem(value: 'export', child: Text('批量导出 MP4')),
+    ];
     return SiteLensPageScaffold(
-      title: _selectionMode ? '已选 ${_selectedTaskIds.length} 项' : '媒体任务',
+      title: _browser.selectionMode ? '已选 ${_browser.selectedCount} 项' : '媒体任务',
       actions: [
-        if (!_selectionMode)
+        if (!_browser.selectionMode) ...[
+          IconButton(
+            tooltip: '新建文件夹',
+            icon: const Icon(Icons.create_new_folder_outlined),
+            onPressed: _createTaskFolder,
+          ),
           IconButton(
             tooltip: '选择任务',
             icon: const Icon(Icons.checklist),
-            onPressed: () => setState(() => _selectionMode = true),
-          )
-        else ...[
-          IconButton(
-            tooltip: '全选',
-            icon: const Icon(Icons.select_all),
-            onPressed: _batchBusy ? null : () => _selectAll(tasks),
+            onPressed: _browser.enterSelection,
           ),
-          PopupMenuButton<_MediaBatchAction>(
-            tooltip: '批量操作',
-            enabled: !_batchBusy && _selectedTaskIds.isNotEmpty,
-            icon: _batchBusy
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.more_vert),
-            onSelected: (action) => unawaited(_runBatch(action)),
-            itemBuilder: (_) => const [
-              PopupMenuItem(
-                value: _MediaBatchAction.retry,
-                child: Text('批量重试下载'),
-              ),
-              PopupMenuItem(
-                value: _MediaBatchAction.refresh,
-                child: Text('批量刷新后台状态'),
-              ),
-              PopupMenuItem(
-                value: _MediaBatchAction.export,
-                child: Text('批量导出 MP4'),
-              ),
-              PopupMenuItem(
-                value: _MediaBatchAction.delete,
-                child: Text('批量删除'),
-              ),
-            ],
+        ] else
+          MediaBrowserSelectionActions(
+            controller: _browser,
+            visibleItemIds: visibleTasks.map((task) => task.id),
+            visibleFolderIds: folders.map((folder) => folder.id),
+            onAction: (action) => unawaited(_taskSharedBatchAction(action)),
+            extraItems: selectionExtras,
+            onExtraAction: (action) {
+              final value = _MediaBatchAction.values.firstWhere(
+                (candidate) => candidate.name == action,
+              );
+              unawaited(_runBatch(value));
+            },
           ),
-          IconButton(
-            tooltip: '退出选择',
-            icon: const Icon(Icons.close),
-            onPressed: _batchBusy
-                ? null
-                : () => setState(() {
-                    _selectionMode = false;
-                    _selectedTaskIds.clear();
-                  }),
-          ),
-        ],
       ],
       body: Column(
         children: [
@@ -2019,54 +2477,67 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                       ),
                     if (activePlayback != null)
                       const SliverToBoxAdapter(child: SiteLensPanelDivider()),
-                    if (_folder != null)
+                    if (current != null)
                       SliverToBoxAdapter(
-                        child: _MediaFolderRow(
-                          title: _folder!,
-                          count: tasks.length,
-                          onOpen: () => setState(() {
-                            _folder = null;
-                            _selectedTaskIds.clear();
-                          }),
+                        child: MediaBrowserFolderRow(
+                          folder: current,
+                          itemCount: visibleTasks.length,
                           parent: true,
+                          onOpen: _browser.goUp,
+                          onAction: (_) {},
                         ),
                       ),
-                    if (_folder == null && folders.isNotEmpty)
+                    if (folders.isNotEmpty)
                       SliverList.builder(
-                        itemCount: folderEntries.length * 2 - 1,
-                        itemBuilder: (context, index) {
-                          if (index.isOdd) {
-                            return const SiteLensPanelDivider();
-                          }
-                          final folder = folderEntries[index ~/ 2];
-                          return _MediaFolderRow(
-                            title: folder.key,
-                            count: folder.value,
-                            onOpen: () => setState(() {
-                              _folder = folder.key;
-                              _selectedTaskIds.clear();
-                            }),
+                        itemCount: folders.length * 2 - 1,
+                        itemBuilder: (_, index) {
+                          if (index.isOdd) return const SiteLensPanelDivider();
+                          final folder = folders[index ~/ 2];
+                          return MediaBrowserFolderRow(
+                            folder: folder,
+                            itemCount: _organization
+                                .itemIdsInFolder(folder.id)
+                                .length,
+                            selectionMode: _browser.selectionMode,
+                            selected: _browser.selectedFolderIds.contains(
+                              folder.id,
+                            ),
+                            onSelected: (_) => _browser.toggleFolder(folder.id),
+                            onOpen: () => _browser.openFolder(folder.id),
+                            onAction: (action) => safely(
+                              context,
+                              () => _taskFolderAction(folder, action),
+                            ),
                           );
                         },
                       ),
-                    if (tasks.isEmpty)
+                    if (visibleTasks.isEmpty &&
+                        (current != null ||
+                            (folders.isEmpty && allTasks.isEmpty)))
                       SliverToBoxAdapter(
                         child: SiteLensCompactRow(
-                          leading: const Icon(Icons.download_done, size: 18),
-                          title: Text(
-                            allTasks.isEmpty ? '暂无媒体任务' : '此文件夹暂无媒体任务',
+                          leading: Icon(
+                            current == null
+                                ? Icons.download_done
+                                : Icons.folder_open_outlined,
+                            size: 18,
                           ),
-                          subtitle: const Text('在浏览器的「媒体候选」中选择地址开始缓存。'),
+                          title: Text(current == null ? '暂无媒体任务' : '文件夹为空'),
+                          subtitle: Text(
+                            current == null
+                                ? '在浏览器的「媒体候选」中选择地址开始缓存。'
+                                : '可以移动或复制媒体任务到这里。',
+                          ),
                         ),
                       ),
-                    if (tasks.isNotEmpty)
+                    if (visibleTasks.isNotEmpty)
                       SliverList.builder(
-                        itemCount: tasks.length,
+                        itemCount: visibleTasks.length,
                         itemBuilder: (context, index) => Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            _buildMediaTaskRow(context, tasks[index]),
-                            if (index < tasks.length - 1)
+                            _buildMediaTaskRow(context, visibleTasks[index]),
+                            if (index < visibleTasks.length - 1)
                               const SiteLensPanelDivider(),
                           ],
                         ),
@@ -2120,81 +2591,53 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
               unawaited(_run(() => _togglePause(task), taskId: task.id));
             case 'retry':
               unawaited(_run(() => _retry(task), taskId: task.id));
+            case 'rename':
+            case 'move':
+            case 'copy':
             case 'delete':
               unawaited(
-                _run(() async {
-                  if (!widget.app.mediaTasks.canDelete(task.id)) {
-                    throw StateError('媒体正在播放、导出或投屏，请先停止');
-                  }
-                  if (widget.app.mediaLibrary.item(task.id) != null) {
-                    final confirmed = await showDialog<bool>(
-                      context: context,
-                      builder: (dialogContext) => SiteLensAlertDialog(
-                        title: const Text('删除任务及下载缓存'),
-                        content: Text(
-                          '删除“${task.displayName}”的任务和下载缓存？已导出媒体文件保留。',
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () =>
-                                Navigator.pop(dialogContext, false),
-                            child: const Text('取消'),
-                          ),
-                          FilledButton(
-                            onPressed: () => Navigator.pop(dialogContext, true),
-                            child: const Text('删除'),
-                          ),
-                        ],
-                      ),
-                    );
-                    if (confirmed != true) return;
-                  }
-                  await widget.app.deleteMediaTask(task.id);
-                  if (mounted) setState(() {});
-                }, taskId: task.id),
+                _run(() => _taskFileManagement(value, task), taskId: task.id),
               );
           }
         },
         itemBuilder: (_) => [
-          const PopupMenuItem(value: 'refresh', child: Text('刷新后台状态')),
-          const PopupMenuItem(value: 'details', child: Text('查看详情')),
-          if (task.state == MediaTaskState.playable)
-            const PopupMenuItem(value: 'play', child: Text('原生播放')),
-          if (task.state == MediaTaskState.playable)
-            const PopupMenuItem(value: 'cast', child: Text('DLNA 投屏')),
-          if (_isBatchExportable(task))
-            const PopupMenuItem(value: 'export', child: Text('导出 MP4')),
-          if (task.state == MediaTaskState.downloading)
-            const PopupMenuItem(value: 'pause', child: Text('暂停下载')),
-          if (task.state == MediaTaskState.paused)
-            const PopupMenuItem(value: 'pause', child: Text('继续下载')),
-          if (task.state == MediaTaskState.failed ||
-              task.state == MediaTaskState.cancelled ||
-              task.state == MediaTaskState.reauthorize)
-            PopupMenuItem(
-              value: 'retry',
-              child: Text(
-                task.state == MediaTaskState.reauthorize ? '刷新授权后重试' : '重试下载',
-              ),
-            ),
-          if (task.state == MediaTaskState.downloading ||
-              task.state == MediaTaskState.paused)
-            const PopupMenuItem(value: 'cancel', child: Text('取消下载')),
-          PopupMenuItem(
-            value: 'delete',
-            child: Text(
-              widget.app.mediaLibrary.item(task.id) == null
-                  ? '删除任务'
-                  : '删除任务及下载缓存',
-            ),
+          ...mediaBrowserFileMenu(
+            extra: [
+              const PopupMenuItem(value: 'refresh', child: Text('刷新后台状态')),
+              const PopupMenuItem(value: 'details', child: Text('查看详情')),
+              if (task.state == MediaTaskState.playable)
+                const PopupMenuItem(value: 'play', child: Text('原生播放')),
+              if (task.state == MediaTaskState.playable)
+                const PopupMenuItem(value: 'cast', child: Text('DLNA 投屏')),
+              if (_isBatchExportable(task))
+                const PopupMenuItem(value: 'export', child: Text('导出 MP4')),
+              if (task.state == MediaTaskState.downloading)
+                const PopupMenuItem(value: 'pause', child: Text('暂停下载')),
+              if (task.state == MediaTaskState.paused)
+                const PopupMenuItem(value: 'pause', child: Text('继续下载')),
+              if (task.state == MediaTaskState.failed ||
+                  task.state == MediaTaskState.cancelled ||
+                  task.state == MediaTaskState.reauthorize)
+                PopupMenuItem(
+                  value: 'retry',
+                  child: Text(
+                    task.state == MediaTaskState.reauthorize
+                        ? '刷新授权后重试'
+                        : '重试下载',
+                  ),
+                ),
+              if (task.state == MediaTaskState.downloading ||
+                  task.state == MediaTaskState.paused)
+                const PopupMenuItem(value: 'cancel', child: Text('取消下载')),
+            ],
           ),
         ],
       );
-      final leading = _selectionMode
+      final leading = _browser.selectionMode
           ? Checkbox(
-              value: _selectedTaskIds.contains(task.id),
+              value: _browser.selectedItemIds.contains(task.id),
               onChanged: _isBatchSelectable(task)
-                  ? (_) => _toggleSelection(task.id)
+                  ? (_) => _browser.toggleItem(task.id)
                   : null,
               materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
             )
@@ -2205,23 +2648,23 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           SiteLensCompactRow(
             leading: leading,
             title: Text(
-              _taskTitle(task, snapshot.data),
+              _organization.nameFor(task.id, _taskTitle(task, snapshot.data)),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
             subtitle: Text(
               '${_mediaTaskStateLabel(task.state)} · ${_taskProgressLabel(task)}${_taskErrorLabel(task).isEmpty ? '' : ' · ${_taskErrorLabel(task)}'}',
-              maxLines: 2,
+              maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-            onTap: _selectionMode
+            onTap: _browser.selectionMode
                 ? (_isBatchSelectable(task)
-                      ? () => _toggleSelection(task.id)
+                      ? () => _browser.toggleItem(task.id)
                       : null)
                 : task.state == MediaTaskState.playable
                 ? () => unawaited(_run(() => _play(task), taskId: task.id))
                 : null,
-            trailing: _selectionMode
+            trailing: _browser.selectionMode
                 ? Text(
                     _isBatchSelectable(task) ? '可处理' : '执行中',
                     style: Theme.of(context).textTheme.bodySmall,
@@ -2385,33 +2828,4 @@ class _TaskThumbnail extends StatelessWidget {
       ),
     );
   }
-}
-
-/// Shared folder navigation for cached tasks and exported media.
-class _MediaFolderRow extends StatelessWidget {
-  const _MediaFolderRow({
-    required this.title,
-    required this.count,
-    required this.onOpen,
-    this.parent = false,
-  });
-  final String title;
-  final int count;
-  final VoidCallback onOpen;
-  final bool parent;
-
-  @override
-  Widget build(BuildContext context) => SiteLensCompactRow(
-    leading: Icon(
-      parent ? Icons.folder_open_rounded : Icons.folder_rounded,
-      color: Theme.of(context).colorScheme.primary,
-    ),
-    title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-    subtitle: Text(parent ? '$count 项 · 返回全部文件夹' : '$count 项'),
-    trailing: Icon(
-      parent ? Icons.arrow_upward_rounded : Icons.chevron_right,
-      size: SiteLensMetrics.compactIconSize,
-    ),
-    onTap: onOpen,
-  );
 }

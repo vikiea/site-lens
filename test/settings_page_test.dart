@@ -151,7 +151,7 @@ void main() {
   });
 
   testWidgets(
-    'appearance keeps opacity compact and theme color swatches visible',
+    'appearance keeps opacity compact and theme colors collapsed in six columns',
     (tester) async {
       await pumpSettings(tester, app);
       expect(find.textContaining('55 / 100'), findsOneWidget);
@@ -167,6 +167,21 @@ void main() {
       );
       expect(find.byType(BottomSheet), findsNothing);
 
+      expect(find.bySemanticsLabel('主题色 雾松绿'), findsNothing);
+      await tester.tap(find.text('主题色'));
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel('主题色 雾松绿'), findsOneWidget);
+      final swatches = find.bySemanticsLabel(RegExp(r'^主题色 '));
+      expect(swatches, findsNWidgets(ThemePresetId.values.length));
+      final firstRow = ['星海蓝', '雾松绿', '鸢尾紫', '玫瑰灰', '砂岩铜', '石墨蓝灰'].map(
+        (label) => tester.getTopLeft(find.bySemanticsLabel('主题色 $label')).dy,
+      );
+      expect(
+        firstRow.map((value) => (value - firstRow.first).abs()),
+        everyElement(lessThan(1)),
+      );
+      final secondRow = tester.getTopLeft(find.bySemanticsLabel('主题色 极光青')).dy;
+      expect(secondRow, greaterThan(firstRow.first));
       await tester.tap(find.bySemanticsLabel('主题色 雾松绿'));
       await tester.pumpAndSettle();
       expect(app.themePreset, ThemePresetId.mistPine);

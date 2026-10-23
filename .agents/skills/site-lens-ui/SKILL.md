@@ -16,15 +16,19 @@ Use this skill for UI work in this repository. Read [references/ui-system.md](re
 - The bottom navigation is a floating, narrow glass chrome surface. It must use the liquid-glass path, keep one row of icon-plus-label destinations, and use a tinted selected capsule without a solid navigation slab.
 - Prefer shared UI primitives and theme tokens over one-off `Container`, `BoxDecoration`, `Card`, `TextStyle`, `BorderRadius`, or hard-coded colors in screens.
 - Keep ordinary rows on the shared `SiteLensMetrics.compactRowMinHeight` baseline. Use compact switch and overflow primitives so controls do not steal width from the primary label.
+- Keep row copy to one title line plus one description line. Use `SiteLensRowText` and the shared `SiteLensTypography` scale; visual row copy is capped at twenty characters and fits down to the minimum row scale on narrow screens while preserving the full semantic label.
+- Switch rows use `SiteLensSwitchRow` or `SiteLensCompactSwitch`. Touching a switch row must keep the row surface quiet; the switch animation is the feedback. Do not restore grey pressed or focus slabs for touch interaction.
 - Use low-contrast inset dividers between distinct rows in one panel. Keep a setting's label, selector, explanation and status together without decorative dividers between them.
 - Group ordinary settings by category in one always-visible semantic panel. Category panels are separated by section labels; they do not fold. Do not add a route only to hold two or three simple controls.
 - Keep complex workflows such as backups, gestures, media management, filtering, and scripts on direct second-level pages. Use inline disclosure only for secondary explanation or a long list row that benefits from one-open details.
 - Use one accordion controller per detail list or secondary page so opening a detail closes the previous detail in that list. A settings category itself remains visible.
+- Theme presets are a useful row disclosure: collapsed by default, with six circular candidates per row when opened. Do not turn the whole appearance category into a foldable panel.
 - Treat rendering cost as a hard constraint: long lists must remain lazily built with one page scroll owner and a bounded glass viewport. Remove per-row glass surfaces only when the shared viewport preserves virtualization and stable layout.
 - Secondary pages always show their title in the shared page shell. Keep content-height panels fixed for short groups; introduce an internal lazy viewport only for groups over ten rows or independently bounded long lists.
 - Use `SiteLensMenuSelector` for compact single-choice menus; follow the sizing, interaction, and accessibility rules in [Compact choice menus](references/ui-system.md#compact-choice-menus).
 - Foldable panels use the shared foldable-panel primitive/theme; do not introduce raw `ExpansionTile` defaults with elevation, pressed shadows, opaque backgrounds, or page-local shape overrides.
 - Preserve existing business behavior, fail-closed navigation and script rules, WebView lifecycle, and data flows while changing presentation.
+- Media Library and Media Tasks share the same folder/file browser interaction primitives for navigation, selection, move, rename, copy and delete. User-visible organization is persisted separately from native download paths so folder operations never invalidate resumable cache identities.
 
 ## Implementation workflow
 

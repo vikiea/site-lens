@@ -174,12 +174,13 @@ class _ProfileCard extends StatelessWidget {
                       ],
                     ),
                   ),
-                  Switch(
+                  SiteLensCompactSwitch(
                     value: profile.enabled,
                     onChanged: (enabled) => safely(context, () async {
                       await app.db.setProfileEnabled(profile.id, enabled);
                       await app.load();
                     }),
+                    semanticLabel: profile.name,
                   ),
                 ],
               ),
@@ -1099,9 +1100,9 @@ class _ProfileFilterSettingsScreenState
             padding: EdgeInsets.zero,
             child: Column(
               children: [
-                SwitchListTile(
-                  title: const Text('启用广告过滤'),
-                  subtitle: const Text('按全局规则源拦截此档案的网页请求'),
+                SiteLensSwitchRow(
+                  title: '启用广告过滤',
+                  subtitle: '按全局规则源拦截网页请求',
                   value: policy.enabled,
                   onChanged: busy
                       ? null
@@ -1113,9 +1114,9 @@ class _ProfileFilterSettingsScreenState
                         ),
                 ),
                 const Divider(height: 1, indent: 18, endIndent: 18),
-                SwitchListTile(
-                  title: const Text('隐藏页面广告元素'),
-                  subtitle: const Text('应用规则源中的 CSS 隐藏规则'),
+                SiteLensSwitchRow(
+                  title: '隐藏页面广告元素',
+                  subtitle: '隐藏规则匹配的广告元素',
                   value: policy.pageFiltering,
                   onChanged: busy
                       ? null
@@ -1291,7 +1292,7 @@ Future<void> importProfilePack(BuildContext context, AppController app) async {
                   const Divider(),
                   Text(
                     script.name,
-                    style: const TextStyle(fontWeight: FontWeight.bold),
+                    style: Theme.of(context).textTheme.titleSmall,
                   ),
                   Text('权限：${script.metadata.grants.join(', ')}'),
                   Text('网络域名：${script.metadata.connect.join(', ')}'),

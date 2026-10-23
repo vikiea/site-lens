@@ -11,6 +11,7 @@ import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/browser_entry.dart';
 import 'package:site_lens/ui/profile_panel.dart';
 import 'package:site_lens/ui/screens.dart';
+import 'package:site_lens/ui/ui_primitives.dart';
 
 import 'fake_update_platform.dart';
 import 'fake_web_host_api.dart';
@@ -228,8 +229,8 @@ void main() {
       expect(find.text('全局关闭脚本'), findsOneWidget);
       await tester.tap(
         find.descendant(
-          of: find.widgetWithText(SwitchListTile, '全局关闭脚本'),
-          matching: find.byType(Switch),
+          of: find.byType(SiteLensSwitchRow),
+          matching: find.byType(SiteLensCompactSwitch),
         ),
       );
       await tester.pumpAndSettle();

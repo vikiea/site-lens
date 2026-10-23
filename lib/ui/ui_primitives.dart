@@ -7,6 +7,66 @@ import 'glass_surface.dart';
 
 enum SiteLensNoticeTone { info, warning, error }
 
+/// A single visual line, with modest fitting for narrow phones. Full content
+/// remains available to assistive technology and through the tooltip.
+class SiteLensRowText extends StatelessWidget {
+  const SiteLensRowText(
+    this.text, {
+    super.key,
+    this.style,
+    this.maxCharacters = SiteLensMetrics.rowTextMaxCharacters,
+    this.semanticsLabel,
+  });
+
+  final String text;
+  final TextStyle? style;
+  final int? maxCharacters;
+  final String? semanticsLabel;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final effective = DefaultTextStyle.of(context).style.merge(style);
+      final limit = maxCharacters;
+      final display = limit != null && text.characters.length > limit
+          ? '${text.characters.take(limit - 1)}…'
+          : text;
+      final baseSize = effective.fontSize ?? SiteLensTypography.rowTitle;
+      var size = baseSize;
+      if (constraints.hasBoundedWidth) {
+        final painter = TextPainter(
+          text: TextSpan(text: display, style: effective),
+          textDirection: Directionality.of(context),
+          textScaler: MediaQuery.textScalerOf(context),
+          locale: Localizations.maybeLocaleOf(context),
+          maxLines: 1,
+        )..layout();
+        if (painter.width > constraints.maxWidth && painter.width > 0) {
+          size =
+              baseSize *
+              (constraints.maxWidth / painter.width).clamp(
+                SiteLensMetrics.rowTextMinScale,
+                1.0,
+              );
+        }
+        painter.dispose();
+      }
+      return Tooltip(
+        message: text,
+        excludeFromSemantics: true,
+        child: Text(
+          display,
+          style: effective.copyWith(fontSize: size),
+          maxLines: 1,
+          softWrap: false,
+          overflow: TextOverflow.ellipsis,
+          semanticsLabel: semanticsLabel ?? text,
+        ),
+      );
+    },
+  );
+}
+
 /// A bounded glass viewport: one material and one lazy page scroll owner.
 /// Long lists must not size their glass layer to the full content extent.
 class SiteLensListPanel extends StatelessWidget {
@@ -66,6 +126,7 @@ class SiteLensCompactRow extends StatelessWidget {
     this.leading,
     this.trailing,
     this.onTap,
+    this.quiet = false,
   });
 
   final Widget title;
@@ -73,23 +134,114 @@ class SiteLensCompactRow extends StatelessWidget {
   final Widget? leading;
   final Widget? trailing;
   final VoidCallback? onTap;
+  final bool quiet;
 
   @override
-  Widget build(BuildContext context) => ListTile(
-    dense: true,
-    minTileHeight: SiteLensMetrics.compactRowMinHeight,
-    minLeadingWidth: SiteLensMetrics.compactIconSize,
-    horizontalTitleGap: 8,
-    minVerticalPadding: SiteLensMetrics.compactRowVerticalPadding,
-    contentPadding: const EdgeInsets.symmetric(
-      horizontal: SiteLensMetrics.compactRowHorizontalPadding,
-      vertical: SiteLensMetrics.compactRowVerticalPadding,
-    ),
+  Widget build(BuildContext context) {
+    Widget rowText(Widget child, TextStyle? style) =>
+        child is Text && child.data != null
+        ? SiteLensRowText(
+            child.data!,
+            key: child.key,
+            style: style?.merge(child.style),
+            semanticsLabel: child.semanticsLabel,
+          )
+        : child;
+    final row = ListTile(
+      dense: true,
+      minTileHeight: SiteLensMetrics.compactRowMinHeight,
+      minLeadingWidth: SiteLensMetrics.compactIconSize,
+      horizontalTitleGap: 8,
+      minVerticalPadding: SiteLensMetrics.compactRowVerticalPadding,
+      contentPadding: const EdgeInsets.symmetric(
+        horizontal: SiteLensMetrics.compactRowHorizontalPadding,
+        vertical: SiteLensMetrics.compactRowVerticalPadding,
+      ),
+      leading: leading,
+      title: rowText(title, Theme.of(context).textTheme.titleSmall),
+      subtitle: subtitle == null
+          ? null
+          : rowText(subtitle!, Theme.of(context).textTheme.bodySmall),
+      trailing: trailing,
+      onTap: onTap,
+    );
+    return quiet || trailing is SiteLensCompactSwitch || trailing is Switch
+        ? SiteLensFoldable(child: row)
+        : row;
+  }
+}
+
+/// The complete row toggles silently; only the switch animates on touch.
+class SiteLensSwitchRow extends StatelessWidget {
+  const SiteLensSwitchRow({
+    super.key,
+    required this.title,
+    required this.value,
+    required this.onChanged,
+    this.subtitle,
+    this.leading,
+  });
+
+  final String title;
+  final String? subtitle;
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+  final Widget? leading;
+
+  @override
+  Widget build(BuildContext context) => SiteLensCompactRow(
+    quiet: true,
     leading: leading,
-    title: title,
-    subtitle: subtitle,
-    trailing: trailing,
-    onTap: onTap,
+    title: Text(title),
+    subtitle: subtitle == null ? null : Text(subtitle!),
+    onTap: onChanged == null ? null : () => onChanged!(!value),
+    trailing: SiteLensCompactSwitch(
+      value: value,
+      onChanged: onChanged,
+      semanticLabel: title,
+    ),
+  );
+}
+
+/// Shared label/value columns for readable, aligned expanded facts.
+class SiteLensDetailRow extends StatelessWidget {
+  const SiteLensDetailRow({
+    super.key,
+    required this.label,
+    required this.value,
+    this.color,
+  });
+
+  final String label;
+  final String value;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(
+      vertical: SiteLensMetrics.diagnosticRowGap,
+    ),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: SiteLensMetrics.detailLabelWidth,
+          child: Text(
+            label,
+            style: Theme.of(context).textTheme.bodySmall
+                ?.copyWith(color: color),
+          ),
+        ),
+        const SizedBox(width: SiteLensMetrics.detailColumnGap),
+        Expanded(
+          child: SelectableText(
+            value,
+            style: Theme.of(context).textTheme.bodySmall
+                ?.copyWith(color: color),
+          ),
+        ),
+      ],
+    ),
   );
 }
 
@@ -121,6 +273,7 @@ class SiteLensCompactSwitch extends StatelessWidget {
           child: Switch.adaptive(
             value: value,
             onChanged: onChanged,
+            overlayColor: const WidgetStatePropertyAll(Colors.transparent),
             materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
         ),
@@ -920,7 +1073,7 @@ class SiteLensStatusBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final textStyle = Theme.of(context).textTheme.labelSmall
-        ?.copyWith(color: color, fontWeight: FontWeight.w700);
+        ?.copyWith(color: color, fontWeight: SiteLensTypography.rowWeight);
     return Container(
       padding: EdgeInsets.symmetric(
         horizontal: compact ? 7 : 9,

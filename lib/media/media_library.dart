@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -825,6 +826,65 @@ class MediaLibrary extends ChangeNotifier {
     } finally {
       tasks.release(taskId);
     }
+  }
+
+  /// Copies filesystem or SAF media to independently owned app-library bytes.
+  /// A SAF document is materialized under the same lease used for playback.
+  Future<MediaArtifact> copy(
+    String taskId, {
+    bool exclusiveAlreadyHeld = false,
+  }) async {
+    if (!exclusiveAlreadyHeld) {
+      return tasks.withExclusive(
+        taskId,
+        () => copy(taskId, exclusiveAlreadyHeld: true),
+      );
+    }
+    if (!tasks.isExclusive(taskId) || busy(taskId)) {
+      throw StateError('媒体正在播放、导出、投屏或管理中，请先停止');
+    }
+    final original = item(taskId) ?? (throw StateError('媒体文件不存在'));
+    final source = await localFile(taskId, exclusiveAlreadyHeld: true);
+    if (source == null) throw StateError('媒体文件不可读取，无法复制');
+    final key = sha256
+        .convert(List<int>.generate(32, (_) => Random.secure().nextInt(256)))
+        .toString();
+    final root = await tasks.cacheRootDirectory();
+    final directory = await Directory(
+      p.join(root.parent.path, 'media_exports', 'copies', key),
+    ).create(recursive: true);
+    try {
+      final partial = File(p.join(directory.path, 'media.mp4.part'));
+      await copyMediaBytes(source, partial);
+      final target = File(p.join(directory.path, 'media.mp4'));
+      await partial.rename(target.path);
+      final value = MediaArtifact(
+        taskId: 'library_copy_$key',
+        location: target.path,
+        name: _copyDisplayName(original.name),
+        size: await target.length(),
+        mime: original.mime,
+        durationMs: original.durationMs,
+        width: original.width,
+        height: original.height,
+        createdAt: DateTime.now().toUtc(),
+      );
+      if (!await _save(value)) throw StateError('保存媒体副本索引失败');
+      return value;
+    } catch (_) {
+      await directory.delete(recursive: true);
+      rethrow;
+    }
+  }
+
+  static String _copyDisplayName(String value) {
+    final extension = RegExp(r'\.mp4$', caseSensitive: false).hasMatch(value)
+        ? '.mp4'
+        : '';
+    final base = extension.isEmpty
+        ? value
+        : value.substring(0, value.length - extension.length);
+    return '$base 副本$extension';
   }
 
   Future<void> rename(String taskId, String name) => _mutate(taskId, (

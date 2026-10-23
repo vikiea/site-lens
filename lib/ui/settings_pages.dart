@@ -63,8 +63,8 @@ class SettingsPage extends StatelessWidget {
             subtitle:
                 app.settings.glassQualityMode ==
                     SiteLensGlassQualityMode.automatic
-                ? '自动选择高质量时应用于内容面板'
-                : '应用于内容面板、弹窗和卡片',
+                ? '自动高质量时应用于内容面板'
+                : '应用于内容、弹窗和卡片',
             value: app.settings.highQualityAllSurfaces,
             onChanged: app.setHighQualityAllSurfaces,
           ),
@@ -94,6 +94,14 @@ class SettingsPage extends StatelessWidget {
           value: app.settings.autoHideBrowserControls,
           onChanged: (value) =>
               app.updateSettings({'autoHideBrowserControls': value}),
+        ),
+        _settingsSwitch(
+          context,
+          title: '浮动按钮展开全部',
+          subtitle: '点击半透明按钮时展开全部操作',
+          value: app.settings.expandAllBrowserControls,
+          onChanged: (value) =>
+              app.updateSettings({'expandAllBrowserControls': value}),
         ),
         _settingsSwitch(
           context,
@@ -247,40 +255,71 @@ class _OpacitySetting extends StatelessWidget {
   );
 }
 
-class _ThemePresetRow extends StatelessWidget {
+class _ThemePresetRow extends StatefulWidget {
   const _ThemePresetRow({required this.app});
 
   final AppController app;
 
   @override
-  Widget build(BuildContext context) => Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      SiteLensCompactRow(
-        leading: const Icon(Icons.palette_outlined, size: 18),
-        title: const Text('主题色'),
-        subtitle: Text(app.themePreset.label),
-      ),
-      Padding(
-        padding: const EdgeInsets.fromLTRB(18, 0, 18, 14),
-        child: Align(
-          alignment: AlignmentDirectional.centerStart,
-          child: Wrap(
-            spacing: SiteLensMetrics.themeSwatchGap,
-            runSpacing: SiteLensMetrics.themeSwatchGap,
-            children: [
-              for (final preset in ThemePresetId.values)
-                _ThemePresetSwatch(
-                  preset: preset,
-                  selected: preset == app.themePreset,
-                  onTap: () =>
-                      safely(context, () => app.setThemePreset(preset)),
+  State<_ThemePresetRow> createState() => _ThemePresetRowState();
+}
+
+class _ThemePresetRowState extends State<_ThemePresetRow> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) => SiteLensDisclosure(
+    expanded: _expanded,
+    onToggle: () => setState(() => _expanded = !_expanded),
+    leading: const Icon(Icons.palette_outlined, size: 18),
+    title: const Text('主题色'),
+    subtitle: Text(widget.app.themePreset.label),
+    details: (context) => LayoutBuilder(
+      builder: (context, constraints) {
+        const columns = SiteLensMetrics.themeSwatchColumns;
+        final cellWidth = constraints.maxWidth / columns;
+        final swatchSize = (cellWidth - SiteLensMetrics.themeSwatchGap).clamp(
+          0.0,
+          SiteLensMetrics.themeSwatchSize,
+        );
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (
+              var offset = 0;
+              offset < ThemePresetId.values.length;
+              offset += columns
+            )
+              Padding(
+                padding: const EdgeInsets.only(
+                  bottom: SiteLensMetrics.themeSwatchGap,
                 ),
-            ],
-          ),
-        ),
-      ),
-    ],
+                child: Row(
+                  children: [
+                    for (final preset
+                        in ThemePresetId.values.skip(offset).take(columns))
+                      SizedBox(
+                        width: cellWidth,
+                        height: kMinInteractiveDimension,
+                        child: Center(
+                          child: _ThemePresetSwatch(
+                            preset: preset,
+                            size: swatchSize,
+                            selected: preset == widget.app.themePreset,
+                            onTap: () => safely(
+                              context,
+                              () => widget.app.setThemePreset(preset),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+          ],
+        );
+      },
+    ),
   );
 }
 
@@ -288,11 +327,13 @@ class _ThemePresetSwatch extends StatelessWidget {
   const _ThemePresetSwatch({
     required this.preset,
     required this.selected,
+    required this.size,
     this.onTap,
   });
 
   final ThemePresetId preset;
   final bool selected;
+  final double size;
   final VoidCallback? onTap;
 
   @override
@@ -314,8 +355,8 @@ class _ThemePresetSwatch extends StatelessWidget {
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 180),
             curve: Curves.easeOut,
-            width: SiteLensMetrics.themeSwatchSize,
-            height: SiteLensMetrics.themeSwatchSize,
+            width: size,
+            height: size,
             decoration: BoxDecoration(
               color: preset.seed,
               shape: BoxShape.circle,
@@ -350,17 +391,11 @@ Widget _settingsSwitch(
   required bool value,
   required Future<void> Function(bool value) onChanged,
   bool enabled = true,
-}) => SiteLensCompactRow(
-  title: Text(title),
-  subtitle: Text(subtitle),
-  onTap: enabled ? () => safely(context, () => onChanged(!value)) : null,
-  trailing: SiteLensCompactSwitch(
-    value: value,
-    semanticLabel: title,
-    onChanged: enabled
-        ? (next) => safely(context, () => onChanged(next))
-        : null,
-  ),
+}) => SiteLensSwitchRow(
+  title: title,
+  subtitle: subtitle,
+  value: value,
+  onChanged: enabled ? (next) => safely(context, () => onChanged(next)) : null,
 );
 
 Widget _settingsLink(

@@ -470,11 +470,7 @@ class ScriptManagementScreen extends StatelessWidget {
     listenable: app,
     builder: (context, _) => Scaffold(
       appBar: AppBar(
-        title: Semantics(
-          namesRoute: true,
-          label: '脚本管理',
-          child: SizedBox.shrink(),
-        ),
+        title: const Text('脚本管理'),
         actions: [
           IconButton(
             tooltip: '导入 .user.js',
@@ -495,20 +491,35 @@ class ScriptManagementScreen extends StatelessWidget {
   );
 }
 
-class ScriptsPage extends StatelessWidget {
+class ScriptsPage extends StatefulWidget {
   const ScriptsPage({super.key, required this.app, this.profileId});
   final AppController app;
   final int? profileId;
 
   @override
+  State<ScriptsPage> createState() => _ScriptsPageState();
+}
+
+class _ScriptsPageState extends State<ScriptsPage> {
+  final _metadata = <String, (String, ScriptMetadata)>{};
+
+  ScriptMetadata _parse(InstalledScript script) {
+    final cached = _metadata[script.id];
+    if (cached != null && cached.$1 == script.source) return cached.$2;
+    final parsed = ScriptMetadata.parse(script.source);
+    _metadata[script.id] = (script.source, parsed);
+    return parsed;
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final parsed = app.installed
-        .map((script) => ScriptMetadata.parse(script.source))
-        .toList();
+    final app = widget.app;
+    _metadata.removeWhere((id, _) => !app.installed.any((s) => s.id == id));
+    final parsed = app.installed.map(_parse).toList();
     final errorCount = parsed
         .where((metadata) => metadata.errors.isNotEmpty)
         .length;
-    final groups = scriptGroups(app, profileId: profileId);
+    final groups = scriptGroups(app, profileId: widget.profileId);
     final enabledCount = groups
         .expand((group) => group.$4)
         .where((script) => script.enabled)
@@ -552,7 +563,12 @@ class ScriptsPage extends StatelessWidget {
               ),
             ),
           for (final script in group.$4) ...[
-            _ScriptCard(app: app, script: script, profileId: group.$3),
+            _ScriptCard(
+              app: app,
+              script: script,
+              metadata: _parse(script),
+              profileId: group.$3,
+            ),
             const SizedBox(height: SiteLensMetrics.itemGap),
           ],
         ],
@@ -698,22 +714,20 @@ class _GlobalScriptSwitchPanel extends StatelessWidget {
       padding: EdgeInsets.zero,
       child: Column(
         children: [
-          SwitchListTile(
-            secondary: Icon(
+          SiteLensSwitchRow(
+            leading: Icon(
               disabled ? Icons.pause_circle : Icons.play_circle_outline,
               color: disabled
                   ? SiteLensColors.of(context).warning
                   : Theme.of(context).colorScheme.primary,
             ),
-            title: const Text('全局关闭脚本'),
-            subtitle: Text(
-              disabled
-                  ? '所有浏览页脚本均已停用，关闭开关后会重新加载当前会话'
-                  : '故障恢复入口：关闭后会撤销脚本桥并重载浏览页',
-            ),
+            title: '全局关闭脚本',
+            subtitle: disabled ? '脚本已停用，关闭后恢复' : '停用所有网页脚本',
             value: disabled,
-            onChanged: (value) =>
-                safely(context, () => app.disableAllScripts(value)),
+            onChanged: app.changingScripts
+                ? null
+                : (value) =>
+                      safely(context, () => app.disableAllScripts(value)),
           ),
           if (disabled)
             Padding(
@@ -730,14 +744,20 @@ class _GlobalScriptSwitchPanel extends StatelessWidget {
 }
 
 class _ScriptCard extends StatelessWidget {
-  const _ScriptCard({required this.app, required this.script, this.profileId});
+  const _ScriptCard({
+    required this.app,
+    required this.script,
+    required this.metadata,
+    this.profileId,
+  });
   final AppController app;
   final InstalledScript script;
+  final ScriptMetadata metadata;
   final int? profileId;
 
   @override
   Widget build(BuildContext context) {
-    final meta = ScriptMetadata.parse(script.source);
+    final meta = metadata;
     final environment = meta.pageWorld
         ? (meta.grants.contains('unsafeWindow')
               ? '网页环境 · unsafeWindow · 无原生存储/网络权限'
@@ -777,9 +797,10 @@ class _ScriptCard extends StatelessWidget {
                   ],
                 ),
               ),
-              Switch(
+              SiteLensCompactSwitch(
                 value: script.enabled,
                 onChanged: (enabled) => _toggle(context, enabled),
+                semanticLabel: meta.name,
               ),
             ],
           ),
@@ -1309,7 +1330,7 @@ class _ScriptEditorState extends State<ScriptEditor> {
                           ],
                         ),
                     style: CodeEditorStyle(
-                      fontSize: 13,
+                      fontSize: SiteLensTypography.description,
                       fontFamily: 'monospace',
                       fontHeight: 1.45,
                       textColor: theme.colorScheme.onSurface,
@@ -1747,6 +1768,15 @@ class _FilterSourceRow extends StatelessWidget {
         : source.status == FilterSourceStatus.degraded
         ? colors.warning
         : Theme.of(context).colorScheme.onSurfaceVariant;
+    final downloaded =
+        source.fileRef?.isNotEmpty == true ||
+        switch (source.status) {
+          FilterSourceStatus.downloading ||
+          FilterSourceStatus.compiling ||
+          FilterSourceStatus.valid ||
+          FilterSourceStatus.degraded => true,
+          _ => false,
+        };
     return SiteLensAccordion(
       id: source.id,
       controller: accordion,
@@ -1763,9 +1793,7 @@ class _FilterSourceRow extends StatelessWidget {
             ?.copyWith(color: muted ? colors.disabledContent : null),
       ),
       subtitle: Text(
-        refreshing
-            ? '正在刷新…'
-            : '${source.enabled ? '已启用' : '已关闭'} · ${source.kind == 'builtin' ? '内置推荐 · ' : ''}${_filterSourceStatusLabel(source.status)}',
+        '${source.enabled ? '已启用' : '已禁用'} · ${source.kind == 'builtin' ? '内置' : '自定义'} · ${downloaded ? '已下载' : '未下载'}',
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: Theme.of(context).textTheme.bodySmall
@@ -1810,8 +1838,7 @@ class _FilterSourceRow extends StatelessWidget {
       ),
       details: (context) => Padding(
         padding: const EdgeInsets.only(
-          left: SiteLensMetrics.accordionContentIndent,
-          right: SiteLensMetrics.compactRowHorizontalPadding,
+          left: SiteLensMetrics.detailContentIndent,
         ),
         child: DefaultTextStyle.merge(
           style: Theme.of(context).textTheme.bodySmall!
@@ -1819,15 +1846,47 @@ class _FilterSourceRow extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('地址：${source.url}'),
+              SiteLensDetailRow(
+                label: '规则名',
+                value: source.label,
+                color: muted ? colors.disabledContent : null,
+              ),
+              SiteLensDetailRow(
+                label: '地址',
+                value: '${source.url}',
+                color: muted ? colors.disabledContent : null,
+              ),
+              SiteLensDetailRow(
+                label: '状态',
+                value: refreshing
+                    ? '正在刷新…'
+                    : _filterSourceStatusLabel(source.status),
+                color: muted ? colors.disabledContent : null,
+              ),
               if (source.version.trim().isNotEmpty)
-                Text('版本：${source.version}'),
+                SiteLensDetailRow(
+                  label: '版本',
+                  value: source.version,
+                  color: muted ? colors.disabledContent : null,
+                ),
               if (source.license.trim().isNotEmpty)
-                Text('许可证：${source.license}'),
+                SiteLensDetailRow(
+                  label: '许可证',
+                  value: source.license,
+                  color: muted ? colors.disabledContent : null,
+                ),
               if (source.refreshedAt != null)
-                Text('最近刷新：${source.refreshedAt!.toLocal()}'),
+                SiteLensDetailRow(
+                  label: '最近刷新',
+                  value: '${source.refreshedAt!.toLocal()}',
+                  color: muted ? colors.disabledContent : null,
+                ),
               if (source.error != null)
-                Text('错误：${friendlyError(source.error!)}'),
+                SiteLensDetailRow(
+                  label: '错误',
+                  value: friendlyError(source.error!),
+                  color: muted ? colors.disabledContent : null,
+                ),
             ],
           ),
         ),
@@ -2745,7 +2804,8 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     setState(() {
       _handleIdle = false;
       _navigationVisible = !_navigationVisible;
-      _moreNavigationVisible = false;
+      _moreNavigationVisible =
+          _navigationVisible && widget.app.settings.expandAllBrowserControls;
     });
     _armHideTimer();
   }
@@ -2793,6 +2853,12 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     final current = host;
     if (current == null) return;
     await widget.app.hosts.api.reload(current.id);
+  }
+
+  Future<void> _resniff() async {
+    if (!mounted) return;
+    showShortToast(context, '开始嗅探…');
+    await _reload();
   }
 
   Future<void> _goHome() async {
@@ -3329,16 +3395,10 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                   );
                 },
               ),
-            if (menus.isEmpty)
-              const ListTile(
-                title: Text('没有脚本菜单'),
-                subtitle: Text(
-                  '菜单只来自脚本里的 GM_registerMenuCommand；脚本没写、没启用，或 @match 不覆盖当前页面时这里就是空的（下一条列出本次实际生效的脚本）。',
-                ),
-              ),
+            if (menus.isEmpty) const ListTile(title: Text('没有脚本菜单')),
             ListTile(
               leading: const Icon(Icons.code),
-              title: const Text('本站脚本'),
+              title: const Text('脚本管理'),
               onTap: () {
                 Navigator.pop(c);
                 Navigator.of(context).push(
@@ -3352,31 +3412,28 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
               },
             ),
             const Divider(),
-            ListTile(
-              title: const Text('本次文档生效脚本'),
-              subtitle: Text(
-                tab == null || active.isNotEmpty
-                    ? active.map((s) => s.name).join('、')
-                    : widget.app.scriptActivityReason(tab),
-              ),
-            ),
+            if (active.isEmpty)
+              const ListTile(title: Text('当前页面没有生效脚本'))
+            else
+              for (final script in active)
+                ListTile(
+                  leading: const Icon(Icons.code_outlined),
+                  title: Text(script.name),
+                ),
             if (widget.app.scriptsDisabled)
               ListTile(
                 leading: const Icon(Icons.play_circle_outline),
                 title: const Text('重新启用脚本并刷新'),
-                subtitle: const Text('全局关闭是持久开关；它关着时任何 @match 都不会生效'),
                 onTap: () {
                   Navigator.pop(c);
                   safely(context, () async {
                     await widget.app.disableAllScripts(false);
-                    await widget.app.reloadScripts();
                   });
                 },
               ),
             ListTile(
               leading: const Icon(Icons.refresh),
               title: const Text('重新加载脚本并刷新页面'),
-              subtitle: const Text('在「脚本管理」页改过脚本/授权后，用它让本页生效'),
               onTap: () {
                 Navigator.pop(c);
                 safely(context, () async {
@@ -3408,22 +3465,26 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
         child: ListView(
           shrinkWrap: true,
           children: [
-            const ListTile(title: Text('当前文档媒体候选')),
+            ListTile(
+              title: const Text('媒体'),
+              trailing: TextButton(
+                onPressed: () {
+                  Navigator.pop(c);
+                  unawaited(_resniff());
+                },
+                child: const Text('重新嗅探'),
+              ),
+            ),
             if (candidates.length > 1)
               ListTile(
                 leading: const Icon(Icons.download_for_offline_outlined),
                 title: const Text('一键下载全部媒体'),
-                subtitle: const Text('已下载或正在下载的项目会自动跳过'),
                 onTap: () async {
                   Navigator.pop(c);
                   await _downloadMediaCandidates(current, candidates);
                 },
               ),
-            if (candidates.isEmpty)
-              const ListTile(
-                title: Text('没有可用候选'),
-                subtitle: Text('页面或已批准脚本尚未登记可播放地址。'),
-              ),
+            if (candidates.isEmpty) const ListTile(title: Text('暂无媒体')),
             for (final candidate in candidates)
               ListTile(
                 leading: const Icon(Icons.play_circle_outline),
@@ -3443,11 +3504,6 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                       ),
                     ),
                   ),
-                ),
-                subtitle: Text(
-                  '${candidate.effectiveMime.isEmpty ? '未知格式' : candidate.effectiveMime} · ${_mediaCandidateSourceLabel(candidate.source)}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                 ),
                 trailing: IconButton(
                   tooltip: '缓存媒体',
@@ -3503,6 +3559,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     HostSession current,
     List<MediaCandidate> candidates,
   ) async {
+    if (mounted) showShortToast(context, '开始下载…');
     var added = 0;
     var skipped = 0;
     var failed = 0;
@@ -3570,12 +3627,6 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     showShortToast(context, parts.isEmpty ? '没有可下载媒体' : parts.join('，'));
   }
 }
-
-String _mediaCandidateSourceLabel(MediaCandidateSource source) =>
-    switch (source) {
-      MediaCandidateSource.dom => '页面嗅探',
-      MediaCandidateSource.registered => '脚本登记',
-    };
 
 /// The browser toolbar: one fixed row of seven equal controls, pinned to the
 /// bottom edge over the page. It never wraps, scrolls or folds — the controls

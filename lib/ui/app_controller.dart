@@ -1734,15 +1734,53 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   String? lastHealthNotice;
 
-  Future<void> disableAllScripts(bool disabled) async {
-    await updateSettings({'scriptsDisabled': disabled});
-    for (final session in hosts.sessions.values.toList().where(
-      (h) => h.purpose == HostPurpose.browsing,
-    )) {
-      await hosts.configure(session);
-      await hosts.api.reload(session.id);
+  Future<void>? _scriptToggleRun;
+  bool get changingScripts => _scriptToggleRun != null;
+
+  Future<void> disableAllScripts(bool disabled) {
+    final running = _scriptToggleRun;
+    if (running != null) {
+      // Requests from recovery menus use the same serialized path as the
+      // settings switch; opposing changes cannot race native registration.
+      return running.then<void>(
+        (_) => disableAllScripts(disabled),
+        onError: (Object _, StackTrace _) => disableAllScripts(disabled),
+      );
     }
-    await load();
+    late final Future<void> run;
+    run = _setScriptsDisabled(disabled).whenComplete(() {
+      if (identical(_scriptToggleRun, run)) _scriptToggleRun = null;
+      if (!_disposed) super.notifyListeners();
+    });
+    _scriptToggleRun = run;
+    if (!_disposed) super.notifyListeners();
+    return run;
+  }
+
+  Future<void> _setScriptsDisabled(bool disabled) async {
+    final previous = scriptsDisabled;
+    scriptsDisabled = disabled;
+    if (!_disposed) super.notifyListeners();
+    try {
+      settings = await settingsRepository.update({'scriptsDisabled': disabled});
+      _applySettings();
+      // The durable policy now blocks GM requests. Revoke registrations and
+      // reload each browsing host without waiting on unrelated media work.
+      await Future.wait([
+        for (final session in hosts.sessions.values.toList())
+          if (!session.disposed && session.purpose == HostPurpose.browsing)
+            (() async {
+              await hosts.configure(session);
+              if (!session.disposed && !_disposed) {
+                await hosts.api.reload(session.id);
+              }
+            })(),
+      ]);
+    } catch (_) {
+      scriptsDisabled = previous;
+      if (!_disposed) super.notifyListeners();
+      rethrow;
+    }
   }
 
   Future<void> disableScript(String id) async {
@@ -2371,6 +2409,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       close,
       nativeMedia.dispose(),
       stopCast,
+      if (_scriptToggleRun != null)
+        _scriptToggleRun!.then<void>(
+          (_) {},
+          onError: (Object _, StackTrace _) {},
+        ),
     ]).then<void>((_) {}).whenComplete(settingsRepository.dispose);
     unawaited(
       _shutdownFuture!.then<void>((_) {}, onError: (Object _, StackTrace _) {}),

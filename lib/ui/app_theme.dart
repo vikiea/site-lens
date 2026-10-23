@@ -83,12 +83,18 @@ abstract final class SiteLensMetrics {
   static const compactIconSize = 18.0;
   static const compactIconButtonSize = 36.0;
   static const compactSwitchScale = 0.84;
+  static const rowTextMaxCharacters = 20;
+  static const rowTextMinScale = 0.88;
+  static const themeSwatchColumns = 6;
   static const themeSwatchSize = 46.0;
   static const themeSwatchGap = 10.0;
   static const compactDividerIndent = 12.0;
   static const accordionContentIndent = 42.0;
   static const settingsDividerIndent = 18.0;
   static const diagnosticLabelWidth = 64.0;
+  static const detailLabelWidth = 64.0;
+  static const detailColumnGap = 10.0;
+  static const detailContentIndent = compactIconSize + 8.0;
   static const diagnosticRowGap = 4.0;
   static const diagnosticDetailMaxHeightFraction = 0.42;
   static const settingsSectionLabelHorizontalPadding = 6.0;
@@ -117,6 +123,20 @@ abstract final class SiteLensMetrics {
   static const toolbarIconSize = 18.0;
   static const toolbarInset = 12.0;
   static const toolbarRadius = 26.0;
+}
+
+/// One type scale for page headings, sections, rows and secondary facts.
+abstract final class SiteLensTypography {
+  static const pageTitle = 20.0;
+  static const sectionTitle = 16.0;
+  static const rowTitle = 15.0;
+  static const body = 14.0;
+  static const description = 12.5;
+  static const caption = 12.0;
+  static const headingWeight = FontWeight.w600;
+  static const rowWeight = FontWeight.w500;
+  static const bodyWeight = FontWeight.w400;
+  static const lineHeight = 1.35;
 }
 
 extension ThemePresetIdLabel on ThemePresetId {
@@ -331,31 +351,57 @@ TextTheme _textTheme(ColorScheme scheme) {
   final muted = scheme.onSurfaceVariant;
   return TextTheme(
     titleLarge: TextStyle(
-      fontSize: 20,
-      fontWeight: FontWeight.w600,
+      fontSize: SiteLensTypography.pageTitle,
+      fontWeight: SiteLensTypography.headingWeight,
+      height: SiteLensTypography.lineHeight,
       letterSpacing: 0.1,
       color: on,
     ),
     titleMedium: TextStyle(
-      fontSize: 16,
-      fontWeight: FontWeight.w600,
+      fontSize: SiteLensTypography.sectionTitle,
+      fontWeight: SiteLensTypography.headingWeight,
+      height: SiteLensTypography.lineHeight,
       color: on,
     ),
     titleSmall: TextStyle(
-      fontSize: 14.5,
-      fontWeight: FontWeight.w600,
+      fontSize: SiteLensTypography.rowTitle,
+      fontWeight: SiteLensTypography.rowWeight,
+      height: SiteLensTypography.lineHeight,
       color: on,
     ),
-    bodyLarge: TextStyle(fontSize: 15.5, height: 1.35, color: on),
-    bodyMedium: TextStyle(fontSize: 14, height: 1.4, color: on),
-    bodySmall: TextStyle(fontSize: 12.5, height: 1.4, color: muted),
+    bodyLarge: TextStyle(
+      fontSize: SiteLensTypography.rowTitle,
+      fontWeight: SiteLensTypography.bodyWeight,
+      height: SiteLensTypography.lineHeight,
+      color: on,
+    ),
+    bodyMedium: TextStyle(
+      fontSize: SiteLensTypography.body,
+      fontWeight: SiteLensTypography.bodyWeight,
+      height: SiteLensTypography.lineHeight,
+      color: on,
+    ),
+    bodySmall: TextStyle(
+      fontSize: SiteLensTypography.description,
+      fontWeight: SiteLensTypography.bodyWeight,
+      height: SiteLensTypography.lineHeight,
+      color: muted,
+    ),
     labelLarge: TextStyle(
-      fontSize: 14,
-      fontWeight: FontWeight.w600,
+      fontSize: SiteLensTypography.body,
+      fontWeight: SiteLensTypography.rowWeight,
       letterSpacing: 0.1,
     ),
-    labelMedium: TextStyle(fontSize: 12, color: muted),
-    labelSmall: TextStyle(fontSize: 11, color: muted, letterSpacing: 0.2),
+    labelMedium: TextStyle(
+      fontSize: SiteLensTypography.description,
+      fontWeight: SiteLensTypography.rowWeight,
+      color: muted,
+    ),
+    labelSmall: TextStyle(
+      fontSize: SiteLensTypography.caption,
+      fontWeight: SiteLensTypography.bodyWeight,
+      color: muted,
+    ),
   );
 }
 
@@ -592,6 +638,7 @@ ThemeData buildSiteLensTheme(
       ),
     ),
     switchTheme: SwitchThemeData(
+      overlayColor: const WidgetStatePropertyAll(Colors.transparent),
       thumbColor: WidgetStateProperty.resolveWith(
         (states) => states.contains(WidgetState.selected)
             ? scheme.onPrimary
@@ -685,7 +732,7 @@ ThemeData buildSiteLensTheme(
         color: scheme.inverseSurface.withValues(alpha: 0.92),
         borderRadius: BorderRadius.circular(10),
       ),
-      textStyle: TextStyle(fontSize: 12.5, color: scheme.onInverseSurface),
+      textStyle: text.bodySmall?.copyWith(color: scheme.onInverseSurface),
     ),
     chipTheme: ChipThemeData(
       backgroundColor: colors.panelTint,

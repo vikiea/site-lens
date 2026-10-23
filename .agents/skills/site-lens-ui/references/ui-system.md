@@ -35,14 +35,17 @@ Use `SiteLensMetrics`, `SiteLensColors`, `Theme.of(context).colorScheme`, and `T
 - Panel radius and padding: `SiteLensMetrics.panelRadius` and `SiteLensMetrics.panelPadding`.
 - Input/control radius: `SiteLensMetrics.inputRadius`.
 - Compact rows: `compactRowHorizontalPadding`, `compactRowVerticalPadding`, `compactRowMinHeight`, `compactIconSize`, and `compactIconButtonSize`.
-- Compact controls: `compactSwitchScale`, `SiteLensCompactSwitch`, and `SiteLensCompactIconButton`; keep the row as the accessible activation target while reserving width for the label.
+- Compact controls: `compactSwitchScale`, `SiteLensCompactSwitch`, `SiteLensSwitchRow`, and `SiteLensCompactIconButton`; keep the row as the accessible activation target while reserving width for the label. Switch touch feedback stays transparent so only the thumb/track animation communicates the change.
+- Row typography: `SiteLensTypography.pageTitle`, `sectionTitle`, `rowTitle`, `body`, `description`, and `caption` define the global hierarchy. `SiteLensMetrics.rowTextMaxCharacters` is `20` and `rowTextMinScale` is `0.88`; use `SiteLensRowText` for title and description widgets so narrow screens fit the copy without growing a second row.
 - Settings groups: `settingsDividerIndent`, `settingsSectionLabelHorizontalPadding`, and `settingsSectionLabelBottom`; use these for the category label and internal row dividers.
 - Diagnostic summaries: `diagnosticLabelWidth` and `diagnosticRowGap`; use these to keep environment facts aligned across platforms and text lengths.
 - Diagnostic detail: keep short capability pages content-sized, but bound unusually long expanded detail text to `diagnosticDetailMaxHeightFraction` so the fixed panel cannot overflow a small viewport.
-- Theme swatches: use `themeSwatchSize` and `themeSwatchGap` for the alpha6 circular palette rhythm.
+- Theme swatches: use `themeSwatchColumns` (`6`), `themeSwatchSize`, and `themeSwatchGap` for the alpha6 circular palette rhythm. The palette disclosure starts collapsed and opens inside the appearance panel.
 - Foldable details: `compactDividerIndent` and `accordionContentIndent`; use the shared accordion controller for one-open detail behavior.
+- Detail facts: `detailLabelWidth`, `detailColumnGap`, and `detailContentIndent` keep expanded rule-source and capability facts aligned instead of using nested ad hoc indents.
 - Bottom navigation: `SiteLensMetrics.navBarHeight`, `navRadius`, `navHorizontalInset`, and `navCapsuleInset`. Keep the rendered capsule radius at or below half its post-inset height; an oversized superellipse radius produces a visibly jagged anti-aliased edge.
 - Browser toolbar: `toolbarHeight`, `toolbarIconSize`, `toolbarInset`, and `toolbarRadius`.
+- Browser floating handle: tapping the translucent handle opens one primary toolbar row by default. The `expandAllBrowserControls` preference opts into opening the secondary action row at the same time; dragging keeps the handle position independent from the toolbar's expanded state.
 
 Use `SiteLensColors.of(context)` for backdrop, panel, navigation, divider, section-label, success, warning, and danger roles. The glass fill token must remain visually separated from the static backdrop in both appearances; current defaults are neutral light gray `#E7EAEE` in light mode and neutral charcoal `#25272B` in dark mode. Do not use a raw `Colors.*` value in a screen unless it is a platform or asset color with an explicit reason.
 
@@ -55,8 +58,10 @@ Use `SiteLensColors.of(context)` for backdrop, panel, navigation, divider, secti
 - Settings: ordinary controls use one always-visible glass panel per category, with the category label outside the panel. Keep related controls together and use internal dividers only between distinct rows. Place complex workflows behind direct second-level rows. About and update are separate direct entries; do not add a combined intermediate page.
 - Foldable panels use the shared theme/primitive and remain shadow-free in every interaction state. Expansion must not add Material elevation, a drop shadow, an opaque slab, or a pressed shadow; use the existing glass tint, overlay and shape tokens for feedback.
 - Rows: use shared compact action/status row primitives when several pages need the same icon-title-description-trailing layout. Keep the primary label to one line where possible and move secondary actions into a compact overflow menu.
+- Row copy: keep title plus description within two visual lines and keep user-facing copy concise. If a narrow width still constrains a line, fit the type before adding height; do not solve it with a taller row.
 - Row rhythm: entry rows and switch rows share the same minimum height. Use one low-contrast inset divider between adjacent semantic rows; do not divide a single setting into label, choice and status fragments.
 - Long lists: preserve a single lazy `CustomScrollView` or `SliverList` owner. A shared glass viewport is preferred when it remains bounded and does not force the list into a `Column`; otherwise keep the list page-level and remove only the per-item glass boundaries. Never trade virtualization for a visually uniform panel.
+- File-style media lists: use one bounded panel and internal dividers. Folder rows and media rows share selection and overflow behavior across Media Library and Media Tasks. Empty text describes the current scope only; a root that contains folders must not claim that the root has no files.
 - Short secondary pages: keep one fixed panel when the content is ten rows or fewer. When a list exceeds ten rows, use one bounded lazy viewport and one glass boundary. Details may expand inline through one accordion controller, with the first row opened only when that page benefits from an immediate read.
 - Disabled rows: mute the icon, title, subtitle, and secondary controls through the disabled content token while retaining readable status and accessible toggles.
 - Feedback: use the shared notice/error surface for persistent page feedback; reserve snack bars for short-lived confirmation.

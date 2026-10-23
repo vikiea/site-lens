@@ -89,6 +89,7 @@ class AppSettings {
     this.glassQualityMode = SiteLensGlassQualityMode.automatic,
     this.highQualityAllSurfaces = false,
     this.autoHideBrowserControls = true,
+    this.expandAllBrowserControls = false,
     this.allowBackgroundPlayback = false,
     this.autoConvertToMp4 = false,
     this.mp4ExportDirectory,
@@ -113,6 +114,7 @@ class AppSettings {
   final SiteLensGlassQualityMode glassQualityMode;
   final bool highQualityAllSurfaces;
   final bool autoHideBrowserControls;
+  final bool expandAllBrowserControls;
   final bool allowBackgroundPlayback;
   final bool autoConvertToMp4;
   final String? mp4ExportDirectory;
@@ -137,6 +139,7 @@ class AppSettings {
     'glassQualityMode': glassQualityMode.name,
     'highQualityAllSurfaces': highQualityAllSurfaces,
     'autoHideBrowserControls': autoHideBrowserControls,
+    'expandAllBrowserControls': expandAllBrowserControls,
     'allowBackgroundPlayback': allowBackgroundPlayback,
     'autoConvertToMp4': autoConvertToMp4,
     'mp4ExportDirectory': mp4ExportDirectory,
@@ -217,6 +220,7 @@ class AppSettings {
       ),
       highQualityAllSurfaces: flag('highQualityAllSurfaces', false),
       autoHideBrowserControls: flag('autoHideBrowserControls', true),
+      expandAllBrowserControls: flag('expandAllBrowserControls', false),
       allowBackgroundPlayback: flag('allowBackgroundPlayback', false),
       autoConvertToMp4: flag('autoConvertToMp4', false),
       mp4ExportDirectory: directory('mp4ExportDirectory'),
@@ -257,6 +261,7 @@ class AppSettings {
       'glassQualityMode',
       'highQualityAllSurfaces',
       'autoHideBrowserControls',
+      'expandAllBrowserControls',
       'allowBackgroundPlayback',
       'autoConvertToMp4',
       'mp4ExportDirectory',

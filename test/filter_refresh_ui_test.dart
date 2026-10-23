@@ -90,6 +90,8 @@ void main() {
     await tester.tap(find.text('刷新规则源'));
     await tester.pump();
     expect(app.requests, hasLength(1));
+    await tester.tap(find.text('源二'));
+    await tester.pumpAndSettle();
     expect(find.text('正在刷新…'), findsOneWidget);
     app.requests.single.result.complete();
     await tester.pumpAndSettle();

@@ -7,6 +7,7 @@ import 'dart:isolate';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart' show ChangeNotifier;
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../data/database.dart';
@@ -682,7 +683,38 @@ class MediaTaskStore extends ChangeNotifier {
     _byCacheKey
       ..clear()
       ..addEntries(repaired.map((task) => MapEntry(task.cacheKey, task.id)));
+    await _cleanupOrphanCopies(repaired);
     await reconcileCachedFiles();
+  }
+
+  Future<void> _cleanupOrphanCopies(Iterable<MediaTask> tasks) async {
+    late final Directory root;
+    try {
+      root = await cacheDirectory(storageDirectory: '媒体副本');
+    } catch (_) {
+      // Pure Dart restore tests may not initialize the platform path provider;
+      // cleanup is best effort and must not block task restoration.
+      return;
+    }
+    if (!await root.exists()) return;
+    final references = tasks
+        .map((task) => task.localRef)
+        .whereType<String>()
+        .map((value) => File(value).absolute.path)
+        .toSet();
+    await for (final entity in root.list(followLinks: false)) {
+      final path = entity.absolute.path;
+      final referenced = references.any(
+        (value) =>
+            value == path || value.startsWith('$path${Platform.pathSeparator}'),
+      );
+      if (referenced) continue;
+      if (entity is Directory) {
+        await entity.delete(recursive: true);
+      } else if (entity is File) {
+        await entity.delete();
+      }
+    }
   }
 
   MediaTask transition(
@@ -992,6 +1024,84 @@ class MediaTaskStore extends ChangeNotifier {
 
   Future<Directory> cacheRootDirectory() => cacheDirectory();
 
+  /// Copies completed cache bytes under a new identity. Presentation folders
+  /// never change the storage directory of an existing native download.
+  Future<MediaTask> copyCompleted(
+    String taskId, {
+    bool exclusiveAlreadyHeld = false,
+  }) async {
+    if (!exclusiveAlreadyHeld) {
+      return withExclusive(
+        taskId,
+        () => copyCompleted(taskId, exclusiveAlreadyHeld: true),
+      );
+    }
+    if (!isExclusive(taskId)) throw StateError('媒体任务未持有排他操作锁');
+    final original = task(taskId) ?? (throw StateError('媒体任务不存在'));
+    if (!{
+          MediaTaskState.completed,
+          MediaTaskState.playable,
+        }.contains(original.state) ||
+        original.totalBytes != null &&
+            original.bytesDownloaded < original.totalBytes!) {
+      throw StateError('仅能复制已完整下载的任务，请等待下载完成');
+    }
+    await flush(taskId);
+    final source = await cachedFile(taskId);
+    if (source == null) throw StateError('完整媒体缓存不存在，无法复制');
+    final key = sha256
+        .convert(List<int>.generate(32, (_) => Random.secure().nextInt(256)))
+        .toString();
+    final root = await cacheDirectory(storageDirectory: '媒体副本');
+    final staging = await Directory(p.join(root.path, '.$key.copy.part'))
+        .create();
+    Directory? directory;
+    try {
+      File target;
+      if (source.path.toLowerCase().endsWith('.m3u8')) {
+        await copyLocalHls(source, staging);
+        target = File(p.join(staging.path, p.basename(source.path)));
+      } else {
+        target = File(p.join(staging.path, 'media.bin'));
+        await copyMediaBytes(source, target);
+      }
+      directory = await staging.rename(p.join(root.path, '$key.hls'));
+      target = File(p.join(directory.path, p.basename(target.path)));
+      final next = MediaTask(
+        id: 'media_copy_$key',
+        candidateId: original.candidateId,
+        hostId: original.hostId,
+        generation: original.generation,
+        sourceUrl: original.sourceUrl,
+        cacheKey: key,
+        state: MediaTaskState.playable,
+        updatedAt: DateTime.now().toUtc(),
+        displayTitle: '${original.displayTitle} 副本',
+        episodeLabel: original.episodeLabel,
+        batchDirectory: '媒体副本',
+        bytesDownloaded: original.bytesDownloaded,
+        totalBytes: original.totalBytes,
+        localRef: target.path,
+      );
+      // Persist before publishing the new task so a failed write cannot expose
+      // a playable row whose bytes have already been rolled back.
+      if (db != null && await db!.saveMediaTask(next) != next.id) {
+        throw StateError('保存媒体副本身份失败');
+      }
+      _tasks[next.id] = next;
+      _byCacheKey[next.cacheKey] = next.id;
+      notifyListeners();
+      return next;
+    } catch (_) {
+      final copiedDirectory = directory;
+      if (copiedDirectory != null && await copiedDirectory.exists()) {
+        await copiedDirectory.delete(recursive: true);
+      }
+      if (await staging.exists()) await staging.delete(recursive: true);
+      rethrow;
+    }
+  }
+
   /// Returns the bytes occupied by the complete local media cache. For HLS,
   /// the playlist itself is only a manifest, so include its selected playlist,
   /// segments, init segment and encryption keys instead of reporting the
@@ -1079,6 +1189,127 @@ class MediaTaskStore extends ChangeNotifier {
     }
     return file;
   }
+}
+
+/// Creates independent bytes and verifies the entire stream before publishing.
+/// The destination must be new; callers own cleanup of their staging directory.
+Future<void> copyMediaBytes(File source, File destination) async {
+  if (await source.length() <= 0) throw StateError('源媒体文件为空');
+  await destination.parent.create(recursive: true);
+  await destination.create(exclusive: true);
+  try {
+    final sink = destination.openWrite();
+    try {
+      await sink.addStream(source.openRead());
+      await sink.flush();
+    } finally {
+      await sink.close();
+    }
+    if (await source.length() != await destination.length() ||
+        await sha256.bind(source.openRead()).first !=
+            await sha256.bind(destination.openRead()).first) {
+      throw StateError('复制媒体校验失败');
+    }
+  } catch (_) {
+    if (await destination.exists()) await destination.delete();
+    rethrow;
+  }
+}
+
+/// Copies a closed local HLS graph, preserving relative resource references.
+/// Validate every variant, key, init and segment before creating any copy.
+Future<void> copyLocalHls(File manifest, Directory destination) async {
+  final files = await _localHlsFiles(manifest);
+  final root = await manifest.parent.resolveSymbolicLinks();
+  for (final source in files) {
+    final relative = p.relative(source.path, from: root);
+    await copyMediaBytes(source, File(p.join(destination.path, relative)));
+  }
+  await _localHlsFiles(
+    File(p.join(destination.path, p.basename(manifest.path))),
+  );
+}
+
+Future<List<File>> _localHlsFiles(File manifest) async {
+  final root = await manifest.parent.resolveSymbolicLinks();
+  final files = <String, File>{};
+  final visiting = <String>{};
+  final visited = <String>{};
+  Future<File> resource(File parent, String reference) async {
+    final uri = Uri.tryParse(reference);
+    if (uri == null ||
+        uri.hasScheme ||
+        uri.hasAuthority ||
+        uri.hasQuery ||
+        uri.hasFragment ||
+        uri.path.startsWith('/') ||
+        uri.pathSegments.any((part) => part == '..' || part.contains('\\')) ||
+        reference.contains('\\')) {
+      throw const FormatException('HLS 仅支持文件夹内的相对资源');
+    }
+    final file = File(p.normalize(p.join(parent.parent.path, uri.toFilePath())))
+        .absolute;
+    final canonical = await file.resolveSymbolicLinks();
+    if (!p.isWithin(root, canonical) ||
+        !await file.exists() ||
+        await file.length() <= 0) {
+      throw const FormatException('HLS 资源缺失、链接或路径越界');
+    }
+    final canonicalFile = File(canonical);
+    files[canonical] = canonicalFile;
+    return canonicalFile;
+  }
+
+  Future<void> visit(File file, int depth) async {
+    if (depth > 32 || visiting.contains(file.path)) {
+      throw const FormatException('HLS 清单循环或嵌套过深');
+    }
+    if (!visited.add(file.path)) return;
+    visiting.add(file.path);
+    final text = await file.readAsString();
+    if (!text.trimLeft().startsWith('#EXTM3U')) {
+      throw const FormatException('HLS 清单格式无效');
+    }
+    final master = text.contains('#EXT-X-STREAM-INF:');
+    if (!master && !text.contains('#EXT-X-ENDLIST')) {
+      throw StateError('HLS 尚未完整下载，无法复制');
+    }
+    var count = 0;
+    for (final raw in text.split(RegExp(r'\r?\n'))) {
+      final line = raw.trim();
+      if (line.isEmpty) continue;
+      final references = <String>[];
+      if (!line.startsWith('#')) {
+        references.add(line);
+        count++;
+      } else {
+        final matches = RegExp(
+          r'''\bURI\s*=\s*(?:"([^"]*)"|'([^']*)'|([^,\s]+))''',
+          caseSensitive: false,
+        ).allMatches(line);
+        for (final match in matches) {
+          references.add(match.group(1) ?? match.group(2) ?? match.group(3)!);
+        }
+        if (RegExp(r'\bURI\s*=', caseSensitive: false).hasMatch(line) &&
+            references.isEmpty) {
+          throw const FormatException('HLS 资源引用无效');
+        }
+      }
+      for (final reference in references) {
+        final child = await resource(file, reference);
+        if (child.path.toLowerCase().endsWith('.m3u8') ||
+            master && !line.startsWith('#')) {
+          await visit(child, depth + 1);
+        }
+      }
+    }
+    if (count == 0) throw const FormatException('HLS 清单没有媒体分片');
+    visiting.remove(file.path);
+  }
+
+  final top = await resource(manifest, p.basename(manifest.path));
+  await visit(top, 0);
+  return files.values.toList();
 }
 
 /// Resumable, app-private media download orchestration. The native Media3
@@ -1349,9 +1580,10 @@ class MediaDownloadService {
     String taskId, {
     bool deleteTask = true,
     Future<void> Function()? beforeDelete,
+    bool exclusiveAlreadyHeld = false,
   }) async {
     final id = tasks.resolveTaskId(taskId);
-    if (!tasks.canDelete(id)) {
+    if (exclusiveAlreadyHeld ? !tasks.isExclusive(id) : !tasks.canDelete(id)) {
       throw StateError('媒体正在播放、导出或投屏，请先停止');
     }
     _stopping.add(id);
@@ -1362,7 +1594,7 @@ class MediaDownloadService {
         // Acquire the file-operation lock before touching transport. A
         // retained playback/export/cast reference therefore fails closed and
         // cannot be interrupted by a rejected delete request.
-        await tasks.withExclusive(id, () async {
+        Future<void> remove() async {
           if (nativeCancel != null) await nativeCancel;
           try {
             await _running[id];
@@ -1392,7 +1624,13 @@ class MediaDownloadService {
             tasks.transition(id, MediaTaskState.cancelled);
             await tasks.flush(id);
           }
-        });
+        }
+
+        if (exclusiveAlreadyHeld) {
+          await remove();
+        } else {
+          await tasks.withExclusive(id, remove);
+        }
         _dartTasks.remove(id);
       });
     } finally {

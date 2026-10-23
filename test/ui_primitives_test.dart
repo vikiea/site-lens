@@ -163,6 +163,40 @@ void main() {
     expect(find.text('第二项详情'), findsOneWidget);
   });
 
+  testWidgets('compact rows fit short copy and switch rows stay quiet', (
+    tester,
+  ) async {
+    var value = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: SizedBox(
+          width: 220,
+          child: StatefulBuilder(
+            builder: (context, setState) => SiteLensSwitchRow(
+              title: '这是一个很长的设置标题应该收敛',
+              subtitle: '这是一个很长的说明文字应该保持单行',
+              value: value,
+              onChanged: (next) => setState(() => value = next),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(find.byType(SiteLensRowText), findsNWidgets(2));
+    expect(find.byType(ListTile), findsOneWidget);
+    await tester.tap(find.byType(SiteLensSwitchRow));
+    await tester.pumpAndSettle();
+    expect(value, isTrue);
+    final quietTheme = tester.widget<Theme>(
+      find.descendant(
+        of: find.byType(SiteLensFoldable),
+        matching: find.byType(Theme),
+      ),
+    );
+    expect(quietTheme.data.highlightColor, Colors.transparent);
+  });
+
   testWidgets('glass alert dialog keeps Material dialog semantics', (
     tester,
   ) async {
