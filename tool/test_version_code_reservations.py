@@ -35,6 +35,16 @@ class VersionCodeReservationsTest(unittest.TestCase):
                 "v0.2.0.alpha4",
             )
 
+    def test_one_version_code_cannot_be_reserved_for_two_tags(self):
+        with self.assertRaisesRegex(ValueError, "reservation collision"):
+            summarize(
+                [
+                    {"ref": "refs/tags/version-code/21-v0.2.0.alpha4"},
+                    {"ref": "refs/tags/version-code/21-v0.2.0.beta1"},
+                ],
+                "v0.2.0.beta1",
+            )
+
     def test_tag_slug_is_safe_for_ref_suffix(self):
         self.assertEqual(tag_slug("v1/2?3"), "v1-2-3")
 

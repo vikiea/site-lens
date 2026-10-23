@@ -700,8 +700,8 @@ String mediaCandidateGroupKey(Uri url) {
   return mediaCandidateKey(clean);
 }
 
-/// Display/export name for folders created by the legacy batch downloader.
-/// Keep the persisted storage path unchanged so existing downloads can resume.
+/// User-facing and on-disk name for folders created by the legacy batch
+/// downloader. The suffix is transport metadata, not part of the series name.
 String mediaFolderDisplayName(String name) =>
     name.replaceFirst(RegExp(r' - 批次\d{16}$'), '');
 
@@ -920,15 +920,22 @@ class MediaTask {
 
   String get seriesDirectoryName => mediaSeriesDirectoryName(displayTitle);
 
-  String get storageDirectoryName =>
+  /// The directory name used by older builds before batch suffix cleanup.
+  String get legacyStorageDirectoryName =>
       batchDirectory == null || batchDirectory!.trim().isEmpty
       ? seriesDirectoryName
       : mediaSeriesDirectoryName(batchDirectory!);
+
+  String get storageDirectoryName =>
+      batchDirectory == null || batchDirectory!.trim().isEmpty
+      ? seriesDirectoryName
+      : mediaSeriesDirectoryName(mediaFolderDisplayName(batchDirectory!));
 
   MediaTask copyWith({
     String? id,
     String? candidateId,
     MediaTaskState? state,
+    DateTime? updatedAt,
     String? displayTitle,
     Object? batchDirectory = _unset,
     Object? episodeLabel = _unset,
@@ -945,7 +952,7 @@ class MediaTask {
     sourceUrl: sourceUrl,
     cacheKey: cacheKey,
     state: state ?? this.state,
-    updatedAt: DateTime.now().toUtc(),
+    updatedAt: updatedAt ?? DateTime.now().toUtc(),
     displayTitle: displayTitle ?? this.displayTitle,
     batchDirectory: identical(batchDirectory, _unset)
         ? this.batchDirectory

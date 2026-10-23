@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:site_lens/settings/settings_repository.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
@@ -16,6 +18,17 @@ import 'package:site_lens/ui/ui_primitives.dart';
 
 import 'fake_update_platform.dart';
 import 'fake_web_host_api.dart';
+
+class _ReconTestApp extends AppController {
+  _ReconTestApp(super.db) : super(api: FakeWebHostApi());
+  final result = Completer<ReconResult>();
+  int calls = 0;
+  @override
+  Future<ReconResult> recon(String input) {
+    calls++;
+    return result.future;
+  }
+}
 
 void main() {
   testWidgets('home exposes import and detection actions in the app bar', (
@@ -139,6 +152,167 @@ void main() {
     final profile = (await db.profiles()).single;
     expect(profile.readySelector, 'main');
 
+    await tester.pumpWidget(const SizedBox());
+    await app.shutdown();
+    await db.close();
+  });
+
+  testWidgets(
+    'create profile automatically scouts once without an outdated warning',
+    (tester) async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final app = _ReconTestApp(db);
+      await app.load();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () => showAddProfileDialog(context, app),
+                child: const Text('添加站点'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('添加站点'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byType(TextField).first,
+        'https://example.com/',
+      );
+      await tester.tap(find.widgetWithText(FilledButton, '创建档案'));
+      await tester.pump();
+      expect(app.calls, 1);
+      expect(find.textContaining('请先完成自动侦察'), findsNothing);
+      expect((await db.profiles()), isEmpty);
+      // A repeated activation while reconnaissance is in flight is ignored.
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.widgetWithText(FilledButton, '侦察中…').last,
+            )
+            .onPressed,
+        isNull,
+      );
+      app.result.complete(
+        ReconResult(
+          url: Uri.parse('https://example.com/'),
+          finalUrl: Uri.parse('https://example.com/'),
+          title: '自动识别站点',
+          regionSelector: '@latest-addresses',
+          regionFound: true,
+          links: const [],
+          inferredReadySelector: 'article',
+        ),
+      );
+      await tester.pumpAndSettle();
+      final profile = (await db.profiles()).single;
+      expect(profile.name, '自动识别站点');
+      expect(profile.readySelector, 'article');
+      expect(
+        (await db.profilePages()).single.url,
+        Uri.parse('https://example.com/'),
+      );
+      expect(app.calls, 1);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await app.shutdown();
+      await db.close();
+    },
+  );
+
+  testWidgets('cancelled reconnaissance cannot complete the dismissed dialog', (
+    tester,
+  ) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final app = _ReconTestApp(db);
+    await app.load();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => showAddProfileDialog(context, app),
+              child: const Text('添加站点'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('添加站点'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byType(TextField).first,
+      'https://example.com/',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, '创建档案'));
+    await tester.pump();
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    app.result.complete(
+      ReconResult(
+        url: Uri.parse('https://example.com/'),
+        finalUrl: Uri.parse('https://example.com/'),
+        title: '不应创建',
+        regionSelector: '@latest-addresses',
+        regionFound: true,
+        links: const [],
+        inferredReadySelector: 'article',
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('添加站点档案'), findsNothing);
+    expect(await db.profiles(), isEmpty);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    await app.shutdown();
+    await db.close();
+  });
+
+  testWidgets('reconnaissance without a ready selector stays in manual form', (
+    tester,
+  ) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final app = _ReconTestApp(db);
+    await app.load();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => showAddProfileDialog(context, app),
+              child: const Text('添加站点'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('添加站点'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byType(TextField).first,
+      'https://example.com/',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, '创建档案'));
+    await tester.pump();
+    app.result.complete(
+      ReconResult(
+        url: Uri.parse('https://example.com/'),
+        finalUrl: Uri.parse('https://example.com/'),
+        title: '需要手动确认',
+        regionSelector: '@latest-addresses',
+        regionFound: true,
+        links: const [],
+        inferredReadySelector: null,
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('侦察结果：需要手动确认'), findsOneWidget);
+    expect(await db.profiles(), isEmpty);
+    expect(find.text('创建档案'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, '取消'));
+    await tester.pumpAndSettle();
     await tester.pumpWidget(const SizedBox());
     await app.shutdown();
     await db.close();

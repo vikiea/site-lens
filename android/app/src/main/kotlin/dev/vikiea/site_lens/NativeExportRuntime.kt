@@ -103,9 +103,30 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             activeCancellation = cancellation
             try {
                 check(!cancellation.get()) { "导出已取消" }
-                val value = NativeMediaFileLeases.registry.acquireRead(readScope(call)).use {
-                    NativeMediaFileLeases.registry.mutate(mutationScope(call)) {
+                val reservationId = call.argument<String>("mutationReservationId")
+                val value = if (reservationId != null) {
+                    require(call.method == "deleteOwnedSources") { "媒体变更许可仅适用于删除副本" }
+                    val taskId = call.argument<String>("taskId") ?: error("缺少媒体身份")
+                    require(NativeDownloadRuntime.ownsMutationReservation(reservationId, taskId)) {
+                        "媒体变更许可不存在或与任务不匹配"
+                    }
+                    // The download reservation already fences the task and
+                    // its cache. Export paths are outside that scope, so take
+                    // a second path-only fence instead of trying to acquire
+                    // the task lease again (which would self-conflict).
+                    val exportScope = ownedSources(call).fold(
+                        MediaFileLeaseRegistry.Scope(),
+                    ) { scope, source ->
+                        scope + MediaFileLeaseRegistry.Scope.source(source)
+                    }
+                    NativeMediaFileLeases.registry.mutate(exportScope) {
                         execute(call, cancellation)
+                    }
+                } else {
+                    NativeMediaFileLeases.registry.acquireRead(readScope(call)).use {
+                        NativeMediaFileLeases.registry.mutate(mutationScope(call)) {
+                            execute(call, cancellation)
+                        }
                     }
                 }
                 main.post { result.success(value) }
@@ -272,7 +293,8 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         activeCancellation?.set(true)
         pendingDirectoryResult?.error("media_export", "媒体服务已关闭", null)
         pendingDirectoryResult = null
-        worker.shutdown()
+        worker.shutdownNow()
+        runCatching { worker.awaitTermination(2, TimeUnit.SECONDS) }
     }
 
     private fun pickDirectory(result: MethodChannel.Result) {

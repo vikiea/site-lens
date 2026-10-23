@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/ui/software_update_screen.dart';
@@ -9,6 +10,7 @@ import 'package:site_lens/settings/app_settings.dart';
 import 'package:site_lens/ui/ui_primitives.dart';
 import 'package:site_lens/update/update_controller.dart';
 import 'package:site_lens/update/update_service.dart';
+import 'package:site_lens/update/github_token_store.dart';
 
 import 'fake_update_platform.dart';
 import 'update_widget_support.dart';
@@ -149,6 +151,74 @@ void main() {
     await waitForChannel(tester, UpdateChannel.beta);
     expect(controller.channel, UpdateChannel.beta);
     expect(find.text('GitHub API Token'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('token save and cancel survive dialog exit and page removal', (
+    tester,
+  ) async {
+    const secureStorage = MethodChannel(
+      'plugins.it_nomads.com/flutter_secure_storage',
+    );
+    final values = <String, String>{};
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      secureStorage,
+      (call) async {
+        final args = Map<Object?, Object?>.from(call.arguments as Map);
+        switch (call.method) {
+          case 'read':
+            return values[args['key']];
+          case 'write':
+            values[args['key'] as String] = args['value'] as String;
+          case 'delete':
+            values.remove(args['key']);
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        secureStorage,
+        null,
+      ),
+    );
+    final controller = build().controller;
+    await runReal(tester, controller.loadLocalState);
+    await tester.pumpWidget(screenApp(controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(SiteLensMenuSelector<UpdateChannel>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(MenuItemButton, '测试版'));
+    await waitForChannel(tester, UpdateChannel.beta);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('设置'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'github_pat_widget_fixture');
+    await tester.tap(find.text('保存'));
+    // Exercise the exiting route while the storage result rebuilds its owner.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(values[GitHubTokenStore.key], 'github_pat_widget_fixture');
+
+    await tester.tap(find.text('管理'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('取消'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.text('管理'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('清除'));
+    await tester.pumpAndSettle();
+    expect(values, isEmpty);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   });
 

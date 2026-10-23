@@ -207,7 +207,9 @@ build-release:
 	"$(FLUTTER_BIN_DIR)/flutter" build apk --release \
 		$(if $(BUILD_NAME),--build-name "$(BUILD_NAME)",) \
 		$(if $(BUILD_NUMBER),--build-number "$(BUILD_NUMBER)",)
-	python3 tool/verify_android_artifact.py --formal
+	python3 tool/verify_android_artifact.py --formal \
+		$(if $(BUILD_NAME),--version-name "$(BUILD_NAME)",) \
+		$(if $(BUILD_NUMBER),--version-code "$(BUILD_NUMBER)",)
 
 build: build-debug build-release
 

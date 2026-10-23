@@ -32,8 +32,8 @@
   HLS 子分片拒绝删除，明确停止后操作成功。用例已加入 `media_tasks_test.dart`；
   alpha12 合并后 API 36 / WebView 155 的完整 35 项批次通过本断言，正常包与
   本机来源绑定数据库校验恢复成功。该证据不覆盖下面尚未接入的 Dart writer 握手。
-- [x] 当前原生租约与 B0.2 窄修独立复审通过；未完成 B0.1/最终发布和设备证据
-  不能以此宣称整个 B0 完成。
+- [x] 当前原生租约与 B0.2 窄修独立复审通过；B0.1 的代码和 Dart 回归已完成，
+  但最终发布和 Android reservation/Engine detach 设备证据仍不能由此推导。
 - [x] Android 库副本回收、物化副本清理及库文件删除接入 `deleteOwnedSources`：
   一次保护完整集合后删第一项，读取中的后项会拒绝整组且不改副本元数据；
   后续 I/O 失败回报已完成清单，保留可重试进度。
@@ -42,8 +42,13 @@
   目标/源恢复记录。重试前确认 target 可读才清理旧副本。共享旧 MP4 先复制并
   `flush` 新缓存引用，再尝试删除旧路径；保存失败的同 Engine 重试也先重新
   持久化当前引用，不能跳过失败。Inspector/投递/校验也持原生读租约。
-- [ ] Flutter 其余 File/Directory 变更接入原生一次性操作，尤其任务缓存删除与
-  正在执行的 Dart writer 的 stop/flush 握手；不能只查 heldIDs。
+- [x] B0.1 任务缓存删除接入跨调用原生 mutation reservation：先冻结 Dart
+  缓存清单并取得 task/path 许可，再停止 Dart/native writer，等待 flush，最后在
+  同一许可内删除原生与 Dart 缓存并释放 reservation。Dart 回归覆盖许可拒绝、
+  活跃 writer 和原生任务；当前尚缺 Android 设备上的实际 reservation/Engine
+  detach 证据。
+- [ ] Flutter 其余 File/Directory 变更继续收口到原生一次性操作，尤其写入发布、
+  Engine 消失后的恢复记录和跨进程边界；不能只查 heldIDs。
 - [ ] 原生操作完成但 Engine 未收到结果时的持久恢复记录和设备证明。
 
 当前 registry 是单进程 fence。后台服务保持同进程；若以后引入独立进程，必须先
@@ -53,9 +58,9 @@
 
 ### B0 剩余接口拆分
 
-1. B0.1 下载删除：冻结 Dart/native 缓存与可选导出清单，在原生取得完整许可后
-   才停止 writer。Dart writer 需要 stop/flush 握手，不能在取得许可前 `_active.cancel()`；
-   不存在 native repository row 的 Dart HLS 同样受保护。
+1. B0.1 下载删除：代码已冻结 Dart/native 缓存与可选导出清单，在原生取得完整
+   reservation 后才停止 writer；Dart writer 的 stop/flush 握手覆盖不存在 native
+   repository row 的 Dart HLS。Android reservation 和 Engine detach 设备证据待补。
 2. B0.2 副本清理已接入，设备验收待补：`deleteOwnedSources` 在删除第一项之前一次保护全部源；被
    当前读者拒绝时保留库/物化副本字段，按已有清理流程稍后重试。
 3. B0.3 写入发布：Android 本地 move、校验复制已接入原生，继续把下载缓存
@@ -111,12 +116,12 @@
 
 本轮 JVM、静态分析与接线契约已通过；全部日志留在 `build/android-acceptance/`。
 B0 复审已修正 legacy source 遗漏与 SAF 别名/API 兼容；停止时 release 异常保留
-player/lease 供重试，在读者结束无法确认时不提前退租。Flutter 直接操作仍待接入
-原生一次性操作，permit 须覆盖 IO、writer 停止与清理全程，不能只查询 heldIDs
-或依靠 Engine detach 时释放 Dart begin/end token。
+player/lease 供重试，在读者结束无法确认时不提前退租。B0.1 现在以 reservation
+覆盖 writer 停止、flush 与 Dart/原生清理；其余写入发布和 Engine detach 恢复仍待
+接入，不能只查询 heldIDs 或依靠 Engine detach 时释放 Dart begin/end token。
 当前 API 36 / WebView 155 真机完成上述原生读者定向及完整验收，并恢复正常包与
-本机备份数据库。已完成证据按源码变化复用；原生读者通过不替代尚未实现的 Dart
-writer 停止/flush、Engine detach 恢复记录和服务后台生命周期验收。
+本机备份数据库。已完成证据按源码变化复用；原生读者通过和 B0.1 本地回归不替代
+Engine detach 恢复记录和服务后台生命周期验收。
 
 Media3 服务参考：<https://developer.android.com/media/media3/session/background-playback>。
 当前只把该契约用作实现目标，未把官方能力当成本应用已完成的证据。

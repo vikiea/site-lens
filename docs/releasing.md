@@ -2,9 +2,25 @@
 
 Site Lens 通过 GitHub Actions 构建 Android 正式 APK，并把 APK 和 SHA-256 校验文件上传到 `vikiea/site-lens` 的 GitHub Release。
 
+## Version 与 versionCode
+
+发布提交必须同时更新 `pubspec.yaml` 和标签。版本名使用 Flutter 的连字符形式，标签使用 dotted 形式：
+
+```yaml
+version: 0.4.0-alpha16+94
+```
+
+对应标签是 `v0.4.0.alpha16`，`94` 是本次 APK 的 Android `versionCode`。先运行：
+
+```bash
+python3 tool/verify_release_pubspec.py --tag v0.4.0.alpha16
+```
+
+校验通过后再创建标签。工作流会在构建前检查不可变 version-code reservation 和安装版本下限，构建后从 APK manifest 回读 `versionName` 与 `versionCode`；任何不一致都会停止发布。需要改版本或数字时，更新 `pubspec.yaml` 并创建新标签。
+
 ## VersionCode allocation
 
-Release runs first enter a short `version-code-allocation` concurrency group. That job reads the latest stable APK and existing `version-code/<code>-<tag>` refs, then atomically creates a new immutable reservation ref through the GitHub API. A ref creation conflict causes the job to reread the reservations and try the next code. The repository checks, formal build, signing, and upload run after allocation and are not held by this lock. Rerunning a tag reuses its existing reservation, so failed retries cannot publish the same code under a different allocation.
+Release runs first enter a short `version-code-allocation` concurrency group. That job reads the latest stable APK and existing `version-code/<code>-<tag>` refs, then atomically creates a new immutable reservation ref through the GitHub API. A ref creation conflict is fatal for a new tag: update `pubspec.yaml` and create a new tag instead of silently changing the build number. Rerunning a tag reuses its existing reservation, so failed retries cannot publish the same code under a different allocation. Different tags cannot reserve the same numeric versionCode.
 
 ## 自动发布
 
@@ -15,7 +31,7 @@ git tag v0.1.1
 git push origin v0.1.1
 ```
 
-Workflow 会执行 `./tool/check.sh`、正式签名构建、包名与证书校验，然后发布：
+Workflow 会执行 `./tool/check.sh`、正式签名构建、包名/证书/manifest 版本校验，然后发布：
 
 - `site-lens-v0.1.1.apk`
 - `site-lens-v0.1.1.apk.sha256`
@@ -24,7 +40,7 @@ Workflow 会执行 `./tool/check.sh`、正式签名构建、包名与证书校�
 
 ## 手动发布
 
-在 GitHub Actions 中运行 `Release Site Lens`，输入 Release tag，例如 `v0.1.1`。手动流程同样要求输入已经存在的稳定标签，并从该标签对应的源码构建。
+在 GitHub Actions 中运行 `Release Site Lens`，输入已经存在的标签。稳定版例如 `v0.1.1`；测试版例如 `v0.4.0.alpha16`。测试版必须在同一提交的 `pubspec.yaml` 中使用 `version: 0.4.0-alpha16+94` 这种连字符版本名，工作流的 `version_code` 只允许填写同一个 `94` 以兼容重跑。
 
 ## GitHub Secrets
 
@@ -40,7 +56,7 @@ keystore 必须对应 `tool/android_artifact.py` 中记录的正式证书指纹�
 本地正式构建仍使用仓库外的 `SITE_LENS_SIGNING_PROPERTIES`，例如：
 
 ```bash
-make build-release BUILD_NAME=0.1.1 BUILD_NUMBER=2
+make build-release BUILD_NAME=0.4.0.alpha16 BUILD_NUMBER=94
 ```
 
 ## 应用内更新

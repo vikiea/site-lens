@@ -48,8 +48,64 @@ def verify_apk_package(apk: Path, expected: str, env: dict[str, str]) -> None:
     print(f"APK package verified: {apk.name} = {package}", flush=True)
 
 
-def verify_formal_apk(apk: Path, env: dict[str, str]) -> None:
+def _manifest_value(apk: Path, field: str, env: dict[str, str]) -> str:
+    analyzer = _tool("apkanalyzer", env)
+    return subprocess.check_output(
+        [analyzer, "manifest", field, str(apk)],
+        env=env,
+        timeout=60,
+        stderr=subprocess.PIPE,
+    ).decode().strip()
+
+
+def verify_apk_version(
+    apk: Path,
+    *,
+    expected_name: str | None = None,
+    expected_code: int | None = None,
+    env: dict[str, str],
+) -> None:
+    if expected_name is None and expected_code is None:
+        return
+    actual_name = _manifest_value(apk, "version-name", env)
+    actual_code = _manifest_value(apk, "version-code", env)
+    if expected_name is not None and actual_name != expected_name:
+        raise RuntimeError(
+            f"unexpected APK versionName for {apk.name}: {actual_name!r}; "
+            f"expected {expected_name!r}"
+        )
+    if expected_code is not None:
+        try:
+            parsed_code = int(actual_code)
+        except ValueError as error:
+            raise RuntimeError(
+                f"invalid APK versionCode for {apk.name}: {actual_code!r}"
+            ) from error
+        if parsed_code != expected_code:
+            raise RuntimeError(
+                f"unexpected APK versionCode for {apk.name}: {parsed_code}; "
+                f"expected {expected_code}"
+            )
+    print(
+        f"APK version verified: {apk.name} = {actual_name} + {actual_code}",
+        flush=True,
+    )
+
+
+def verify_formal_apk(
+    apk: Path,
+    env: dict[str, str],
+    *,
+    expected_name: str | None = None,
+    expected_code: int | None = None,
+) -> None:
     verify_apk_package(apk, FORMAL_PACKAGE, env)
+    verify_apk_version(
+        apk,
+        expected_name=expected_name,
+        expected_code=expected_code,
+        env=env,
+    )
     signer = _tool("apksigner", env)
     output = subprocess.check_output(
         [signer, "verify", "--print-certs", str(apk)],

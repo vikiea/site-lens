@@ -102,7 +102,6 @@ class SiteLensGlassSurface extends StatelessWidget {
     );
     final plan = SiteLensGlassPolicyScope.of(context)
         .resolve(context, role: role);
-    // Rotate the library's asymmetric shape, keeping content upright inside.
     final edge = attachedEdge;
     final LiquidShape shape = edge == null
         ? LiquidRoundedSuperellipse(borderRadius: radius)
@@ -111,23 +110,22 @@ class SiteLensGlassSurface extends StatelessWidget {
             bottomRadius: edge == SiteLensGlassEdge.right ? radius : 0,
           );
     Widget surface(Widget body) {
+      // The asymmetric library shape is vertical. Rotate the content into the
+      // same coordinate space, then rotate the finished surface back so the
+      // mounted content remains upright and the clipped edge stays attached.
       if (edge != null) body = RotatedBox(quarterTurns: 3, child: body);
-      late final Widget result;
+      late final Widget decoration;
       if (plan.useCompatibilityFallback) {
         final backer = plan.settings.effectiveBackerColor;
-        result = ClipPath(
-          clipper: ShapeBorderClipper(shape: shape),
-          child: Stack(
-            fit: StackFit.passthrough,
-            children: [
-              if (backer != null)
-                Positioned.fill(child: ColoredBox(color: backer)),
-              ColoredBox(color: plan.glassColor, child: body),
-            ],
-          ),
+        decoration = Stack(
+          fit: StackFit.expand,
+          children: [
+            if (backer != null) ColoredBox(color: backer),
+            ColoredBox(color: plan.glassColor),
+          ],
         );
       } else {
-        result = AdaptiveGlass(
+        decoration = AdaptiveGlass(
           shape: shape,
           settings: plan.settings,
           quality: plan.quality,
@@ -135,9 +133,33 @@ class SiteLensGlassSurface extends StatelessWidget {
           // Chrome and panels both provide the backdrop for their children: glass
           // inside a bar is a nested surface and would only double the blur.
           allowElevation: false,
-          child: body,
+          child: const SizedBox.expand(),
         );
       }
+      // Shader loading and quality changes can replace the dependency's entire
+      // child tree. Keep real content in a stable sibling slot so it always
+      // paints, retaining state/focus even on the first premium frame.
+      final stableBody = InheritedLiquidGlass(
+        settings: plan.settings,
+        quality: plan.quality,
+        // Keep this inherited node even in fallback mode. Replacing the
+        // wrapper would remount all content when backend support changes.
+        // The decoration sibling supplies blur whenever shaders are enabled.
+        isBlurProvidedByAncestor: !plan.useCompatibilityFallback,
+        child: body,
+      );
+      final result = ClipPath(
+        clipper: ShapeBorderClipper(shape: shape),
+        child: Stack(
+          fit: StackFit.passthrough,
+          children: [
+            Positioned.fill(
+              child: ExcludeSemantics(child: IgnorePointer(child: decoration)),
+            ),
+            stableBody,
+          ],
+        ),
+      );
       return edge == null ? result : RotatedBox(quarterTurns: 1, child: result);
     }
 

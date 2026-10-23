@@ -370,7 +370,7 @@ class MainActivity : FlutterActivity() {
         deviceDiagnostics = null
         hosts?.dispose(); hosts = null
         nativeMedia?.dispose(); nativeMedia = null
-        nativeDownloads?.let { nativeDownloads = null }
+        nativeDownloads?.dispose(); nativeDownloads = null
         nativeExport?.dispose(); nativeExport = null
         dlnaMulticastLock?.takeIf { it.isHeld }?.release()
         dlnaMulticastLock = null

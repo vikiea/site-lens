@@ -69,6 +69,15 @@ class VersionCodeTest(unittest.TestCase):
                 override=15,
             )
 
+    def test_override_cannot_reuse_a_reserved_code(self):
+        with self.assertRaisesRegex(ValueError, "floor"):
+            determine(
+                "v0.2.1",
+                "stable",
+                reserved_codes={"v0.2.0.beta1": 94},
+                override=94,
+            )
+
     def test_installed_floor_is_honored_without_published_releases(self):
         result = determine("v0.1.0", "beta", minimum_code=13)
         self.assertEqual(result["version_code"], 14)

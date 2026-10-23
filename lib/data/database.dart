@@ -1494,6 +1494,72 @@ class AppDatabase extends GeneratedDatabase {
           )
           .toList();
 
+  /// Rewrites media paths and advances the migration journal in one SQLite
+  /// transaction. Physical files are prepared before this method is called;
+  /// the journal then makes post-commit source cleanup retryable.
+  Future<void> rewriteMediaStorageReferences({
+    required String Function(String) rewrite,
+    required String journalKey,
+    required String journalValue,
+  }) => transaction(() async {
+    for (final task in await mediaTasks()) {
+      final localRef = task.localRef;
+      if (localRef == null) continue;
+      final next = rewrite(localRef);
+      if (next != localRef) {
+        await customStatement('UPDATE media_tasks SET local_ref=? WHERE id=?', [
+          next,
+          task.id,
+        ]);
+      }
+    }
+
+    for (final raw in await mediaArtifacts()) {
+      final taskId = raw['taskId'];
+      if (taskId is! String) continue;
+      final next = Map<String, Object?>.from(raw);
+      var changed = false;
+      for (final key in [
+        'location',
+        'libraryCopy',
+        'materializedCopy',
+        'thumbnailPath',
+      ]) {
+        final value = raw[key];
+        if (value is! String) continue;
+        final rewritten = rewrite(value);
+        if (rewritten != value) {
+          next[key] = rewritten;
+          changed = true;
+        }
+      }
+      if (!changed) continue;
+
+      final location = next['location'];
+      if (location is! String) continue;
+      final sourceKey = mediaArtifactSourceKey(location);
+      final existing = await customSelect(
+        'SELECT task_id FROM media_artifacts WHERE source_key=?',
+        variables: [Variable.withString(sourceKey)],
+      ).getSingleOrNull();
+      final previousId = existing?.read<String>('task_id');
+      if (previousId != null && previousId != taskId) {
+        if (taskId.startsWith('library_') &&
+            !previousId.startsWith('library_')) {
+          continue;
+        }
+        await customStatement('DELETE FROM media_artifacts WHERE task_id=?', [
+          previousId,
+        ]);
+      }
+      await customStatement(
+        'UPDATE media_artifacts SET source_key=?, metadata=? WHERE task_id=?',
+        [sourceKey, jsonEncode(next), taskId],
+      );
+    }
+    await setSetting(journalKey, journalValue);
+  });
+
   Future<void> deleteMediaTask(String id) =>
       customStatement('DELETE FROM media_tasks WHERE id=?', [id]);
 

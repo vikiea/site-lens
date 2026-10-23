@@ -20,8 +20,9 @@ class _CleanupRuntime extends NativeExportRuntime {
   @override
   Future<List<String>> deleteOwnedSources(
     String taskId,
-    List<String> sources,
-  ) async {
+    List<String> sources, {
+    String? mutationReservationId,
+  }) async {
     batches.add(List.of(sources));
     if (readerHeld) {
       throw PlatformException(code: 'media_export', message: '媒体正在播放，请先停止');
@@ -174,8 +175,9 @@ class _ScanRuntime extends NativeExportRuntime {
   @override
   Future<List<String>> deleteOwnedSources(
     String taskId,
-    List<String> sources,
-  ) async {
+    List<String> sources, {
+    String? mutationReservationId,
+  }) async {
     for (final source in sources) {
       await delete(source, allowMissing: true);
     }

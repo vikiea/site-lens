@@ -14,6 +14,7 @@ import '../data/database.dart';
 import '../diagnostics/error_log.dart';
 import '../domain/models.dart';
 import '../network/transport.dart';
+import 'media_directory_migration.dart';
 import 'native_download_runtime.dart';
 import 'native_export_runtime.dart';
 
@@ -429,7 +430,11 @@ class MediaTaskStore extends ChangeNotifier {
   final _writeFailures = <String, (Object, StackTrace)>{};
   final _aliases = <String, String>{};
   final _authorizationKeys = <String, String>{};
+  MediaStorageMigration _storageMigration = const MediaStorageMigration({}, {});
 
+  /// Rewrites a managed app-private media path after a legacy folder merge.
+  /// Content URIs and paths outside the app's managed roots are returned as-is.
+  String rewriteManagedPath(String value) => _storageMigration.rewrite(value);
   String _resolveId(String id) {
     var current = id;
     final seen = <String>{};
@@ -653,7 +658,8 @@ class MediaTaskStore extends ChangeNotifier {
     final trimmed = value?.trim() ?? '';
     return trimmed.isEmpty
         ? null
-        : mediaSeriesDirectoryName(trimmed).replaceAll('..', '_');
+        : mediaSeriesDirectoryName(mediaFolderDisplayName(trimmed))
+              .replaceAll('..', '_');
   }
 
   static String? _candidateEpisodeLabel(MediaCandidate candidate) {
@@ -704,9 +710,33 @@ class MediaTaskStore extends ChangeNotifier {
     await flushAll();
     final persisted = await db?.mediaTasks();
     if (persisted == null) return;
+    _storageMigration = const MediaStorageMigration({}, {});
+    Directory? storageRoot;
+    try {
+      storageRoot = await _directoryProvider();
+    } catch (error, stack) {
+      // Platform-free restore tests have no path provider. The catalog can
+      // still load, while a real app retries physical migration next time.
+      AppErrorLogger.capture(
+        error,
+        module: 'media.storage-migration',
+        context: 'path-provider',
+        stack: stack,
+      );
+    }
+    if (storageRoot != null) {
+      _storageMigration = await MediaDirectoryMigration(db!)
+          .migrateLocal(storageRoot);
+    }
+    final migrated = _storageMigration.hasRewrites
+        ? await db!.mediaTasks()
+        : persisted;
     final repaired = <MediaTask>[];
     final authorizationKeys = <String, String>{};
-    for (final task in persisted) {
+    final cacheRoot = storageRoot == null
+        ? null
+        : Directory(p.join(storageRoot.path, 'media_cache'));
+    for (final task in migrated) {
       final candidate = await db!.mediaCandidate(task.candidateId);
       final missingTitle =
           task.displayTitle.trim().isEmpty ||
@@ -717,9 +747,28 @@ class MediaTaskStore extends ChangeNotifier {
           }.contains(task.displayTitle.trim().toLowerCase());
       final sameIdentity =
           candidate != null && task.cacheKey == cacheKey(candidate);
+      final canNormalize =
+          cacheRoot != null &&
+          _storageMigration.canNormalizeLegacy(
+            cacheRoot,
+            task.legacyStorageDirectoryName,
+          );
+      final migratedRef = task.localRef == null
+          ? null
+          : rewriteManagedPath(task.localRef!);
+      final normalized = canNormalize && task.batchDirectory != null
+          ? task.copyWith(
+              updatedAt: task.updatedAt,
+              batchDirectory: mediaFolderDisplayName(task.batchDirectory!),
+              localRef: migratedRef,
+            )
+          : task.copyWith(updatedAt: task.updatedAt, localRef: migratedRef);
       final next = !sameIdentity
-          ? task
+          ? normalized
           : task.copyWith(
+              updatedAt: normalized.updatedAt,
+              batchDirectory: normalized.batchDirectory,
+              localRef: normalized.localRef,
               displayTitle: missingTitle && candidate.title.trim().isNotEmpty
                   ? candidate.title.trim()
                   : task.displayTitle,
@@ -731,6 +780,8 @@ class MediaTaskStore extends ChangeNotifier {
         candidate?.mediaUrl ?? task.sourceUrl,
       );
       if (next.displayTitle != task.displayTitle ||
+          next.batchDirectory != task.batchDirectory ||
+          next.localRef != task.localRef ||
           next.episodeLabel != task.episodeLabel) {
         await db!.saveMediaTask(next);
       }
@@ -1029,17 +1080,22 @@ class MediaTaskStore extends ChangeNotifier {
   Future<void> deleteCachedFiles(
     String taskId, {
     bool exclusiveAlreadyHeld = false,
+    MediaCacheDeletionPlan? frozenPlan,
   }) async {
     await ready;
     if (!exclusiveAlreadyHeld) {
       await withExclusive(
         taskId,
-        () => deleteCachedFiles(taskId, exclusiveAlreadyHeld: true),
+        () => deleteCachedFiles(
+          taskId,
+          exclusiveAlreadyHeld: true,
+          frozenPlan: frozenPlan,
+        ),
       );
       return;
     }
     if (!isExclusive(taskId)) throw StateError('媒体任务未持有排他操作锁');
-    final plan = await cacheDeletionPlan(taskId);
+    final plan = frozenPlan ?? await cacheDeletionPlan(taskId);
     for (final path in plan.files) {
       final file = File(path);
       if (await file.exists()) await file.delete();
@@ -1109,6 +1165,28 @@ class MediaTaskStore extends ChangeNotifier {
       '${directory.path}/${current.cacheKey}.hls',
       '${directory.path}/${current.cacheKey}.hls.part',
     ]);
+    final legacyName = current.legacyStorageDirectoryName;
+    if (legacyName != current.storageDirectoryName) {
+      final legacyDirectory = Directory(
+        p.join(
+          appRoot.path,
+          'media_cache',
+          mediaSeriesDirectoryName(legacyName),
+        ),
+      );
+      files.addAll([
+        '${legacyDirectory.path}/${current.cacheKey}.media',
+        '${legacyDirectory.path}/${current.cacheKey}.part',
+        '${legacyDirectory.path}/${current.cacheKey}.part.resume.json',
+        '${legacyDirectory.path}/${current.cacheKey}.part.resume.json.tmp',
+        '${legacyDirectory.path}/${current.cacheKey}.part.resume',
+        '${legacyDirectory.path}/${current.cacheKey}.part.resume.tmp',
+      ]);
+      directories.addAll([
+        '${legacyDirectory.path}/${current.cacheKey}.hls',
+        '${legacyDirectory.path}/${current.cacheKey}.hls.part',
+      ]);
+    }
     return MediaCacheDeletionPlan(
       files: files.toList(),
       directories: directories.toList(),
@@ -1552,6 +1630,20 @@ class MediaDownloadService {
   }
 
   Future<void> reconcileNative() async {
+    if (native != null) {
+      try {
+        await native!.migrateLegacyDirectories();
+      } catch (error, stack) {
+        // A running WorkManager writer can legitimately defer a directory
+        // merge until the next cold restore. Status reconciliation still
+        // needs to run so the task remains usable in the current session.
+        AppErrorLogger.capture(
+          error,
+          module: 'media.native-storage-migration',
+          stack: stack,
+        );
+      }
+    }
     for (final task in tasks.tasks) {
       await refreshTask(task.id);
     }
@@ -1722,7 +1814,7 @@ class MediaDownloadService {
   Future<void> delete(
     String taskId, {
     bool deleteTask = true,
-    Future<void> Function()? beforeDelete,
+    Future<void> Function(String? nativeMutationReservation)? beforeDelete,
     bool exclusiveAlreadyHeld = false,
   }) async {
     final id = tasks.resolveTaskId(taskId);
@@ -1733,12 +1825,38 @@ class MediaDownloadService {
     } else {
       tasks.acquireExclusive(id);
     }
+    MediaCacheDeletionPlan? frozenPlan;
+    String? nativeReservation;
+    try {
+      if (native?.supportsMutationReservation == true) {
+        // Freeze the complete Dart-owned cache set before touching transport.
+        // The native reservation then covers both this set and any native
+        // WorkManager/DownloadManager paths for the same task.
+        frozenPlan = await tasks.cacheDeletionPlan(id);
+        nativeReservation = await native!.reserveMutation(id, [
+          ...frozenPlan.files,
+          ...frozenPlan.directories,
+        ]);
+      }
+    } catch (_) {
+      if (!exclusiveAlreadyHeld) tasks.releaseExclusive(id);
+      rethrow;
+    }
     _stopping.add(id);
     try {
       _active[id]?.cancel();
-      final nativeCancel = !_dartTasks.contains(id) ? native?.cancel(id) : null;
+      final nativeCancel = nativeReservation == null && !_dartTasks.contains(id)
+          ? native?.cancel(id)
+          : null;
+      final nativeBeforeDeleteStop =
+          beforeDelete != null &&
+              nativeReservation != null &&
+              !_dartTasks.contains(id)
+          ? native?.cancel(id)
+          : null;
       await _control(id, (id) async {
         if (nativeCancel != null) await nativeCancel;
+        if (nativeBeforeDeleteStop != null) await nativeBeforeDeleteStop;
         try {
           await _running[id];
         } catch (_) {
@@ -1746,20 +1864,27 @@ class MediaDownloadService {
         }
         final current = tasks.task(id);
         if (current == null) return;
-        if (nativeCancel == null && !_dartTasks.contains(id)) {
+        if (nativeCancel == null &&
+            nativeReservation == null &&
+            !_dartTasks.contains(id)) {
           await native?.cancel(id);
         }
         try {
-          if (beforeDelete != null) await beforeDelete();
+          if (beforeDelete != null) await beforeDelete(nativeReservation);
         } catch (_) {
           final latest = tasks.task(id);
           if (latest != null && latest.state == MediaTaskState.downloading) {
             tasks.transition(id, MediaTaskState.cancelled);
+            await tasks.flush(id);
           }
           rethrow;
         }
-        await native?.delete(id);
-        await tasks.deleteCachedFiles(id, exclusiveAlreadyHeld: true);
+        await native?.delete(id, reservationId: nativeReservation);
+        await tasks.deleteCachedFiles(
+          id,
+          exclusiveAlreadyHeld: true,
+          frozenPlan: frozenPlan,
+        );
         if (deleteTask) {
           await tasks.delete(id, exclusiveAlreadyHeld: true);
         } else if (tasks.task(id)?.state == MediaTaskState.downloading ||
@@ -1771,7 +1896,22 @@ class MediaDownloadService {
       });
     } finally {
       _stopping.remove(id);
-      if (!exclusiveAlreadyHeld) tasks.releaseExclusive(id);
+      try {
+        if (nativeReservation != null) {
+          try {
+            await native!.releaseMutation(nativeReservation);
+          } catch (error, stack) {
+            AppErrorLogger.capture(
+              error,
+              module: 'media',
+              context: 'release-mutation',
+              stack: stack,
+            );
+          }
+        }
+      } finally {
+        if (!exclusiveAlreadyHeld) tasks.releaseExclusive(id);
+      }
     }
   }
 

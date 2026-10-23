@@ -1161,7 +1161,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         deleteTask: deleteTask,
         beforeDelete: mediaLibrary.item(taskId) == null
             ? null
-            : () => mediaLibrary.delete(taskId, exclusiveAlreadyHeld: true),
+            : (nativeMutationReservation) => mediaLibrary.delete(
+                taskId,
+                exclusiveAlreadyHeld: true,
+                nativeMutationReservation: nativeMutationReservation,
+              ),
       );
     } else {
       await mediaLibrary.delete(taskId);

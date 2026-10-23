@@ -11,6 +11,7 @@ import java.io.IOException
 import java.io.InterruptedIOException
 import java.net.InetAddress
 import java.net.URI
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
@@ -37,7 +38,8 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
         }
         if (!acquired) return Result.retry()
         try {
-            return withFileLock(applicationContext, taskId) {
+            val initial = repository.read(taskId) ?: return Result.failure()
+            return withFileLock(applicationContext, taskId, initial.seriesDirectory) {
                 if (isObsolete()) return@withFileLock Result.failure()
                 val record = repository.read(taskId) ?: return@withFileLock Result.failure()
                 val partial = partialFile(applicationContext, record)
@@ -169,14 +171,69 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
             File(partialFile(context, record).path + ".legacy.tmp"),
         )
 
-        fun <T> withFileLock(context: Context, taskId: String, action: () -> T): T {
+        fun <T> withFileLock(
+            context: Context,
+            taskId: String,
+            directoryName: String? = null,
+            action: () -> T,
+        ): T {
             require(taskId.matches(Regex("[A-Za-z0-9._-]{1,128}")) && taskId !in listOf(".", ".."))
-            return synchronized(fileMonitors.getOrPut(taskId) { Any() }) {
-                val lock = File(root(context), "." + taskId + ".lock")
+            val run = {
+                synchronized(fileMonitors.getOrPut(taskId) { Any() }) {
+                    val lock = File(root(context), "." + taskId + ".lock")
+                    lock.parentFile?.mkdirs()
+                    java.io.RandomAccessFile(lock, "rw").use { file ->
+                        file.channel.lock().use { action() }
+                    }
+                }
+            }
+            return if (directoryName == null) run()
+            else withDirectoryLocks(context, listOf(directoryName), run)
+        }
+
+        /** Serializes directory migration with every worker writing that directory. */
+        fun <T> withDirectoryLocks(
+            context: Context,
+            names: Collection<String>,
+            action: () -> T,
+        ): T {
+            val ordered = names.map(::validateDirectoryName).distinct().sorted()
+            fun acquire(index: Int): T = if (index == ordered.size) {
+                action()
+            } else {
+                withDirectoryLock(context, ordered[index]) { acquire(index + 1) }
+            }
+            return acquire(0)
+        }
+
+        private fun <T> withDirectoryLock(
+            context: Context,
+            name: String,
+            action: () -> T,
+        ): T {
+            val root = root(context).canonicalFile
+            val lock = File(root, ".directory-${directoryKey(name)}.lock")
+            return synchronized(directoryMonitors.getOrPut(lock.path) { Any() }) {
                 lock.parentFile?.mkdirs()
-                java.io.RandomAccessFile(lock, "rw").use { file -> file.channel.lock().use { action() } }
+                java.io.RandomAccessFile(lock, "rw").use { file ->
+                    file.channel.lock().use { action() }
+                }
             }
         }
+
+        private fun validateDirectoryName(name: String): String {
+            require(name.isNotBlank() && name != "." && name != "..")
+            require(!name.contains('/') && !name.contains('\\')) { "媒体目录无效" }
+            return name
+        }
+
+        private fun directoryKey(name: String): String = MessageDigest
+            .getInstance("SHA-256")
+            .digest(name.toByteArray(Charsets.UTF_8))
+            .take(12)
+            .joinToString("") { "%02x".format(it) }
+
+        private val directoryMonitors = ConcurrentHashMap<String, Any>()
 
         fun validateUrl(raw: String): URI {
             val uri = URI(raw.trim())

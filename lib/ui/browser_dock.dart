@@ -63,6 +63,7 @@ class _BrowserDockState extends State<_BrowserDockBody> {
   Offset? _dockOrigin;
   bool _positionPending = false;
   bool _frameMarkPending = false;
+  bool _changeScheduled = false;
   bool? _localRight;
   double? _localY;
   Future<void> _positionWrites = Future.value();
@@ -120,6 +121,24 @@ class _BrowserDockState extends State<_BrowserDockBody> {
 
   void _changed() {
     if (!mounted) return;
+    if (!(WidgetsBinding.instance.buildOwner?.debugBuilding ?? false)) {
+      _applyChanged();
+      return;
+    }
+    if (_changeScheduled) return;
+    _changeScheduled = true;
+    // Navigator can notify while it is still mounting/restoring routes. Defer
+    // only that build-phase case so the dock never marks itself dirty during
+    // the observer callback, while ordinary route changes stay synchronous.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _changeScheduled = false;
+      if (!mounted) return;
+      _applyChanged();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void _applyChanged() {
     setState(() {
       final id = _current?.id;
       if (id != _activeId || !_eligible) _resetTransient();

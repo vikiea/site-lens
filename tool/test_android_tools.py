@@ -586,6 +586,39 @@ class AndroidToolsTests(unittest.TestCase):
              self.assertRaisesRegex(RuntimeError, 'unexpected APK package'):
             verify_apk_package(Path(apk.name), acceptance.FORMAL_PACKAGE, acceptance.ENV)
 
+    def test_apk_version_verification_reads_manifest_identity(self):
+        from android_artifact import verify_apk_version
+
+        with tempfile.NamedTemporaryFile() as apk, \
+                patch('android_artifact._tool', return_value='/sdk/apkanalyzer'), \
+                patch(
+                    'android_artifact.subprocess.check_output',
+                    side_effect=[b'0.4.0.alpha16\n', b'94\n'],
+                ):
+            verify_apk_version(
+                Path(apk.name),
+                expected_name='0.4.0.alpha16',
+                expected_code=94,
+                env=acceptance.ENV,
+            )
+
+    def test_apk_version_verification_rejects_mismatched_manifest_identity(self):
+        from android_artifact import verify_apk_version
+
+        with tempfile.NamedTemporaryFile() as apk, \
+                patch('android_artifact._tool', return_value='/sdk/apkanalyzer'), \
+                patch(
+                    'android_artifact.subprocess.check_output',
+                    side_effect=[b'0.4.0.alpha15\n', b'93\n'],
+                ), \
+                self.assertRaisesRegex(RuntimeError, 'versionName'):
+            verify_apk_version(
+                Path(apk.name),
+                expected_name='0.4.0.alpha16',
+                expected_code=94,
+                env=acceptance.ENV,
+            )
+
     def test_formal_package_foreground_guard_rejects_formal_activity(self):
         with patch.object(acceptance, 'adb', return_value=SimpleNamespace(
             stdout=b'topResumedActivity=dev.vikiea.site_lens/dev.vikiea.site_lens.MainActivity',

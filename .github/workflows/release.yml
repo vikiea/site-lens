@@ -29,12 +29,12 @@ on:
           - minor
           - patch
       version_code:
-        description: Android versionCode override (auto derives it from release tags)
+        description: Must match the versionCode in the tagged pubspec.yaml (kept for reruns)
         required: false
         default: auto
         type: string
       minimum_version_code:
-        description: Optional installed versionCode floor for emergency/manual builds
+        description: Optional installed versionCode floor; pubspec versionCode must still exceed it
         required: false
         default: '0'
         type: string
@@ -136,10 +136,35 @@ jobs:
           python3 tool/extract_release_version_codes.py \
             --input dist/releases.json \
             --output dist/published-version-codes.txt
-          pubspec_code="$(sed -n 's/^version:.*+\([0-9][0-9]*\)$/\1/p' pubspec.yaml | head -1)"
-          test -n "$pubspec_code"
+          pubspec_code="$(python3 tool/verify_release_pubspec.py --tag "$tag")"
           minimum_code="$DISPATCH_MINIMUM_VERSION_CODE"
-          if (( pubspec_code > minimum_code )); then minimum_code="$pubspec_code"; fi
+          [[ "$minimum_code" =~ ^[0-9]+$ ]] || {
+            echo "minimum_version_code must be a non-negative integer" >&2
+            exit 1
+          }
+          if [[ "$DISPATCH_VERSION_CODE" != "auto" && "$DISPATCH_VERSION_CODE" != "$pubspec_code" ]]; then
+            echo "version_code must match the tagged pubspec.yaml build number" >&2
+            exit 1
+          fi
+          validate_existing_reservation() {
+            local code="$1"
+            if [[ -z "$code" ]]; then
+              return 0
+            fi
+            if [[ "$code" != "$pubspec_code" ]]; then
+              echo "existing reservation $code does not match tagged pubspec build $pubspec_code" >&2
+              exit 1
+            fi
+            if (( code <= minimum_code )); then
+              echo "existing reservation $code does not clear minimum_version_code $minimum_code" >&2
+              exit 1
+            fi
+            if [[ "$DISPATCH_VERSION_CODE" != "auto" && "$DISPATCH_VERSION_CODE" != "$code" ]]; then
+              echo "release tag already reserves versionCode $code; override $DISPATCH_VERSION_CODE is unsafe" >&2
+              exit 1
+            fi
+          }
+          validate_existing_reservation "$existing_code"
           # Older stable releases predate versionCode release-note records.
           # Read the current stable APK's manifest so the shared sequence also
           # includes the versionCode shipped from main.
@@ -181,14 +206,8 @@ jobs:
             --main-stable-code "$main_stable_code"
             --reserved-codes-file dist/reserved-version-codes.txt
           )
-          if [[ "$DISPATCH_VERSION_CODE" != "auto" && -n "$DISPATCH_VERSION_CODE" ]]; then
-            version_args+=(--override "$DISPATCH_VERSION_CODE")
-          fi
+          version_args+=(--override "$pubspec_code")
           if [[ -n "$existing_code" ]]; then
-            if [[ "$DISPATCH_VERSION_CODE" != "auto" && "$DISPATCH_VERSION_CODE" != "$existing_code" ]]; then
-              echo "release tag $tag already reserves versionCode $existing_code; override $DISPATCH_VERSION_CODE is unsafe" >&2
-              exit 1
-            fi
             version_code="$existing_code"
             echo "Reusing version-code reservation $version_code for $tag"
           else
@@ -224,21 +243,15 @@ jobs:
           PY
               )"
               if [[ -n "$existing_code" ]]; then
+                validate_existing_reservation "$existing_code"
                 version_code="$existing_code"
                 echo "Using reservation created by a concurrent run: $version_code"
                 reservation_ready=true
                 break
               fi
-              if [[ "$DISPATCH_VERSION_CODE" != "auto" && -n "$DISPATCH_VERSION_CODE" ]]; then
-                echo "versionCode override $DISPATCH_VERSION_CODE collided with an existing reservation" >&2
-                cat dist/version-code-reservation-error.log >&2 || true
-                exit 1
-              fi
-              write_reserved_codes
-              python3 tool/determine_version_code.py \
-                "${version_args[@]}" \
-                --minimum-code "$minimum_code" > dist/version-code.json
-              version_code="$(python3 -c 'import json; print(json.load(open("dist/version-code.json"))["version_code"])')"
+              echo "pubspec versionCode $pubspec_code could not be reserved; update pubspec and create a new tag" >&2
+              cat dist/version-code-reservation-error.log >&2 || true
+              exit 1
             done
             if [[ "$reservation_ready" != true ]]; then
               echo "failed to create a version-code reservation after 20 attempts" >&2
@@ -246,6 +259,7 @@ jobs:
               exit 1
             fi
           fi
+          python3 tool/verify_release_pubspec.py --tag "$tag" --version-code "$version_code"
           python3 tool/determine_release_version.py \
             --tag "$tag" \
             --channel "$channel" \

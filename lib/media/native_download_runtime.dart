@@ -11,6 +11,10 @@ class NativeDownloadRuntime {
 
   final MethodChannel _channel;
 
+  /// Android exposes a cross-call mutation reservation. Test doubles can
+  /// override this to keep their in-memory backend behavior unchanged.
+  bool get supportsMutationReservation => true;
+
   Future<Map<String, Object?>> start(
     MediaTask task,
     MediaCandidate candidate, {
@@ -55,6 +59,23 @@ class NativeDownloadRuntime {
       }) ??
       const <String, Object?>{};
 
-  Future<void> delete(String taskId) =>
-      _channel.invokeMethod<void>('delete', {'taskId': taskId});
+  /// Consolidates legacy batch directories in the Android-owned download
+  /// root and updates native task records after each successful merge.
+  Future<void> migrateLegacyDirectories() =>
+      _channel.invokeMethod<void>('migrateLegacyDirectories');
+
+  Future<String?> reserveMutation(String taskId, List<String> paths) async =>
+      _channel.invokeMethod<String>('reserveMutation', {
+        'taskId': taskId,
+        'paths': paths,
+      });
+
+  Future<void> releaseMutation(String reservationId) => _channel
+      .invokeMethod<void>('releaseMutation', {'reservationId': reservationId});
+
+  Future<void> delete(String taskId, {String? reservationId}) =>
+      _channel.invokeMethod<void>('delete', {
+        'taskId': taskId,
+        ...?(reservationId == null ? null : {'reservationId': reservationId}),
+      });
 }

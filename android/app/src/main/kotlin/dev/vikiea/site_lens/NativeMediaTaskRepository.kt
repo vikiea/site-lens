@@ -1,9 +1,14 @@
 package dev.vikiea.site_lens
 
 import android.content.Context
+import org.json.JSONObject
 
 /** No Cookie, Authorization or other session headers are persisted here. */
 class NativeMediaTaskRepository(context: Context) {
+    private companion object {
+        const val DIRECTORY_MIGRATION_JOURNAL = "directoryMigrationJournalV1"
+    }
+
     private val prefs = context.getSharedPreferences("media_task_repository", Context.MODE_PRIVATE)
 
     data class Record(
@@ -50,6 +55,55 @@ class NativeMediaTaskRepository(context: Context) {
             prefs.getBoolean("$taskId.cancelled", false),
             prefs.getString("$taskId.workId", null),
         )
+    }
+
+    fun all(): List<Record> = prefs.all.keys
+        .asSequence()
+        .filter { it.endsWith(".known") && prefs.getBoolean(it, false) }
+        .map { it.removeSuffix(".known") }
+        .distinct()
+        .mapNotNull(::read)
+        .toList()
+
+    /** Persists old -> clean directory mappings before physical migration. */
+    fun directoryMigrationJournal(): Map<String, String> {
+        val raw = prefs.getString(DIRECTORY_MIGRATION_JOURNAL, null) ?: return emptyMap()
+        return runCatching {
+            val json = JSONObject(raw)
+            json.keys().asSequence().associateWith { key -> json.getString(key) }
+        }.getOrDefault(emptyMap())
+    }
+
+    fun rememberDirectoryMigration(oldName: String, newName: String) {
+        val next = directoryMigrationJournal().toMutableMap()
+        next[oldName] = newName
+        val json = JSONObject()
+        next.toSortedMap().forEach { (old, clean) -> json.put(old, clean) }
+        check(prefs.edit().putString(DIRECTORY_MIGRATION_JOURNAL, json.toString()).commit()) {
+            "无法保存媒体目录迁移记录"
+        }
+    }
+
+    fun completeDirectoryMigration(oldName: String) {
+        val next = directoryMigrationJournal().toMutableMap()
+        next.remove(oldName)
+        val edit = prefs.edit()
+        if (next.isEmpty()) edit.remove(DIRECTORY_MIGRATION_JOURNAL)
+        else {
+            val json = JSONObject()
+            next.toSortedMap().forEach { (old, clean) -> json.put(old, clean) }
+            edit.putString(DIRECTORY_MIGRATION_JOURNAL, json.toString())
+        }
+        check(edit.commit()) { "无法清理媒体目录迁移记录" }
+    }
+
+    /** Updates every task in one SharedPreferences commit after a merge. */
+    fun rewriteSeriesDirectory(oldName: String, newName: String) {
+        val edit = prefs.edit()
+        all().filter { it.seriesDirectory == oldName }.forEach { record ->
+            edit.putString("${record.taskId}.seriesDirectory", newName)
+        }
+        check(edit.commit()) { "无法更新媒体目录引用" }
     }
 
     fun remove(taskId: String) {

@@ -1384,12 +1384,18 @@ class _AddProfileDialogState extends State<_AddProfileDialog> {
   bool manual = false;
   ReconResult? recon;
   String? error;
+  int _reconGeneration = 0;
+
+  void _invalidateRecon() {
+    _reconGeneration++;
+    widget.app.cancelRecon();
+  }
 
   @override
   void dispose() {
     // Dismissing the dialog must not leave a discovery WebView probing for
     // up to ~15s + selector inference.
-    widget.app.cancelRecon();
+    _invalidateRecon();
     url.dispose();
     name.dispose();
     region.dispose();
@@ -1398,20 +1404,20 @@ class _AddProfileDialogState extends State<_AddProfileDialog> {
   }
 
   Future<void> _recon() async {
+    if (reconning) return;
+    final generation = ++_reconGeneration;
     setState(() {
       reconning = true;
       error = null;
     });
     try {
       final result = await widget.app.recon(url.text);
-      if (!mounted) return;
+      if (!_isCurrentRecon(generation)) return;
       setState(() {
         recon = result;
         manual = true;
         region.text = result.regionSelector;
-        if (result.inferredReadySelector != null) {
-          ready.text = result.inferredReadySelector!;
-        }
+        ready.text = result.inferredReadySelector ?? '';
         if (name.text.trim().isEmpty) {
           final title = result.title.trim();
           name.text = title.isEmpty
@@ -1420,26 +1426,38 @@ class _AddProfileDialogState extends State<_AddProfileDialog> {
         }
       });
     } catch (e) {
-      if (!mounted) return;
+      if (!_isCurrentRecon(generation)) return;
       setState(() {
         error = friendlyError(e);
         manual = true; // Fall back to the manual selector form.
       });
     } finally {
-      if (mounted) setState(() => reconning = false);
+      if (_isCurrentRecon(generation)) {
+        setState(() => reconning = false);
+      }
     }
   }
 
+  bool _isCurrentRecon(int generation) =>
+      mounted &&
+      generation == _reconGeneration &&
+      ModalRoute.of(context)?.isCurrent != false;
+
   Future<void> _submit() async {
+    if (reconning) return;
     if (url.text.trim().isNotEmpty && recon == null && !manual) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('请先完成自动侦察，或点击“手动填写”后再创建')));
-      }
+      final generation = _reconGeneration + 1;
       await _recon();
-      return;
+      if (!_isCurrentRecon(generation) ||
+          recon == null ||
+          !recon!.regionFound ||
+          recon!.inferredReadySelector == null ||
+          recon!.challenge ||
+          recon!.interactionRequired) {
+        return;
+      }
     }
+    if (!_isCurrentRecon(_reconGeneration) || !mounted) return;
     try {
       final label = name.text.trim();
       if (label.isEmpty) throw const FormatException('档案名称不能为空');
@@ -1455,86 +1473,104 @@ class _AddProfileDialogState extends State<_AddProfileDialog> {
         _NewProfile(label, selector, uri, region.text.trim()),
       );
     } catch (e) {
-      showError(context, e);
+      if (mounted) showError(context, e);
     }
   }
 
   @override
-  Widget build(BuildContext context) => SiteLensAlertDialog(
-    title: const Text('添加站点档案'),
-    content: SizedBox(
-      width: 460,
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextField(
-              controller: url,
-              keyboardType: TextInputType.url,
-              decoration: const InputDecoration(
-                labelText: '站点地址（发布页或任意入口）',
-                helperText: '粘一个 URL，App 会侦察最新地址区域并推断核心 DOM 选择器',
-              ),
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              children: [
-                FilledButton.icon(
-                  onPressed: reconning ? null : _recon,
-                  icon: const Icon(Icons.travel_explore),
-                  label: Text(reconning ? '侦察中…' : '开始侦察'),
+  Widget build(BuildContext context) => PopScope<void>(
+    canPop: false,
+    onPopInvokedWithResult: (didPop, _) {
+      _invalidateRecon();
+      if (!didPop && mounted) Navigator.of(context).pop();
+    },
+    child: SiteLensAlertDialog(
+      title: const Text('添加站点档案'),
+      content: SizedBox(
+        width: 460,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: url,
+                readOnly: reconning,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(
+                  labelText: '站点地址（发布页或任意入口）',
+                  helperText: '粘一个 URL，App 会侦察最新地址区域并推断核心 DOM 选择器',
                 ),
-                TextButton(
-                  onPressed: () => setState(() => manual = !manual),
-                  child: Text(manual ? '收起手动填写' : '手动填写'),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                children: [
+                  FilledButton.icon(
+                    onPressed: reconning ? null : _recon,
+                    icon: const Icon(Icons.travel_explore),
+                    label: Text(reconning ? '侦察中…' : '开始侦察'),
+                  ),
+                  TextButton(
+                    onPressed: reconning
+                        ? null
+                        : () => setState(() => manual = !manual),
+                    child: Text(manual ? '收起手动填写' : '手动填写'),
+                  ),
+                ],
+              ),
+              if (reconning) const LinearProgressIndicator(),
+              if (error != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    error!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                ),
+              if (recon != null) _ReconReport(result: recon!),
+              if (manual) ...[
+                const Divider(),
+                TextField(
+                  controller: name,
+                  decoration: const InputDecoration(labelText: '档案名称'),
+                ),
+                const SizedBox(height: SiteLensMetrics.formGap),
+                TextField(
+                  controller: region,
+                  decoration: const InputDecoration(
+                    labelText: '最新地址区域（自动识别或 CSS）',
+                  ),
+                ),
+                const SizedBox(height: SiteLensMetrics.formGap),
+                TextField(
+                  controller: ready,
+                  decoration: const InputDecoration(
+                    labelText: '核心 DOM 选择器',
+                    helperText: '首页已就绪 = 该选择器可见且有内容',
+                  ),
                 ),
               ],
-            ),
-            if (reconning) const LinearProgressIndicator(),
-            if (error != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  error!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-              ),
-            if (recon != null) _ReconReport(result: recon!),
-            if (manual) ...[
-              const Divider(),
-              TextField(
-                controller: name,
-                decoration: const InputDecoration(labelText: '档案名称'),
-              ),
-              const SizedBox(height: SiteLensMetrics.formGap),
-              TextField(
-                controller: region,
-                decoration: const InputDecoration(
-                  labelText: '最新地址区域（自动识别或 CSS）',
-                ),
-              ),
-              const SizedBox(height: SiteLensMetrics.formGap),
-              TextField(
-                controller: ready,
-                decoration: const InputDecoration(
-                  labelText: '核心 DOM 选择器',
-                  helperText: '首页已就绪 = 该选择器可见且有内容',
-                ),
-              ),
             ],
-          ],
+          ),
         ),
       ),
+      actions: [
+        TextButton(
+          onPressed: () {
+            _invalidateRecon();
+            Navigator.pop(context);
+          },
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: reconning ? null : _submit,
+          child: Text(reconning ? '侦察中…' : '创建档案'),
+        ),
+      ],
     ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('取消'),
-      ),
-      FilledButton(onPressed: _submit, child: const Text('创建档案')),
-    ],
   );
 }
 
@@ -1569,9 +1605,7 @@ class _ReconReport extends StatelessWidget {
                 ? '最新地址区域：命中（高亮前 ${result.links.length} 条链接）'
                 : '最新地址区域：未命中，请手动填写选择器',
           ),
-          Text(
-            '推断 ready 选择器：${result.inferredReadySelector ?? '未推断出，默认 main'}',
-          ),
+          Text('核心 DOM 选择器：${result.inferredReadySelector ?? '未推断出，请手动填写'}'),
           if (result.challenge)
             Text('⚠️ 命中验证码/人机验证', style: TextStyle(color: scheme.error)),
           if (result.interactionRequired)

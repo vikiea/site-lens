@@ -8,6 +8,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/media/dlna_service.dart';
+import 'package:site_lens/media/media_directory_migration.dart';
+import 'package:site_lens/media/media_library.dart';
 import 'package:site_lens/media/media_service.dart';
 import 'package:site_lens/media/native_download_runtime.dart';
 import 'package:site_lens/network/transport.dart';
@@ -18,6 +20,8 @@ class FakeNativeDownloads extends NativeDownloadRuntime {
   final statuses = <String, Map<String, Object?>>{};
   final calls = <String>[];
   void Function(String taskId)? onCancel;
+  bool reservationEnabled = false;
+  bool rejectReservation = false;
 
   @override
   Future<Map<String, Object?>> start(
@@ -44,7 +48,27 @@ class FakeNativeDownloads extends NativeDownloadRuntime {
   }
 
   @override
-  Future<void> delete(String taskId) async => calls.add('delete:$taskId');
+  bool get supportsMutationReservation => reservationEnabled;
+
+  @override
+  Future<String?> reserveMutation(String taskId, List<String> paths) async {
+    if (!reservationEnabled) return null;
+    calls.add('reserve:$taskId');
+    if (rejectReservation) throw StateError('media busy');
+    return 'reservation:$taskId';
+  }
+
+  @override
+  Future<void> releaseMutation(String reservationId) async =>
+      calls.add('release:$reservationId');
+
+  @override
+  Future<void> delete(String taskId, {String? reservationId}) async =>
+      calls.add(
+        reservationId == null
+            ? 'delete:$taskId'
+            : 'delete:$taskId:$reservationId',
+      );
 
   @override
   Future<Map<String, Object?>> resume(String taskId) async {
@@ -392,7 +416,7 @@ void main() {
     );
 
     expect(retry.id, original.id);
-    expect(retry.batchDirectory, '旧剧集 - 批次1792686431921372');
+    expect(retry.batchDirectory, '旧剧集');
     expect(retry.candidateId, 'retry-new');
   });
 
@@ -422,6 +446,101 @@ void main() {
     expect(directory.path, endsWith('/media_cache/批量下载一'));
   });
 
+  test('legacy media folders are physically merged and catalog paths follow', () async {
+    final root = await Directory.systemTemp.createTemp('site-lens-migrate-');
+    addTearDown(() => root.delete(recursive: true));
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final source = candidate(
+      id: 'legacy-folder-task',
+      title: '系统带我攻略弟弟（漫剧版） - 第1集',
+    );
+    await db.saveMediaCandidate(source);
+    final seed = MediaTaskStore(db: db, directoryProvider: () async => root);
+    final task = seed.create(source, batchDirectory: '系统带我攻略弟弟（漫剧版）');
+    final legacy = task.copyWith(
+      updatedAt: task.updatedAt,
+      batchDirectory: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
+    );
+    await db.saveMediaTask(legacy);
+
+    final oldCache = Directory(
+      '${root.path}/media_cache/系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
+    )..createSync(recursive: true);
+    final newCache = Directory('${root.path}/media_cache/系统带我攻略弟弟（漫剧版）')
+      ..createSync(recursive: true);
+    final oldFile = File('${oldCache.path}/${task.cacheKey}.media')
+      ..writeAsBytesSync([1, 2, 3]);
+    File('${newCache.path}/${task.cacheKey}.media').writeAsBytesSync([9]);
+    final oldExport = Directory(
+      '${root.path}/media_exports/系统带我攻略弟弟（漫剧版） - 批次1792686431921372/${task.cacheKey}',
+    )..createSync(recursive: true);
+    final oldExportFile = File('${oldExport.path}/episode.mp4')
+      ..writeAsBytesSync([4, 5, 6]);
+    final exported = MediaArtifact(
+      taskId: task.id,
+      location: oldExportFile.path,
+      name: 'episode.mp4',
+      size: 3,
+      folder: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
+      createdAt: task.updatedAt,
+    );
+    await db.saveMediaArtifact(task.id, exported.toJson());
+    await db.saveMediaTask(
+      legacy.copyWith(updatedAt: legacy.updatedAt, localRef: oldFile.path),
+    );
+
+    final restored = MediaTaskStore(
+      db: db,
+      directoryProvider: () async => root,
+    );
+    await restored.restore();
+    final cleanTask = restored.task(task.id)!;
+    expect(cleanTask.batchDirectory, '系统带我攻略弟弟（漫剧版）');
+    expect(cleanTask.localRef, '${newCache.path}/${task.cacheKey}.media');
+    expect(await File(cleanTask.localRef!).readAsBytes(), [1, 2, 3]);
+    expect(await oldCache.exists(), isFalse);
+
+    final library = MediaLibrary(db: db, tasks: restored);
+    addTearDown(library.dispose);
+    await library.restore();
+    final migratedArtifact = library.item(task.id)!;
+    expect(
+      migratedArtifact.location,
+      oldExportFile.path.replaceFirst(
+        '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
+        '系统带我攻略弟弟（漫剧版）',
+      ),
+    );
+    expect(migratedArtifact.folder, '系统带我攻略弟弟（漫剧版）');
+    expect(await File(migratedArtifact.location).readAsBytes(), [4, 5, 6]);
+  });
+
+  test(
+    'corrupt media migration journal is discarded and rebuilt from disk',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-bad-journal-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      await db.setSetting(MediaDirectoryMigration.journalKey, '{broken json');
+      final legacy = Directory(
+        '${root.path}/media_cache/系列 - 批次1792686431921372',
+      )..createSync(recursive: true);
+      File('${legacy.path}/episode.media').writeAsBytesSync([1, 2, 3]);
+
+      await MediaDirectoryMigration(db).migrateLocal(root);
+
+      expect(
+        await File('${root.path}/media_cache/系列/episode.media').readAsBytes(),
+        [1, 2, 3],
+      );
+      expect(await legacy.exists(), isFalse);
+    },
+  );
+
   test(
     'legacy cache identity stays stable while its display name is clean',
     () {
@@ -431,8 +550,8 @@ void main() {
         batchDirectory: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
       );
 
-      expect(task.batchDirectory, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
-      expect(task.storageDirectoryName, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
+      expect(task.batchDirectory, '系统带我攻略弟弟（漫剧版）');
+      expect(task.storageDirectoryName, '系统带我攻略弟弟（漫剧版）');
       expect(mediaFolderDisplayName(task.batchDirectory!), '系统带我攻略弟弟（漫剧版）');
     },
   );
@@ -939,6 +1058,129 @@ void main() {
   );
 
   test(
+    'delete reserves native and Dart cache paths before cancelling transport',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-delete-reservation-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final task = store.create(candidate());
+      final native = FakeNativeDownloads()..reservationEnabled = true;
+      native.statuses[task.id] = {'state': 'downloading'};
+      final service = MediaDownloadService(tasks: store, native: native);
+
+      await service.startNative(task, candidate());
+      await service.delete(task.id);
+
+      expect(native.calls, [
+        'start:${task.id}',
+        'reserve:${task.id}',
+        'delete:${task.id}:reservation:${task.id}',
+        'release:reservation:${task.id}',
+      ]);
+      expect(store.task(task.id), isNull);
+    },
+  );
+
+  test('a failed export cleanup stops native writing before releasing its reservation', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'site-lens-delete-before-hook-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final store = MediaTaskStore(directoryProvider: () async => root);
+    final task = store.create(candidate());
+    final native = FakeNativeDownloads()
+      ..reservationEnabled = true
+      ..statuses[task.id] = {'state': 'downloading'};
+    final service = MediaDownloadService(tasks: store, native: native);
+
+    await service.startNative(task, candidate());
+    await expectLater(
+      service.delete(
+        task.id,
+        beforeDelete: (reservation) async {
+          expect(reservation, 'reservation:${task.id}');
+          throw StateError('导出副本仍被占用');
+        },
+      ),
+      throwsStateError,
+    );
+
+    expect(native.calls, [
+      'start:${task.id}',
+      'reserve:${task.id}',
+      'cancel:${task.id}',
+      'release:reservation:${task.id}',
+    ]);
+    expect(store.task(task.id)?.state, MediaTaskState.cancelled);
+  });
+
+  test(
+    'a rejected native reservation leaves the writer and task untouched',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-delete-reservation-reject-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final task = store.create(candidate());
+      final native = FakeNativeDownloads()
+        ..reservationEnabled = true
+        ..rejectReservation = true;
+      native.statuses[task.id] = {'state': 'downloading'};
+      final service = MediaDownloadService(tasks: store, native: native);
+
+      await service.startNative(task, candidate());
+      await expectLater(service.delete(task.id), throwsStateError);
+
+      expect(native.calls, ['start:${task.id}', 'reserve:${task.id}']);
+      expect(store.task(task.id)?.state, MediaTaskState.downloading);
+    },
+  );
+
+  test(
+    'Dart writer remains behind the native reservation until flush completes',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-dart-writer-reservation-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final task = store.create(candidate());
+      final transport = _HeldDownloadHttp();
+      final native = FakeNativeDownloads()..reservationEnabled = true;
+      final service = MediaDownloadService(
+        tasks: store,
+        http: transport,
+        native: native,
+      );
+      final running = service.start(task, candidate());
+      addTearDown(() async {
+        if (!transport.flushAllowed.isCompleted) {
+          transport.flushAllowed.complete();
+        }
+        await running;
+      });
+      await transport.started.future.timeout(const Duration(seconds: 3));
+
+      final deleting = service.delete(task.id);
+      await transport.cancelled.future.timeout(const Duration(seconds: 3));
+      expect(native.calls, ['reserve:${task.id}']);
+      expect(store.isExclusive(task.id), isTrue);
+
+      transport.flushAllowed.complete();
+      await deleting.timeout(const Duration(seconds: 3));
+      expect(native.calls, [
+        'reserve:${task.id}',
+        'delete:${task.id}:reservation:${task.id}',
+        'release:reservation:${task.id}',
+      ]);
+      expect(store.task(task.id), isNull);
+    },
+  );
+
+  test(
     'delete preserves a caller-owned lease through a failed file operation',
     () async {
       final root = await Directory.systemTemp.createTemp(
@@ -961,7 +1203,7 @@ void main() {
         service.delete(
           task.id,
           exclusiveAlreadyHeld: true,
-          beforeDelete: () async =>
+          beforeDelete: (_) async =>
               throw StateError('file reader remains held'),
         ),
         throwsStateError,

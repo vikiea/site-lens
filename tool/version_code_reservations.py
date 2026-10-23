@@ -42,6 +42,7 @@ def summarize(payload: Any, tag: str) -> dict[str, Any]:
     slug = tag_slug(tag)
     reservations: dict[str, int] = {}
     matching_codes: set[int] = set()
+    owners: dict[int, list[str]] = {}
     for item in _items(payload):
         ref = item.get("ref")
         if not isinstance(ref, str):
@@ -51,8 +52,18 @@ def summarize(payload: Any, tag: str) -> dict[str, Any]:
             continue
         code = int(match.group(1))
         reservations[ref] = code
+        owners.setdefault(code, []).append(ref)
         if match.group(2) == slug:
             matching_codes.add(code)
+    collisions = {
+        code: refs for code, refs in owners.items() if len(refs) > 1
+    }
+    if collisions:
+        details = "; ".join(
+            f"{code}: {', '.join(sorted(refs))}"
+            for code, refs in sorted(collisions.items())
+        )
+        raise ValueError(f"versionCode reservation collision: {details}")
     if len(matching_codes) > 1:
         values = ", ".join(str(value) for value in sorted(matching_codes))
         raise ValueError(f"release tag {tag} has multiple versionCode reservations: {values}")

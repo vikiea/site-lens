@@ -86,11 +86,13 @@ class NativeExportRuntime {
   /// Completed deletions are returned even when a later provider operation fails.
   Future<List<String>> deleteOwnedSources(
     String taskId,
-    List<String> sources,
-  ) async =>
+    List<String> sources, {
+    String? mutationReservationId,
+  }) async =>
       await _channel.invokeListMethod<String>('deleteOwnedSources', {
         'taskId': taskId,
         'sources': sources,
+        'mutationReservationId': ?mutationReservationId,
       }) ??
       const [];
 

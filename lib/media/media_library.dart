@@ -181,7 +181,12 @@ class MediaLibrary extends ChangeNotifier {
       final restored = <String, MediaArtifact>{};
       final duplicates = <MediaArtifact>[];
       for (final raw in await db.mediaArtifacts()) {
-        final item = MediaArtifact.fromJson(raw);
+        var item = MediaArtifact.fromJson(raw);
+        final migrated = _migrateArtifactPaths(item);
+        if (_artifactChanged(item, migrated)) {
+          item = migrated;
+          await db.saveMediaArtifact(item.taskId, item.toJson());
+        }
         final key = _sourceKey(item.location);
         final previous = restored[key];
         if (previous == null ||
@@ -235,6 +240,45 @@ class MediaLibrary extends ChangeNotifier {
     _restored = true;
     _notify();
   }
+
+  MediaArtifact _migrateArtifactPaths(MediaArtifact item) => MediaArtifact(
+    taskId: item.taskId,
+    location: tasks.rewriteManagedPath(item.location),
+    libraryCopy: item.libraryCopy == null
+        ? null
+        : tasks.rewriteManagedPath(item.libraryCopy!),
+    materializedCopy: item.materializedCopy == null
+        ? null
+        : tasks.rewriteManagedPath(item.materializedCopy!),
+    name: item.name,
+    size: item.size,
+    mime: item.mime,
+    durationMs: item.durationMs,
+    width: item.width,
+    height: item.height,
+    thumbnailPath: item.thumbnailPath == null
+        ? null
+        : tasks.rewriteManagedPath(item.thumbnailPath!),
+    folder: _migrateArtifactFolder(item.folder),
+    createdAt: item.createdAt,
+  );
+
+  static String? _migrateArtifactFolder(String? folder) {
+    if (folder == null || folder.trim().isEmpty) return folder;
+    final segments = p.split(folder);
+    if (segments.isEmpty) return folder;
+    return p.joinAll([
+      mediaFolderDisplayName(segments.first),
+      ...segments.skip(1),
+    ]);
+  }
+
+  static bool _artifactChanged(MediaArtifact before, MediaArtifact after) =>
+      before.location != after.location ||
+      before.libraryCopy != after.libraryCopy ||
+      before.materializedCopy != after.materializedCopy ||
+      before.folder != after.folder ||
+      before.thumbnailPath != after.thumbnailPath;
 
   Future<({int added, int found, List<String> warnings})> rescan({
     String? directory,
@@ -1060,6 +1104,7 @@ class MediaLibrary extends ChangeNotifier {
   Future<void> delete(
     String taskId, {
     bool exclusiveAlreadyHeld = false,
+    String? nativeMutationReservation,
   }) => _mutate(taskId, (value) async {
     final ownedPaths = {
       value.location,
@@ -1125,7 +1170,11 @@ class MediaLibrary extends ChangeNotifier {
       disposable.add(path);
     }
     if (native != null) {
-      await native!.deleteOwnedSources(taskId, disposable);
+      await native!.deleteOwnedSources(
+        taskId,
+        disposable,
+        mutationReservationId: nativeMutationReservation,
+      );
     } else {
       for (final path in disposable) {
         final file = File(path);

@@ -70,7 +70,7 @@ class ReleaseInfo {
   }
 }
 
-/// Stable and dotted prerelease versions used by Site Lens release tags.
+/// Release tags use dots; pubspec uses the equivalent SemVer prerelease dash.
 class AppVersion implements Comparable<AppVersion> {
   const AppVersion(this.major, this.minor, this.patch, [this.prerelease]);
   final int major;
@@ -80,7 +80,7 @@ class AppVersion implements Comparable<AppVersion> {
 
   factory AppVersion.parse(String value) {
     final match = RegExp(
-      r'^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.((?:alpha|beta|rc)(?:0|[1-9]\d*)))?(?:\+\d+)?$',
+      r'^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:[.-]((?:alpha|beta|rc)(?:0|[1-9]\d*)))?(?:\+\d+)?$',
     ).firstMatch(value);
     if (match == null) throw const FormatException('版本号格式错误');
     return AppVersion(

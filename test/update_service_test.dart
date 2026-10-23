@@ -28,7 +28,11 @@ void main() {
     expect(AppVersion.parse('v1.2.3'), const AppVersion(1, 2, 3));
     expect(AppVersion.parse('1.2.3+4'), const AppVersion(1, 2, 3));
     expect(AppVersion.parse('1.2.3.alpha1').toString(), '1.2.3.alpha1');
-    expect(() => AppVersion.parse('1.2.3-beta1'), throwsFormatException);
+    expect(AppVersion.parse('1.2.3-beta1'), AppVersion.parse('1.2.3.beta1'));
+    expect(
+      AppVersion.parse('0.4.0-alpha16+94'),
+      AppVersion.parse('0.4.0.alpha16'),
+    );
     expect(() => AppVersion.parse('1.2.3.alpha.1'), throwsFormatException);
     expect(() => AppVersion.parse('1.2.3.alpha01'), throwsFormatException);
     expect(

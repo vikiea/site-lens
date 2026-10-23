@@ -464,44 +464,11 @@ class _UpdateGitHubTokenEntryState extends State<_UpdateGitHubTokenEntry> {
   }
 
   Future<void> _edit() async {
-    final controller = TextEditingController();
+    if (_busy) return;
     final result = await showDialog<_UpdateTokenResult>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('GitHub API Token'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          obscureText: true,
-          autocorrect: false,
-          enableSuggestions: false,
-          decoration: const InputDecoration(
-            hintText: '粘贴 ghp_ 或 github_pat_ Token',
-            helperText: '仅保存在系统安全存储，不会进入备份或日志。',
-          ),
-        ),
-        actions: [
-          if (_configured == true)
-            TextButton(
-              onPressed: () =>
-                  Navigator.pop(context, const _UpdateTokenResult.clear()),
-              child: const Text('清除'),
-            ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(
-              context,
-              _UpdateTokenResult.save(controller.text),
-            ),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
+      builder: (_) => _UpdateTokenDialog(configured: _configured == true),
     );
-    controller.dispose();
     if (result == null || !mounted) return;
     setState(() => _busy = true);
     try {
@@ -554,6 +521,74 @@ class _UpdateGitHubTokenEntryState extends State<_UpdateGitHubTokenEntry> {
             child: Text(_configured == true ? '管理' : '设置'),
           ),
     onTap: _busy ? null : _edit,
+  );
+}
+
+/// Own the input for the whole route lifetime, including its exit animation.
+/// showDialog's result completes before the exiting TextField is unmounted.
+class _UpdateTokenDialog extends StatefulWidget {
+  const _UpdateTokenDialog({required this.configured});
+  final bool configured;
+
+  @override
+  State<_UpdateTokenDialog> createState() => _UpdateTokenDialogState();
+}
+
+class _UpdateTokenDialogState extends State<_UpdateTokenDialog> {
+  final _controller = TextEditingController();
+  final _form = GlobalKey<FormState>();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    if (!_form.currentState!.validate()) return;
+    Navigator.pop(context, _UpdateTokenResult.save(_controller.text));
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('GitHub API Token'),
+    content: Form(
+      key: _form,
+      child: TextFormField(
+        controller: _controller,
+        autofocus: true,
+        obscureText: true,
+        autocorrect: false,
+        enableSuggestions: false,
+        onFieldSubmitted: (_) => _save(),
+        validator: (value) {
+          try {
+            return GitHubTokenStore.normalize(value) == null
+                ? 'GitHub Token 不能为空'
+                : null;
+          } on FormatException catch (error) {
+            return error.message;
+          }
+        },
+        decoration: const InputDecoration(
+          hintText: '粘贴 ghp_ 或 github_pat_ Token',
+          helperText: '仅保存在系统安全存储，不会进入备份或日志。',
+        ),
+      ),
+    ),
+    actions: [
+      if (widget.configured)
+        TextButton(
+          onPressed: () =>
+              Navigator.pop(context, const _UpdateTokenResult.clear()),
+          child: const Text('清除'),
+        ),
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      FilledButton(onPressed: _save, child: const Text('保存')),
+    ],
   );
 }
 

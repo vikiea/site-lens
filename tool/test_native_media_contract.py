@@ -33,9 +33,28 @@ class NativeMediaContractTests(unittest.TestCase):
         download = (ANDROID / "NativeDownloadRuntime.kt").read_text()
         export = NATIVE_EXPORT
         self.assertIn('NativeMediaFileLeases.registry.mutate(scope)', download)
-        delete = download.split('private fun delete(taskId: String)', 1)[1].split('private fun validTaskId(', 1)[0]
+        self.assertIn('reserveMutation', download)
+        self.assertIn('mutationReservations', download)
+        for token in (
+            'directoryMigrationJournal',
+            'rewriteSeriesDirectory',
+            'withDirectoryLocks',
+            'LinkOption.NOFOLLOW_LINKS',
+            'newName in activeDirectories',
+            'ownsMutationReservation',
+            'fun dispose()',
+        ):
+            self.assertIn(token, download)
+        delete = download.split(
+            'private fun delete(taskId: String, reservationId: String? = null)', 1
+        )[1].split('private fun validTaskId(', 1)[0]
         self.assertLess(delete.index('registry.mutate(scope)'), delete.index('stop(taskId, true'))
-        self.assertLess(export.index('registry.mutate(mutationScope(call))'), export.index('execute(call, cancellation)'))
+        self.assertLess(delete.index('deleteUnderLease'), delete.index('NativeMediaDownloadWorker.files'))
+        normal_export = export.split('} else {', 1)[1]
+        self.assertLess(
+            normal_export.index('registry.mutate(mutationScope(call))'),
+            normal_export.index('execute(call, cancellation)'),
+        )
         scope = export.split('private fun mutationScope(', 1)[1].split('private fun execute(', 1)[0]
         for operation in ('"delete"', '"move"', '"rename"', '"deliver"', '"materialize"', '"deleteOwnedSources"', '"copyVerified"'):
             self.assertIn(operation, scope)
@@ -47,7 +66,8 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertLess(body.index('sources.forEach'), body.index('delete(source, allowMissing = true)'))
         self.assertIn('PartialMediaDeletion(deleted.toList(), error)', body)
         library = (ROOT / 'lib/media/media_library.dart').read_text()
-        self.assertIn('native!.deleteOwnedSources(value.taskId, disposable)', library)
+        self.assertIn('native!.deleteOwnedSources(', library)
+        self.assertIn('mutationReservationId: nativeMutationReservation', library)
         self.assertIn("details['deletedSources']", library)
 
     def test_verified_local_copy_and_move_stay_under_native_reservations(self):

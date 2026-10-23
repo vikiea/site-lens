@@ -7,7 +7,12 @@ import argparse
 import os
 from pathlib import Path
 
-from android_artifact import FORMAL_PACKAGE, verify_apk_package, verify_formal_apk
+from android_artifact import (
+    FORMAL_PACKAGE,
+    verify_apk_package,
+    verify_apk_version,
+    verify_formal_apk,
+)
 
 
 def main() -> int:
@@ -21,6 +26,8 @@ def main() -> int:
         type=Path,
         help="APK path; defaults to the Flutter output for the selected build",
     )
+    parser.add_argument("--version-name")
+    parser.add_argument("--version-code", type=int)
     args = parser.parse_args()
     apk = args.apk or Path(
         "build/app/outputs/flutter-apk/app-release.apk"
@@ -30,9 +37,20 @@ def main() -> int:
     env = os.environ.copy()
     env.setdefault("ANDROID_HOME", "/opt/homebrew/share/android-commandlinetools")
     if args.formal:
-        verify_formal_apk(apk, env)
+        verify_formal_apk(
+            apk,
+            env,
+            expected_name=args.version_name,
+            expected_code=args.version_code,
+        )
     else:
         verify_apk_package(apk, "dev.vikiea.site_lens.debug", env)
+        verify_apk_version(
+            apk,
+            expected_name=args.version_name,
+            expected_code=args.version_code,
+            env=env,
+        )
     return 0
 
 
