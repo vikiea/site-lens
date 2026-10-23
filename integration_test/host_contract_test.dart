@@ -24,7 +24,7 @@ import 'package:site_lens/web_host/filter_payload_store.dart';
 import 'package:path_provider/path_provider.dart';
 
 const fixture = '''<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Contract fixture</title></head><body>
-<main><h1>Unprivileged fixture</h1><p id="result">Waiting for approved user script</p><p id="page-bridge"></p><p id="cookie-state"></p><p id="local-state"></p><a href="/next">Next document</a></main>
+<main><h1>Unprivileged fixture</h1><p id="result">Waiting for approved user script</p><p id="slot-state"></p><p id="extra-state"></p><p id="traffic-state"></p><p id="page-bridge"></p><p id="cookie-state"></p><p id="local-state"></p><a href="/next">Next document</a></main>
 <iframe src="/frame"></iframe><script>
 document.querySelector('#page-bridge').textContent = String(typeof window.lensBridge !== 'undefined' || !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.lensBridge));
 document.querySelector('#cookie-state').textContent = document.cookie;
@@ -44,6 +44,7 @@ void main() {
     (tester) async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       var privateNetworkHits = 0;
+      var documentLoads = 0;
       server.listen((request) async {
         request.response.headers.contentType = ContentType.html;
         switch (request.uri.path) {
@@ -87,7 +88,12 @@ void main() {
               ),
             );
           default:
-            request.response.write(fixture);
+            request.response.write(
+              fixture.replaceFirst(
+                '<main>',
+                '<main><span id="document-id">${++documentLoads}</span>',
+              ),
+            );
         }
         await request.response.close();
       });
@@ -294,7 +300,7 @@ void main() {
         final other = await service.save(
           userScript(
             'B isolated storage',
-            "document.documentElement.dataset.otherStored = String(GM_getValue('count', 'empty'));",
+            "document.documentElement.dataset.otherStored = String(GM_getValue('count', 'empty')); document.querySelector('#slot-state').textContent = document.documentElement.dataset.otherStored;",
           ),
         );
         final start = await service.save(
@@ -432,19 +438,148 @@ void main() {
             currentUrl,
             reason: 'Back exits fullscreen before navigating history',
           );
-          await step('navigate fixture', hosts.navigate(browser, url));
-          await until(browser, 'main', (s) => s.ready && s.url.endsWith('/'));
         }
+        await step('navigate recovery fixture', hosts.navigate(browser, url));
+        await until(
+          browser,
+          '#document-id',
+          (s) =>
+              s.text.isNotEmpty &&
+              s.url == url.toString() &&
+              browser.url == url.toString() &&
+              browser.loaded &&
+              s.generation == browser.generation &&
+              browser.errorKind == null,
+        );
         // Global recovery really removes registration and reloads a clean document.
+        final previousDocument = (await hosts.api.inspect(
+          browser.id,
+          '#document-id',
+        )).text;
         await SettingsRepository(db).update({'scriptsDisabled': true});
         await step('configure', hosts.configure(browser));
         await step('reload', hosts.api.reload(browser.id));
+        await until(
+          browser,
+          '#document-id',
+          (s) =>
+              s.text.isNotEmpty &&
+              s.text != previousDocument &&
+              s.url == url.toString() &&
+              browser.url == url.toString() &&
+              browser.loaded &&
+              s.generation == browser.generation &&
+              browser.errorKind == null,
+        );
         await until(
           browser,
           '#result',
           (s) => s.text == 'Waiting for approved user script',
         );
         expect(browser.menus, isEmpty);
+        // Exercise the registration removal/reload boundary repeatedly in one
+        // mounted provider. A single successful reload cannot exclude the
+        // intermittent native crash seen after global script revocation.
+        if (Platform.isAndroid && browser.capabilities.isolatedScripts) {
+          for (var cycle = 0; cycle < 12; cycle++) {
+            await SettingsRepository(db).update({'scriptsDisabled': false});
+            await step('stress $cycle enable', hosts.configure(browser));
+            await step(
+              'stress $cycle reload enabled',
+              hosts.api.reload(browser.id),
+            );
+            await until(
+              browser,
+              '#result',
+              (s) => s.text.startsWith('{') && browser.menus.length == 1,
+            );
+            expect(
+              (await hosts.api.inspect(browser.id, '#page-bridge')).text,
+              'false',
+            );
+            await SettingsRepository(db).update({'scriptsDisabled': true});
+            await step('stress $cycle disable', hosts.configure(browser));
+            await step(
+              'stress $cycle reload disabled',
+              hosts.api.reload(browser.id),
+            );
+            await until(
+              browser,
+              '#result',
+              (s) => s.text == 'Waiting for approved user script',
+            );
+            expect(browser.menus, isEmpty);
+            debugPrint('HOST_REVOKE_RELOAD_STRESS_PASS cycle=$cycle');
+          }
+          await SettingsRepository(db).update({'scriptsDisabled': false});
+          await service.disable(attack.id);
+          await step('configure reassigned slots', hosts.configure(browser));
+          await step('reload reassigned slots', hosts.api.reload(browser.id));
+          await until(browser, '#slot-state', (s) => s.text == 'empty');
+          expect(
+            (await hosts.api.inspect(browser.id, '#result')).text,
+            'Waiting for approved user script',
+          );
+          expect(await db.values(other.id), isEmpty);
+          await service.enable(attack, Cancellation());
+          await step('configure restored slots', hosts.configure(browser));
+          await step('reload restored slots', hosts.api.reload(browser.id));
+          await until(browser, '#result', (s) => s.text.startsWith('{'));
+          // Keep native requests active across configuration. Increasing the
+          // script count must not rebuild a live provider's message endpoints.
+          final traffic = await service.save(
+            userScript(
+              'E bridge traffic',
+              "let tick = 0; setInterval(() => { GM.setValue('traffic', ++tick).then(() => { document.querySelector('#traffic-state').textContent = String(tick); }).catch(() => {}); }, 10);",
+              grants: '// @grant GM.setValue',
+            ),
+          );
+          await service.enable(traffic, Cancellation());
+          await step('configure traffic', hosts.configure(browser));
+          await step('reload traffic', hosts.api.reload(browser.id));
+          await until(browser, '#result', (s) => s.text.startsWith('{'));
+          await until(
+            browser,
+            '#traffic-state',
+            (s) => (int.tryParse(s.text) ?? 0) > 0,
+          );
+          expect((await db.values(traffic.id))['traffic'], greaterThan(0));
+          // Grow the simultaneous script set while a fully instrumented page
+          // is live, rather than assuming provider registration is startup-only.
+          final extra = await service.save(
+            userScript(
+              'D live addition',
+              "document.querySelector('#extra-state').textContent = String(GM_getValue('count', 'extra-empty'));",
+            ),
+          );
+          await service.enable(extra, Cancellation());
+          await step('configure extra world', hosts.configure(browser));
+          await step('reload extra world', hosts.api.reload(browser.id));
+          await until(browser, '#extra-state', (s) => s.text == 'extra-empty');
+          expect(await db.values(extra.id), isEmpty);
+          final registration = (await service.registrations()).firstWhere(
+            (r) => r.privileged,
+          );
+          await expectLater(
+            hosts.api.registerScripts(
+              browser.id,
+              List.filled(33, registration),
+            ),
+            throwsA(isA<PlatformException>()),
+            reason: 'Overflow must explicitly fail instead of skipping scripts or mutating live listeners',
+          );
+          debugPrint(
+            'HOST_BRIDGE_SLOT_OWNERSHIP_PASS reassigned=true liveAddition=true overflowRejected=true',
+          );
+          await SettingsRepository(db).update({'scriptsDisabled': true});
+          await step('disable after slot checks', hosts.configure(browser));
+          await step('reload after slot checks', hosts.api.reload(browser.id));
+          await until(
+            browser,
+            '#result',
+            (s) => s.text == 'Waiting for approved user script',
+          );
+        }
         if (browser.capabilities.privateProbes) {
           await step(
             'navigate cookie',

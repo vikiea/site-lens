@@ -37,6 +37,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import java.io.File
+import java.io.Closeable
 import java.io.FileNotFoundException
 import java.nio.ByteBuffer
 import java.security.MessageDigest
@@ -87,7 +88,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             try { pickDirectory(result) } catch (error: Exception) { fail(call, result, error) }
             return
         }
-        val supported = setOf("validateLocalInput", "muxHls", "validateOutput", "deliver", "deliverToDirectory", "stat", "inspect", "inspectSamples", "scanMedia", "materialize", "rename", "move", "delete")
+        val supported = setOf("validateLocalInput", "muxHls", "validateOutput", "deliver", "deliverToDirectory", "stat", "inspect", "inspectSamples", "scanMedia", "materialize", "rename", "move", "delete", "deleteOwnedSources", "copyVerified")
         if (call.method !in supported) { result.notImplemented(); return }
         val jobId = call.argument<String>("jobId") ?: "job-${System.nanoTime()}"
         val cancellation = AtomicBoolean(false)
@@ -102,7 +103,11 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             activeCancellation = cancellation
             try {
                 check(!cancellation.get()) { "导出已取消" }
-                val value = execute(call, cancellation)
+                val value = NativeMediaFileLeases.registry.acquireRead(readScope(call)).use {
+                    NativeMediaFileLeases.registry.mutate(mutationScope(call)) {
+                        execute(call, cancellation)
+                    }
+                }
                 main.post { result.success(value) }
             } catch (error: Exception) {
                 main.post { fail(call, result, error) }
@@ -110,6 +115,69 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 activeCancellation = null
                 cancellations.remove(jobId)
             }
+        }
+    }
+
+    private fun readScope(call: MethodCall): MediaFileLeaseRegistry.Scope {
+        val raw = when (call.method) {
+            "deliver", "deliverToDirectory", "inspect", "inspectSamples", "stat", "materialize" -> call.argument<String>("source")
+            "validateOutput" -> call.argument<String>("path")
+            "validateLocalInput", "muxHls" -> {
+                val path = call.argument<String>(if (call.method == "muxHls") "playlist" else "path")
+                    ?: return MediaFileLeaseRegistry.Scope()
+                return MediaFileLeaseRegistry.Scope.file(File(path).canonicalFile.parentFile!!)
+            }
+            else -> null
+        }
+        return raw?.let(MediaFileLeaseRegistry.Scope::source) ?: MediaFileLeaseRegistry.Scope()
+    }
+
+    private fun mutationScope(call: MethodCall): MediaFileLeaseRegistry.Scope {
+        fun source(name: String) = call.argument<String>(name)?.let(MediaFileLeaseRegistry.Scope::source)
+            ?: MediaFileLeaseRegistry.Scope()
+        return when (call.method) {
+            "delete" -> source("source")
+            "move" -> {
+                val rawDirectory = call.argument<String>("directory").orEmpty()
+                val uri = Uri.parse(rawDirectory)
+                if (uri.scheme == "content") source("source") else {
+                    val directory = File(if (uri.scheme == "file") uri.path!! else rawDirectory)
+                    val target = File(directory, call.argument<String>("fileName").orEmpty())
+                    source("source") + MediaFileLeaseRegistry.Scope.file(target) +
+                        MediaFileLeaseRegistry.Scope.file(File(target.path + ".part"))
+                }
+            }
+            "deleteOwnedSources" -> {
+                val taskId = call.argument<String>("taskId")?.takeIf { it.isNotBlank() } ?: error("缺少媒体身份")
+                ownedSources(call).fold(MediaFileLeaseRegistry.Scope.task(taskId)) { scope, raw ->
+                    scope + MediaFileLeaseRegistry.Scope.source(raw)
+                }
+            }
+            "copyVerified" -> source("destination") +
+                MediaFileLeaseRegistry.Scope.source(call.argument<String>("destination").orEmpty() + ".part")
+            "rename" -> {
+                val original = source("source")
+                val raw = call.argument<String>("source").orEmpty()
+                val uri = Uri.parse(raw)
+                if (uri.scheme == "content") original else {
+                    val file = File(if (uri.scheme == "file") uri.path!! else raw)
+                    original + MediaFileLeaseRegistry.Scope.file(File(file.parentFile, call.argument<String>("fileName").orEmpty()))
+                }
+            }
+            "deliver" -> source("destination")
+            "muxHls" -> source("output") +
+                MediaFileLeaseRegistry.Scope.source(call.argument<String>("output").orEmpty() + ".part") +
+                MediaFileLeaseRegistry.Scope.source(call.argument<String>("output").orEmpty() + ".segments")
+            "materialize" -> {
+                val raw = call.argument<String>("source").orEmpty()
+                if (Uri.parse(raw).scheme != "content") MediaFileLeaseRegistry.Scope() else {
+                    val key = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray()).joinToString("") { "%02x".format(it) }
+                    val base = File(filesRoot, "media_exports/materialized")
+                    MediaFileLeaseRegistry.Scope.file(File(base, "$key.mp4")) +
+                        MediaFileLeaseRegistry.Scope.file(File(base, "$key.part"))
+                }
+            }
+            else -> MediaFileLeaseRegistry.Scope()
         }
     }
 
@@ -130,11 +198,22 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             "inspectSamples" -> inspectSamples(argument("source"))
             "scanMedia" -> scanMedia(call.argument<String>("directory"), cancellation)
             "materialize" -> materialize(argument("source"))
+            "copyVerified" -> copyVerified(argument("source"), argument("destination"),
+                reuseExistingVerified = call.argument<Boolean>("reuseExistingVerified") == true)
+            "deleteOwnedSources" -> deleteOwnedSources(ownedSources(call))
             "rename" -> rename(argument("source"), argument("fileName"))
             "move" -> {
                 val source = argument("source")
-                val target = deliverToDirectory(source, Uri.parse(argument("directory")), argument("fileName"))
-                runCatching { delete(source) }
+                val directory = Uri.parse(argument("directory"))
+                val target = if (directory.scheme == "content") {
+                    deliverToDirectory(source, directory, argument("fileName"))
+                } else {
+                    require(directory.scheme == null || directory.scheme == "file") { "移动目录无效" }
+                    validateName(argument("fileName"))
+                    val base = File(if (directory.scheme == "file") directory.path!! else argument("directory"))
+                    copyVerified(source, File(base, argument("fileName")).path, sourceMutationHeld = true)
+                }
+                completeMediaMove(target, { delete(source) }, { delete(target, allowMissing = true) })
                 target
             }
             "delete" -> { delete(argument("source"), call.argument<Boolean>("allowMissing") == true); null }
@@ -142,16 +221,49 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         }
     }
 
+    private fun ownedSources(call: MethodCall): List<String> =
+        (call.argument<List<String>>("sources") ?: error("缺少媒体文件清单")).also {
+            require(it.size <= 128 && it.distinct().size == it.size) { "媒体文件清单无效" }
+        }
+
+    private class PartialMediaDeletion(val deletedSources: List<String>, cause: Exception) : Exception(cause)
+
+    private fun deleteOwnedSources(sources: List<String>): List<String> {
+        // Validate every path before deleting the first. The outer reservation
+        // already covers the complete set, including any later active reader.
+        sources.forEach { source ->
+            val uri = Uri.parse(source)
+            if (uri.scheme != "content") {
+                require(uri.scheme == null || uri.scheme == "file") { "仅允许本地媒体文件" }
+                validateLocalPath(if (uri.scheme == "file") uri.path!! else source)
+            }
+        }
+        val deleted = mutableListOf<String>()
+        try {
+            sources.forEach { source ->
+                delete(source, allowMissing = true)
+                deleted.add(source)
+            }
+        } catch (error: Exception) { throw PartialMediaDeletion(deleted.toList(), error) }
+        return deleted
+    }
+
     private fun fail(call: MethodCall, result: MethodChannel.Result, error: Exception) {
-        val code = MediaFileErrors.code(error) ?: "media_export"
+        val failure = if (error is PartialMediaDeletion) error.cause as Exception else error
+        val code = if (error is MediaMoveRollbackFailure) "media_move_incomplete" else MediaFileErrors.code(failure) ?: "media_export"
         // Provider/Media3 exception text and cause stacks can embed private paths
         // or URIs. Persist only the exception type and a safe application message.
-        val message = if ((error is IllegalArgumentException || error is IllegalStateException) &&
-            error.message?.any { it in '\u4e00'..'\u9fff' } == true &&
-            error.message?.none { it == '/' || it == '\\' || it == '\n' } == true) error.message!! else "媒体操作失败"
+        val message = if ((failure is IllegalArgumentException || failure is IllegalStateException) &&
+            failure.message?.any { it in '\u4e00'..'\u9fff' } == true &&
+            failure.message?.none { it == '/' || it == '\\' || it == '\n' } == true) failure.message!! else "媒体操作失败"
         NativeCrashStore.append(context, module = "media.export", message = message,
             details = error.javaClass.simpleName, contextValue = "method=${call.method}")
-        result.error(code, message, null)
+        val details = when (error) {
+            is PartialMediaDeletion -> mapOf("deletedSources" to error.deletedSources)
+            is MediaMoveRollbackFailure -> mapOf("recoveryTarget" to error.target, "sourceRetained" to true, "rollbackFailed" to true)
+            else -> null
+        }
+        result.error(code, message, details)
     }
 
     fun dispose() {
@@ -905,6 +1017,55 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         require(actualSize == count && actual.digest().contentEquals(expected.digest())) { "导出文件校验失败" }
     }
 
+    private fun copyVerified(source: String, destination: String, sourceMutationHeld: Boolean = false,
+                             reuseExistingVerified: Boolean = false): String {
+        val uri = Uri.parse(destination)
+        require(uri.scheme == null || uri.scheme == "file") { "本地复制目标无效" }
+        val target = validateLocalPath(if (uri.scheme == "file") uri.path!! else destination)
+        val temporary = File(target.path + ".part")
+        require(temporary.canonicalFile == temporary) { "临时文件不能使用符号链接" }
+        val reader = if (sourceMutationHeld) Closeable {} else
+            NativeMediaFileLeases.registry.acquireRead(MediaFileLeaseRegistry.Scope.source(source))
+        return reader.use {
+            if (reuseExistingVerified && verifyExistingMediaCopy(target, { sourceStream(source) }, {
+                    check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                })) return@use target.path
+            require(!target.exists()) { "目标目录存在同名文件" }
+            require(!temporary.exists()) { "临时文件已存在，请先清理" }
+            target.parentFile?.mkdirs()
+            try {
+                val expected = MessageDigest.getInstance("SHA-256")
+                var bytes = 0L
+                sourceStream(source).use { input -> temporary.outputStream().use { output ->
+                    val buffer = ByteArray(128 * 1024)
+                    while (true) {
+                        check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                        expected.update(buffer, 0, read)
+                        bytes += read
+                    }
+                } }
+                require(bytes > 0 && temporary.length() == bytes) { "复制文件校验失败" }
+                val actual = MessageDigest.getInstance("SHA-256")
+                temporary.inputStream().use { input ->
+                    val buffer = ByteArray(128 * 1024)
+                    while (true) {
+                        check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        actual.update(buffer, 0, read)
+                    }
+                }
+                require(actual.digest().contentEquals(expected.digest())) { "复制文件校验失败" }
+                check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                check(!target.exists() && temporary.renameTo(target)) { "无法发布复制文件" }
+                target.path
+            } finally { if (temporary.exists()) temporary.delete() }
+        }
+    }
+
     private fun deliverToDirectory(sourcePath: String, directory: Uri, fileName: String, subdirectory: String? = null): String {
         sourceStream(sourcePath).close()
         require(directory.scheme == "content") { "系统目录无效" }
@@ -1220,13 +1381,16 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             } finally { reader.release() }
         }
         val key = MessageDigest.getInstance("SHA-256").digest("$source:${metadata["size"]}:${metadata["modifiedMs"]}".toByteArray()).toHex()
-        val thumbnail = File(File(filesRoot, "media_thumbnails").apply { mkdirs() }, "$key.jpg")
+        // The old cache forced every frame to 16:9. A new namespace makes
+        // existing catalog entries regenerate their thumbnail on inspection.
+        val thumbnail = File(File(filesRoot, "media_thumbnails").apply { mkdirs() }, "v2-$key.jpg")
         if (!thumbnail.isFile || thumbnail.length() == 0L) runCatching {
             FrameExtractor.Builder(context, item).setMediaSourceFactory(sources).build().use { reader ->
                 val bitmap = awaitInspection(reader.getThumbnail()).bitmap
                 val temporary = File(thumbnail.path + ".part")
                 try {
-                    val scaled = Bitmap.createScaledBitmap(bitmap, 320, 180, true)
+                    val size = MediaThumbnailGeometry.fit(bitmap.width, bitmap.height)
+                    val scaled = Bitmap.createScaledBitmap(bitmap, size.width, size.height, true)
                     try {
                         temporary.outputStream().use { check(scaled.compress(Bitmap.CompressFormat.JPEG, 80, it)) }
                         check(temporary.renameTo(thumbnail))

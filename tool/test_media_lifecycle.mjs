@@ -401,19 +401,22 @@ const removedRecommendationStart = outbound.length;
 mutation();
 await waitForReport();
 assert.equal(outbound.slice(removedRecommendationStart).filter(value => value.kind === 'candidates').length, 0);
-// A different series' attached/playing video must not suppress current timing.
-initialData.value = JSON.stringify({id: 42, epPlaySrcs: {}});
+// A different series' attached/playing video must not suppress an explicitly
+// owned source. Unowned timing entries cannot establish current-series identity.
+initialData.value = JSON.stringify({id: 42, epPlaySrcs: {'1': '/current-from-timing.m3u8'}});
 const foreignPlayer = new Media();
 foreignPlayer.currentSrc = foreignPlayer.src = 'https://example.test/foreign-playing.mp4';
 foreignPlayer.owner = recommended;
 foreignPlayer.paused = false;
 nodes.push(foreignPlayer);
 performanceEntries.push({name:'https://example.test/current-from-timing.m3u8', initiatorType:'fetch'});
+performanceEntries.push({name:'https://example.test/unowned-recommendation.m3u8', initiatorType:'fetch'});
 mutation();
 await waitForReport();
 const foreignTimingCandidates = outbound.filter(value => value.kind === 'candidates').at(-1).candidates;
 assert.ok(foreignTimingCandidates.some(value => value.url === 'https://example.test/current-from-timing.m3u8'));
 assert.ok(foreignTimingCandidates.every(value => !value.url.includes('recommended')));
+assert.ok(foreignTimingCandidates.every(value => !value.url.includes('unowned-recommendation')));
 foreignPlayer.isConnected = false;
 nodes.length = 0;
 performanceEntries.length = 0;

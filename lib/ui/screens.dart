@@ -2924,6 +2924,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
       initial: current != null && current.isNotEmpty
           ? current
           : (_tab?.site.url.toString() ?? ''),
+      surfaceRole: SiteLensSurfaceRole.platformView,
     );
   });
 
@@ -3187,6 +3188,10 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     final padding = MediaQuery.paddingOf(context);
     final bottomInset = _webViewFullScreen ? 0.0 : padding.bottom;
     final topInset = _webViewFullScreen ? 0.0 : padding.top;
+    final hasBrowserErrorNotice =
+        current?.error != null && current!.error != _dismissedError;
+    final hasCapabilityNotice =
+        current != null && !current.capabilities.isolatedScripts;
     // Apply the engine's composition policy from the first browser frame.
     // The local scope also covers the microtask before the global mounted-
     // surface notification reaches the app wrapper.
@@ -3215,41 +3220,48 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                 Padding(
                   key: const ValueKey('browser-web-viewport'),
                   padding: EdgeInsets.only(top: topInset),
-                  child: KeyedSubtree(
-                    key: const ValueKey('browser-web-content'),
-                    child: _webContent(),
+                  child: Column(
+                    children: [
+                      // Size notices before laying out the native viewport.
+                      // A fixed inset cannot cover narrow screens, scaled
+                      // text or simultaneous error and capability messages.
+                      if (hasBrowserErrorNotice)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                          child: _BrowserNotice(
+                            text: friendlyError(current.error!),
+                            action: TextButton(
+                              onPressed: () => safely(
+                                context,
+                                () => widget.app.disableAllScripts(true),
+                              ),
+                              child: const Text('关闭全部脚本'),
+                            ),
+                            onDismiss: () => setState(() {
+                              _dismissedError = current.error;
+                              _dismissedHostId = current.id;
+                            }),
+                          ),
+                        ),
+                      if (hasCapabilityNotice)
+                        const Padding(
+                          padding: EdgeInsets.fromLTRB(12, 8, 12, 0),
+                          child: _BrowserNotice(
+                            tone: _NoticeTone.warning,
+                            text: '本机不支持安全隔离，特权脚本已关闭；普通浏览不受影响。',
+                          ),
+                        ),
+                      if (hasBrowserErrorNotice || hasCapabilityNotice)
+                        const SizedBox(height: 8),
+                      Expanded(
+                        child: KeyedSubtree(
+                          key: const ValueKey('browser-web-content'),
+                          child: _webContent(),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                if (current?.error != null && current!.error != _dismissedError)
-                  Positioned(
-                    top: topInset + 8,
-                    left: 12,
-                    right: 12,
-                    child: _BrowserNotice(
-                      text: friendlyError(current.error!),
-                      action: TextButton(
-                        onPressed: () => safely(
-                          context,
-                          () => widget.app.disableAllScripts(true),
-                        ),
-                        child: const Text('关闭全部脚本'),
-                      ),
-                      onDismiss: () => setState(() {
-                        _dismissedError = current.error;
-                        _dismissedHostId = current.id;
-                      }),
-                    ),
-                  ),
-                if (current != null && !current.capabilities.isolatedScripts)
-                  Positioned(
-                    top: topInset + 8,
-                    left: 12,
-                    right: 12,
-                    child: const _BrowserNotice(
-                      tone: _NoticeTone.warning,
-                      text: '本机不支持安全隔离，特权脚本已关闭；普通浏览不受影响。',
-                    ),
-                  ),
                 // The toolbar is pinned to the bottom edge and overlays the page,
                 // so the WebView keeps its size while the bar is open.
                 if (tab != null && _navigationVisible)
@@ -3458,99 +3470,104 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   Future<void> _showMediaCandidatesSheet() async {
     final current = host;
     if (current == null || current.disposed) return;
-    final candidates = widget.app.hosts.mediaCandidates(current);
     await showModalBottomSheet<void>(
       context: context,
-      builder: (c) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            ListTile(
-              title: const Text('媒体'),
-              trailing: TextButton(
-                onPressed: () {
-                  Navigator.pop(c);
-                  unawaited(_resniff());
-                },
-                child: const Text('重新嗅探'),
-              ),
-            ),
-            if (candidates.length > 1)
-              ListTile(
-                leading: const Icon(Icons.download_for_offline_outlined),
-                title: const Text('一键下载全部媒体'),
-                onTap: () async {
-                  Navigator.pop(c);
-                  await _downloadMediaCandidates(current, candidates);
-                },
-              ),
-            if (candidates.isEmpty) const ListTile(title: Text('暂无媒体')),
-            for (final candidate in candidates)
-              ListTile(
-                leading: const Icon(Icons.play_circle_outline),
-                title: Semantics(
-                  label: candidate.title.isEmpty
-                      ? candidate.mediaUrl.host
-                      : candidate.title,
-                  child: SizedBox(
-                    height: 24,
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      physics: const BouncingScrollPhysics(),
-                      child: Text(
-                        candidate.title.isEmpty
-                            ? candidate.mediaUrl.host
-                            : candidate.title,
-                      ),
-                    ),
+      builder: (c) => ListenableBuilder(
+        listenable: widget.app.hosts.changed,
+        builder: (c, _) {
+          final candidates = current.disposed
+              ? const <MediaCandidate>[]
+              : widget.app.hosts.mediaCandidates(current);
+          return SafeArea(
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                ListTile(
+                  title: const Text('媒体'),
+                  trailing: TextButton(
+                    onPressed: () {
+                      Navigator.pop(c);
+                      unawaited(_resniff());
+                    },
+                    child: const Text('重新嗅探'),
                   ),
                 ),
-                trailing: IconButton(
-                  tooltip: '缓存媒体',
-                  icon: const Icon(Icons.download_for_offline_outlined),
-                  onPressed: () async {
-                    Navigator.pop(c);
-                    await _downloadMediaCandidates(current, [candidate]);
-                  },
-                ),
-                onTap: () async {
-                  Navigator.pop(c);
-                  try {
-                    final authorized = widget.app.hosts.authorizeMediaCandidate(
-                      current.id,
-                      candidate.id,
-                    );
-                    final session = await widget.app.nativeMedia.open(
-                      authorized,
-                      hostId: current.id,
-                      generation: current.generation,
-                      sourceUrl: authorized.sourceUrl,
-                      sessionId: 'candidate_${candidate.id}',
-                    );
-                    if (mounted) {
-                      await Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (_) => NativeMediaPlayerScreen(
-                            app: widget.app,
-                            session: session,
-                            candidate: authorized,
+                if (candidates.length > 1)
+                  ListTile(
+                    leading: const Icon(Icons.download_for_offline_outlined),
+                    title: const Text('一键下载全部媒体'),
+                    onTap: () async {
+                      Navigator.pop(c);
+                      await _downloadMediaCandidates(current, candidates);
+                    },
+                  ),
+                if (candidates.isEmpty) const ListTile(title: Text('暂无媒体')),
+                for (final candidate in candidates)
+                  ListTile(
+                    leading: const Icon(Icons.play_circle_outline),
+                    title: Semantics(
+                      label: candidate.title.isEmpty
+                          ? candidate.mediaUrl.host
+                          : candidate.title,
+                      child: SizedBox(
+                        height: 24,
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          physics: const BouncingScrollPhysics(),
+                          child: Text(
+                            candidate.title.isEmpty
+                                ? candidate.mediaUrl.host
+                                : candidate.title,
                           ),
                         ),
-                      );
-                    }
-                  } catch (error) {
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('媒体任务未完成：${friendlyError(error)}'),
-                        ),
-                      );
-                    }
-                  }
-                },
-              ),
-          ],
-        ),
+                      ),
+                    ),
+                    trailing: IconButton(
+                      tooltip: '缓存媒体',
+                      icon: const Icon(Icons.download_for_offline_outlined),
+                      onPressed: () async {
+                        Navigator.pop(c);
+                        await _downloadMediaCandidates(current, [candidate]);
+                      },
+                    ),
+                    onTap: () async {
+                      Navigator.pop(c);
+                      try {
+                        final authorized = widget.app.hosts
+                            .authorizeMediaCandidate(current.id, candidate.id);
+                        final session = await widget.app.nativeMedia.open(
+                          authorized,
+                          hostId: current.id,
+                          generation: current.generation,
+                          sourceUrl: authorized.sourceUrl,
+                          sessionId: 'candidate_${candidate.id}',
+                        );
+                        if (mounted) {
+                          await Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => NativeMediaPlayerScreen(
+                                app: widget.app,
+                                session: session,
+                                candidate: authorized,
+                              ),
+                            ),
+                          );
+                        }
+                      } catch (error) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('媒体任务未完成：${friendlyError(error)}'),
+                            ),
+                          );
+                        }
+                      }
+                    },
+                  ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }

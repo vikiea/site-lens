@@ -1,6 +1,6 @@
 # 广告规则引擎评估
 
-日期：2026-10-20。仓库基线：8d92be8871da（v0.3.0.beta7）。本轮仅实现刷新状态等界面调整，以下为引擎评估，尚未接入 Rust 或验证移动端编译。
+日期：2026-10-22。仓库基线：18d718b（v0.4.0.alpha4 候选）。本轮已完成大规则文件装载和规则源独立启停；以下引擎评估仍不代表完整 ABP/uBlock 兼容，也不代表移动端真实站点验收已经完成。
 
 ## 结论与范围
 
@@ -26,12 +26,12 @@
 | 请求解析 | 支持简化域名、例外、domain/third-party 和正向资源类型；不支持的选项跳过整条规则 | lib/filter/filter_service.dart：FilterCompiler、_parseNetworkRule |
 | 匹配语义 | Dart 与 Android 各自匹配；Android 的部分路径模式删去 * 后按子串比较，不能等价表达完整 ABP 锚定和分隔符 | lib/filter/filter_service.dart：FilterRule.matches；android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt：filterAllows |
 | 页面规则 | CSS 安全子集；scriptlet 仅识别 abort-on-property-read、set-constant，当前运行语义有限 | lib/filter/filter_service.dart；web_assets/filter_runtime.js |
-| 快照装载 | 所有规则编码为 JSON，再受 512 KiB DTO 限额；大订阅即便下载/编译成功，也可能无法装载原生宿主 | lib/web_host/host_dto_codec.dart：maxFilterRulePayloadBytes、filterSnapshot |
-| 页面规则规模 | 按全局顺序截取前 128 条 CSS、32 条 scriptlet 后注入；应改为站点筛选后限额 | NativeWebHost.kt：refreshFilterInjection |
+| 快照装载 | 小规则以内联 DTO 传递；大规则通过应用私有内容寻址文件传递，Android 校验路径、长度、摘要和 JSON 后再装载。32 MiB 合并载荷、30 万条规则及 document-start 页面脚本预算仍是资源保护 | lib/web_host/filter_payload_store.dart；android/.../NativeWebHost.kt |
+| 页面规则规模 | 页面注入使用独立 document-start 预算；超出预算时保留旧 hook 并报告失败，不能把整个网络快照误报为宿主不支持 | NativeWebHost.kt：refreshFilterInjection |
 | 回退源 | 部分 fallback 是其他项目的列表，uBlock 末级 fallback 还是 AdGuard 2.txt；不是同一原始订阅的镜像 | lib/filter/filter_service.dart：builtInFilterSources |
 | iOS | applyFilter 当前仅记录快照 ID，未实现完整请求引擎 | ios/Runner/NativeWebHost.swift：applyFilter |
 
-已有测试以手写小样本为主，不能证明全量真实订阅在原生生效。本次独立只读评估抓取的列表中，仅纯域名规则转成当前 DTO 的大小下界，EasyList/EasyPrivacy/China 已分别约 11.1/9.1/1.2 MB；列表会更新，应以固定样本重新量测，不能把这些数值当作稳定规格。
+已有测试以手写样本和固定大载荷为主，不能证明全量真实订阅在原生生效。过去的“规则较大，暂不加载”提示来自 512 KiB Pigeon 内联消息预算；该预算现在只决定是否切换到私有文件传输，不再决定规则是否可用。真实订阅仍受输入、合并载荷、规则数量和页面脚本预算保护，超限时需要减少启用源或关闭页面元素过滤。
 
 ## 建议接入方式
 

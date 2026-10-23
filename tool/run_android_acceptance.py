@@ -24,10 +24,13 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import base64
 import hashlib
 import json
 import os
+import re
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -57,8 +60,10 @@ INTEGRATION_TARGETS = (
     'integration_test/configured_sites_test.dart',
     'integration_test/real_media_site_test.dart',
     'integration_test/navigation_lease_test.dart',
+    'integration_test/hcpp_visual_test.dart',
 )
 PREBUILT_MANIFEST = "acceptance-manifest.json"
+BACKUP_MANIFEST = "backup-manifest.json"
 DATABASE_FILES = (
     "site_lens.sqlite",
     "site_lens.sqlite-wal",
@@ -86,12 +91,24 @@ ADB = shutil.which("adb", path=ENV["PATH"]) or "adb"
 
 def test_defines() -> list[str]:
     values = [NETWORK_DEFINE]
+    visual_run = ENV.get('SITE_LENS_VISUAL_RUN_ID', '').strip()
+    if visual_run:
+        if not re.fullmatch(r'[0-9a-f]{32}', visual_run):
+            raise ValueError('invalid visual acceptance run id')
+        values.append(f'--dart-define=SITE_LENS_VISUAL_RUN_ID={visual_run}')
     sites = ENV.get('SITE_LENS_TEST_SITES', '').strip()
     if sites:
         values.append(f'--dart-define=SITE_LENS_TEST_SITES={sites}')
     media_url = ENV.get('SITE_LENS_MEDIA_TEST_URL', '').strip()
+    media_pages = ENV.get('SITE_LENS_MEDIA_TEST_URLS', '').strip()
     if media_url:
         values.append(f'--dart-define=SITE_LENS_MEDIA_TEST_URL={media_url}')
+    if media_pages:
+        # Flutter test splits multiline define values into positional test
+        # arguments. Encode the developer-only list as one safe argument.
+        encoded_pages = base64.b64encode(media_pages.encode()).decode('ascii')
+        values.append(f'--dart-define=SITE_LENS_MEDIA_TEST_URLS_BASE64={encoded_pages}')
+    if media_url or media_pages:
         expected_episodes = ENV.get('SITE_LENS_MEDIA_EXPECT_EPISODES', '').strip()
         if expected_episodes:
             values.append(f'--dart-define=SITE_LENS_MEDIA_EXPECT_EPISODES={expected_episodes}')
@@ -120,15 +137,39 @@ def integration_driver_path() -> Path:
     )
     os.close(fd)
     path = Path(raw_path)
+    completion = integration_completion_path(path)
     path.write_text(
+        "import 'dart:convert';\n"
+        "import 'dart:io';\n"
         "import 'package:integration_test/integration_test_driver.dart';\n"
         "\n"
         "Future<void> main() => integrationDriver("
-        "writeResponseOnFailure: true);\n",
+        "writeResponseOnFailure: false, responseDataCallback: (data) async {\n"
+        "  await writeResponseData(data);\n"
+        f"  await File({json.dumps(str(completion))}).writeAsString(\n"
+        "    jsonEncode({'schema': 1, 'passed': true}), flush: true);\n"
+        "});\n",
         encoding="utf-8",
     )
     atexit.register(path.unlink, missing_ok=True)
+    atexit.register(completion.unlink, missing_ok=True)
     return path
+
+
+def integration_completion_path(driver: Path) -> Path:
+    return driver.with_suffix('.passed.json')
+
+
+def verify_integration_completion(driver: Path) -> None:
+    # `flutter drive` can exit 0 after SIGTERM while leaving the test app
+    # running. The unique per-run receipt is emitted only by the SDK's success
+    # response callback, after all tests have finished, never from console text.
+    try:
+        result = json.loads(integration_completion_path(driver).read_text())
+    except (OSError, ValueError) as error:
+        raise RuntimeError('Integration driver exited without a passed suite completion receipt') from error
+    if result != {'schema': 1, 'passed': True}:
+        raise RuntimeError('Integration driver completion receipt does not prove a passed suite')
 
 
 def apk_sha256(path: Path) -> str:
@@ -309,9 +350,11 @@ def restart_adb_server(device: str) -> None:
     )
 
 
-def require_device(device: str) -> None:
+def require_device(device: str, *, allow_recovery: bool = True) -> None:
     if is_tcp_endpoint(device):
         if not device_online(device):
+            if not allow_recovery:
+                raise SystemExit(f"device {device} is unavailable; ADB recovery disabled")
             print(
                 f"device {device} preflight failed; restarting local adb server once",
                 file=sys.stderr,
@@ -417,23 +460,137 @@ def ensure_debug_install(device: str, apk: Path = DEBUG_APK) -> bool:
 
 
 def file_exists(device: str, relative: str) -> bool:
-    return adb(
-        device,
-        "shell",
-        "run-as",
-        PACKAGE,
-        "test",
-        "-f",
-        relative,
-        check=False,
-    ).returncode == 0
+    if relative not in {f"files/{name}" for name in DATABASE_FILES}:
+        raise ValueError("unexpected backup database path")
+    script = (
+        "if [ -d files ]; then "
+        "[ -r files ] && [ -x files ] || exit 3; "
+        f"if [ -f {shlex.quote(relative)} ]; then "
+        f"[ -r {shlex.quote(relative)} ] || exit 4; printf PRESENT; "
+        f"elif [ -e {shlex.quote(relative)} ]; then exit 5; else printf ABSENT; fi; "
+        "elif [ -e files ]; then exit 6; else printf ABSENT; fi"
+    )
+    result = adb(device, "shell", f"run-as {PACKAGE} sh -c {shlex.quote(script)}")
+    result.check_returncode()
+    status = result.stdout.strip()
+    if status not in (b"PRESENT", b"ABSENT"):
+        raise RuntimeError("database existence probe did not return a trustworthy result")
+    return status == b"PRESENT"
 
 
 def read_device_file(device: str, relative: str) -> bytes:
     return subprocess.check_output(
         [ADB, "-s", device, "exec-out", "run-as", PACKAGE, "cat", relative],
         stderr=subprocess.PIPE,
+        timeout=ADB_COMMAND_TIMEOUT_SECONDS,
     )
+
+
+def read_device_identity(device: str) -> dict:
+    """Bind user-0 run-as data to a device, independently of its TCP endpoint.
+
+    Keep only hashes of serial/Android ID in the local backup. Model, API and
+    build fingerprint are deliberately not restore keys: an OTA is permitted.
+    """
+    serial = ''
+    for prop in ('ro.serialno', 'ro.boot.serialno'):
+        value = adb(device, 'shell', 'getprop', prop).stdout.decode().strip()
+        if value and value.lower() not in {'unknown', 'null', 'none'}:
+            serial = value
+            break
+    android_id = adb(
+        device, 'shell', 'settings', '--user', '0', 'get', 'secure', 'android_id'
+    ).stdout.decode().strip().lower()
+    if not serial or not re.fullmatch(r'[0-9a-f]{16}', android_id) \
+            or android_id == '0000000000000000':
+        raise RuntimeError('stable device identity unavailable; no device mutation permitted')
+    return {
+        'serial_sha256': hashlib.sha256(serial.encode()).hexdigest(),
+        'android_id_sha256': hashlib.sha256(android_id.encode()).hexdigest(),
+    }
+
+
+def write_backup_manifest(
+    device: str, directory: Path, backup: dict[str, str], identity: dict
+) -> None:
+    """Publish a complete backup only after a second source identity check."""
+    if read_device_identity(device) != identity:
+        raise RuntimeError('device identity changed during backup; tests not permitted')
+    files = {}
+    for name, digest in backup.items():
+        if name not in DATABASE_FILES:
+            raise RuntimeError('unexpected backup database name')
+        source = directory / name
+        if hashlib.sha256(source.read_bytes()).hexdigest() != digest:
+            raise RuntimeError(f'backup hash mismatch for {name}')
+        files[name] = {'sha256': digest, 'size': source.stat().st_size}
+    payload = {
+        'schema': 1, 'complete': True, 'package': PACKAGE, 'user': 0,
+        'identity': identity, 'files': files,
+        'product_sha256': apk_sha256(directory / 'product-debug.apk'),
+    }
+    pending = directory / (BACKUP_MANIFEST + '.part')
+    with pending.open('x', encoding='utf-8') as stream:
+        os.chmod(pending, 0o600)
+        json.dump(payload, stream, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    pending.replace(directory / BACKUP_MANIFEST)
+
+
+def load_backup_manifest(directory: Path, *, allow_missing_product: bool = False) -> dict:
+    try:
+        manifest = json.loads((directory / BACKUP_MANIFEST).read_text())
+        if not isinstance(manifest, dict) or manifest.get('schema') != 1 \
+                or manifest.get('complete') is not True \
+                or manifest.get('package') != PACKAGE or manifest.get('user') != 0:
+            raise ValueError('invalid backup metadata')
+        identity = manifest.get('identity')
+        if not isinstance(identity, dict) or set(identity) != {
+            'serial_sha256', 'android_id_sha256'
+        } or not all(isinstance(value, str) and re.fullmatch(r'[0-9a-f]{64}', value)
+                     for value in identity.values()):
+            raise ValueError('missing stable source identity')
+        files = manifest.get('files')
+        if not isinstance(files, dict) or not set(files).issubset(DATABASE_FILES):
+            raise ValueError('invalid database inventory')
+        actual_files = {name for name in DATABASE_FILES if (directory / name).exists()}
+        if set(files) != actual_files:
+            raise ValueError('database inventory changed')
+        for name, record in files.items():
+            source = directory / name
+            if not isinstance(record, dict) or record.get('size') != source.stat().st_size \
+                    or record.get('sha256') != hashlib.sha256(source.read_bytes()).hexdigest():
+                raise ValueError(f'backup bytes changed for {name}')
+        product_digest = manifest.get('product_sha256')
+        if not isinstance(product_digest, str) or not re.fullmatch(r'[0-9a-f]{64}', product_digest):
+            raise ValueError('missing backup product APK identity')
+        product = directory / 'product-debug.apk'
+        if not product.exists():
+            if not allow_missing_product:
+                raise RuntimeError(f'prebuilt product APK backup is missing: {product}')
+        elif product_digest != apk_sha256(product):
+            raise ValueError('backup product APK changed')
+        return manifest
+    except (OSError, ValueError, TypeError) as error:
+        raise RuntimeError(
+            'backup lacks valid complete source metadata; legacy backups require '
+            'separate source verification and are not automatically assigned to this device'
+        ) from error
+
+
+def verify_backup_target(
+    device: str, directory: Path, backup: dict[str, str], *, expected_identity: dict | None = None,
+    allow_missing_product: bool = False,
+) -> dict:
+    manifest = load_backup_manifest(directory, allow_missing_product=allow_missing_product)
+    if {name: row['sha256'] for name, row in manifest['files'].items()} != backup:
+        raise RuntimeError('backup inventory differs from the captured snapshot')
+    if expected_identity is not None and manifest['identity'] != expected_identity:
+        raise RuntimeError('backup source metadata differs from the captured identity')
+    if read_device_identity(device) != manifest['identity']:
+        raise RuntimeError('backup belongs to another device; restore blocked before mutation')
+    return manifest
 
 
 def write_device_file(device: str, relative: str, source: Path) -> None:
@@ -445,6 +602,7 @@ def write_device_file(device: str, relative: str, source: Path) -> None:
             stdin=stream,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
+            timeout=ADB_COMMAND_TIMEOUT_SECONDS,
         )
 
 
@@ -462,6 +620,9 @@ def backup_database(device: str, directory: Path) -> dict[str, str]:
 
 
 def restore_database(device: str, directory: Path, backup: dict[str, str]) -> None:
+    # Database ownership remains mandatory even when the normal product APK
+    # had to be rebuilt into DEBUG_APK instead of its old backup location.
+    verify_backup_target(device, directory, backup, allow_missing_product=True)
     if not backup:
         # Nothing was present to back up. Report it loudly instead of claiming a
         # restore: a run that silently leaves the device without the user's data
@@ -589,8 +750,13 @@ def restore_and_launch_debug(
     installs: list[str],
     *,
     allow_rebuild: bool = True,
+    expected_identity: dict | None = None,
 ) -> None:
     """Restore only the debug test package, then launch the restored debug build."""
+    verify_backup_target(
+        device, directory, backup, expected_identity=expected_identity,
+        allow_missing_product=allow_rebuild,
+    )
     adb(device, "shell", "am", "force-stop", PACKAGE, check=False)
     product = directory / "product-debug.apk"
     if not product.is_file():
@@ -605,6 +771,7 @@ def restore_and_launch_debug(
     install(device, product, PACKAGE)
     installs.append("normal debug for restore")
     restore_database(device, directory, backup)
+    print('restore verified: source device identity and database SHA-256 match', flush=True)
     adb(
         device,
         "shell",
@@ -620,7 +787,12 @@ def restore_only(device: str, directory: Path) -> int:
     """Finish a failed run from its retained backup, without replaying suites."""
     if not directory.is_dir():
         raise SystemExit(f"not a backup directory: {directory}")
-    backup = backup_hashes(directory)
+    try:
+        manifest = load_backup_manifest(directory, allow_missing_product=True)
+    except RuntimeError as exc:
+        print(f'Android restore-only FAIL: {exc}; backup retained at {directory}', file=sys.stderr)
+        return 1
+    backup = {name: row['sha256'] for name, row in manifest['files'].items()}
     if not backup:
         raise SystemExit(f"no database files in {directory}")
     installs: list[str] = []
@@ -647,6 +819,10 @@ def main() -> int:
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--skip-check", action="store_true")
     parser.add_argument(
+        "--no-adb-recovery", action="store_true",
+        help="stop on an unavailable endpoint without restarting the shared ADB server",
+    )
+    parser.add_argument(
         "--single-suite",
         action="store_true",
         help="run all integration suites through one app install",
@@ -664,20 +840,8 @@ def main() -> int:
     )
     parser.add_argument(
         '--integration-target',
-        choices=[
-            'integration_test/acceptance_suite_test.dart',
-            'integration_test/app_flow_test.dart',
-            'integration_test/browser_tabs_test.dart',
-            'integration_test/host_contract_test.dart',
-            'integration_test/modernization_test.dart',
-            'integration_test/script_import_test.dart',
-            'integration_test/media_tasks_test.dart',
-            'integration_test/media3_parity_test.dart',
-            'integration_test/configured_sites_test.dart',
-            'integration_test/real_media_site_test.dart',
-            'integration_test/navigation_lease_test.dart',
-        ],
-        default='integration_test/acceptance_suite_test.dart',
+        choices=INTEGRATION_TARGETS,
+        default=DEFAULT_INTEGRATION_TARGET,
     )
     parser.add_argument('--test-name', help='Optional Flutter test-name regex for a targeted device regression')
     parser.add_argument(
@@ -696,6 +860,11 @@ def main() -> int:
         help='manifest emitted by tool/prepare_android_acceptance.py',
     )
     args = parser.parse_args()
+
+    if not args.single_suite and (
+        args.test_name or args.integration_target != DEFAULT_INTEGRATION_TARGET
+    ):
+        parser.error('--integration-target and --test-name require --single-suite')
 
     prebuilt_requested = (
         args.prebuilt_product_apk is not None
@@ -726,7 +895,7 @@ def main() -> int:
 
     global RESTART_ADB
     RESTART_ADB = args.restart_adb
-    require_device(args.device)
+    require_device(args.device, allow_recovery=not args.no_adb_recovery)
 
     if args.restore_from:
         return restore_only(args.device, Path(args.restore_from))
@@ -761,18 +930,24 @@ def main() -> int:
     backup_dir = Path(tempfile.mkdtemp(prefix="site-lens-android-backup-"))
     shutil.copy2(product_apk, backup_dir / "product-debug.apk")
     backup: dict[str, str] = {}
+    backup_completed = False
+    backup_identity = None
     installs: list[str] = []
     error: Exception | None = None
     try:
+        backup_identity = read_device_identity(args.device)
         adb(args.device, "shell", "am", "force-stop", PACKAGE, check=False)
         adb(args.device, "shell", "am", "force-stop", FORMAL_PACKAGE, check=False)
         if ensure_debug_install(args.device, product_apk):
             installs.append("debug for backup/restore")
         backup = backup_database(args.device, backup_dir)
+        write_backup_manifest(args.device, backup_dir, backup, backup_identity)
+        backup_completed = True
         print(f"backup: {backup_dir} files={sorted(backup)}", flush=True)
 
         if prebuilt_apks is not None:
             print("acceptance mode: prebuilt single-suite (one app install)", flush=True)
+            integration_completion_path(prebuilt_driver).unlink(missing_ok=True)
             run_single_suite_with_media_driver(
                 prebuilt_drive_command(
                     args.device,
@@ -782,6 +957,7 @@ def main() -> int:
                 args.device,
                 timeout=1800,
             )
+            verify_integration_completion(prebuilt_driver)
         elif args.single_suite:
             print("acceptance mode: single-suite (one app install)", flush=True)
             run_single_suite_with_media_driver(
@@ -830,48 +1006,51 @@ def main() -> int:
     except Exception as exc:  # Restore before reporting the original failure.
         error = exc
     finally:
-        try:
-            restore_and_launch_debug(
-                args.device,
-                backup_dir,
-                backup,
-                installs,
-                allow_rebuild=prebuilt_apks is None,
-            )
-        except Exception as restore_error:
-            # Never let this read as a clean run: the user database is still
-            # only in the retained backup at this point.
-            print(f"database restore failed: {restore_error}", file=sys.stderr)
-            if backup:
-                print(f"backup retained at {backup_dir}", file=sys.stderr)
-                print(
-                    "the on-device database may be incomplete; finish this run "
-                    f"with: make restore-device DEVICE={args.device} "
-                    f"BACKUP={backup_dir}",
-                    file=sys.stderr,
+        if not backup_completed:
+            print(f"backup incomplete; tests, restore installation and app launch not attempted; "
+                  f"partial backup retained at {backup_dir}", file=sys.stderr, flush=True)
+        else:
+            try:
+                restore_and_launch_debug(
+                    args.device,
+                    backup_dir,
+                    backup,
+                    installs,
+                    allow_rebuild=prebuilt_apks is None,
+                    expected_identity=backup_identity,
                 )
-            else:
-                # Nothing was read off the device, so there is nothing to put
-                # back and `--restore-from` would refuse the empty directory.
-                print(
-                    "no user database was backed up, so there is nothing to "
-                    "restore (the run failed before the backup, or the app had "
-                    "no database yet)",
-                    file=sys.stderr,
-                )
-            if error is None:
-                error = restore_error
-
+            except Exception as restore_error:
+                # Never let this read as a clean run: the user database is still
+                # only in the retained backup at this point.
+                print(f"database restore failed: {restore_error}", file=sys.stderr)
+                if backup:
+                    print(f"backup retained at {backup_dir}", file=sys.stderr)
+                    print(
+                        "the on-device database may be incomplete; finish this run "
+                        f"with: make restore-device DEVICE={args.device} "
+                        f"BACKUP={backup_dir}",
+                        file=sys.stderr,
+                    )
+                else:
+                    # Nothing was read off the device, so there is nothing to put
+                    # back and `--restore-from` would refuse the empty directory.
+                    print(
+                        "no user database was backed up, so there is nothing to "
+                        "restore (the run failed before the backup, or the app had "
+                        "no database yet)",
+                        file=sys.stderr,
+                    )
+                if error is None:
+                    error = restore_error
     if error is not None:
         print(f"Android acceptance FAIL: {error}", file=sys.stderr)
         if backup:
             print(f"backup retained at {backup_dir}", file=sys.stderr)
+        elif not backup_completed:
+            print(f"backup was not completed; original device files remain in place; "
+                  f"partial files and product APK retained at {backup_dir}", file=sys.stderr)
         else:
-            print(
-                "no backup was taken (failure before the backup step); the "
-                f"product APK remains in {backup_dir}",
-                file=sys.stderr,
-            )
+            print(f"no user database was present; product APK retained at {backup_dir}", file=sys.stderr)
         return 1
     restored = (
         "user database restored"

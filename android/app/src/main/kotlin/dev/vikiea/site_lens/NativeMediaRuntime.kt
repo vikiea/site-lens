@@ -26,6 +26,7 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.TextureRegistry
 import java.io.File
+import java.io.Closeable
 import java.util.UUID
 import kotlin.math.roundToInt
 
@@ -47,6 +48,7 @@ class NativeMediaRuntime(
     private var surface: Surface? = null
     private var state: String = "stopped"
     private var lastError: String? = null
+    private var fileLease: Closeable? = null
 
     fun attach(channel: MethodChannel) {
         this.channel = channel
@@ -177,14 +179,24 @@ class NativeMediaRuntime(
     }
 
     private fun openLocal(call: MethodCall, result: MethodChannel.Result) {
+        val taskId = call.argument<String>("taskId")?.takeIf { it.isNotBlank() }
+            ?: error("缺少本地媒体身份")
+        val taskScope = MediaFileLeaseRegistry.Scope.task(taskId)
         val document = call.argument<String>("uri")
         if (document != null) {
             val uri = Uri.parse(document)
             require(uri.scheme == "content" && !uri.authority.isNullOrBlank()) { "本地媒体地址无效" }
-            context.contentResolver.openFileDescriptor(uri, "r")?.use {
-                require(it.statSize != 0L) { "本地媒体不存在或为空" }
-            } ?: error("无法读取本地媒体文件")
-            start(call, result, uri, "video/mp4", null, null)
+            val lease = NativeMediaFileLeases.registry.acquireRead(taskScope + MediaFileLeaseRegistry.Scope.source(document))
+            try {
+                context.contentResolver.openFileDescriptor(uri, "r")?.use {
+                    require(it.statSize != 0L) { "本地媒体不存在或为空" }
+                } ?: error("无法读取本地媒体文件")
+                start(call, result, uri, "video/mp4", null, null, lease)
+            } catch (error: Exception) {
+                // Once adopted, release the player before its input lease.
+                if (fileLease === lease) stop() else lease.close()
+                throw error
+            }
             return
         }
         val raw = call.argument<String>("path")?.trim() ?: error("缺少本地媒体路径")
@@ -196,9 +208,20 @@ class NativeMediaRuntime(
         require(roots.any { file.path == it.path || file.path.startsWith("${it.path}${File.separator}") }) {
             "本地媒体路径越界"
         }
-        require(file.isFile && file.length() > 0) { "本地媒体不存在或为空" }
         val mime = call.argument<String>("mime")?.trim().orEmpty()
-        start(call, result, Uri.fromFile(file), mime, null, null)
+        // HLS readers open key/init/segments after the playlist; protect the
+        // complete directory, including against deleting a parent directory.
+        val hls = mime.contains("mpegurl", ignoreCase = true) ||
+            file.extension.lowercase() in setOf("m3u8", "m3u")
+        val scope = taskScope + MediaFileLeaseRegistry.Scope.file(if (hls) file.parentFile!! else file)
+        val lease = NativeMediaFileLeases.registry.acquireRead(scope)
+        try {
+            require(file.isFile && file.length() > 0) { "本地媒体不存在或为空" }
+            start(call, result, Uri.fromFile(file), mime, null, null, lease)
+        } catch (error: Exception) {
+            if (fileLease === lease) stop() else lease.close()
+            throw error
+        }
     }
 
     private fun start(
@@ -208,8 +231,10 @@ class NativeMediaRuntime(
         mime: String,
         referer: String?,
         origin: String?,
+        inputLease: Closeable? = null,
     ) {
         stop()
+        fileLease = inputLease
         sessionId = call.argument<String>("sessionId")?.takeIf { it.isNotBlank() }
             ?: "native_${UUID.randomUUID()}"
         candidateId = call.argument<String>("candidateId")
@@ -387,12 +412,17 @@ class NativeMediaRuntime(
     }
 
     private fun stop() {
-        sessionId?.let { NativeMediaObservations.recordPlayback(it, "stopped") }
         player?.let { media ->
             runCatching { media.clearVideoSurface() }
+            // If release fails, keep the player and its input lease for a
+            // subsequent stop attempt; deletion must stay blocked while the
+            // native reader's termination is unconfirmed.
             media.release()
         }
+        sessionId?.let { NativeMediaObservations.recordPlayback(it, "stopped") }
         player = null
+        fileLease?.close()
+        fileLease = null
         surface?.release()
         surface = null
         textureEntry?.release()

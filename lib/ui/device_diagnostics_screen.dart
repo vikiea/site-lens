@@ -500,6 +500,7 @@ class _CapabilityRow extends StatelessWidget {
     'background.powerAndIdle' => '省电与后台状态',
     'background.workManager' => 'WorkManager 状态',
     'network.activeTransport' => '当前网络连接',
+    'network.privateDns' => 'Private DNS 配置',
     'notifications.runtime' => '通知权限与渠道',
     'settings.backgroundPolicy' => '应用后台策略',
     'storage.exportDirectory' => '导出目录策略',

@@ -112,8 +112,9 @@ Completed checks for this revision:
 - `python3 tool/verify_level.py --level L4 --device DEVICE`: passed on Android 16
   / WebView 155, including 30 combined integration cases, database SHA-256
   restoration, formal package identity and fixed signing-certificate validation.
-- Five H.264/H.265, TS/fMP4, AES-128 fixtures preserved AAC counts, B-frame PTS,
-  EOS, metadata/thumbnails and playback/seek behavior.
+- Five H.264/H.265, TS/fMP4, AES-128 fixtures preserved AAC counts, B-frame PTS
+  and EOS. At this earlier revision, actual thumbnail/playback/seek checks ran
+  only for H.264 TS; the expanded per-fixture checks are recorded below.
 - A real-page test with locally supplied URL and expected episode numbers
   confirmed only explicitly mapped episodes were shown. No private test URL is
   stored in source or the formal APK.
@@ -124,3 +125,356 @@ settings and does not assume that a user's proxy serves the fixture domain.
 Passive diagnostics share the same three WebView media-feature predicates as
 BrowserMediaController, reporting missing capabilities separately from query
 failure or an actual playback observation.
+
+## Proxy safety and thumbnail regression checks (2026-10-22)
+
+The explicit proxy fixture now uses `tool/run_android_proxy_acceptance.py` and
+`tool/android_proxy_lease.py`. Ordinary acceptance does not change proxy
+settings. An existing user HTTP/PAC proxy prevents takeover. The fixture
+forwards ordinary HTTP and verified HTTPS CONNECT without decrypting TLS or
+logging unrelated destinations. A device-side heartbeat watchdog attempts
+rollback after missed heartbeats, host-process death or the 180-second lease
+deadline. Failed Settings writes are retried; the deadline triggers rollback
+and does not guarantee restoration completes within 180 seconds. Restoration
+resets Android's running proxy before restoring the saved fields. During cleanup,
+a live host keeps the relay available while ownership cannot be verified.
+The strict acceptance runner also offers `--no-adb-recovery` for an endpoint
+whose single allowed recovery has already been used.
+
+The explicit physical-device proxy run passed actual discovery redirect,
+playlist and segment-byte checks, ordinary HTTP/HTTPS forwarding, host-process
+termination rollback, all-field restoration and subsequent system Internet
+checks. This is separate from the intentionally skipped proxy case in ordinary
+acceptance. Backup failures now stop before tests or restore installation;
+only explicit file-existence responses count as a complete backup.
+
+Both media lists use `MediaThumbnail`: a stable bounded slot with a loose,
+centered image, `BoxFit.contain` and a clip following the image's actual size.
+Android's generated JPEG no longer stretches every frame to 320x180. It keeps
+the decoded frame ratio within those bounds and does not enlarge small frames.
+The `v2` cache namespace avoids reusing previously distorted JPEGs; successful
+metadata inspection updates the catalog to the new thumbnail. Old files are
+not eagerly deleted, and failed optional extraction may retain an earlier
+catalog preview until a later successful inspection.
+
+Completed checks:
+
+- L1 full local check passed: 551 Flutter tests, analyzer and JS/Python
+  contracts. The later list-only test-define regression passed all 36 Android
+  tooling tests; thumbnail/evidence targeted tests passed all 17 cases.
+- `./gradlew :app:testDebugUnitTest` passed, including eight thumbnail geometry
+  regressions for landscape, portrait, square, non-16:9, panorama, small and
+  extreme inputs.
+- Physical Android 16 acceptance passed all 31 cases, followed by normal debug
+  installation and verified database restoration. A new case mounts both media
+  lists: the local-file phase makes no network request, while the network phase
+  fetches the controlled thumbnail URL. Each decodes the 160x96 source frame
+  and renders it at 68x40.8; neither generation nor display stretches it.
+- All five Media3 fixtures now independently check nonempty thumbnail output,
+  playback to at least 3800 ms, seek to 1800 ms and continued decoding after seek, in
+  addition to sample/AAC/timing and sandbox contracts.
+
+The first run containing the new UI case failed because its scroll helper
+matched multiple scrollables. It remains a failed batch; the subsequent 31-case
+run uses the explicitly selected list viewport. A separate earlier 30-case run
+had an installation restriction during restoration and required a successful
+restore-only operation; test assertions alone did not establish its recovery.
+
+Real-site acceptance now checks each exposed episode-to-resource binding, not
+only episode counts, and optional download selects the page's current episode.
+Multiline page lists are base64-encoded for Flutter CLI and can be supplied
+without a separate single URL. The latest eight-page device attempt stopped
+at page loading: the device resolved that test domain to 0.0.0.0 and a system
+curl request also failed, while independent HTTPS checks returned 204 and 200.
+No DNS, VPN or network-profile policy was changed during that earlier attempt.
+Eight-page mapping, actual story content, real-site download and cross-episode
+SPA behavior remained unverified by that attempt; the later targeted evidence
+below supersedes only the current page's loading and complete-download boundary.
+Private test URLs are not stored in source
+or normal product builds.
+
+The local WebView identity fixture now exercises eight mapped episodes, a
+same-count second series with different per-episode URLs, a same-series DOM
+revision, a page-owned episode response and a repeated-resource ambiguous
+mapping. It compares complete URLs including selection parameters. Its current
+device run passed the eight-episode SPA contract before the restore-install
+permission failure; restore-only then succeeded and verified the database.
+
+The lifecycle implementation also rejects three deterministic stale-identity
+cases: changing only a retired node's text or episode label, letting a later
+explicit map remain overridden by an older episode response, and sending
+next/previous to a recommendation or ambiguous player. Nine VM regressions plus
+the existing lifecycle suite pass. MediaSession next/previous acceptance was
+extended with one current-series player and one foreign player whose URLs share
+an episode identity; the scoped action driver only sends commands to the
+debug package's uniquely identified session.
+
+The stale-resource guard is per normalized media URL. Removing an unrelated
+`data-*` attribute or rotating only a retired player's authorization token does
+not reopen the old URL; a genuinely new media URL may be observed. These cases
+including fragment changes have dedicated VM coverage. The real-device background-control extension now
+requires the foreign player to be demonstrably playing before issuing the
+system command, then checks its full URL, ready state and playing state after
+the current-series switch. The later protected Android 16 batch passed the
+eight-episode identity case, all five fixture playback/seek checks and the
+thumbnail case, but finished 30/31 because notification stop was not visible.
+Removing duplicate custom skip actions exposed stop; the final scoped driver
+also waits for the debug session to disappear before collapsing the notification
+shade. Next/previous, pause/resume, notification stop and final page state then
+passed in a targeted run. Its normal-package restore was denied and the device
+went offline before restore-only could complete. The suite assertions and the
+incomplete recovery remain separate facts; the full batch is not 31/31.
+
+The checkout first incorporated `2993e08` (alpha9), then `a28ce05` (alpha10's
+always-visible settings categories). Current priorities and evidence validity are in
+[active-work-plan.md](active-work-plan.md). The later device is a different
+Android phone and must not receive the earlier phone's database backup.
+
+On that API 34 / WebView 155 phone, the full protected batch reported 31 successes
+and one failure: exact floating-point equality of the network thumbnail's center.
+The file thumbnail, current-series next/previous, pause/resume/stop, actual HCPP,
+independent export retention and all five Media3 parity/playback/seek fixtures
+passed. The normal product package and this phone's own database were restored.
+The batch retains its original FAIL result. Changing only the center assertion
+to a distance below 0.01 logical pixels made the targeted thumbnail case pass for
+both file and network images; aspect ratio, bounds, decoded frame and source
+checks remain. That targeted run also completed product/data restoration.
+
+DOM candidate event completion now awaits its SQLite write. A held-write
+regression proves that awaiting the event no longer leaves a detached database
+transaction to race task creation or database closure. The original cross-frame
+authorization test remains enabled; it passed in the final local check. Candidate
+publication now remains pending until the write succeeds, and clear, host
+invalidation and destruction drain in-flight publication barriers. A failed
+write is recorded and cannot produce an in-memory authorizable candidate.
+The same publication barrier covers `registerMedia`; after persistence it checks
+revoked/disposed/generation, so a route-clear cannot resurrect an in-flight
+script registration. A held-write + clear regression and independent review
+cover this case.
+
+## Real-page network diagnosis and download (2026-10-22)
+
+The API 34 / WebView 155 device separately completed the premium-glass codec
+inventory case: 85 native entries, no compatibility fallback, end-of-list reach,
+detail expand/collapse and reverse scrolling to the first entry, followed by
+product/database restoration. This establishes the current settings revision's
+device evidence, rather than borrowing the earlier alpha8 device result.
+
+The real page's initial DNS answer was a loopback address. A documented device
+Private DNS change restored verified HTTPS and WebView loading. The media CDN
+was a separate fault: direct connections to several public CDN nodes reset
+during TLS negotiation, while an existing subscription's isolated outbound
+returned the same key and TS with normal certificate verification. This does
+not establish whether the reset originated at a middlebox or the remote edge,
+and does not justify changing signed resource hosts, permitting private targets,
+downgrading HTTPS or bypassing certificate validation in the application.
+
+The proxy run uncovered a host bug: `onReceivedSslError` cancelled a third-party
+tracking request but also revoked the entire main document and published its
+URL as the tab's failure. Every SSL handler is still cancelled. A separate
+navigation identity policy now distinguishes main-document URLs, redirects and
+retired navigations from unrelated subresources; it does not grant script or
+network authority. Redirect callbacks must still own the current SSL navigation;
+preparing another navigation retires that identity before the next start. Native
+unit and source-wiring regressions cover delayed errors and retired redirects.
+Native transfer failures now expose bounded phase, hostname,
+attempt, offset, byte count, selected route type and classified reason, without
+serializing provider exception messages, signed URLs, proxy addresses or cookies.
+
+The final protected real-page run verified both explicitly exposed episode URLs
+and downloaded the selected episode completely: 78,669,748 bytes, 40 segments
+and one AES key. It validated all local input paths and required every playlist,
+key/init/segment file to be nonempty. The normal product package, this phone's
+database SHA-256 and all temporary proxy settings were restored. The earlier
+failed batches remain failures. Their short proxy lease could expire before a
+long real download; the final isolated test extended only its total deadline
+while retaining heartbeat-loss rollback. No permanent phone-to-workstation
+proxy, production transport fallback or proxy configuration change was added.
+
+This establishes current-page download and binding behavior. Manual story
+comparison, the remaining real episode pages, real receiver DLNA, iOS and the
+unavailable API/rendering matrix remain separate unfinished gates.
+
+After fast-forwarding to alpha10 (`a28ce05`), the combined local check passed
+549 Flutter tests plus analyzer and JS/Python contracts. Native unit tests
+passed 83 cases; the SSL/navigation source contract passed 17. Independent
+narrow review approved the SSL fix and upstream integration. The protected
+alpha10 settings rerun passed both the 85-codec premium viewport case and
+settings/themes/backup/cold-tab restoration, then restored this device's own
+database and normal debug product. An earlier interrupted run executed no
+assertions and remains a failed batch. These scoped results do not turn the
+earlier failed full L3 run into a pass, nor establish a new published release.
+
+## Final alpha10 regression checkpoint (2026-10-23)
+
+The failed full run and a repeated script enable/reload test reproduced the
+same WebView 155 main-process SIGSEGV at address 0x18. Matching provider source
+and disassembly point to a null native messaging reply proxy during listener
+reconfiguration; complete upstream symbols were unavailable, so this is not a
+claim of a formally confirmed upstream bug. The host now registers a fixed pool
+of 32 isolated worlds and listeners before any document executes. Navigation,
+script replacement and script-count growth reuse those listeners. Bindings are
+revoked immediately, each document receives new tokens, and asynchronous replies
+must still own their original binding. A 33rd privileged script is explicitly
+rejected rather than silently skipped or assigned weaker privileges.
+
+Independent final review approved the fixed pool and episode identity changes.
+The final protected L3 run passed all 32 device assertions and restored this
+phone's own database and normal debug product. It includes 12 enable/reload
+cycles, script-slot reassignment, adding a script while acknowledged GM.setValue
+calls cross the native bridge, and overflow rejection. It also covers the
+85-codec premium viewport, browser notification controls, aspect-preserving
+thumbnails, both exported-MP4 ownership layouts and five Media3 fixture variants
+with playback and seek. The local gate passed 549 Flutter tests, analyzer and
+JS/Python contracts; native tests passed 83 cases. The ordinary suite explicitly
+skipped its opt-in system-proxy fixture; earlier dedicated proxy/download
+evidence remains separately identified. Historical failed and interrupted runs
+remain failed or interrupted, and no new release was published.
+
+The eight real playback pages separately passed authorization-normalized resource
+identity comparison (content selectors retained; rotating credentials removed)
+for their sliding current/neighbor episode windows, covering episodes 1–8 in
+aggregate. That batch preceded the final API URL-string guard and generic timing
+refinement. Fifteen deterministic identity regressions cover mixed old/new
+maps, reused players, foreign API responses and ownerless timing. Neither the
+page windows nor opaque resource URLs prove narrative content or authorize
+guessing unexposed episode resources.
+
+Device DNS comparison received A=0.0.0.0 with a successful DNS response code on
+the original DNS path. Another public resolver's plaintext UDP did not respond.
+Validated Private DNS restored the page to HTTPS 200; this does not identify
+which resolver or middlebox imposed the original sinkhole. The CDN's separate
+direct TLS resets remain unresolved at the network boundary; the earlier
+verified proxy route completed the real download with certificate validation.
+
+Seventy-five read-only samples during the debug suite observed app PSS up to
+923,237 KiB and up to six WebViews. Without a same-scenario baseline or a long
+post-disposal series, these measurements do not establish a memory-leak fix or
+an acceptable memory cost for 32 pre-registered isolated worlds. Native-player
+service ownership, streaming-save P0–P8, real SAF/DLNA, old-token migration and
+the remaining API/rendering/iOS matrix retain their separate unfinished status
+in `active-work-plan.md`.
+
+## Retired-navigation callback regression (2026-10-23)
+
+A subsequent narrow audit found that asynchronous app navigation preparation
+retired script bindings but retained the previous Navigation/Page references.
+An old completion could consume the new entry/history state or publish the old
+URL under the new generation. An old main-frame network/HTTP error likewise
+revoked the new lease without checking which document failed. Both preparation
+paths now retire Navigation, Page and SSL navigation references before waiting
+for Dart. Ordinary main-frame errors use the existing full-document URL policy;
+current entry and redirect failures remain errors, with no TLS bypass.
+
+The two new wiring regressions reject the old code in an in-memory comparison.
+Two additional policy tests cover retired errors while a new document prepares
+or starts, and current redirect failures. Native tests pass 85 cases; the full
+local gate passes 549 Flutter tests, analyzer and JS/Python contracts. Seven
+protected device navigation cases pass, including history, same-document SPA,
+entry redirects and rejecting page-started privilege inheritance. Final narrow
+independent review is APPROVE. The same final source also passes eight real
+playback-page binding checks and restores its normal product and own database.
+This supersedes the earlier eight-page batch's source-version limitation;
+it does not turn opaque resource URLs into proof of narrative content or add
+direct-CDN download evidence. The earlier full 32-case suite remains a separate
+checkpoint; unchanged media fixtures were not replayed for this narrow fix.
+
+Ordinary WebView error callbacks expose no navigation ID. Old and current loads
+of an identical URL cannot be distinguished by this URL policy; same-URL ABA
+callback attribution remains an explicit platform limitation.
+
+The same source was then run through the isolated system-proxy fixture. HTTP and
+HTTPS CONNECT, redirect, exact local playlist and segment hits, and the media
+discovery/download contract passed. A detached device watchdog restored all
+proxy fields after the host process was killed in 22.38 seconds. The final
+read-only network check reported validated Wi-Fi, HTTP 204 and HTTPS 200, with
+the reverse port removed. This does not change the separate direct-CDN TLS reset
+finding or prove a permanent proxy policy for production traffic.
+
+The requested emulator matrix remains incomplete. At the final checkpoint,
+`adb devices` contained only the API 34/WebView 155 phone and no
+`emulator-5554`. Host swap free was about 668 MiB, below the emulator
+validation stop threshold of 1 GiB, so no new emulator was started or replayed.
+The previous API 37 boot-complete observation remains startup evidence only; it
+does not establish Media3, HCPP, codec diagnostics or compatibility-glass
+acceptance on an emulator.
+
+## Alpha12 follow-up: application HTTPS and document-lifetime evidence
+
+The current `145ab61` worktree has a separate protected API 36 / WebView 155
+checkpoint. The local gate passes 578 Flutter tests, analyzer and JS/Python
+contracts. This reuses unchanged Media3 parity evidence from the prior complete
+35-case device run; it does not rewrite historical failures or release a package.
+
+The opt-in system-proxy suite passes nine cases with restoration. Its five HTTPS
+stages cover application discovery, Dart fetch, Android TLS file transfer,
+WorkManager download and a complete fixed upstream Media3 HLS VOD. The latter
+checks the manifest, init and both fragments by exact length and SHA-256, then
+validates the local playlist/resource boundary. It has no encryption key and
+does not claim AES network-download, playback or remux evidence. Each stage
+requires its own bidirectional encrypted proxy traffic, separately from content
+validation; persistent connection reuse is permitted. Proxy fields, ordinary
+Internet checks, the normal product APK and the same-device database restore
+all pass. Test/fixture/orchestrator narrow independent review is APPROVE.
+
+The real WebView lifecycle fixture separates delayed fetch ep2 and XHR ep1,
+completes inside four seconds to exclude the five-second clone timeout, and
+keeps both original mappings after synthetic pagehide/pageshow. A newly declared
+ep3 reappears, and unbound same-page requests retain an unknown episode label.
+These assertions pass on device, but synthetic events do not prove physical
+BFCache residency. Final-route selection is also checked on the real first and
+second playback pages; authorization-normalized resource identity is not proof
+of narrative content.
+
+Sampled system screenshots of the codec scroll showed no black blocks or
+duplicate painting in the reviewed frames. At that checkpoint, WebView/video
+overlay pixels and the light/dark by 0/55/100 matrix were still missing. The
+follow-up below supplies a scoped physical-device matrix; continuous scrolling
+and the remaining device/GPU combinations remain incomplete. Earlier emulator
+memory failures are retained as historical evidence.
+
+## HCPP compositor matrix and direct-native popup roles
+
+The opt-in fixture and host observer now capture eighteen real Android
+compositor frames: light/dark by 0/55/100 fill, across the browser, an overlay
+intersecting the playing video and a Flutter-owned page. Each checkpoint checks
+the effective engine HCPP predicate and ongoing playback. Each overlay maps
+fresh video edges and the current visual viewport into Flutter coordinates;
+intersection and a partly visible video are required. The observer uses a fresh
+run nonce, ordered acknowledgements and foreground/window checks before and
+after capture. Missing or ambiguous ownership refuses capture. The canonical
+runner continues to own installation and same-device database restoration.
+
+Early failures are retained: a duplicate CLI target whitelist, an observer
+lifetime error requiring an explicit protected restore, a locked-device driver
+failure, and missed fixture clicks. Android 16 requires the full window dump
+for global focus. Fixture text overflow is bounded; visualViewport coordinates,
+actual pointer target and a single successful playback click are verified.
+
+The `visual9` suite and restoration passed, but pixel review failed: a
+transparent overlay directly over native video used the ordinary panel shader
+role and became opaque black at zero fill. The real browser new-tab prompt had
+the same undeclared native backdrop. It now passes an explicit `platformView`
+role through `promptNewTab`, `promptText` and `SiteLensAlertDialog`. Ordinary
+Flutter prompts retain the panel default. Direct-native surfaces keep the
+existing polarity backer/fill; HCPP and premium Flutter pages remain enabled.
+There is no new native screenshot/texture bridge or claim of native refraction.
+
+The final `visual10` protected API 36 / WebView 155 run passes all eighteen
+captures plus six actual browser new-tab dialog checks. The latter verify the
+native role, exact configured alpha, the shader-free fill path and cancellation
+without creating a tab. Flutter-owned pages still check actual premium widgets,
+no compatibility fallback and selected alpha. All eighteen image hashes match;
+reviewed frames show no unexpected opaque black body, duplicate painting or
+app-panel clipping. The zero-fill native overlay intentionally retains its
+contrast backer. A constant system-sidebar indicator is outside the app pixel
+assessment. The solid-color synthetic video checks playback time, not motion
+between decoded frames. These static frames do not prove continuous scroll or
+animation behavior, other APIs, non-Vulkan devices or other GPUs.
+
+The final local gate passes 580 Flutter tests, analyzer and JS/Python contracts.
+Visual tooling, runner and backup-identity tests pass 13, 45 and 13 cases;
+narrow independent code review is APPROVE. The normal product package and the
+source-bound same-device database restore with matching SHA-256. This is a
+targeted checkpoint, not a new full L3 result or release. Native background
+service/queue B0–B3 and streaming-save P0–P8 remain separate unfinished plans.

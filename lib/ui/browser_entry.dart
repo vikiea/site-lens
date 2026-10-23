@@ -375,10 +375,12 @@ Future<void> promptNewTab(
   BuildContext context,
   AppController app, {
   String? initial,
+  SiteLensSurfaceRole surfaceRole = SiteLensSurfaceRole.panel,
 }) async {
   final input = await promptText(
     context,
     title: '新建标签页',
+    surfaceRole: surfaceRole,
     initial: initial,
     keyboardType: TextInputType.url,
     confirmLabel: '打开',

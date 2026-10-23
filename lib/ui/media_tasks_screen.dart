@@ -16,6 +16,7 @@ import 'app_controller.dart';
 import 'dlna_cast_screen.dart';
 import 'glass_surface.dart';
 import 'help_notice.dart';
+import 'media_thumbnail.dart';
 import 'ui_primitives.dart';
 import 'ui_util.dart';
 import 'app_theme.dart';
@@ -1601,12 +1602,7 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
         child: ClipRRect(
           borderRadius: BorderRadius.circular(SiteLensMetrics.inputRadius),
           child: thumbnail != null
-              ? Image.file(
-                  File(thumbnail),
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, _, _) =>
-                      const Icon(Icons.video_file_outlined),
-                )
+              ? MediaThumbnail(image: FileImage(File(thumbnail)))
               : FutureBuilder<MediaCandidate?>(
                   future: _candidate,
                   builder: (_, data) =>
@@ -2810,22 +2806,11 @@ class _TaskThumbnail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final thumbnail = candidate?.thumbnailUrl;
-    if (thumbnail == null) {
-      return Icon(
-        task.state == MediaTaskState.playable
-            ? Icons.play_circle
-            : Icons.downloading,
-      );
-    }
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: Image.network(
-        thumbnail.toString(),
-        width: 64,
-        height: 42,
-        fit: BoxFit.cover,
-        errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined),
-      ),
+    return MediaThumbnail(
+      image: thumbnail == null ? null : NetworkImage(thumbnail.toString()),
+      placeholder: task.state == MediaTaskState.playable
+          ? Icons.play_circle
+          : Icons.downloading,
     );
   }
 }

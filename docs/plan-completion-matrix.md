@@ -1,5 +1,9 @@
 # Browser enhancement implementation matrix
 
+This is the historical browser-enhancement baseline. The current cross-feature
+status and evidence reuse rules are maintained in [active-work-plan.md](active-work-plan.md).
+The rows below are not a claim about the present Media3 implementation.
+
 This matrix is the implementation baseline for the feature branch. It records
 what is present in the checkout, what this work closes, and which evidence is
 required before a release can claim the corresponding plan.

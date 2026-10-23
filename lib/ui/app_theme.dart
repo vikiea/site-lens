@@ -99,6 +99,7 @@ abstract final class SiteLensMetrics {
   static const diagnosticDetailMaxHeightFraction = 0.42;
   static const settingsSectionLabelHorizontalPadding = 6.0;
   static const settingsSectionLabelBottom = 8.0;
+  static const mediaThumbnailSize = Size(68, 48);
 
   /// Fixed bottom navigation: one compact labelled row, never wraps. The
   /// outer surface is narrower than the screen so it reads as a floating iOS

@@ -10,8 +10,15 @@ node tool/test_runtime.mjs
 node tool/test_page_inspector.mjs
 
 node tool/test_media_lifecycle.mjs
+node tool/test_media_episode_identity.mjs
 node tool/test_filter_runtime.mjs
 python3 tool/test_android_tools.py
+python3 tool/test_android_backup_identity.py
+python3 tool/test_android_visual_acceptance.py
+python3 tool/test_android_proxy_lease.py
+python3 tool/test_android_proxy_fixture.py
+python3 tool/test_run_android_proxy_acceptance.py
+sh tool/test_fix_android_system_proxy.sh
 python3 tool/test_native_crash_contract.py
 python3 tool/test_native_media_contract.py
 python3 tool/test_check_emulator.py

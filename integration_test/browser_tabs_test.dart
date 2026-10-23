@@ -249,8 +249,12 @@ GM_registerMenuCommand('菜单条目', () => {});
       await tester.pumpAndSettle();
       expect(find.text('当前文档脚本菜单'), findsOneWidget);
       expect(find.text('菜单条目'), findsOneWidget);
-      expect(find.text('本次文档生效脚本'), findsOneWidget);
-      expect(find.textContaining('Menu owner'), findsWidgets);
+      expect(find.text('脚本管理'), findsOneWidget);
+      expect(
+        controller.activeScriptsFor(controller.activeBrowser!),
+        hasLength(1),
+      );
+      expect(find.text('Menu owner'), findsOneWidget);
       expect(find.text('重新加载脚本并刷新页面'), findsOneWidget);
 
       // Hand the single test process over clean: unmount the screens (closing

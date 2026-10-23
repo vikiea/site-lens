@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../data/database.dart';
+import '../diagnostics/error_log.dart';
 import '../settings/settings_repository.dart';
 import '../domain/models.dart';
 import '../network/transport.dart';
@@ -15,6 +16,15 @@ import '../filter/filter_service.dart';
 import 'web_host.g.dart';
 import 'host_dto_codec.dart';
 import 'filter_payload_store.dart';
+
+class _CandidatePublication {
+  _CandidatePublication(this.candidate, this.frame, this.document);
+  final MediaCandidate candidate;
+  final String frame;
+  final String document;
+  final done = Completer<void>();
+  bool revoked = false;
+}
 
 class HostSession {
   HostSession(this.id, this.purpose, this.capabilities, {this.profileId});
@@ -38,6 +48,7 @@ class HostSession {
   final mediaCandidates = <String, MediaCandidate>{};
   final mediaCandidateFrames =
       <String, ({String frame, String document, bool main})>{};
+  final _candidatePublications = <_CandidatePublication>{};
   FilterEngine? filterEngine;
   FilterPolicy filterPolicy = const FilterPolicy();
   FilterSnapshot? filterSnapshot;
@@ -81,6 +92,15 @@ class NativeHosts extends WebHostEvents {
   FilterPolicy filterPolicy = const FilterPolicy();
   FilterSnapshot? filterSnapshot;
   Map<int, FilterPolicy> profileFilterPolicies = const {};
+
+  Future<void> _drainCandidateWrites(HostSession session) async {
+    while (session._candidatePublications.isNotEmpty) {
+      await Future.wait([
+        for (final publication in session._candidatePublications)
+          publication.done.future,
+      ]);
+    }
+  }
 
   /// Policy [AppController] owns and pushes to every host: the app decides, the
   /// native host only enforces. New hosts get the current value at creation, and
@@ -270,7 +290,10 @@ class NativeHosts extends WebHostEvents {
   }
 
   Future<void> destroy(HostSession session) async {
-    if (session.disposed) return;
+    if (session.disposed) {
+      await _drainCandidateWrites(session);
+      return;
+    }
     session.disposed = true;
     session.cancellation.cancel();
     session.menus.clear();
@@ -278,6 +301,7 @@ class NativeHosts extends WebHostEvents {
     session.mediaCandidateFrames.clear();
     _aborted.removeWhere((key) => key.startsWith('${session.id}:'));
     sessions.remove(session.id);
+    await _drainCandidateWrites(session);
     await api.destroy(session.id);
   }
 
@@ -351,6 +375,18 @@ class NativeHosts extends WebHostEvents {
         final document = (raw['document'] as String? ?? '').trim();
         final main = raw['main'] == true && raw['reason'] != 'snapshot';
         final previousPage = (raw['previousPageUrl'] as String? ?? '').trim();
+        for (final publication in session._candidatePublications) {
+          if (document.isNotEmpty &&
+                  (main
+                      ? publication.document == document
+                      : publication.frame == frame) ||
+              main &&
+                  previousPage.isNotEmpty &&
+                  publication.candidate.sourceUrl.removeFragment() ==
+                      webUri(previousPage).removeFragment()) {
+            publication.revoked = true;
+          }
+        }
         final remove = <String>{};
         for (final entry in session.mediaCandidateFrames.entries) {
           final identity = entry.value;
@@ -382,6 +418,7 @@ class NativeHosts extends WebHostEvents {
     }
     if (event.kind == 'mediaCandidate' &&
         session.purpose == HostPurpose.browsing) {
+      _CandidatePublication? publication;
       try {
         final raw = jsonDecode(event.detail) as Map<String, dynamic>;
         final observedPage = (raw['pageUrl'] as String? ?? '').trim();
@@ -434,6 +471,26 @@ class NativeHosts extends WebHostEvents {
               policy: session.filterPolicy,
             ) !=
             FilterDecision.block) {
+          publication = _CandidatePublication(candidate, frameKey, document);
+          session._candidatePublications.add(publication);
+          try {
+            await db.saveMediaCandidate(candidate);
+          } catch (error, stack) {
+            // A candidate is usable only after its durable authorization row
+            // exists. Keep the event fail-closed when storage is unavailable.
+            AppErrorLogger.capture(
+              error,
+              module: 'media.candidate.persistence',
+              context: 'host:${session.id}',
+              stack: stack,
+            );
+            return;
+          }
+          if (publication.revoked ||
+              session.disposed ||
+              session.generation != event.generation) {
+            return;
+          }
           final groupKey = mediaCandidateDisplayGroupKey(candidate);
           session.mediaCandidates.removeWhere(
             (_, value) =>
@@ -450,12 +507,16 @@ class NativeHosts extends WebHostEvents {
             document: document,
             main: main,
           );
-          unawaited(db.saveMediaCandidate(candidate));
           changed.value++;
         }
       } catch (_) {
         // Media telemetry is untrusted page data; malformed candidates are
         // ignored and never become persisted tasks.
+      } finally {
+        if (publication != null) {
+          session._candidatePublications.remove(publication);
+          publication.done.complete();
+        }
       }
     }
     if (event.kind == 'hostInvalidated') {
@@ -469,6 +530,7 @@ class NativeHosts extends WebHostEvents {
       session.mediaCandidateFrames.clear();
       sessions.remove(session.id);
       onInvalidated?.call(session);
+      await _drainCandidateWrites(session);
       await api.destroy(session.id);
     }
     if (event.kind == 'loaded') session.loaded = true;
@@ -773,22 +835,39 @@ class NativeHosts extends WebHostEvents {
             FilterDecision.block) {
           throw StateError('媒体地址被当前过滤快照阻止');
         }
-        final groupKey = mediaCandidateDisplayGroupKey(candidate);
-        session.mediaCandidates.removeWhere(
-          (_, value) =>
-              value.id != candidate.id &&
-              value.sourceUrl.removeFragment() == sourceUrl.removeFragment() &&
-              mediaCandidateDisplayGroupKey(value) == groupKey,
+        final publication = _CandidatePublication(
+          candidate,
+          'host:${session.id}',
+          sourceUrl.toString(),
         );
-        session.mediaCandidates[candidate.id] = candidate;
-        session.mediaCandidateFrames[candidate.id] = (
-          frame: 'host:${session.id}',
-          document: sourceUrl.toString(),
-          main: true,
-        );
-        await db.saveMediaCandidate(candidate);
-        changed.value++;
-        value = candidate.toJson();
+        session._candidatePublications.add(publication);
+        try {
+          await db.saveMediaCandidate(candidate);
+          if (publication.revoked ||
+              session.disposed ||
+              session.generation != request.generation) {
+            throw const Cancelled();
+          }
+          final groupKey = mediaCandidateDisplayGroupKey(candidate);
+          session.mediaCandidates.removeWhere(
+            (_, value) =>
+                value.id != candidate.id &&
+                value.sourceUrl.removeFragment() ==
+                    sourceUrl.removeFragment() &&
+                mediaCandidateDisplayGroupKey(value) == groupKey,
+          );
+          session.mediaCandidates[candidate.id] = candidate;
+          session.mediaCandidateFrames[candidate.id] = (
+            frame: 'host:${session.id}',
+            document: sourceUrl.toString(),
+            main: true,
+          );
+          changed.value++;
+          value = candidate.toJson();
+        } finally {
+          session._candidatePublications.remove(publication);
+          publication.done.complete();
+        }
       } else if (op == 'xhrAbort') {
         final key =
             '${session.id}:${request.generation}:${request.scriptId}:${args['requestId']}';

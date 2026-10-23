@@ -147,7 +147,33 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
         }
     }
 
-    private fun migrateLegacy(record: NativeMediaTaskRepository.Record): Map<String, Any?>? {
+    private data class LegacySnapshot(val completed: Boolean, val source: Uri?)
+
+    private fun readLegacy(record: NativeMediaTaskRepository.Record): LegacySnapshot? {
+        if (record.workId != null || record.downloadId < 0L) return null
+        return legacyManager.query(DownloadManager.Query().setFilterById(record.downloadId)).use { row ->
+            if (!row.moveToFirst()) null else LegacySnapshot(
+                completed = row.getInt(row.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)) == DownloadManager.STATUS_SUCCESSFUL,
+                source = row.getString(row.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI))?.let(Uri::parse),
+            )
+        }
+    }
+
+    private fun mutationScope(record: NativeMediaTaskRepository.Record, legacy: LegacySnapshot?): MediaFileLeaseRegistry.Scope {
+        val files = NativeMediaDownloadWorker.files(context, record).fold(MediaFileLeaseRegistry.Scope.task(record.taskId)) { scope, file ->
+            scope + MediaFileLeaseRegistry.Scope.file(file)
+        }
+        return legacy?.source?.let { files + MediaFileLeaseRegistry.Scope.source(it.toString()) } ?: files
+    }
+
+    private fun migrateLegacy(
+        record: NativeMediaTaskRepository.Record,
+        mutationHeld: Boolean = false,
+        legacy: LegacySnapshot? = readLegacy(record),
+    ): Map<String, Any?>? {
+        if (!mutationHeld) return NativeMediaFileLeases.registry.mutate(mutationScope(record, legacy)) {
+            migrateLegacy(record, mutationHeld = true, legacy = legacy)
+        }
         val legacyId = record.downloadId
         if (legacyId < 0L) return null
         val finalTarget = NativeMediaDownloadWorker.finalFile(context, record)
@@ -161,32 +187,26 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
             "localUri" to Uri.fromFile(target).toString(),
         )
 
-        var localUri: Uri? = null
-        var completed = false
-        legacyManager.query(DownloadManager.Query().setFilterById(legacyId)).use { row ->
-            if (!row.moveToFirst()) {
-                val stagedFinal = File(finalTarget.path + ".legacy.tmp")
-                if (stagedFinal.isFile && stagedFinal.length() > 0L) {
-                    commitLegacyCopy(stagedFinal, finalTarget)
-                    repository.save(record.copy(downloadId = -1L, workId = null, paused = false, cancelled = false))
-                    return completedResult(finalTarget)
-                }
-                val stagedPartial = File(partialTarget.path + ".legacy.tmp")
-                if (stagedPartial.isFile && stagedPartial.length() > 0L) {
-                    commitLegacyCopy(stagedPartial, partialTarget)
-                    repository.save(record.copy(downloadId = -1L, workId = null, paused = true, cancelled = false))
-                    return null
-                }
-                repository.save(record.copy(downloadId = -1L))
+        if (legacy == null) {
+            val stagedFinal = File(finalTarget.path + ".legacy.tmp")
+            if (stagedFinal.isFile && stagedFinal.length() > 0L) {
+                commitLegacyCopy(stagedFinal, finalTarget)
+                repository.save(record.copy(downloadId = -1L, workId = null, paused = false, cancelled = false))
+                return completedResult(finalTarget)
+            }
+            val stagedPartial = File(partialTarget.path + ".legacy.tmp")
+            if (stagedPartial.isFile && stagedPartial.length() > 0L) {
+                commitLegacyCopy(stagedPartial, partialTarget)
+                repository.save(record.copy(downloadId = -1L, workId = null, paused = true, cancelled = false))
                 return null
             }
-            completed = row.getInt(row.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)) ==
-                DownloadManager.STATUS_SUCCESSFUL
-            localUri = row.getString(row.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI))?.let(Uri::parse)
+            repository.save(record.copy(downloadId = -1L))
+            return null
         }
+        val completed = legacy.completed
         val target = if (completed) finalTarget else partialTarget
         val temporary = File(target.path + ".legacy.tmp")
-        val source = localUri ?: throw IllegalStateException("旧下载文件地址不存在")
+        val source = legacy.source ?: throw IllegalStateException("旧下载文件地址不存在")
         val input = if (source.scheme == "file") {
             File(source.path ?: error("旧下载文件地址无效")).inputStream()
         } else {
@@ -245,10 +265,10 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
         }
     }
 
-    private fun stop(taskId: String, cancelled: Boolean) {
+    private fun stop(taskId: String, cancelled: Boolean, mutationHeld: Boolean = false, legacy: LegacySnapshot? = null) {
         var record = repository.read(taskId) ?: return
         if (record.workId == null && record.downloadId >= 0L) {
-            if (migrateLegacy(record) != null) return
+            if (if (mutationHeld) migrateLegacy(record, true, legacy) != null else migrateLegacy(record) != null) return
             record = repository.read(taskId) ?: return
         }
         repository.save(record.copy(paused = !cancelled, cancelled = cancelled))
@@ -270,14 +290,20 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
     }
 
     private fun delete(taskId: String) {
-        repository.read(taskId) ?: return
-        stop(taskId, true)
-        val record = repository.read(taskId) ?: return
-        NativeMediaDownloadWorker.withFileLock(context, taskId) {
-            NativeMediaDownloadWorker.files(context, record).forEach { file ->
-                if (file.exists()) check(file.delete()) { "无法删除下载文件" }
+        val initial = repository.read(taskId) ?: return
+        val legacy = readLegacy(initial)
+        val scope = mutationScope(initial, legacy)
+        // Acquire before cancelling transport: a rejected deletion must not
+        // pause a download, remove its metadata or disrupt the active reader.
+        NativeMediaFileLeases.registry.mutate(scope) {
+            stop(taskId, true, mutationHeld = true, legacy = legacy)
+            val record = repository.read(taskId) ?: return@mutate
+            NativeMediaDownloadWorker.withFileLock(context, taskId) {
+                NativeMediaDownloadWorker.files(context, record).forEach { file ->
+                    if (file.exists()) check(file.delete()) { "无法删除下载文件" }
+                }
+                repository.remove(taskId)
             }
-            repository.remove(taskId)
         }
     }
 

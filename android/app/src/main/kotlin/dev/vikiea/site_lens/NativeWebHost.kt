@@ -266,7 +266,7 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
     override fun registerScripts(hostId: Long, scripts: List<ScriptRegistration>) {
         val host = host(hostId)
         require(host.purpose == HostPurpose.BROWSING || scripts.isEmpty()) { "Probe hosts cannot run user scripts" }
-        host.revoke(); host.scripts = scripts
+        host.registerScripts(scripts)
     }
     override fun applyFilter(hostId: Long, context: HostFilterContextDto, policy: FilterPolicyDto, snapshot: FilterSnapshotDto, callback: (Result<Unit>) -> Unit) {
         try {
@@ -420,6 +420,8 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
     }
 }
 
+private const val PRIVILEGED_SCRIPT_SLOTS = 32
+
 class ScriptBinding(val script: ScriptRegistration, val generation: Long, val token: String, val world: JavaScriptExecutionWorld) {
     var proxy: JavaScriptReplyProxy? = null
 }
@@ -527,11 +529,15 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     var destroyed = false
     var pageError: String? = null
     var scripts = emptyList<ScriptRegistration>()
+        private set
     val bindings = mutableListOf<ScriptBinding>()
+    // Pre-register a bounded pool before any document runs. Even adding a
+    // listener to a live document rebuilds all provider message endpoints.
+    // Navigation, script churn and increasing script counts only reuse slots.
+    private val privilegedWorlds = mutableListOf<JavaScriptExecutionWorld>()
     private val injections = mutableListOf<ScriptHandler>()
     private val filterInstallation = NativeFilterInstallation<NativeFilterState, ScriptHandler>(NativeFilterState()) { it.remove() }
     private val retiredInjections = mutableListOf<ScriptHandler>()
-    private val retiredBindings = mutableListOf<ScriptBinding>()
     private var bridgeCleanupScheduled = false
     private val bridgeCleanup = Runnable {
         bridgeCleanupScheduled = false
@@ -564,6 +570,8 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     // redirect target.)
     private var entryArmed = false
     private var activeNavigation: Navigation? = null
+    private var sslNavigation: Navigation? = null
+    private val sslFailures = WebSslFailurePolicy()
     private var activePage: Page? = null
     // App-owned back/forward is armed only after the target's scripts have
     // been fetched and immediately before WebView starts the history load.
@@ -590,6 +598,9 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     // that callback can still be associated with the same document load.
     private var pageLoadGeneration = -1L
     private var pageStartedUrl: String? = null
+    // Do not let callbacks from the previous document cancel the asynchronous
+    // policy preparation for the next app-owned load on older providers.
+    private var fallbackNavigationPreparing = false
     @Volatile private var lastKnownUrl: String? = null
     // A history traversal is app-owned only for the one target selected from
     // copyBackForwardList. Keep this marker until the navigation commits so
@@ -785,9 +796,12 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         }
         // Profile must be selected before any navigation, cookie/store access.
         if (profileName != null) WebViewCompat.setProfile(webView, profileName)
+        if (purpose == HostPurpose.BROWSING && enhanced) {
+            repeat(PRIVILEGED_SCRIPT_SLOTS) { createPrivilegedWorld(it) }
+        }
         val provider = WebViewCompat.getCurrentWebViewPackage(activity)
         capabilities = HostCapabilities(platform = "Android WebView ${provider?.versionName ?: "unknown"}", isolatedScripts = enhanced, documentStart = hasStart,
-            privateProbes = hasProfiles, reason = "world=$hasWorld; navigation=$hasNavigation; profile=$hasProfiles. Missing capabilities fail closed; no iframe or generic JavaScript bridge.")
+            privateProbes = hasProfiles, reason = "world=$hasWorld; navigation=$hasNavigation; profile=$hasProfiles; privilegedScriptSlots=$PRIVILEGED_SCRIPT_SLOTS. Missing capabilities fail closed; no iframe or generic JavaScript bridge.")
         webView.settings.apply {
             javaScriptEnabled = true; domStorageEnabled = true
             allowFileAccess = false; allowContentAccess = false
@@ -811,6 +825,8 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 override fun onNavigationStarted(navigation: Navigation) {
                     if (!available) return
                     activeNavigation = navigation; activePage = null
+                    sslNavigation = navigation
+                    sslFailures.navigate(navigation.url)
                     // The navigation must address the canonical URL the registration was
                     // fetched for; WebView normalizes `https://host` to `https://host/`
                     // before reporting it, so a raw string compare would revoke every
@@ -872,7 +888,10 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 }
                 override fun onNavigationRedirected(navigation: Navigation) {
                     if (!available) return
-                    if (activeNavigation != navigation) return
+                    // Preparation retires SSL ownership before the next start.
+                    // activeNavigation can still refer to the previous load here.
+                    if (activeNavigation != navigation || sslNavigation !== navigation) return
+                    sslFailures.redirected(navigation.url)
                     val leased = leasedOrigin
                     val redirected = webOrigin(navigation.url)
                     // The app's own entry navigation may follow the server's redirect
@@ -981,14 +1000,24 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             }
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                 if (!available) return
-                lastKnownUrl = url ?: lastKnownUrl
-                runCatching { media.pageStarted() }
-                pageLoadGeneration = generation
-                pageStartedUrl = url
                 if (!hasNavigation) {
-                    if (expectedUrl == null) { revoke(); event("scriptsSuspended", "Navigation lifecycle unavailable; refresh to restore page-only scripts") }
+                    if (fallbackNavigationPreparing) return
+                    sslFailures.navigate(url)
+                    // Older providers may report only the final redirect URL.
+                    // Privileged scripts are already unavailable without the
+                    // navigation listener; don't mislabel that ordinary load.
+                    if (expectedUrl == null) {
+                        revoke()
+                        event("scriptsSuspended", "Navigation lifecycle unavailable; refresh to restore page-only scripts")
+                    }
                     expectedUrl = null; leasedOrigin = null
                 }
+                lastKnownUrl = url ?: lastKnownUrl
+                runCatching { media.pageStarted() }
+                // revoke() above advances generation. The started/finished pair
+                // must use that new generation even for an unleased page load.
+                pageLoadGeneration = generation
+                pageStartedUrl = url
                 event("started", url = url)
             }
             override fun onPageFinished(view: WebView, url: String?) {
@@ -1012,15 +1041,30 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             }
             override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
                 if (!available) { handler.cancel(); return }
-                refreshLayout?.isRefreshing = false; handler.cancel(); revoke(); event("certificateError", "TLS/证书验证失败，不会忽略证书错误；若启用了代理/MITM，请检查代理证书", error.url)
+                handler.cancel()
+                if (sslFailures.affectsDocument(error.url, sslNavigation?.url)) {
+                    refreshLayout?.isRefreshing = false
+                    revoke()
+                    event("certificateError", "TLS/证书验证失败，不会忽略证书错误；若启用了代理/MITM，请检查代理证书", error.url)
+                }
             }
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 if (!available) return
-                if (request.isForMainFrame) { refreshLayout?.isRefreshing = false; revoke(); event("networkError", error.description.toString(), request.url.toString()) }
+                // Main-frame errors have no Navigation object. A late error
+                // from the previous load must not revoke the new document.
+                if (request.isForMainFrame && sslFailures.affectsDocument(request.url.toString(), sslNavigation?.url)) {
+                    refreshLayout?.isRefreshing = false
+                    revoke()
+                    event("networkError", error.description.toString(), request.url.toString())
+                }
             }
             override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
                 if (!available) return
-                if (request.isForMainFrame) { refreshLayout?.isRefreshing = false; revoke(); event("httpError", "HTTP " + errorResponse.statusCode, request.url.toString()) }
+                if (request.isForMainFrame && sslFailures.affectsDocument(request.url.toString(), sslNavigation?.url)) {
+                    refreshLayout?.isRefreshing = false
+                    revoke()
+                    event("httpError", "HTTP " + errorResponse.statusCode, request.url.toString())
+                }
             }
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                 if (rendererGone || destroyed) return true
@@ -1186,35 +1230,43 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     fun revoke() {
         if (!available) return
         accepting = false; generation++; expectedUrl = null; leasedOrigin = null; pageError = null
+        fallbackNavigationPreparing = false
         entryFollowing = false; entryHops = 0; entryNavigation = null; entryArmed = false
         clearHistoryNavigation()
-        // Android WebView 145 can crash in libwebviewchromium when document
-        // start injections or world listeners are synchronously removed from a
-        // navigation callback. Snapshot the old bridge and detach it after the
-        // callback returns; generation/token checks already fail closed while
-        // the old bridge is waiting for removal.
+        // Remove document-start injections after provider callbacks return.
+        // Listener registrations stay with their WebView: changing any listener
+        // rebuilds provider channels, racing messages from still-live documents.
+        // Clearing bindings revokes all authority immediately, independently of
+        // physical injection removal or the lifetime of those inert listeners.
         retiredInjections.addAll(injections)
-        retiredBindings.addAll(bindings)
         injections.clear()
         bindings.clear()
-        if (!bridgeCleanupScheduled && (retiredInjections.isNotEmpty() || retiredBindings.isNotEmpty())) {
+        if (!bridgeCleanupScheduled && retiredInjections.isNotEmpty()) {
             bridgeCleanupScheduled = true
             mainHandler.post(bridgeCleanup)
         }
         event("invalidated")
     }
 
+    fun registerScripts(next: List<ScriptRegistration>) {
+        revoke()
+        requireScriptCapacity(next)
+        scripts = next
+    }
+
+    private fun requireScriptCapacity(next: List<ScriptRegistration>) {
+        require(!enhanced || next.count { it.privileged } <= PRIVILEGED_SCRIPT_SLOTS) {
+            "当前配置最多同时启用 $PRIVILEGED_SCRIPT_SLOTS 个特权脚本，请停用部分脚本后刷新"
+        }
+    }
+
     private fun flushRetiredBridges() {
         mainHandler.removeCallbacks(bridgeCleanup)
         bridgeCleanupScheduled = false
         val oldInjections = retiredInjections.toList()
-        val oldBindings = retiredBindings.toList()
-        retiredInjections.clear(); retiredBindings.clear()
+        retiredInjections.clear()
         if (!available) return
         oldInjections.forEach { runCatching { it.remove() } }
-        oldBindings.forEach {
-            runCatching { WebViewCompat.removeWebMessageListener(webView, it.world, "lensBridge") }
-        }
     }
     fun prepareNavigation(
         url: String,
@@ -1223,7 +1275,14 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         load: () -> Unit,
     ) {
         if (!available) return
+        // Dart preparation is asynchronous. Old completion/page-deletion
+        // callbacks must not consume this navigation's entry/history lease.
+        activeNavigation = null
+        activePage = null
+        sslNavigation = null
+        sslFailures.navigate(url)
         revoke(); val ticket = generation
+        fallbackNavigationPreparing = !hasNavigation
         // Only the navigations the app itself starts may follow the server's own
         // redirect chain (see [entryFollowing]); everything a page starts on its
         // own keeps the strict lease rules. Page-started navigations also defer
@@ -1239,6 +1298,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 if (!available || generation != ticket) return@prepareFilterForNavigation
                 if (result.isFailure) {
                     refreshLayout?.isRefreshing = false
+                    fallbackNavigationPreparing = false
                     event("networkError", result.exceptionOrNull()?.message ?: "Filter navigation rejected")
                     return@prepareFilterForNavigation
                 }
@@ -1246,6 +1306,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                     if (!available || generation != ticket) return@post
                     flushRetiredBridges()
                     expectedUrl = url; leasedOrigin = webOrigin(url)
+                    fallbackNavigationPreparing = false
                     load()
                 }
             }
@@ -1253,10 +1314,11 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         }
         events.getScriptsForNavigation(id, ticket, url) { result ->
             if (!available || generation != ticket) return@getScriptsForNavigation
-            if (result.isFailure) { refreshLayout?.isRefreshing = false; event("networkError", result.exceptionOrNull()?.message ?: "Navigation policy rejected"); return@getScriptsForNavigation }
+            if (result.isFailure) { refreshLayout?.isRefreshing = false; fallbackNavigationPreparing = false; event("networkError", result.exceptionOrNull()?.message ?: "Navigation policy rejected"); return@getScriptsForNavigation }
             try {
                 scripts = result.getOrThrow()
                 install(url)
+                fallbackNavigationPreparing = false
                 load()
             } catch (error: Exception) {
                 refreshLayout?.isRefreshing = false
@@ -1273,7 +1335,12 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
      */
     private fun prepareHistoryNavigation(url: String?, load: () -> Unit) {
         if (!available) return
+        activeNavigation = null
+        activePage = null
+        sslNavigation = null
+        sslFailures.navigate(url)
         revoke(); historyInFlight = true; val ticket = generation
+        fallbackNavigationPreparing = !hasNavigation
         entryFollowing = false; entryHops = 0; entryNavigation = null
         historyTargetUrl = url
         armHistoryTimeout(ticket)
@@ -1286,6 +1353,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             // but the app-owned traversal is still a valid back/forward action.
             historyArmed = true
             historyLoading = true
+            fallbackNavigationPreparing = false
             load()
             return
         }
@@ -1294,6 +1362,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             if (result.isFailure) {
                 refreshLayout?.isRefreshing = false
                 expectedUrl = null; leasedOrigin = null
+                fallbackNavigationPreparing = false
                 clearHistoryNavigation()
                 event("networkError", result.exceptionOrNull()?.message ?: "Navigation policy rejected")
                 return@getScriptsForNavigation
@@ -1303,6 +1372,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 historyArmed = true
                 historyLoading = true
                 install(targetUrl)
+                fallbackNavigationPreparing = false
                 load()
             } catch (error: Exception) {
                 refreshLayout?.isRefreshing = false
@@ -1334,31 +1404,17 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         // Called after the navigation-policy reply, outside provider callbacks.
         // Finish the previous generation's removals before installing another.
         flushRetiredBridges()
+        requireScriptCapacity(scripts)
         expectedUrl = url; leasedOrigin = webOrigin(url); accepting = true
         if (purpose != HostPurpose.BROWSING) return
+        var privilegedSlot = 0
         for (script in scripts) {
             val source = resolvedSource(script)
             if (script.privileged) {
                 if (!enhanced) continue
                 val token = UUID.randomUUID().toString()
-                val world = WebViewCompat.getExecutionWorld(webView, "site-lens.$id.${script.id}.$generation.$token")
+                val world = privilegedWorlds[privilegedSlot++]
                 val binding = ScriptBinding(script, generation, token, world); bindings.add(binding)
-                WebViewCompat.addWebMessageListener(webView, "lensBridge", setOf("*"), world) { view, message, sourceOrigin, isMainFrame, proxy ->
-                    try {
-                        check(view === webView && isMainFrame && valid(binding)) { "Invalid frame or document" }
-                        val current = webView.url ?: throw IllegalStateException("No current document")
-                        check(origin(webUri(current)) == origin(sourceOrigin) && matches(script, current)) { "Source is not allowed" }
-                        val raw = message.data ?: throw IllegalStateException("Empty message")
-                        check(raw.length <= 128 * 1024) { "Message too large" }
-                        val payload = JSONObject(raw)
-                        check(payload.optString("token") == binding.token) { "Invalid native document capability" }
-                        binding.proxy = proxy
-                        events.onGmRequest(GmRequest(id, binding.generation, script.id, script.revision, current, raw)) { result ->
-                            if (!valid(binding) || webView.url?.let { origin(webUri(it)) == origin(sourceOrigin) && matches(script, it) } != true) return@onGmRequest
-                            proxy.postMessage(result.getOrElse { JSONObject().put("id", payload.optString("id")).put("ok", false).put("error", it.message ?: "Native error").toString() })
-                        }
-                    } catch (_: Exception) { /* Unauthenticated messages never reach Dart. */ }
-                }
                 injections.add(WebViewCompat.addJavaScriptOnEvent(webView, "const __lensBridgeToken = ${JSONObject.quote(token)};\n$source", WebViewCompat.INJECTION_EVENT_DOCUMENT_START, setOf("*"), world))
             } else if (hasWorld) {
                 val world = WebViewCompat.getExecutionWorld(webView, JavaScriptExecutionWorld.PAGE_WORLD_NAME)
@@ -1367,6 +1423,33 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 injections.add(WebViewCompat.addDocumentStartJavaScript(webView, source, setOf("*")))
             }
         }
+    }
+    private fun createPrivilegedWorld(slot: Int) {
+        check(slot == privilegedWorlds.size)
+        val world = WebViewCompat.getExecutionWorld(webView, "site-lens.$id.slot.$slot")
+        WebViewCompat.addWebMessageListener(webView, "lensBridge", setOf("*"), world) { view, message, sourceOrigin, isMainFrame, proxy ->
+            try {
+                check(view === webView && isMainFrame) { "Invalid frame" }
+                // A slot can be assigned a different script on a later document.
+                // Resolve its current lease, then authenticate the unpredictable
+                // document token; old closures can never inherit the new lease.
+                val binding = bindings.firstOrNull { it.world === world && valid(it) }
+                    ?: throw IllegalStateException("Document invalidated")
+                val script = binding.script
+                val current = webView.url ?: throw IllegalStateException("No current document")
+                check(origin(webUri(current)) == origin(sourceOrigin) && matches(script, current)) { "Source is not allowed" }
+                val raw = message.data ?: throw IllegalStateException("Empty message")
+                check(raw.length <= 128 * 1024) { "Message too large" }
+                val payload = JSONObject(raw)
+                check(payload.optString("token") == binding.token) { "Invalid native document capability" }
+                binding.proxy = proxy
+                events.onGmRequest(GmRequest(id, binding.generation, script.id, script.revision, current, raw)) { result ->
+                    if (!valid(binding) || webView.url?.let { origin(webUri(it)) == origin(sourceOrigin) && matches(script, it) } != true) return@onGmRequest
+                    proxy.postMessage(result.getOrElse { JSONObject().put("id", payload.optString("id")).put("ok", false).put("error", it.message ?: "Native error").toString() })
+                }
+            } catch (_: Exception) { /* Unauthenticated messages never reach Dart. */ }
+        }
+        privilegedWorlds.add(world)
     }
     private fun resolvedSource(script: ScriptRegistration): String {
         if (script.sourcePath.isBlank()) return script.source
@@ -1414,7 +1497,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         clearHistoryNavigation()
         activeNavigation = null; activePage = null; navigationListener = null
         injections.clear(); bindings.clear(); scripts = emptyList()
-        retiredInjections.clear(); retiredBindings.clear()
+        retiredInjections.clear(); privilegedWorlds.clear()
         bridgeCleanupScheduled = false
         filterInstallation.forget()
         runCatching { forceClearFullscreen() }
@@ -1467,7 +1550,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         clearPopupProbes()
         runCatching { media.dispose() }
         injections.clear(); bindings.clear(); scripts = emptyList()
-        retiredInjections.clear(); retiredBindings.clear()
+        retiredInjections.clear(); privilegedWorlds.clear()
         filterInstallation.forget()
         runCatching { forceClearFullscreen() }
         navigationListener?.let { runCatching { WebViewCompat.removeNavigationListener(webView, it) } }; navigationListener = null

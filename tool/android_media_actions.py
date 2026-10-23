@@ -51,7 +51,7 @@ class MediaActionDriver:
                 ).decode().strip()
             except (RuntimeError, subprocess.TimeoutExpired):
                 continue  # Fixture has not started, or runner is reinstalling.
-            if phase not in {'pause', 'resume', 'stop'} or phase in self.handled:
+            if phase not in {'pause', 'resume', 'stop', 'next', 'previous'} or phase in self.handled:
                 continue
             try:
                 sessions = self.command(
@@ -218,6 +218,30 @@ class MediaActionDriver:
             self.command(
                 'shell', 'input', 'tap', str((x1 + x2) // 2), str((y1 + y2) // 2)
             )
-            print('MEDIA_DRIVER clicked system notification stop action', flush=True)
+            # input tap returning only acknowledges input injection. Keep the
+            # shade in place until the app's own session has actually stopped;
+            # collapsing immediately can race delivery on OEM media controls.
+            self._await_stopped_session()
+            print('MEDIA_DRIVER system notification stop confirmed', flush=True)
         finally:
             self.command('shell', 'cmd', 'statusbar', 'collapse')
+
+    def _await_stopped_session(self):
+        deadline = time.monotonic() + 6
+        expected = f'tag=site-lens-browser:{self.package}, package={self.package}'
+        while time.monotonic() < deadline:
+            sessions = self.command(
+                'shell', 'cmd', 'media_session', 'list-sessions'
+            ).decode()
+            rows = [row.strip() for row in sessions.splitlines() if row.strip()]
+            if (not rows or rows[0] != 'Sessions:' or any(
+                    re.fullmatch(r'tag=.+, package=[A-Za-z0-9_.]+', row) is None
+                    for row in rows[1:])):
+                raise RuntimeError('Cannot verify media session inventory after notification stop')
+            own = [row for row in rows[1:] if row == expected]
+            if len(own) > 1:
+                raise RuntimeError('Ambiguous debug media session after notification stop')
+            if not own:
+                return
+            time.sleep(0.2)
+        raise RuntimeError('Notification stop was injected but the debug media session remained active')

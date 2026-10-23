@@ -300,4 +300,31 @@ void main() {
       isTrue,
     );
   });
+
+  testWidgets('opacity controls fit narrow phone panels at every value', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    for (final width in [320.0, 384.0, 412.0]) {
+      tester.view.physicalSize = Size(width, 800);
+      for (final scale in [1.0, 1.3]) {
+        tester.platformDispatcher.textScaleFactorTestValue = scale;
+        for (final opacity in [0, 55, 100]) {
+          await app.updateSettings({'glassOpacity': opacity});
+          await pumpSettings(tester, app);
+          expect(
+            tester.takeException(),
+            isNull,
+            reason: 'width=$width scale=$scale opacity=$opacity',
+          );
+          final slider = tester.getRect(find.byType(Slider));
+          expect(slider.left, greaterThanOrEqualTo(0));
+          expect(slider.right, lessThanOrEqualTo(width));
+          expect(slider.width, greaterThan(48));
+        }
+      }
+    }
+  });
 }

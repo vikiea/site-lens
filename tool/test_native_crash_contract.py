@@ -86,6 +86,27 @@ class NativeCrashContractTests(unittest.TestCase):
         self.assertIn("!available || generation != ticket", page)
         self.assertLess(page.index("mainHandler.post"), page.index("load()"))
 
+    def test_legacy_page_start_tracks_generation_after_revoking_unleased_load(self):
+        body = block(self.host, "override fun onPageStarted(view: WebView")
+        fallback = block(body, "if (!hasNavigation)")
+        self.assertIn("expectedUrl == null", fallback)
+        self.assertNotIn("sameWebUrl(expectedUrl, url)", fallback)
+        self.assertIn("revoke()", fallback)
+        self.assertLess(body.index("revoke()"), body.index("pageLoadGeneration = generation"))
+        self.assertLess(body.index("revoke()"), body.index('event("started"'))
+
+    def test_legacy_page_start_does_not_cancel_pending_app_navigation(self):
+        started = block(self.host, "override fun onPageStarted(view: WebView")
+        self.assertLess(started.index("if (fallbackNavigationPreparing) return"), started.index("revoke()"))
+        for signature in ("fun prepareNavigation(", "private fun prepareHistoryNavigation("):
+            prepare = block(self.host, signature)
+            self.assertIn("fallbackNavigationPreparing = !hasNavigation", prepare)
+            # Every actual load clears preparation, including filter-only
+            # navigation and non-web history entries. Revocation cancels it.
+            for match in re.finditer(r"\bload\(\)", prepare):
+                self.assertRegex(prepare[:match.start()], r"fallbackNavigationPreparing = false\s*$")
+        self.assertIn("fallbackNavigationPreparing = false", block(self.host, "fun revoke()"))
+
     def test_entry_redirect_lease_keeps_navigation_identity(self):
         body = block(self.host, "override fun onNavigationStarted")
         self.assertIn("entryNavigation === navigation", body)

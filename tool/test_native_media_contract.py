@@ -13,9 +13,102 @@ TRANSFER = (ANDROID / "ResumableMediaTransfer.kt").read_text()
 DOWNLOAD_RUNTIME = (ANDROID / "NativeDownloadRuntime.kt").read_text()
 NATIVE_MEDIA = (ANDROID / "NativeMediaRuntime.kt").read_text()
 NATIVE_EXPORT = (ANDROID / "NativeExportRuntime.kt").read_text()
+NATIVE_LEASES = (ANDROID / "NativeMediaFileLeases.kt").read_text()
 
 
 class NativeMediaContractTests(unittest.TestCase):
+    def test_native_playback_file_lease_contract_is_fail_closed(self):
+        self.assertIn('class MediaFileLeaseRegistry', NATIVE_LEASES)
+        for token in ('acquireRead', 'acquireMutation', 'overlaps', 'taskIds', 'documents'):
+            self.assertIn(token, NATIVE_LEASES)
+        local = NATIVE_MEDIA.split('private fun openLocal(', 1)[1].split('private fun start(', 1)[0]
+        self.assertIn('NativeMediaFileLeases.registry.acquireRead', local)
+        self.assertLess(local.index('registry.acquireRead'), local.index('openFileDescriptor'))
+        self.assertIn('Scope.file(if (hls) file.parentFile!! else file)', local)
+        self.assertIn('if (fileLease === lease) stop() else lease.close()', local)
+        stop = NATIVE_MEDIA.split('private fun stop()', 1)[1].split('private fun attachSurface(', 1)[0]
+        self.assertLess(stop.index('media.release()'), stop.index('fileLease?.close()'))
+
+    def test_native_mutations_take_file_leases_before_cancellation_or_delete(self):
+        download = (ANDROID / "NativeDownloadRuntime.kt").read_text()
+        export = NATIVE_EXPORT
+        self.assertIn('NativeMediaFileLeases.registry.mutate(scope)', download)
+        delete = download.split('private fun delete(taskId: String)', 1)[1].split('private fun validTaskId(', 1)[0]
+        self.assertLess(delete.index('registry.mutate(scope)'), delete.index('stop(taskId, true'))
+        self.assertLess(export.index('registry.mutate(mutationScope(call))'), export.index('execute(call, cancellation)'))
+        scope = export.split('private fun mutationScope(', 1)[1].split('private fun execute(', 1)[0]
+        for operation in ('"delete"', '"move"', '"rename"', '"deliver"', '"materialize"', '"deleteOwnedSources"', '"copyVerified"'):
+            self.assertIn(operation, scope)
+
+    def test_group_cleanup_takes_one_native_reservation_and_preserves_partial_progress(self):
+        scope = NATIVE_EXPORT.split('private fun mutationScope(', 1)[1].split('private fun execute(', 1)[0]
+        self.assertIn('ownedSources(call).fold(MediaFileLeaseRegistry.Scope.task(taskId))', scope)
+        body = NATIVE_EXPORT.split('private fun deleteOwnedSources(', 1)[1].split('private fun fail(', 1)[0]
+        self.assertLess(body.index('sources.forEach'), body.index('delete(source, allowMissing = true)'))
+        self.assertIn('PartialMediaDeletion(deleted.toList(), error)', body)
+        library = (ROOT / 'lib/media/media_library.dart').read_text()
+        self.assertIn('native!.deleteOwnedSources(value.taskId, disposable)', library)
+        self.assertIn("details['deletedSources']", library)
+
+    def test_verified_local_copy_and_move_stay_under_native_reservations(self):
+        copy = NATIVE_EXPORT.split('private fun copyVerified(', 1)[1].split('private fun deliverToDirectory(', 1)[0]
+        self.assertIn('registry.acquireRead(MediaFileLeaseRegistry.Scope.source(source))', copy)
+        self.assertIn('sourceMutationHeld', copy)
+        for token in ('temporary.canonicalFile == temporary', '!temporary.exists()',
+                      '!target.exists()', 'actual.digest().contentEquals(expected.digest())',
+                      'temporary.renameTo(target)', 'finally { if (temporary.exists()) temporary.delete() }'):
+            self.assertIn(token, copy)
+        execute = NATIVE_EXPORT.split('private fun execute(', 1)[1].split('private fun ownedSources(', 1)[0]
+        self.assertIn('sourceMutationHeld = true', execute)
+        self.assertNotIn('runCatching { delete(source) }', execute)
+        self.assertIn('registry.acquireRead(readScope(call)).use', NATIVE_EXPORT)
+        move = NATIVE_EXPORT.split('"move" -> {', 1)[1].split('"delete" ->', 1)[0]
+        self.assertIn('completeMediaMove(target, { delete(source) }, { delete(target, allowMissing = true) })', move)
+        self.assertIn('"recoveryTarget" to error.target', NATIVE_EXPORT)
+
+    def test_navigation_preparation_retires_previous_completion_and_page(self):
+        host = (ANDROID / "NativeWebHost.kt").read_text()
+        # A can complete while B is awaiting Dart's script/filter reply.
+        # Retire A before the asynchronous preparation, so A cannot consume
+        # B's entry/history state or publish committed(A) with B's generation.
+        for start, end in (("fun prepareNavigation(", "private fun prepareHistoryNavigation("),
+                           ("private fun prepareHistoryNavigation(", "val targetUrl =")):
+            preparation = host.split(start, 1)[1].split(end, 1)[0]
+            for retired in ("activeNavigation = null", "activePage = null", "sslNavigation = null"):
+                self.assertLess(preparation.index(retired), preparation.index("revoke();"))
+        completed = host.split("override fun onNavigationCompleted(", 1)[1].split(
+            "override fun onPageDeleted(", 1)[0]
+        self.assertLess(completed.index("if (activeNavigation != navigation) return"),
+                        completed.index("clearHistoryNavigation()"))
+
+    def test_retired_main_frame_errors_cannot_revoke_the_new_document(self):
+        host = (ANDROID / "NativeWebHost.kt").read_text()
+        for start, end in (("override fun onReceivedError(", "override fun onReceivedHttpError("),
+                           ("override fun onReceivedHttpError(", "override fun onRenderProcessGone(")):
+            body = host.split(start, 1)[1].split(end, 1)[0]
+            guard = "request.isForMainFrame && sslFailures.affectsDocument(request.url.toString(), sslNavigation?.url)"
+            self.assertLess(body.index(guard), body.index("revoke()"))
+
+    def test_prepared_navigation_rejects_retired_ssl_redirect_callbacks(self):
+        host = (ANDROID / "NativeWebHost.kt").read_text()
+        # A is still active while B prepares. A's delayed redirect must not
+        # reinsert A into B's SSL identities or publish A's URL over B's.
+        for start, end in (("fun prepareNavigation(", "private fun prepareHistoryNavigation("),
+                           ("private fun prepareHistoryNavigation(", "val targetUrl =")):
+            preparation = host.split(start, 1)[1].split(end, 1)[0]
+            self.assertLess(preparation.index("sslNavigation = null"),
+                            preparation.index("sslFailures.navigate(url)"))
+        redirect = host.split("override fun onNavigationRedirected(", 1)[1].split(
+            "override fun onNavigationCompleted(", 1)[0]
+        guard = "if (activeNavigation != navigation || sslNavigation !== navigation) return"
+        self.assertLess(redirect.index(guard), redirect.index("sslFailures.redirected("))
+        self.assertLess(redirect.index(guard), redirect.index('event("redirected"'))
+        ssl_error = host.split("override fun onReceivedSslError(", 1)[1].split(
+            "override fun onReceivedError(", 1)[0]
+        self.assertLess(ssl_error.index("handler.cancel()"),
+                        ssl_error.index("sslFailures.affectsDocument("))
+        self.assertNotIn("handler.proceed()", ssl_error)
+
     def test_controller_uses_per_frame_reply_proxy_and_document_epoch(self):
         self.assertIn("JavaScriptReplyProxy", CONTROLLER)
         self.assertIn("frame.proxy.postMessage", CONTROLLER)

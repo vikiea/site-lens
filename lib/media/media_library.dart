@@ -742,14 +742,18 @@ class MediaLibrary extends ChangeNotifier {
         suffix++;
       }
       final temporary = File('${file.path}.part');
-      try {
-        await File(source).copy(temporary.path);
-        if (await temporary.length() != await File(source).length()) {
-          throw StateError('导出文件校验失败');
+      if (native != null) {
+        await native!.copyVerified(source: source, destination: file.path);
+      } else {
+        try {
+          await File(source).copy(temporary.path);
+          if (await temporary.length() != await File(source).length()) {
+            throw StateError('导出文件校验失败');
+          }
+          await temporary.rename(file.path);
+        } finally {
+          if (await temporary.exists()) await temporary.delete();
         }
-        await temporary.rename(file.path);
-      } finally {
-        if (await temporary.exists()) await temporary.delete();
       }
       target = file.path;
     }
@@ -782,16 +786,50 @@ class MediaLibrary extends ChangeNotifier {
       if (value.libraryCopy != null) value.libraryCopy!,
       if (value.materializedCopy != null) value.materializedCopy!,
     }..remove(value.location);
+    if (native != null) {
+      final disposable = paths
+          .where((path) => cache?.absolute.path != File(path).absolute.path)
+          .toList();
+      Future<void> recordDeleted(Iterable<String> deleted) async {
+        for (final path in deleted) {
+          if (!paths.contains(path)) continue;
+          current = current.withCopies(
+            libraryCopy: current.libraryCopy == path
+                ? null
+                : current.libraryCopy,
+            materializedCopy: current.materializedCopy == path
+                ? null
+                : current.materializedCopy,
+          );
+        }
+        await _save(current);
+      }
+
+      try {
+        if (disposable.isNotEmpty) {
+          await recordDeleted(
+            await native!.deleteOwnedSources(value.taskId, disposable),
+          );
+        }
+      } on PlatformException catch (error) {
+        final details = error.details;
+        if (details is Map && details['deletedSources'] is List) {
+          await recordDeleted(
+            (details['deletedSources'] as List).whereType<String>(),
+          );
+        }
+        rethrow;
+      }
+      // Cache-owned aliases remain task-owned, but are no longer cleanup copies.
+      await _save(current.withCopies());
+      return;
+    }
     for (final path in paths) {
       // Legacy MP4 tasks can own the same bytes. Their cache is independent
       // until it is explicitly deleted through the task surface.
       if (cache?.absolute.path != File(path).absolute.path) {
-        if (native != null) {
-          await native!.delete(path, allowMissing: true);
-        } else {
-          final file = File(path);
-          if (await file.exists()) await file.delete();
-        }
+        final file = File(path);
+        if (await file.exists()) await file.delete();
       }
       current = current.withCopies(
         libraryCopy: current.libraryCopy == path ? null : current.libraryCopy,
@@ -817,7 +855,7 @@ class MediaLibrary extends ChangeNotifier {
     tasks.retain(taskId);
     try {
       if (native != null) {
-        await native!.delete(path, allowMissing: true);
+        await native!.deleteOwnedSources(taskId, [path]);
       } else {
         final file = File(path);
         if (await file.exists()) await file.delete();
@@ -929,50 +967,83 @@ class MediaLibrary extends ChangeNotifier {
     await _save(next);
   });
 
-  Future<void> move(String taskId, String directory) =>
-      _mutate(taskId, (value) async {
-        final uri = Uri.tryParse(directory);
-        String target;
-        if (uri?.scheme == 'content') {
-          target = await native!.move(
-            source: value.location,
-            directory: uri!,
-            fileName: value.name,
-          );
-        } else {
-          final destination = File(
-            '$directory${Platform.pathSeparator}${value.name}',
-          );
-          if (await destination.exists()) throw StateError('目标目录存在同名文件');
-          await destination.parent.create(recursive: true);
-          final copied = await File(value.location).copy(destination.path);
-          if (await copied.length() != await File(value.location).length()) {
-            await copied.delete();
-            throw StateError('移动文件校验失败');
-          }
-          await File(value.location).delete();
-          target = destination.path;
-        }
-        await _save(
-          MediaArtifact(
-            taskId: value.taskId,
-            location: target,
-            libraryCopy: value.libraryCopy == value.location
-                ? null
-                : value.libraryCopy,
-            materializedCopy: value.materializedCopy,
-            name: value.name,
-            size: value.size,
-            mime: value.mime,
-            durationMs: value.durationMs,
-            width: value.width,
-            height: value.height,
-            thumbnailPath: value.thumbnailPath,
-            folder: value.folder,
-            createdAt: value.createdAt,
-          ),
+  Future<void> move(String taskId, String directory) => _mutate(taskId, (
+    value,
+  ) async {
+    // Resolve pending copies before replacing the one recovery-copy slot.
+    await _verifyReadable(value);
+    await _releaseCopies(value);
+    value = _items[taskId]!;
+    final uri = Uri.tryParse(directory);
+    String target;
+    if (native != null) {
+      try {
+        target = await native!.move(
+          source: value.location,
+          directory: uri?.hasScheme == true ? uri! : Directory(directory).uri,
+          fileName: value.name,
         );
-      });
+      } on PlatformException catch (error) {
+        final details = error.details;
+        if (error.code == 'media_move_incomplete' &&
+            details is Map &&
+            details['sourceRetained'] == true &&
+            details['rollbackFailed'] == true &&
+            details['recoveryTarget'] is String) {
+          await _save(
+            MediaArtifact(
+              taskId: value.taskId,
+              location: details['recoveryTarget'] as String,
+              libraryCopy: value.location,
+              materializedCopy: value.materializedCopy,
+              name: value.name,
+              size: value.size,
+              mime: value.mime,
+              durationMs: value.durationMs,
+              width: value.width,
+              height: value.height,
+              thumbnailPath: value.thumbnailPath,
+              folder: value.folder,
+              createdAt: value.createdAt,
+            ),
+          );
+        }
+        rethrow;
+      }
+    } else {
+      final destination = File(
+        '$directory${Platform.pathSeparator}${value.name}',
+      );
+      if (await destination.exists()) throw StateError('目标目录存在同名文件');
+      await destination.parent.create(recursive: true);
+      final copied = await File(value.location).copy(destination.path);
+      if (await copied.length() != await File(value.location).length()) {
+        await copied.delete();
+        throw StateError('移动文件校验失败');
+      }
+      await File(value.location).delete();
+      target = destination.path;
+    }
+    await _save(
+      MediaArtifact(
+        taskId: value.taskId,
+        location: target,
+        libraryCopy: value.libraryCopy == value.location
+            ? null
+            : value.libraryCopy,
+        materializedCopy: value.materializedCopy,
+        name: value.name,
+        size: value.size,
+        mime: value.mime,
+        durationMs: value.durationMs,
+        width: value.width,
+        height: value.height,
+        thumbnailPath: value.thumbnailPath,
+        folder: value.folder,
+        createdAt: value.createdAt,
+      ),
+    );
+  });
 
   Future<void> delete(
     String taskId, {
@@ -985,6 +1056,14 @@ class MediaLibrary extends ChangeNotifier {
     };
     var cache = await tasks.cachedFile(taskId);
     var cachePath = cache == null ? null : await cache.resolveSymbolicLinks();
+    // A previous detach may have copied bytes but failed while persisting the
+    // new task cache reference. Re-publish the current in-memory reference
+    // before considering any export bytes disposable; otherwise a retry could
+    // delete a path still referenced by the durable task row.
+    if (cache != null) {
+      tasks.setLocalRef(taskId, cache.path);
+      await tasks.flush(taskId);
+    }
     // Earlier releases indexed the task's only MP4 as the export itself.
     // Detach those bytes into task-owned storage before deleting that export.
     if (cache != null) {
@@ -1000,29 +1079,43 @@ class MediaLibrary extends ChangeNotifier {
           );
           final copy = File('${directory.path}/${task.cacheKey}.media');
           if (copy.absolute.path != originalCache.absolute.path) {
-            await originalCache.copy('${copy.path}.part');
-            final temporary = File('${copy.path}.part');
-            if (await temporary.length() != await originalCache.length()) {
-              await temporary.delete();
-              throw StateError('保留媒体任务缓存失败');
+            if (native != null) {
+              await native!.copyVerified(
+                source: originalCache.path,
+                destination: copy.path,
+                reuseExistingVerified: true,
+              );
+              cache = copy;
+            } else {
+              await originalCache.copy('${copy.path}.part');
+              final temporary = File('${copy.path}.part');
+              if (await temporary.length() != await originalCache.length()) {
+                await temporary.delete();
+                throw StateError('保留媒体任务缓存失败');
+              }
+              cache = await temporary.rename(copy.path);
             }
-            cache = await temporary.rename(copy.path);
             tasks.setLocalRef(taskId, cache.path);
+            await tasks.flush(taskId);
             cachePath = await cache.resolveSymbolicLinks();
           }
           break;
         }
       }
     }
+    final disposable = <String>[];
     for (final path in ownedPaths) {
       if (Uri.tryParse(path)?.scheme != 'content') {
         final file = File(path);
         if (!await file.exists()) continue;
         if (await file.resolveSymbolicLinks() == cachePath) continue;
       }
-      if (native != null) {
-        await native!.delete(path, allowMissing: true);
-      } else {
+      disposable.add(path);
+    }
+    if (native != null) {
+      await native!.deleteOwnedSources(taskId, disposable);
+    } else {
+      for (final path in disposable) {
         final file = File(path);
         if (await file.exists()) await file.delete();
       }

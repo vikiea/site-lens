@@ -2,7 +2,8 @@ import 'dart:io';
 import 'dart:convert';
 
 import 'package:drift/native.dart';
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:path_provider/path_provider.dart';
@@ -15,12 +16,285 @@ import 'package:site_lens/media/native_export_runtime.dart';
 import 'package:site_lens/media/native_media_runtime.dart';
 import 'package:site_lens/network/transport.dart';
 import 'package:site_lens/ui/app_controller.dart';
+import 'package:site_lens/ui/app_theme.dart';
+import 'package:site_lens/ui/media_tasks_screen.dart';
+import 'package:site_lens/ui/media_thumbnail.dart';
 
 import 'media3_fixture.dart';
 import 'video_fixture.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets(
+    'native playback leases reject destructive file operations without Dart references',
+    (tester) async {
+      final support = await getApplicationSupportDirectory();
+      final root = await Directory(
+        '${support.path}/native-file-leases-${DateTime.now().microsecondsSinceEpoch}',
+      ).create();
+      final tasks = MediaTaskStore(directoryProvider: () async => root);
+      final player = NativeMediaRuntime();
+      final native = NativeExportRuntime();
+      final candidate = MediaCandidate(
+        id: 'native-file-leases',
+        hostId: 1,
+        generation: 1,
+        sourceUrl: Uri.parse('https://example.org/watch'),
+        mediaUrl: Uri.parse('https://example.org/episode.mp4'),
+        title: 'Native file leases',
+        mime: 'video/mp4',
+        source: MediaCandidateSource.dom,
+      );
+      final task = tasks.create(candidate);
+      final blocked = throwsA(
+        isA<PlatformException>().having(
+          (error) => error.message,
+          'reader remains held',
+          contains('正在播放'),
+        ),
+      );
+      try {
+        final bytes = base64Decode(videoFixtureBase64);
+        final file = await File('${root.path}/第 1 集.mp4').writeAsBytes(bytes);
+        final other = await File('${root.path}/other.mp4').writeAsBytes(bytes);
+        final session = await player.openLocal(task, file);
+        await player.pause(sessionId: session.id);
+        // No Dart retain: the native reader must protect the bytes itself,
+        // including paused or completed sessions and after route changes.
+        expect(tasks.canDelete(task.id), isTrue);
+        await expectLater(native.delete(file.path), blocked);
+        await expectLater(
+          native.deleteOwnedSources(task.id, [other.path, file.path]),
+          blocked,
+        );
+        expect(await other.readAsBytes(), bytes);
+        await expectLater(native.rename(file.path, 'renamed.mp4'), blocked);
+        await expectLater(
+          native.move(
+            source: file.path,
+            directory: root.uri,
+            fileName: 'local-moved.mp4',
+          ),
+          blocked,
+        );
+        await expectLater(
+          native.copyVerified(source: other.path, destination: file.path),
+          blocked,
+        );
+        await expectLater(
+          native.move(
+            source: file.path,
+            directory: Uri.parse('content://missing-provider/tree/not-granted'),
+            fileName: 'moved.mp4',
+          ),
+          blocked,
+        );
+        await expectLater(
+          native.deliver(source: other.path, destination: file.uri),
+          blocked,
+        );
+        expect(await file.readAsBytes(), bytes);
+        await player.close(sessionId: session.id);
+        final renamed = await native.rename(file.path, 'renamed.mp4');
+        expect(await File(renamed).readAsBytes(), bytes);
+        final copied = await native.copyVerified(
+          source: renamed,
+          destination: '${root.path}/verified-copy.mp4',
+        );
+        expect(await File(copied).readAsBytes(), bytes);
+        await expectLater(
+          native.copyVerified(source: renamed, destination: copied),
+          throwsA(isA<PlatformException>()),
+        );
+        final modified = await File(copied).lastModified();
+        expect(
+          await native.copyVerified(
+            source: renamed,
+            destination: copied,
+            reuseExistingVerified: true,
+          ),
+          copied,
+        );
+        expect(await File(copied).lastModified(), modified);
+        final mismatched = List<int>.of(bytes);
+        mismatched[mismatched.length - 1] ^= 1;
+        await other.writeAsBytes(mismatched);
+        await expectLater(
+          native.copyVerified(
+            source: other.path,
+            destination: copied,
+            reuseExistingVerified: true,
+          ),
+          throwsA(isA<PlatformException>()),
+        );
+        expect(await File(copied).readAsBytes(), bytes);
+        debugPrint(
+          'NATIVE_VERIFIED_COPY_RECOVERY_PASS identicalReused=true mismatchRejected=true defaultRejects=true',
+        );
+        final moved = await native.move(
+          source: renamed,
+          directory: root.uri,
+          fileName: 'local-moved.mp4',
+        );
+        expect(await File(renamed).exists(), isFalse);
+        expect(await File(moved).readAsBytes(), bytes);
+        await native.deleteOwnedSources(task.id, [moved, copied]);
+        expect(await File(moved).exists(), isFalse);
+        expect(await File(copied).exists(), isFalse);
+
+        await unpackMedia3Fixtures(root);
+        final playlist = File('${root.path}/h264_ts/index.m3u8');
+        final segment = (await playlist.parent.list().toList())
+            .whereType<File>()
+            .firstWhere((file) => file.path.endsWith('.ts'));
+        final hls = await player.openLocal(task, playlist);
+        await expectLater(native.delete(segment.path), blocked);
+        await expectLater(
+          native.rename(playlist.path, 'renamed.m3u8'),
+          blocked,
+        );
+        await player.close(sessionId: hls.id);
+        await native.delete(segment.path);
+        expect(await segment.exists(), isFalse);
+        debugPrint(
+          'NATIVE_PLAYBACK_FILE_LEASE_PASS pausedReader=true '
+          'noDartReferences=true moveRejectedBeforeDelivery=true '
+          'overwriteRejected=true hlsChildrenProtected=true stopReleases=true',
+        );
+      } finally {
+        await player.close();
+        await player.dispose();
+        if (await root.exists()) await root.delete(recursive: true);
+      }
+    },
+  );
+
+  testWidgets('media list thumbnails preserve native frame aspect ratio', (
+    tester,
+  ) async {
+    final support = await getApplicationSupportDirectory();
+    final root = await Directory(
+      '${support.path}/thumbnail-ui-${DateTime.now().microsecondsSinceEpoch}',
+    ).create();
+    final db = AppDatabase(NativeDatabase.memory());
+    final app = AppController(db);
+    HttpServer? server;
+    String? thumbnailPath;
+    try {
+      final video = await File('${root.path}/thumbnail.mp4')
+          .writeAsBytes(base64Decode(videoFixtureBase64));
+      final metadata = await app.nativeExports!.inspect(video.path);
+      expect(metadata['width'], 160);
+      expect(metadata['height'], 96);
+      thumbnailPath = metadata['thumbnailPath'] as String?;
+      expect(thumbnailPath, isNotNull);
+      final thumbnailBytes = await File(thumbnailPath!).readAsBytes();
+      var networkRequests = 0;
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        networkRequests++;
+        request.response.headers.contentType = ContentType('image', 'jpeg');
+        request.response.add(thumbnailBytes);
+        await request.response.close();
+      });
+      final candidate = MediaCandidate(
+        id: 'thumbnail-ui',
+        hostId: 1,
+        generation: 1,
+        sourceUrl: Uri.parse('https://example.org/watch'),
+        mediaUrl: Uri.parse('https://example.org/thumbnail.mp4'),
+        thumbnailUrl: Uri.parse('http://127.0.0.1:${server.port}/frame.jpg'),
+        title: 'Thumbnail aspect ratio',
+        mime: 'video/mp4',
+        source: MediaCandidateSource.dom,
+      );
+      await db.saveMediaCandidate(candidate);
+      final task = app.mediaTasks.create(candidate);
+      await app.mediaLibrary.register(task, video.path);
+
+      for (final library in [true, false]) {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSiteLensTheme(ThemePresetId.mistPine, Brightness.dark),
+            home: ListenableBuilder(
+              listenable: app,
+              builder: (_, _) => library
+                  ? MediaLibraryScreen(app: app)
+                  : MediaTasksScreen(app: app),
+            ),
+          ),
+        );
+        final thumbnail = find.byType(MediaThumbnail);
+        final scrollable = find.descendant(
+          of: find.byKey(
+            PageStorageKey<String>(
+              library ? 'media-library-scroll' : 'media-tasks-scroll',
+            ),
+          ),
+          matching: find.byType(Scrollable),
+        );
+        expect(scrollable, findsOneWidget);
+        await tester.scrollUntilVisible(thumbnail, 200, scrollable: scrollable);
+        final rawImage = find.descendant(
+          of: thumbnail,
+          matching: find.byType(RawImage),
+        );
+        final deadline = DateTime.now().add(const Duration(seconds: 10));
+        while (rawImage.evaluate().isEmpty &&
+            DateTime.now().isBefore(deadline)) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        expect(rawImage, findsOneWidget);
+        final provider = tester
+            .widget<Image>(
+              find.descendant(of: thumbnail, matching: find.byType(Image)),
+            )
+            .image;
+        if (library) {
+          expect(provider, isA<FileImage>());
+          expect((provider as FileImage).file.path, thumbnailPath);
+          expect(networkRequests, 0);
+        } else {
+          expect(provider, isA<NetworkImage>());
+          expect(
+            (provider as NetworkImage).url,
+            candidate.thumbnailUrl.toString(),
+          );
+          expect(networkRequests, greaterThan(0));
+        }
+        final decoded = tester.widget<RawImage>(rawImage).image!;
+        // The MP4 fixture is 160x96, not 16:9. This also catches distortion
+        // introduced before Flutter receives the generated JPEG.
+        expect(decoded.width / decoded.height, closeTo(160 / 96, 0.001));
+        final displayed = tester.getRect(rawImage);
+        final slot = tester.getRect(thumbnail);
+        expect(
+          displayed.size.aspectRatio,
+          closeTo(decoded.width / decoded.height, 0.001),
+        );
+        expect(displayed.width, lessThanOrEqualTo(slot.width));
+        expect(displayed.height, lessThanOrEqualTo(slot.height));
+        expect((displayed.center - slot.center).distance, lessThan(0.01));
+        expect(tester.takeException(), isNull);
+        debugPrint(
+          'MEDIA_THUMBNAIL_ROW_PASS source=${library ? "file" : "network"} '
+          'decoded=${decoded.width}x${decoded.height} displayed=${displayed.size}',
+        );
+      }
+      expect(networkRequests, greaterThan(0));
+    } finally {
+      await tester.pumpWidget(const SizedBox());
+      await server?.close(force: true);
+      await app.shutdown();
+      await db.close();
+      if (await root.exists()) await root.delete(recursive: true);
+      if (thumbnailPath != null) {
+        final thumbnail = File(thumbnailPath);
+        if (await thumbnail.exists()) await thumbnail.delete();
+      }
+    }
+  });
 
   testWidgets(
     'temporary cast cleanup removes unfinished HLS without an MP4 artifact',

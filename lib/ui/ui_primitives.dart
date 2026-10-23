@@ -1200,6 +1200,7 @@ class SiteLensAlertDialog extends StatelessWidget {
     this.title,
     this.content,
     this.actions = const [],
+    this.surfaceRole = SiteLensSurfaceRole.panel,
     this.insetPadding = const EdgeInsets.symmetric(
       horizontal: 24,
       vertical: 24,
@@ -1209,6 +1210,9 @@ class SiteLensAlertDialog extends StatelessWidget {
   final Widget? title;
   final Widget? content;
   final List<Widget> actions;
+
+  /// Callers directly above a native WebView must declare that backdrop.
+  final SiteLensSurfaceRole surfaceRole;
   final EdgeInsets insetPadding;
 
   @override
@@ -1218,6 +1222,7 @@ class SiteLensAlertDialog extends StatelessWidget {
     elevation: 0,
     insetPadding: insetPadding,
     child: SiteLensGlassSurface(
+      role: surfaceRole,
       radius: SiteLensMetrics.panelRadius + 4,
       padding: const EdgeInsets.fromLTRB(24, 22, 24, 14),
       child: ConstrainedBox(

@@ -112,6 +112,7 @@ object SystemMediaNetwork {
         selector: ProxySelector? = ProxySelector.getDefault(),
         resolve: (String) -> Array<InetAddress> = InetAddress::getAllByName,
         open: (URI, Proxy) -> HttpURLConnection = { target, proxy -> target.toURL().openConnection(proxy) as HttpURLConnection },
+        onSelectedRoute: (String) -> Unit = {},
     ): HttpURLConnection {
         val selected = proxies(uri, selector)
         var lastIo: IOException? = null
@@ -129,6 +130,7 @@ object SystemMediaNetwork {
                     }) { "DNS 包含本机/私网媒体地址；请检查系统代理或 VPN 设置" }
                 }
                 return open(uri, proxy).also {
+                    onSelectedRoute(if (proxy.type() == Proxy.Type.HTTP) "http_proxy" else "direct")
                     it.connectTimeout = 15000
                     it.readTimeout = 20000
                 }

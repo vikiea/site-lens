@@ -99,6 +99,7 @@ class NativeMediaRuntime {
     }
     final raw = await _invokeMap('openLocal', {
       'sessionId': 'play_${task.id}_${DateTime.now().microsecondsSinceEpoch}',
+      'taskId': task.id,
       'candidateId': task.candidateId,
       'path': file.path,
       'mime': inferMediaMime(file.uri),
@@ -114,6 +115,7 @@ class NativeMediaRuntime {
     }
     final raw = await _invokeMap('openLocal', {
       'sessionId': 'play_${task.id}_${DateTime.now().microsecondsSinceEpoch}',
+      'taskId': task.id,
       'candidateId': task.candidateId,
       'uri': uri.toString(),
       'mime': 'video/mp4',

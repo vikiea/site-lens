@@ -82,6 +82,28 @@ class NativeExportRuntime {
   Future<String> materialize(String source) async =>
       (await _channel.invokeMethod<String>('materialize', {'source': source}))!;
 
+  /// Holds one native mutation reservation for the full set before any delete.
+  /// Completed deletions are returned even when a later provider operation fails.
+  Future<List<String>> deleteOwnedSources(
+    String taskId,
+    List<String> sources,
+  ) async =>
+      await _channel.invokeListMethod<String>('deleteOwnedSources', {
+        'taskId': taskId,
+        'sources': sources,
+      }) ??
+      const [];
+
+  Future<String> copyVerified({
+    required String source,
+    required String destination,
+    bool reuseExistingVerified = false,
+  }) async => (await _channel.invokeMethod<String>('copyVerified', {
+    'source': source,
+    'destination': destination,
+    'reuseExistingVerified': reuseExistingVerified,
+  }))!;
+
   Future<String> rename(String source, String fileName) async =>
       (await _channel.invokeMethod<String>('rename', {
         'source': source,

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -6,7 +8,11 @@ import 'package:site_lens/data/database.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/app_theme.dart';
 import 'package:site_lens/ui/browser_entry.dart';
+import 'package:site_lens/ui/glass_surface.dart';
 import 'package:site_lens/ui/screens.dart';
+import 'package:site_lens/ui/ui_primitives.dart';
+import 'package:site_lens/ui/ui_util.dart';
+import 'package:site_lens/web_host/web_host.g.dart';
 
 import 'fake_web_host_api.dart';
 
@@ -20,6 +26,7 @@ void main() {
     WidgetTester tester,
     AppDatabase db, {
     MediaQueryData? mediaQuery,
+    bool isolatedScripts = true,
   }) async {
     late final AppController app;
     late final ActiveBrowserSession tab;
@@ -27,7 +34,10 @@ void main() {
     // read/write assets and source files. Those operations must run outside the
     // widget test's fake async zone or the Future never completes.
     await tester.runAsync(() async {
-      app = AppController(db, api: FakeWebHostApi());
+      app = AppController(
+        db,
+        api: FakeWebHostApi(isolatedScripts: isolatedScripts),
+      );
       await app.load();
       tab = await app.openUrl(Uri.parse(_siteUrl));
     });
@@ -206,6 +216,122 @@ void main() {
     );
   });
 
+  testWidgets('new tab dialog over the browser declares the native backdrop', (
+    tester,
+  ) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final app = await boot(tester, db);
+    addTearDown(() async {
+      await app.shutdown();
+      await db.close();
+    });
+    await app.updateSettings({'autoHideBrowserControls': false});
+    await tester.tap(find.byIcon(Icons.keyboard_arrow_up));
+    await tester.pump();
+    await tester.tap(find.byTooltip('更多浏览器操作'));
+    await tester.pump();
+    await tester.tap(find.byTooltip('新建标签页'));
+    await tester.pumpAndSettle();
+    final dialog = find.byType(SiteLensAlertDialog);
+    expect(
+      tester.widget<SiteLensAlertDialog>(dialog).surfaceRole,
+      SiteLensSurfaceRole.platformView,
+    );
+    final surface = find.descendant(
+      of: dialog,
+      matching: find.byType(SiteLensGlassSurface),
+    );
+    expect(
+      tester.widget<SiteLensGlassSurface>(surface).role,
+      SiteLensSurfaceRole.platformView,
+    );
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(app.browserTabs, hasLength(1));
+  });
+
+  testWidgets('ordinary Flutter text prompts retain the panel renderer', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) {
+            return TextButton(
+              onPressed: () => promptText(context, title: '编辑'),
+              child: const Text('显示'),
+            );
+          },
+        ),
+      ),
+    );
+    await tester.tap(find.text('显示'));
+    await tester.pumpAndSettle();
+    final dialog = find.byType(SiteLensAlertDialog);
+    expect(
+      tester.widget<SiteLensAlertDialog>(dialog).surfaceRole,
+      SiteLensSurfaceRole.panel,
+    );
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets(
+    'open media sheet follows new episode snapshots without refresh',
+    (tester) async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final app = await boot(tester, db);
+      addTearDown(() async {
+        await app.shutdown();
+        await db.close();
+      });
+      final host = app.activeBrowser!.loadedHost!;
+      final generation = host.generation;
+      Future<void> publish(String kind, int episode) async {
+        await tester.runAsync(
+          () => app.hosts.onEvent(
+            HostEvent(
+              hostId: host.id,
+              generation: generation,
+              kind: kind,
+              url: _siteUrl,
+              detail: jsonEncode({
+                'frame': 'media-main',
+                'document': 'media-document',
+                'main': true,
+                'reason': 'snapshot',
+                'pageUrl': _siteUrl,
+                if (kind == 'mediaCandidate') ...{
+                  'url': 'https://media.example/episode-$episode.m3u8',
+                  'title': 'Live episode $episode',
+                  'mime': 'application/vnd.apple.mpegurl',
+                },
+              }),
+            ),
+          ),
+        );
+        await tester.pump();
+      }
+
+      await publish('mediaCandidate', 1);
+      expect(host.mediaCandidates.values.single.title, 'Live episode 1');
+      await tester.tap(find.byIcon(Icons.keyboard_arrow_up));
+      await tester.pump();
+      await tester.tap(find.byTooltip('更多浏览器操作'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('媒体嗅探与候选'));
+      await tester.pumpAndSettle();
+      expect(find.text('Live episode 1'), findsOneWidget);
+
+      await publish('mediaCandidatesClear', 2);
+      await publish('mediaCandidate', 2);
+      expect(find.text('Live episode 1'), findsNothing);
+      expect(find.text('Live episode 2'), findsOneWidget);
+      expect(find.text('重新嗅探'), findsOneWidget);
+      expect(host.generation, generation);
+    },
+  );
+
   testWidgets(
     'floating handle drags immediately and fades to twenty percent when idle',
     (tester) async {
@@ -287,4 +413,24 @@ void main() {
     expect(calls.last.arguments, containsPair('enabled', true));
     expect(tester.getTopLeft(viewport).dy, closeTo(0, 1));
   });
+
+  testWidgets(
+    'capability warning reserves space instead of covering the page top',
+    (tester) async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final app = await boot(tester, db, isolatedScripts: false);
+      addTearDown(() async {
+        await app.shutdown();
+        await db.close();
+      });
+
+      final viewport = find.byKey(const ValueKey('browser-web-content'));
+      expect(
+        tester.getTopLeft(viewport).dy,
+        greaterThan(40),
+        reason: 'the warning must not intercept the page top controls',
+      );
+      expect(find.text('本机不支持安全隔离，特权脚本已关闭；普通浏览不受影响。'), findsOneWidget);
+    },
+  );
 }

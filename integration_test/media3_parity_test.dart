@@ -106,57 +106,79 @@ void main() {
           );
           expect(metadata['width'], 160);
           expect(metadata['height'], 96);
-          if (fixture['name'] == 'h264_ts') {
+          expect(
+            metadata['thumbnailPath'],
+            isNotNull,
+            reason: 'FrameExtractor produces the thumbnail',
+          );
+          expect(
+            await File(metadata['thumbnailPath'] as String).length(),
+            greaterThan(0),
+          );
+          final candidate = MediaCandidate(
+            id: 'parity-playback',
+            hostId: 1,
+            generation: 1,
+            sourceUrl: Uri.parse('https://example.org/test'),
+            mediaUrl: Uri.parse('https://example.org/test.mp4'),
+            title: 'Synthetic parity',
+            mime: 'video/mp4',
+            source: MediaCandidateSource.dom,
+          );
+          final tasks = MediaTaskStore(directoryProvider: () async => root);
+          final task = tasks.create(candidate);
+          final session = await player.openLocal(task, output);
+          final deadline = DateTime.now().add(const Duration(seconds: 15));
+          while (DateTime.now().isBefore(deadline)) {
+            await tester.pump(const Duration(milliseconds: 100));
+            final state = await player.state(sessionId: session.id);
             expect(
-              metadata['thumbnailPath'],
-              isNotNull,
-              reason: 'FrameExtractor produces the thumbnail',
+              state.state,
+              isNot(NativePlaybackState.failed),
+              reason: state.errorCode,
             );
-            expect(
-              await File(metadata['thumbnailPath'] as String).length(),
-              greaterThan(0),
-            );
-            final candidate = MediaCandidate(
-              id: 'parity-playback',
-              hostId: 1,
-              generation: 1,
-              sourceUrl: Uri.parse('https://example.org/test'),
-              mediaUrl: Uri.parse('https://example.org/test.mp4'),
-              title: 'Synthetic parity',
-              mime: 'video/mp4',
-              source: MediaCandidateSource.dom,
-            );
-            final tasks = MediaTaskStore(directoryProvider: () async => root);
-            final task = tasks.create(candidate);
-            final session = await player.openLocal(task, output);
-            final deadline = DateTime.now().add(const Duration(seconds: 15));
-            while (DateTime.now().isBefore(deadline)) {
-              await tester.pump(const Duration(milliseconds: 100));
-              final state = await player.state(sessionId: session.id);
-              expect(
-                state.state,
-                isNot(NativePlaybackState.failed),
-                reason: state.errorCode,
-              );
-              if (state.state == NativePlaybackState.completed ||
-                  state.positionMs >= 3800) {
-                break;
-              }
+            if (state.state == NativePlaybackState.completed ||
+                state.positionMs >= 3800) {
+              break;
             }
-            final ended = await player.state(sessionId: session.id);
-            expect(ended.positionMs, greaterThanOrEqualTo(3800));
-            await player.seek(
-              const Duration(milliseconds: 1800),
-              sessionId: session.id,
-            );
-            await player.play(sessionId: session.id);
-            await tester.pump(const Duration(milliseconds: 400));
-            expect(
-              (await player.state(sessionId: session.id)).positionMs,
-              greaterThanOrEqualTo(1800),
-            );
-            await player.close(sessionId: session.id);
           }
+          final ended = await player.state(sessionId: session.id);
+          expect(ended.positionMs, greaterThanOrEqualTo(3800));
+          await player.pause(sessionId: session.id);
+          await player.seek(
+            const Duration(milliseconds: 1800),
+            sessionId: session.id,
+          );
+          await tester.pump(const Duration(milliseconds: 200));
+          final seeked = await player.state(sessionId: session.id);
+          expect(
+            seeked.positionMs,
+            inInclusiveRange(1600, 2000),
+            reason: '$name seek target',
+          );
+          await player.play(sessionId: session.id);
+          final seekDeadline = DateTime.now().add(const Duration(seconds: 8));
+          NativePlaybackSession? progressed;
+          while (DateTime.now().isBefore(seekDeadline)) {
+            await tester.pump(const Duration(milliseconds: 100));
+            progressed = await player.state(sessionId: session.id);
+            expect(
+              progressed.state,
+              isNot(NativePlaybackState.failed),
+              reason: progressed.errorCode,
+            );
+            if (progressed.positionMs >= seeked.positionMs + 900) break;
+          }
+          expect(
+            progressed!.positionMs,
+            greaterThanOrEqualTo(seeked.positionMs + 900),
+            reason: '$name must continue decoding after seek',
+          );
+          debugPrint(
+            'MEDIA3_PLAYBACK_SEEK_PASS fixture=$name thumbnail=true '
+            'seeked=${seeked.positionMs} progressed=${progressed.positionMs}',
+          );
+          await player.close(sessionId: session.id);
           debugPrint('MEDIA3_PARITY_PASS fixture=$name');
         }
       } finally {

@@ -5,6 +5,7 @@ import '../domain/models.dart';
 import '../diagnostics/error_log.dart';
 import '../network/transport.dart';
 import 'app_theme.dart';
+import 'glass_surface.dart';
 import 'ui_primitives.dart';
 
 String clock(DateTime? value) =>
@@ -202,6 +203,7 @@ Future<String?> promptText(
   String? helperText,
   String confirmLabel = '保存',
   TextInputType? keyboardType,
+  SiteLensSurfaceRole surfaceRole = SiteLensSurfaceRole.panel,
 }) => showDialog<String>(
   context: context,
   builder: (_) => _TextPromptDialog(
@@ -211,6 +213,7 @@ Future<String?> promptText(
     helperText: helperText,
     confirmLabel: confirmLabel,
     keyboardType: keyboardType,
+    surfaceRole: surfaceRole,
   ),
 );
 
@@ -222,6 +225,7 @@ class _TextPromptDialog extends StatefulWidget {
     this.hintText,
     this.helperText,
     this.keyboardType,
+    required this.surfaceRole,
   });
   final String title;
   final String confirmLabel;
@@ -229,6 +233,7 @@ class _TextPromptDialog extends StatefulWidget {
   final String? hintText;
   final String? helperText;
   final TextInputType? keyboardType;
+  final SiteLensSurfaceRole surfaceRole;
   @override
   State<_TextPromptDialog> createState() => _TextPromptDialogState();
 }
@@ -246,6 +251,7 @@ class _TextPromptDialogState extends State<_TextPromptDialog> {
 
   @override
   Widget build(BuildContext context) => SiteLensAlertDialog(
+    surfaceRole: widget.surfaceRole,
     title: Text(widget.title),
     content: TextField(
       controller: controller,

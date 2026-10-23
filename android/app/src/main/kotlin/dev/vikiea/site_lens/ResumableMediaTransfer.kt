@@ -10,6 +10,23 @@ import java.security.MessageDigest
 import java.util.Properties
 import java.util.concurrent.atomic.AtomicBoolean
 
+class MediaTransferFailure(
+    val phase: String,
+    val host: String,
+    val attempt: Int,
+    val offset: Long,
+    val bytesWritten: Long,
+    val route: String,
+    val reason: String,
+    cause: Throwable,
+) : IOException("媒体连接失败，已保留缓存，可重试", cause) {
+    fun diagnostics(): Map<String, Any> = mapOf(
+        "phase" to phase, "host" to host, "attempt" to attempt,
+        "offset" to offset, "bytesWritten" to bytesWritten,
+        "route" to route, "reason" to reason,
+    )
+}
+
 /** Pure JVM transport, also exercised against an actual local HTTP server. */
 class ResumableMediaTransfer(
     private val cancelled: () -> Boolean = { false },
@@ -18,6 +35,9 @@ class ResumableMediaTransfer(
         SystemMediaNetwork.openConnection(uri, attempt = attempt)
     },
     private val validate: (URI) -> Unit = SystemMediaNetwork::validateTarget,
+    private val routeForConnection: (HttpURLConnection) -> String = {
+        if (it.usingProxy()) "http_proxy" else "direct"
+    },
 ) {
     private val aborted = AtomicBoolean(false)
     @Volatile private var connection: HttpURLConnection? = null
@@ -44,6 +64,10 @@ class ResumableMediaTransfer(
         repeat(4) { attempt ->
             checkActive()
             var failedUri = url
+            var failurePhase = "route"
+            var failureOffset = 0L
+            var failureBytes = 0L
+            var failureRoute = "unknown"
             try {
                 while (true) {
                     checkActive()
@@ -61,11 +85,12 @@ class ResumableMediaTransfer(
                     var response: HttpURLConnection? = null
                     try {
                         for (redirect in 0..5) {
-                            checkActive(); validate(uri)
+                            checkActive(); validate(uri); failurePhase = "route"
                             failedUri = uri
                             val routeKey = uri.toString()
                             val current = connect?.invoke(uri)
                                 ?: connectForAttempt(uri, routeAttempts[routeKey] ?: 0)
+                            failureRoute = routeForConnection(current)
                             connection = current
                             current.instanceFollowRedirects = false
                             current.connectTimeout = 15000
@@ -83,6 +108,8 @@ class ResumableMediaTransfer(
                                 current.setRequestProperty("If-Range", validator)
                             }
                             // Cookie selection is recalculated for every redirect target.
+                            failurePhase = "response_headers"
+                            failureOffset = offset
                             val status = current.responseCode
                             if (status in listOf(301, 302, 303, 307, 308)) {
                                 check(redirect < 5) { "重定向过多" }
@@ -132,6 +159,7 @@ class ResumableMediaTransfer(
                         val append = status == 206 && offset > 0
                         val expected = current.contentLengthLong.takeIf { it >= 0 }
                         check((expected ?: 0) + (if (append) offset else 0) <= maxBytes) { "媒体响应过大" }
+                        failurePhase = "file_io"
                         partial.parentFile?.mkdirs()
                         // Truncate before replacing the validator: a crash between
                         // these steps cannot associate old bytes with a new ETag.
@@ -151,20 +179,26 @@ class ResumableMediaTransfer(
                                 if (tmp.exists()) tmp.delete()
                             }
                             var written = 0L
+                            failurePhase = "body_read"
                             current.inputStream.use { input ->
                                 val buffer = ByteArray(64 * 1024)
                                 while (true) {
                                     checkActive()
+                                    failurePhase = "body_read"
                                     val read = input.read(buffer)
                                     if (read < 0) break
                                     checkActive()
                                     check(output.filePointer + read <= maxBytes) { "媒体响应过大" }
+                                    failurePhase = "file_io"
                                     output.write(buffer, 0, read)
                                     written += read
+                                    failureBytes = output.filePointer
                                     onProgress(output.filePointer, total ?: expected)
                                 }
                             }
+                            failurePhase = "file_io"
                             output.fd.sync()
+                            failurePhase = "body_read"
                             if (expected != null && written != expected ||
                                 status == 206 && written != end!! - start!! + 1) {
                                 throw IOException("媒体响应未完整接收")
@@ -184,7 +218,28 @@ class ResumableMediaTransfer(
                     }
                 }
             } catch (error: IOException) {
-                checkActive(); failure = error
+                checkActive()
+                // Never serialize provider messages, URLs, query parameters,
+                // proxy addresses or cookies through the diagnostics channel.
+                val text = error.message.orEmpty().lowercase()
+                val reason = when {
+                    error is java.net.UnknownHostException -> "dns"
+                    error is java.net.SocketTimeoutException -> "timeout"
+                    error is javax.net.ssl.SSLException -> "tls"
+                    "reset" in text -> "connection_reset"
+                    "closed" in text -> "connection_closed"
+                    else -> "io"
+                }
+                failure = MediaTransferFailure(
+                    phase = failurePhase,
+                    host = failedUri.host ?: "unknown",
+                    attempt = attempt,
+                    offset = failureOffset,
+                    bytesWritten = failureBytes,
+                    route = failureRoute,
+                    reason = reason,
+                    cause = error,
+                )
                 val routeKey = failedUri.toString()
                 routeAttempts[routeKey] = (routeAttempts[routeKey] ?: 0) + 1
             } finally {

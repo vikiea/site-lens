@@ -936,6 +936,25 @@ class MediaTaskStore extends ChangeNotifier {
       return;
     }
     if (!isExclusive(taskId)) throw StateError('媒体任务未持有排他操作锁');
+    final plan = await cacheDeletionPlan(taskId);
+    for (final path in plan.files) {
+      final file = File(path);
+      if (await file.exists()) await file.delete();
+    }
+    for (final path in plan.directories) {
+      final directory = Directory(path);
+      if (await directory.exists()) await directory.delete(recursive: true);
+    }
+    cacheFilesDeleted(taskId);
+  }
+
+  void cacheFilesDeleted(String taskId) {
+    if (!isExclusive(taskId)) throw StateError('媒体任务未持有排他操作锁');
+    markCacheMissing(taskId);
+    setLocalRef(taskId, null);
+  }
+
+  Future<MediaCacheDeletionPlan> cacheDeletionPlan(String taskId) async {
     final current = task(taskId) ?? (throw StateError('媒体任务不存在'));
     final file = await cachedFile(taskId, validateHls: false);
     final appRoot = await _directoryProvider();
@@ -950,14 +969,16 @@ class MediaTaskStore extends ChangeNotifier {
         (await file.resolveSymbolicLinks()).startsWith(
           '$exportPath${Platform.pathSeparator}',
         );
+    final files = <String>{};
+    final directories = <String>{};
     if (file != null && !pointsAtExport) {
       // Only a task-specific HLS directory may be removed recursively; a
       // series directory can contain other episodes and must remain intact.
       if (file.parent.uri.pathSegments.where((v) => v.isNotEmpty).lastOrNull ==
           '${current.cacheKey}.hls') {
-        await file.parent.delete(recursive: true);
+        directories.add(file.parent.path);
       } else {
-        await file.delete();
+        files.add(file.path);
       }
     }
     final directory = await cacheDirectory(
@@ -971,28 +992,23 @@ class MediaTaskStore extends ChangeNotifier {
     if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(current.cacheKey)) {
       throw StateError('媒体缓存身份无效');
     }
-    for (final orphan in [
-      Directory('${directory.path}/${current.cacheKey}.hls'),
-      File('${directory.path}/${current.cacheKey}.media'),
-    ]) {
-      if (await orphan.exists()) {
-        await orphan.delete(recursive: orphan is Directory);
-      }
-    }
-    for (final partial in [
-      File('${directory.path}/${current.cacheKey}.part'),
-      File('${directory.path}/${current.cacheKey}.part.resume.json'),
-      File('${directory.path}/${current.cacheKey}.part.resume.json.tmp'),
-      File('${directory.path}/${current.cacheKey}.part.resume'),
-      File('${directory.path}/${current.cacheKey}.part.resume.tmp'),
-      Directory('${directory.path}/${current.cacheKey}.hls.part'),
-    ]) {
-      if (await partial.exists()) {
-        await partial.delete(recursive: partial is Directory);
-      }
-    }
-    markCacheMissing(taskId);
-    setLocalRef(taskId, null);
+    files.addAll([
+      '${directory.path}/${current.cacheKey}.media',
+      '${directory.path}/${current.cacheKey}.part',
+      '${directory.path}/${current.cacheKey}.part.resume.json',
+      '${directory.path}/${current.cacheKey}.part.resume.json.tmp',
+      '${directory.path}/${current.cacheKey}.part.resume',
+      '${directory.path}/${current.cacheKey}.part.resume.tmp',
+    ]);
+    directories.addAll([
+      '${directory.path}/${current.cacheKey}.hls',
+      '${directory.path}/${current.cacheKey}.hls.part',
+    ]);
+    return MediaCacheDeletionPlan(
+      files: files.toList(),
+      directories: directories.toList(),
+      cacheKey: current.cacheKey,
+    );
   }
 
   Future<Directory> cacheDirectory({
@@ -1312,6 +1328,24 @@ Future<List<File>> _localHlsFiles(File manifest) async {
   return files.values.toList();
 }
 
+class MediaCacheDeletionPlan {
+  const MediaCacheDeletionPlan({
+    required this.files,
+    required this.directories,
+    required this.cacheKey,
+  });
+
+  final List<String> files;
+  final List<String> directories;
+  final String cacheKey;
+
+  Map<String, Object?> toJson() => {
+    'files': files,
+    'directories': directories,
+    'cacheKey': cacheKey,
+  };
+}
+
 /// Resumable, app-private media download orchestration. The native Media3
 /// implementation can replace this transport while keeping the same task
 /// states and cache keys.
@@ -1583,58 +1617,52 @@ class MediaDownloadService {
     bool exclusiveAlreadyHeld = false,
   }) async {
     final id = tasks.resolveTaskId(taskId);
-    if (exclusiveAlreadyHeld ? !tasks.isExclusive(id) : !tasks.canDelete(id)) {
-      throw StateError('媒体正在播放、导出或投屏，请先停止');
+    // Reserve the Dart task before touching transport. Active writers own the
+    // control chain, so cancellation must precede waiting for that chain.
+    if (exclusiveAlreadyHeld) {
+      if (!tasks.isExclusive(id)) throw StateError('媒体任务未持有排他操作锁');
+    } else {
+      tasks.acquireExclusive(id);
     }
     _stopping.add(id);
-    _active[id]?.cancel();
-    final nativeCancel = !_dartTasks.contains(id) ? native?.cancel(id) : null;
     try {
+      _active[id]?.cancel();
+      final nativeCancel = !_dartTasks.contains(id) ? native?.cancel(id) : null;
       await _control(id, (id) async {
-        // Acquire the file-operation lock before touching transport. A
-        // retained playback/export/cast reference therefore fails closed and
-        // cannot be interrupted by a rejected delete request.
-        Future<void> remove() async {
-          if (nativeCancel != null) await nativeCancel;
-          try {
-            await _running[id];
-          } catch (_) {
-            // The partial file remains resumable after a transport failure.
-          }
-          final current = tasks.task(id);
-          if (current == null) return;
-          if (nativeCancel == null && !_dartTasks.contains(id)) {
-            await native?.cancel(id);
-          }
-          try {
-            if (beforeDelete != null) await beforeDelete();
-          } catch (_) {
-            final latest = tasks.task(id);
-            if (latest != null && latest.state == MediaTaskState.downloading) {
-              tasks.transition(id, MediaTaskState.cancelled);
-            }
-            rethrow;
-          }
-          await native?.delete(id);
-          await tasks.deleteCachedFiles(id, exclusiveAlreadyHeld: true);
-          if (deleteTask) {
-            await tasks.delete(id, exclusiveAlreadyHeld: true);
-          } else if (tasks.task(id)?.state == MediaTaskState.downloading ||
-              tasks.task(id)?.state == MediaTaskState.paused) {
-            tasks.transition(id, MediaTaskState.cancelled);
-            await tasks.flush(id);
-          }
+        if (nativeCancel != null) await nativeCancel;
+        try {
+          await _running[id];
+        } catch (_) {
+          // The partial file remains resumable after a transport failure.
         }
-
-        if (exclusiveAlreadyHeld) {
-          await remove();
-        } else {
-          await tasks.withExclusive(id, remove);
+        final current = tasks.task(id);
+        if (current == null) return;
+        if (nativeCancel == null && !_dartTasks.contains(id)) {
+          await native?.cancel(id);
+        }
+        try {
+          if (beforeDelete != null) await beforeDelete();
+        } catch (_) {
+          final latest = tasks.task(id);
+          if (latest != null && latest.state == MediaTaskState.downloading) {
+            tasks.transition(id, MediaTaskState.cancelled);
+          }
+          rethrow;
+        }
+        await native?.delete(id);
+        await tasks.deleteCachedFiles(id, exclusiveAlreadyHeld: true);
+        if (deleteTask) {
+          await tasks.delete(id, exclusiveAlreadyHeld: true);
+        } else if (tasks.task(id)?.state == MediaTaskState.downloading ||
+            tasks.task(id)?.state == MediaTaskState.paused) {
+          tasks.transition(id, MediaTaskState.cancelled);
+          await tasks.flush(id);
         }
         _dartTasks.remove(id);
       });
     } finally {
       _stopping.remove(id);
+      if (!exclusiveAlreadyHeld) tasks.releaseExclusive(id);
     }
   }
 
@@ -1915,6 +1943,7 @@ class MediaDownloadService {
               totalBytes,
               maxBytes,
               document: candidate.sourceUrl,
+              resourceKind: line.startsWith('#EXT-X-KEY:') ? 'key' : 'map',
               onProgress: (bytes) =>
                   _reportTaskProgress(task.id, totalBytes + bytes),
             );
@@ -1942,6 +1971,7 @@ class MediaDownloadService {
           totalBytes,
           maxBytes,
           document: candidate.sourceUrl,
+          resourceKind: 'segment',
           onProgress: (bytes) =>
               _reportTaskProgress(task.id, totalBytes + bytes),
         );
@@ -2082,6 +2112,7 @@ class MediaDownloadService {
     int downloaded,
     int maxBytes, {
     required Uri document,
+    required String resourceKind,
     void Function(int bytesWritten)? onProgress,
   }) async {
     final remote = playlist.resolve(raw);
@@ -2110,14 +2141,25 @@ class MediaDownloadService {
         .convert(utf8.encode(_resumeContentIdentity(remote)))
         .toString();
     final partial = File('${staging.path}/resume_$resumeKey.part');
-    await _downloadFile(
-      remote,
-      partial,
-      cancel,
-      document: document,
-      maxBytes: min(64 * 1024 * 1024, maxBytes),
-      onProgress: onProgress,
-    );
+    try {
+      await _downloadFile(
+        remote,
+        partial,
+        cancel,
+        document: document,
+        maxBytes: min(64 * 1024 * 1024, maxBytes),
+        onProgress: onProgress,
+      );
+    } on PlatformException catch (error) {
+      throw PlatformException(
+        code: error.code,
+        message: error.message,
+        details: {
+          'resource': resourceKind,
+          if (error.details is Map) ...error.details as Map,
+        },
+      );
+    }
     cancel.check();
     final size = await partial.length();
     if (size == 0) throw StateError('HLS 分片响应为空');

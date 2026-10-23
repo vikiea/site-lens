@@ -1,12 +1,90 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/media/media_service.dart';
 import 'package:site_lens/network/transport.dart';
 
 void main() {
+  for (final resource in ['key', 'map', 'segment']) {
+    test(
+      'native HLS $resource failure retains safe transfer context',
+      () async {
+        final root = await Directory.systemTemp.createTemp(
+          'site-lens-context-',
+        );
+        addTearDown(() => root.delete(recursive: true));
+        final candidate = _candidate(
+          Uri.parse('https://cdn.example/index.m3u8'),
+        );
+        final tasks = MediaTaskStore(directoryProvider: () async => root);
+        final tag = switch (resource) {
+          'key' => '#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\n',
+          'map' => '#EXT-X-MAP:URI="init.mp4"\n',
+          _ => '',
+        };
+        final service = MediaDownloadService(
+          tasks: tasks,
+          http: _FailingTlsHttp(
+            const SocketException('Connection reset'),
+            playlistPrefix: tag,
+          ),
+          tlsTransfer:
+              (
+                url,
+                document,
+                destination,
+                maxBytes,
+                cancel, {
+                onProgress,
+              }) async {
+                await destination.writeAsBytes([1, 2, 3], flush: true);
+                throw PlatformException(
+                  code: 'media_transfer',
+                  message: '媒体连接失败，已保留缓存，可重试',
+                  details: const {
+                    'phase': 'body_read',
+                    'host': 'cdn.example',
+                    'attempt': 3,
+                    'offset': 0,
+                    'bytesWritten': 3,
+                    'route': 'http_proxy',
+                    'reason': 'connection_reset',
+                  },
+                );
+              },
+        );
+        final task = tasks.create(candidate);
+        await expectLater(
+          service.start(task, candidate),
+          throwsA(
+            isA<PlatformException>()
+                .having(
+                  (error) => error.details,
+                  'resource context',
+                  containsPair('resource', resource),
+                )
+                .having(
+                  (error) => error.details,
+                  'original transfer context',
+                  containsPair('bytesWritten', 3),
+                ),
+          ),
+        );
+        expect(tasks.task(task.id)!.state, MediaTaskState.failed);
+        final partials = await root
+            .list(recursive: true)
+            .where((file) => file is File && file.path.endsWith('.part'))
+            .cast<File>()
+            .toList();
+        expect(partials, hasLength(1));
+        expect(await partials.single.readAsBytes(), [1, 2, 3]);
+      },
+    );
+  }
+
   test('HLS key versions keep separate cached bytes', () async {
     final root = await Directory.systemTemp.createTemp(
       'site-lens-key-version-',
@@ -382,9 +460,10 @@ void main() {
 }
 
 class _FailingTlsHttp extends ControlledHttp {
-  _FailingTlsHttp(this.failure);
+  _FailingTlsHttp(this.failure, {this.playlistPrefix = ''});
 
   final Object failure;
+  final String playlistPrefix;
   final attempts = <int>[];
 
   @override
@@ -403,7 +482,7 @@ class _FailingTlsHttp extends ControlledHttp {
   }) async => FetchResponse(
     url: url,
     status: 200,
-    bytes: utf8.encode('#EXTM3U\n#EXTINF:1,\nsegment.ts\n'),
+    bytes: utf8.encode('#EXTM3U\n$playlistPrefix#EXTINF:1,\nsegment.ts\n'),
     headers: const {},
   );
 

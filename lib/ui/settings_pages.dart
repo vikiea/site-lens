@@ -212,7 +212,7 @@ class _OpacitySetting extends StatelessWidget {
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final scaler = MediaQuery.textScalerOf(context).scale(1);
-      final inline = constraints.maxWidth >= 280 * scaler;
+      final inline = constraints.maxWidth >= 360 * scaler;
       if (!inline) {
         return Column(
           mainAxisSize: MainAxisSize.min,
@@ -247,7 +247,9 @@ class _OpacitySetting extends StatelessWidget {
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(width: 8),
-            _GlassOpacitySlider(app: app, width: sliderWidth),
+            Flexible(
+              child: _GlassOpacitySlider(app: app, width: sliderWidth),
+            ),
           ],
         ),
       );

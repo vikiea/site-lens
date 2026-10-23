@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 
+import 'package:crypto/crypto.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -12,7 +13,34 @@ import 'package:site_lens/media/native_export_runtime.dart';
 
 class _CleanupRuntime extends NativeExportRuntime {
   String? failOnce;
+  bool readerHeld = false;
   final deleted = <String>[];
+  final batches = <List<String>>[];
+
+  @override
+  Future<List<String>> deleteOwnedSources(
+    String taskId,
+    List<String> sources,
+  ) async {
+    batches.add(List.of(sources));
+    if (readerHeld) {
+      throw PlatformException(code: 'media_export', message: '媒体正在播放，请先停止');
+    }
+    final completed = <String>[];
+    try {
+      for (final source in sources) {
+        await delete(source, allowMissing: true);
+        completed.add(source);
+      }
+    } catch (_) {
+      throw PlatformException(
+        code: 'media_export',
+        message: '暂时无法删除副本',
+        details: {'deletedSources': completed},
+      );
+    }
+    return completed;
+  }
 
   @override
   Future<Map<String, Object?>> inspect(String source) async => {
@@ -35,6 +63,65 @@ class _CleanupRuntime extends NativeExportRuntime {
       await file.delete();
     }
     deleted.add(source);
+  }
+}
+
+class _FailCacheReferenceDatabase extends AppDatabase {
+  _FailCacheReferenceDatabase() : super(NativeDatabase.memory());
+  bool failDetachedReference = false;
+
+  @override
+  Future<String> saveMediaTask(MediaTask task) {
+    if (failDetachedReference && task.localRef?.endsWith('.media') == true) {
+      return Future.error(StateError('cache reference persistence failed'));
+    }
+    return super.saveMediaTask(task);
+  }
+}
+
+class _VerifiedCopyRuntime extends _CleanupRuntime {
+  final reuses = <String>[];
+
+  @override
+  Future<String> copyVerified({
+    required String source,
+    required String destination,
+    bool reuseExistingVerified = false,
+  }) async {
+    final target = File(destination);
+    if (await target.exists()) {
+      if (!reuseExistingVerified ||
+          sha256.convert(await target.readAsBytes()).toString() !=
+              sha256.convert(await File(source).readAsBytes()).toString()) {
+        throw PlatformException(code: 'media_export', message: '已有副本不同');
+      }
+      reuses.add(destination);
+    } else {
+      await File(source).copy(destination);
+    }
+    return destination;
+  }
+}
+
+class _DoubleFailureMoveRuntime extends _CleanupRuntime {
+  _DoubleFailureMoveRuntime(this.target);
+  final String target;
+
+  @override
+  Future<String> move({
+    required String source,
+    required Uri directory,
+    required String fileName,
+  }) async {
+    await File(source).copy(target);
+    throw PlatformException(
+      code: 'media_move_incomplete',
+      details: {
+        'recoveryTarget': target,
+        'sourceRetained': true,
+        'rollbackFailed': true,
+      },
+    );
   }
 }
 
@@ -83,6 +170,17 @@ class _ScanRuntime extends NativeExportRuntime {
 
   @override
   Future<Map<String, Object?>> stat(String source) async => {'size': 6};
+
+  @override
+  Future<List<String>> deleteOwnedSources(
+    String taskId,
+    List<String> sources,
+  ) async {
+    for (final source in sources) {
+      await delete(source, allowMissing: true);
+    }
+    return List.of(sources);
+  }
 }
 
 class _DelayedScanRuntime extends _ScanRuntime {
@@ -221,6 +319,189 @@ void main() {
     expect(tasks.task(task.id), isNotNull);
   });
 
+  test('double move failure keeps both published target and original source in the durable catalog', () async {
+    final destination = await Directory('${root.path}/double-failed-move')
+        .create();
+    final target = '${destination.path}/recovered.mp4';
+    final runtime = _DoubleFailureMoveRuntime(target);
+    library.dispose();
+    library = MediaLibrary(db: db, tasks: tasks, native: runtime);
+    await library.register(task, output.path);
+    await expectLater(
+      library.move(task.id, destination.path),
+      throwsA(isA<PlatformException>()),
+    );
+    expect(library.item(task.id)!.location, target);
+    expect(library.item(task.id)!.libraryCopy, output.path);
+    expect(await output.exists(), isTrue);
+    expect(await File(target).readAsBytes(), await output.readAsBytes());
+    final restored = MediaLibrary(db: db, tasks: tasks, native: runtime);
+    addTearDown(restored.dispose);
+    await restored.restore();
+    expect(restored.item(task.id)!.location, target);
+    expect(restored.item(task.id)!.libraryCopy, output.path);
+    await restored.deliver(task.id, null);
+    expect(await output.exists(), isFalse);
+    expect(await File(target).length(), 6);
+    expect(restored.item(task.id)!.libraryCopy, isNull);
+  });
+
+  test(
+    'missing move recovery target preserves the only surviving source on retry',
+    () async {
+      final destination = await Directory(
+        '${root.path}/missing-recovery-target',
+      ).create();
+      final target = '${destination.path}/recovered.mp4';
+      final runtime = _DoubleFailureMoveRuntime(target);
+      library.dispose();
+      library = MediaLibrary(db: db, tasks: tasks, native: runtime);
+      await library.register(task, output.path);
+      await expectLater(
+        library.move(task.id, destination.path),
+        throwsA(isA<PlatformException>()),
+      );
+      await File(target).delete();
+      await expectLater(
+        library.move(task.id, destination.path),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(await output.exists(), isTrue);
+      expect(runtime.deleted, isEmpty);
+      final stored = (await db.mediaArtifacts()).single;
+      expect(stored['location'], target);
+      expect(stored['libraryCopy'], output.path);
+      expect(library.item(task.id)!.libraryCopy, output.path);
+    },
+  );
+
+  test('shared MP4 detach retries persist the cache reference before deleting the durable old path', () async {
+    final failing = _FailCacheReferenceDatabase();
+    addTearDown(failing.close);
+    final candidate = MediaCandidate(
+      id: 'detach-failure',
+      hostId: 1,
+      generation: 1,
+      sourceUrl: Uri.parse('https://example.com/watch'),
+      mediaUrl: Uri.parse('https://cdn.example/video.mp4'),
+      title: 'detach failure',
+      mime: 'video/mp4',
+      source: MediaCandidateSource.dom,
+    );
+    await failing.saveMediaCandidate(candidate);
+    final store = MediaTaskStore(
+      db: failing,
+      directoryProvider: () async => root,
+    );
+    final current = store.create(candidate);
+    store.transition(current.id, MediaTaskState.downloading);
+    store.transition(current.id, MediaTaskState.playable);
+    store.setLocalRef(current.id, output.path);
+    await store.flush(current.id);
+    final separate = MediaLibrary(db: failing, tasks: store);
+    addTearDown(separate.dispose);
+    await separate.register(store.task(current.id)!, output.path);
+    failing.failDetachedReference = true;
+    await expectLater(separate.delete(current.id), throwsStateError);
+    expect(store.task(current.id)!.localRef, endsWith('.media'));
+    expect(
+      (await failing.mediaTaskByCacheKey(current.cacheKey))!.localRef,
+      output.path,
+    );
+    await expectLater(separate.delete(current.id), throwsStateError);
+    expect(await output.exists(), isTrue);
+    expect(
+      (await failing.mediaTaskByCacheKey(current.cacheKey))!.localRef,
+      output.path,
+    );
+    failing.failDetachedReference = false;
+    await separate.delete(current.id);
+    final rebuilt = MediaTaskStore(
+      db: failing,
+      directoryProvider: () async => root,
+    );
+    await rebuilt.restore();
+    final retained = rebuilt.task(current.id)!;
+    expect(retained.localRef, endsWith('.media'));
+    expect(await File(retained.localRef!).readAsBytes(), [1, 2, 3, 4, 5, 6]);
+    expect(await output.exists(), isFalse);
+  });
+
+  test('shared MP4 detach recovers a verified published copy after failed persistence and restart', () async {
+    final failing = _FailCacheReferenceDatabase();
+    addTearDown(failing.close);
+    final candidate = MediaCandidate(
+      id: 'detach-restart',
+      hostId: 1,
+      generation: 1,
+      sourceUrl: Uri.parse('https://example.com/watch'),
+      mediaUrl: Uri.parse('https://cdn.example/video.mp4'),
+      title: 'detach restart',
+      mime: 'video/mp4',
+      source: MediaCandidateSource.dom,
+    );
+    await failing.saveMediaCandidate(candidate);
+    final store = MediaTaskStore(
+      db: failing,
+      directoryProvider: () async => root,
+    );
+    final current = store.create(candidate);
+    store.transition(current.id, MediaTaskState.downloading);
+    store.transition(current.id, MediaTaskState.playable);
+    store.setLocalRef(current.id, output.path);
+    await store.flush(current.id);
+    final runtime = _VerifiedCopyRuntime();
+    final first = MediaLibrary(db: failing, tasks: store, native: runtime);
+    addTearDown(first.dispose);
+    await first.register(store.task(current.id)!, output.path);
+    failing.failDetachedReference = true;
+    await expectLater(first.delete(current.id), throwsStateError);
+    final copied = store.task(current.id)!.localRef!;
+    expect(copied, endsWith('.media'));
+    expect(await File(copied).exists(), isTrue);
+    expect(
+      (await failing.mediaTaskByCacheKey(current.cacheKey))!.localRef,
+      output.path,
+    );
+    final restartedStore = MediaTaskStore(
+      db: failing,
+      directoryProvider: () async => root,
+    );
+    await restartedStore.restore();
+    expect(restartedStore.task(current.id)!.localRef, output.path);
+    final restarted = MediaLibrary(
+      db: failing,
+      tasks: restartedStore,
+      native: runtime,
+    );
+    addTearDown(restarted.dispose);
+    await restarted.restore();
+    failing.failDetachedReference = false;
+    // A same-size unrelated file at the recovery path must not be adopted.
+    await File(copied).writeAsBytes([6, 5, 4, 3, 2, 1]);
+    await expectLater(
+      restarted.delete(current.id),
+      throwsA(isA<PlatformException>()),
+    );
+    expect(await output.exists(), isTrue);
+    expect(restarted.item(current.id), isNotNull);
+    expect(
+      (await failing.mediaTaskByCacheKey(current.cacheKey))!.localRef,
+      output.path,
+    );
+    await output.copy(copied);
+    final modified = await File(copied).lastModified();
+    await restarted.delete(current.id);
+    expect(runtime.reuses, [copied]);
+    expect(await File(copied).lastModified(), modified);
+    expect(
+      (await failing.mediaTaskByCacheKey(current.cacheKey))!.localRef,
+      copied,
+    );
+    expect(await File(copied).readAsBytes(), [1, 2, 3, 4, 5, 6]);
+    expect(await output.exists(), isFalse);
+  });
+
   test('delivering MP4 keeps the media task HLS cache and metadata', () async {
     final cacheDirectory = await tasks.cacheDirectory(
       storageDirectory: task.storageDirectoryName,
@@ -333,7 +614,10 @@ void main() {
     await library.restore();
     runtime.failOnce = temporary.path;
 
-    await expectLater(library.deliver(task.id, null), throwsStateError);
+    await expectLater(
+      library.deliver(task.id, null),
+      throwsA(isA<PlatformException>()),
+    );
     final interrupted = (await db.mediaArtifacts()).single;
     expect(interrupted['libraryCopy'], isNull);
     expect(interrupted['materializedCopy'], temporary.path);
@@ -342,6 +626,45 @@ void main() {
     expect(runtime.deleted, [output.path, temporary.path]);
     expect(library.item(task.id)!.materializedCopy, isNull);
     expect(await destination.length(), 6);
+  });
+
+  test('native reader rejects the complete cleanup set without changing copy metadata', () async {
+    final runtime = _CleanupRuntime();
+    library.dispose();
+    library = MediaLibrary(db: db, tasks: tasks, native: runtime);
+    final temporary = await output.copy('${root.path}/materialized-reader.mp4');
+    final destination = await output.copy('${root.path}/delivered-reader.mp4');
+    final value = MediaArtifact(
+      taskId: task.id,
+      location: destination.path,
+      libraryCopy: output.path,
+      materializedCopy: temporary.path,
+      name: mediaExportFileName(task),
+      size: 6,
+      createdAt: DateTime.now().toUtc(),
+    );
+    await db.saveMediaArtifact(task.id, value.toJson());
+    await library.restore();
+    runtime.readerHeld = true;
+    await expectLater(
+      library.deliver(task.id, null),
+      throwsA(isA<PlatformException>()),
+    );
+    expect(runtime.batches.single, [output.path, temporary.path]);
+    expect(runtime.deleted, isEmpty);
+    expect(await output.exists(), isTrue);
+    expect(await temporary.exists(), isTrue);
+    expect(library.item(task.id)!.libraryCopy, output.path);
+    expect(library.item(task.id)!.materializedCopy, temporary.path);
+    final stored = (await db.mediaArtifacts()).single;
+    expect(stored['libraryCopy'], output.path);
+    expect(stored['materializedCopy'], temporary.path);
+    runtime.readerHeld = false;
+    await library.deliver(task.id, null);
+    expect(runtime.deleted, [output.path, temporary.path]);
+    expect(await destination.length(), 6);
+    expect(library.item(task.id)!.libraryCopy, isNull);
+    expect(library.item(task.id)!.materializedCopy, isNull);
   });
 
   test(

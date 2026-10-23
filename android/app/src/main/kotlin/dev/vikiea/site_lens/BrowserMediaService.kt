@@ -69,10 +69,10 @@ class BrowserMediaService : Service() {
                         PlaybackState.ACTION_SKIP_TO_PREVIOUS else 0L,
             )
             .apply {
-                if (active.canSkip) {
-                    addCustomAction(PlaybackState.CustomAction.Builder("previous", "上一集", android.R.drawable.ic_media_previous).build())
-                    addCustomAction(PlaybackState.CustomAction.Builder("next", "下一集", android.R.drawable.ic_media_next).build())
-                }
+                // Android 13+ derives the five media-control slots from this
+                // state. Standard skip actions already occupy their own slots;
+                // duplicate custom skips would consume the two custom slots
+                // before the stop action can be displayed.
                 addCustomAction(PlaybackState.CustomAction.Builder("stop", "停止", android.R.drawable.ic_menu_close_clear_cancel).build())
             }
             .setState(if (active.playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED,

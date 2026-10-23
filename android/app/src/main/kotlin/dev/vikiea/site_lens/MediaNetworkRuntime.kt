@@ -69,11 +69,15 @@ class MediaNetworkRuntime(
         try {
             val job = call.argument<String>("jobId") ?: "invalid"
             require(job.matches(Regex("[A-Za-z0-9_-]{1,100}"))) { "下载任务无效" }
+            var selectedRoute = "unknown"
             val transfer = ResumableMediaTransfer(
                 connectForAttempt = { uri, attempt ->
                     val vpn = allowsProxyFakeIp(uri)
-                    SystemMediaNetwork.openConnection(uri, allowProxyFakeIp = vpn, attempt = attempt)
+                    selectedRoute = "unknown"
+                    SystemMediaNetwork.openConnection(uri, allowProxyFakeIp = vpn, attempt = attempt,
+                        onSelectedRoute = { selectedRoute = it })
                 },
+                routeForConnection = { selectedRoute },
             )
             transfers.submit(job, transfer::abort, { transferFile(call, transfer, job) }) { outcome ->
                 main.post { outcome.fold(
@@ -88,7 +92,8 @@ class MediaNetworkRuntime(
 
     private fun failTransfer(result: MethodChannel.Result, error: Throwable) {
         val code = if (error is MediaAuthorizationException) "media_authorization" else "media_transfer"
-        result.error(code, error.message ?: "媒体连接失败，已保留缓存，可重试", null)
+        val details = (error as? MediaTransferFailure)?.diagnostics()
+        result.error(code, error.message ?: "媒体连接失败，已保留缓存，可重试", details)
     }
 
     /** Never resolve origin DNS while selecting a route, including PAC fallbacks. */

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -16,6 +17,7 @@ class FakeNativeDownloads extends NativeDownloadRuntime {
 
   final statuses = <String, Map<String, Object?>>{};
   final calls = <String>[];
+  void Function(String taskId)? onCancel;
 
   @override
   Future<Map<String, Object?>> start(
@@ -36,7 +38,10 @@ class FakeNativeDownloads extends NativeDownloadRuntime {
   Future<void> pause(String taskId) async => calls.add('pause:$taskId');
 
   @override
-  Future<void> cancel(String taskId) async => calls.add('cancel:$taskId');
+  Future<void> cancel(String taskId) async {
+    calls.add('cancel:$taskId');
+    onCancel?.call(taskId);
+  }
 
   @override
   Future<void> delete(String taskId) async => calls.add('delete:$taskId');
@@ -869,6 +874,110 @@ void main() {
   );
 
   test(
+    'delete holds the exclusive lease while stopping native transport',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-delete-lease-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final task = store.create(candidate());
+      final native = FakeNativeDownloads();
+      native.statuses[task.id] = {'state': 'downloading'};
+      native.onCancel = (id) => expect(store.isExclusive(id), isTrue);
+      final service = MediaDownloadService(tasks: store, native: native);
+
+      await service.startNative(task, candidate());
+      await service.delete(task.id);
+
+      expect(store.task(task.id), isNull);
+      expect(native.calls, [
+        'start:${task.id}',
+        'cancel:${task.id}',
+        'delete:${task.id}',
+      ]);
+    },
+  );
+
+  test(
+    'delete preserves a caller-owned lease through a failed file operation',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-delete-held-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final task = store.create(candidate());
+      final native = FakeNativeDownloads();
+      final service = MediaDownloadService(tasks: store, native: native);
+      await expectLater(
+        service.delete(task.id, exclusiveAlreadyHeld: true),
+        throwsStateError,
+      );
+      expect(native.calls, isEmpty);
+
+      store.acquireExclusive(task.id);
+      addTearDown(() => store.releaseExclusive(task.id));
+      await expectLater(
+        service.delete(
+          task.id,
+          exclusiveAlreadyHeld: true,
+          beforeDelete: () async =>
+              throw StateError('file reader remains held'),
+        ),
+        throwsStateError,
+      );
+      expect(store.task(task.id), isNotNull);
+      expect(store.isExclusive(task.id), isTrue);
+      expect(() => store.retain(task.id), throwsStateError);
+      await service.delete(task.id, exclusiveAlreadyHeld: true);
+      expect(store.task(task.id), isNull);
+      expect(store.isExclusive(task.id), isTrue);
+    },
+  );
+
+  test(
+    'delete waits for an active writer and preserves a retained download',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-delete-writer-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final task = store.create(candidate());
+      final transport = _HeldDownloadHttp();
+      final service = MediaDownloadService(tasks: store, http: transport);
+      final running = service.start(task, candidate());
+      addTearDown(() async {
+        if (!transport.flushAllowed.isCompleted) {
+          transport.flushAllowed.complete();
+        }
+        await running;
+      });
+      await transport.started.future.timeout(const Duration(seconds: 3));
+      store.retain(task.id);
+
+      await expectLater(service.delete(task.id), throwsStateError);
+
+      expect(transport.cancelled.isCompleted, isFalse);
+      expect(store.task(task.id)?.state, MediaTaskState.downloading);
+      expect(await transport.destination!.exists(), isTrue);
+      store.release(task.id);
+      final deleting = service.delete(task.id);
+      await transport.cancelled.future.timeout(const Duration(seconds: 3));
+      expect(store.isExclusive(task.id), isTrue);
+      expect(await transport.destination!.readAsBytes(), [1, 2, 3]);
+      expect(store.task(task.id), isNotNull);
+      transport.flushAllowed.complete();
+      await deleting.timeout(const Duration(seconds: 3));
+
+      expect(store.task(task.id), isNull);
+      expect(await transport.destination!.exists(), isFalse);
+      expect(store.isExclusive(task.id), isFalse);
+    },
+  );
+
+  test(
     'delete waits through cleanup and removes partial files and task row',
     () async {
       final root = await Directory.systemTemp.createTemp(
@@ -1565,6 +1674,50 @@ class _MapHttp extends ControlledHttp {
       totalBytes: (append ? resumeOffset : 0) + bytes.length,
       appended: append,
     );
+  }
+}
+
+class _HeldDownloadHttp extends ControlledHttp {
+  final started = Completer<void>();
+  final cancelled = Completer<void>();
+  final flushAllowed = Completer<void>();
+  File? destination;
+
+  @override
+  Future<FetchFileResponse> fetchToFile(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    required File destination,
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    int resumeOffset = 0,
+    int maxBytes = 2 * 1024 * 1024 * 1024,
+    Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    void Function(int bytesWritten)? onProgress,
+    Duration timeout = const Duration(seconds: 15),
+    int routeAttempt = 0,
+  }) async {
+    this.destination = destination;
+    await onHeaders?.call(200, const {'etag': '"held-writer"'});
+    await destination.writeAsBytes([1, 2, 3], flush: true);
+    final detach = cancel.onCancel(() => cancelled.complete());
+    started.complete();
+    try {
+      await flushAllowed.future;
+      cancel.check();
+      return FetchFileResponse(
+        url: url,
+        status: 200,
+        headers: const {},
+        bytesWritten: 3,
+        totalBytes: 3,
+        appended: false,
+      );
+    } finally {
+      detach();
+    }
   }
 }
 

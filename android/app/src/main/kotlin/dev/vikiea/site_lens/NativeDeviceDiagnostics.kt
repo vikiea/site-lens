@@ -8,6 +8,7 @@ import android.media.MediaCodecList
 import android.net.ConnectivityManager
 import android.os.Build
 import android.os.PowerManager
+import android.provider.Settings
 import android.os.Handler
 import android.os.Looper
 import androidx.work.WorkManager
@@ -161,6 +162,7 @@ class NativeDeviceDiagnostics(
         rows += guarded("storage.saf.persistedGrants", now) { safRow(now) }
         rows += guarded("background.powerAndIdle", now) { backgroundRow(now) }
         rows += guarded("network.activeTransport", now) { networkRow(now) }
+        rows += guarded("network.privateDns", now) { privateDnsRow(now) }
         rows += guarded("notifications.runtime", now) { notificationRow(now) }
         rows += guarded("background.workManager", now) { workManagerRow(now) }
         rows += guarded("platform.graphicsDeclarations", now) { graphicsRow(now) }
@@ -343,6 +345,49 @@ class NativeDeviceDiagnostics(
             detailsJson = JSONObject().put("validated", validated ?: JSONObject.NULL)
                 .put("metered", metered ?: JSONObject.NULL)
                 .put("transports", JSONArray(transports)).toString(),
+        )
+    }
+
+    private fun privateDnsRow(now: Long): CapabilityRecord {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            return row("network.privateDns", CapabilityState.NOT_APPLICABLE,
+                "Android API 28 以下无系统 Private DNS 状态接口", "Build.VERSION", now)
+        }
+        val manager = appContext.getSystemService(ConnectivityManager::class.java)
+        val network = manager?.activeNetwork
+        val links = network?.let { manager.getLinkProperties(it) }
+        // Global settings are not readable on every Android version/vendor.
+        // Preserve that uncertainty separately from the public network facts.
+        val settings = runCatching {
+            val resolver = appContext.contentResolver
+            Settings.Global.getString(resolver, "private_dns_mode") to
+                Settings.Global.getString(resolver, "private_dns_specifier")
+        }
+        val mode = settings.getOrNull()?.first
+        val specifier = settings.getOrNull()?.second
+        val active = links?.isPrivateDnsActive
+        val provider = links?.privateDnsServerName
+        return row(
+            id = "network.privateDns",
+            state = if (links == null) CapabilityState.UNKNOWN else CapabilityState.SUPPORTED,
+            // A stored hostname is configuration, not proof of active DNS.
+            configured = when (mode) {
+                "hostname", "opportunistic" -> true
+                "off" -> false
+                else -> null
+            },
+            effective = active,
+            observed = active?.let { if (it) "当前网络已启用 Private DNS" else "当前网络未启用 Private DNS" },
+            reason = "只读取系统配置与当前网络状态；未查询域名，不证明目标域名可解析或可访问",
+            source = "ConnectivityManager.getLinkProperties / Settings.Global",
+            now = now,
+            detailsJson = JSONObject()
+                .put("configuredMode", mode ?: JSONObject.NULL)
+                .put("configuredProvider", specifier ?: JSONObject.NULL)
+                .put("configurationReadable", settings.isSuccess)
+                .put("active", active ?: JSONObject.NULL)
+                .put("networkProvider", provider ?: JSONObject.NULL)
+                .toString(),
         )
     }
 

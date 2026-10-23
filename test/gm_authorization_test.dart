@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -61,6 +62,19 @@ class CancelAwareHttp extends ControlledHttp {
       bytes: utf8.encode('ok'),
       headers: {},
     );
+  }
+}
+
+class _HeldCandidateDatabase extends AppDatabase {
+  _HeldCandidateDatabase() : super(NativeDatabase.memory());
+  final entered = Completer<void>();
+  final releaseWrite = Completer<void>();
+
+  @override
+  Future<void> saveMediaCandidate(MediaCandidate candidate) async {
+    entered.complete();
+    await releaseWrite.future;
+    await super.saveMediaCandidate(candidate);
   }
 }
 
@@ -161,6 +175,7 @@ void main() {
           'id': 'media',
           'op': 'registerMedia',
           'args': {
+            'candidateId': 'media',
             'url': 'https://cdn.example/video.mp4',
             'title': 'fixture',
             'mime': 'video/mp4',
@@ -175,6 +190,94 @@ void main() {
       expect(candidate?.mediaUrl.toString(), 'https://cdn.example/video.mp4');
       expect(candidate?.source, MediaCandidateSource.registered);
       await db.close();
+    },
+  );
+
+  test(
+    'revoked registerMedia publication cannot be resurrected after persistence',
+    () async {
+      final db = _HeldCandidateDatabase();
+      final scripts = ScriptService(db, CancelAwareHttp());
+      final script = await scripts.save(
+        '// ==UserScript==\n'
+        '// @name media\n'
+        '// @match https://example.com/*\n'
+        '// @grant SiteLens.registerMedia\n'
+        '// ==/UserScript==',
+      );
+      await scripts.enable(script, Cancellation());
+      final revision = (await db.scripts()).single.approvedDigest!;
+      final hosts = NativeHosts(
+        db,
+        scripts,
+        CancelAwareHttp(),
+        api: SnapshotApi(),
+      );
+      final session =
+          HostSession(
+              1,
+              HostPurpose.browsing,
+              HostCapabilities(
+                platform: 'fixture',
+                isolatedScripts: true,
+                documentStart: true,
+                privateProbes: true,
+                reason: 'test',
+              ),
+            )
+            ..generation = 1
+            ..url = 'https://example.com/watch'
+            ..registered[script.id] = revision;
+      hosts.sessions[session.id] = session;
+      final request = GmRequest(
+        hostId: session.id,
+        generation: session.generation,
+        scriptId: script.id,
+        revision: revision,
+        documentUrl: session.url,
+        payload: jsonEncode({
+          'id': 'media',
+          'op': 'registerMedia',
+          'args': {
+            'candidateId': 'media',
+            'url': 'https://cdn.example/video.mp4',
+            'title': 'fixture',
+            'mime': 'video/mp4',
+          },
+        }),
+      );
+      final publication = hosts.onGmRequest(request);
+      try {
+        await db.entered.future;
+        await hosts.onEvent(
+          HostEvent(
+            hostId: session.id,
+            generation: session.generation,
+            kind: 'mediaCandidatesClear',
+            url: session.url,
+            detail: jsonEncode({
+              'frame': '',
+              'document': session.url,
+              'main': true,
+              'reason': 'route',
+              'previousPageUrl': session.url,
+            }),
+          ),
+        );
+        db.releaseWrite.complete();
+        final result = jsonDecode(await publication) as Map<String, dynamic>;
+        expect(result['ok'], isFalse);
+        expect(session.mediaCandidates, isEmpty);
+        expect(
+          await db.mediaCandidate('media'),
+          isNotNull,
+          reason: 'Persistence may complete, but a revoked publication must not authorize it',
+        );
+      } finally {
+        if (!db.releaseWrite.isCompleted) db.releaseWrite.complete();
+        await publication;
+        await db.close();
+      }
     },
   );
 

@@ -12,10 +12,49 @@ import java.nio.file.Files
 import java.util.ArrayDeque
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 class ResumableMediaTransferTest {
+    @Test
+    fun headerFailureDiagnosticsContainNoSignedUrlOrProviderMessage() = fixture { root ->
+        val url = URL("https://cdn.example/video?auth_key=private-signature").toURI()
+        try {
+            ResumableMediaTransfer(connect = { FailingResponseCodeConnection() })
+                .transfer(url, url, File(root, "secret-path.part"), "test")
+            throw AssertionError("expected transfer failure")
+        } catch (failure: MediaTransferFailure) {
+            assertEquals("response_headers", failure.phase)
+            assertEquals("cdn.example", failure.host)
+            assertEquals(3, failure.attempt)
+            assertEquals("direct", failure.route)
+            assertEquals(0L, failure.bytesWritten)
+            val exposed = failure.toString() + failure.diagnostics().toString()
+            assertFalse(exposed.contains("auth_key"))
+            assertFalse(exposed.contains("private-signature"))
+            assertFalse(exposed.contains("secret-path"))
+            assertFalse(exposed.contains("route failed"))
+        }
+    }
+
+    @Test
+    fun bodyFailureKeepsPartialBytesAndReportsReadStage() = fixture { root ->
+        val url = URL("https://cdn.example/video").toURI()
+        val partial = File(root, "video.part")
+        try {
+            ResumableMediaTransfer(connect = {
+                FakeConnection(200, mapOf("Content-Length" to "6"), FailingInputStream(byteArrayOf(1, 2, 3)))
+            }).transfer(url, url, partial, "test")
+            throw AssertionError("expected body failure")
+        } catch (failure: MediaTransferFailure) {
+            assertEquals("body_read", failure.phase)
+            assertEquals("connection_reset", failure.reason)
+            assertEquals(3L, failure.bytesWritten)
+            assertArrayEquals(byteArrayOf(1, 2, 3), partial.readBytes())
+        }
+    }
+
     @Test
     fun redirectsRecomputeCookiesInsteadOfForwardingThem() = fixture { root ->
         val first = FakeConnection(302, mapOf("Location" to "https://other.example/video"), ByteArrayInputStream(byteArrayOf()))
