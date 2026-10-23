@@ -364,6 +364,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     app.cancel('已进入浏览，检测已停止；不会自动切换站点');
     Navigator.of(context).push(
       MaterialPageRoute<void>(
+        settings: const RouteSettings(name: siteLensBrowserRouteName),
         builder: (_) => BrowserScreen(app: app, site: site),
       ),
     );
@@ -374,6 +375,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     if (session == null || !mounted) return;
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
+        settings: const RouteSettings(name: siteLensBrowserRouteName),
         builder: (_) => BrowserScreen(app: app, site: session.site),
       ),
     );
@@ -411,6 +413,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       app.cancel('已切回浏览，检测已停止');
       await Navigator.of(context).push(
         MaterialPageRoute<void>(
+          settings: const RouteSettings(name: siteLensBrowserRouteName),
           builder: (_) => BrowserScreen(app: app, site: tab.site),
         ),
       );
@@ -3545,6 +3548,9 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                         if (mounted) {
                           await Navigator.of(context).push(
                             MaterialPageRoute<void>(
+                              settings: const RouteSettings(
+                                name: siteLensPlayerRouteName,
+                              ),
                               builder: (_) => NativeMediaPlayerScreen(
                                 app: widget.app,
                                 session: session,
@@ -3601,6 +3607,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
           skipped++;
           continue;
         }
+        await widget.app.mediaTasks.ready;
         final task = widget.app.mediaTasks.create(
           authorized,
           batchDirectory: batchName,

@@ -15,6 +15,7 @@ node tool/test_filter_runtime.mjs
 python3 tool/test_android_tools.py
 python3 tool/test_android_backup_identity.py
 python3 tool/test_android_visual_acceptance.py
+python3 tool/test_android_startup_trace.py
 python3 tool/test_android_proxy_lease.py
 python3 tool/test_android_proxy_fixture.py
 python3 tool/test_run_android_proxy_acceptance.py

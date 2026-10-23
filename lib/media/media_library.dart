@@ -176,6 +176,7 @@ class MediaLibrary extends ChangeNotifier {
       _restoring ??= _restore().whenComplete(() => _restoring = null);
 
   Future<void> _restore() async {
+    await tasks.ready;
     if (!_restored) {
       final restored = <String, MediaArtifact>{};
       final duplicates = <MediaArtifact>[];
@@ -445,6 +446,7 @@ class MediaLibrary extends ChangeNotifier {
     String? name,
     String mime = 'video/mp4',
   }) async {
+    await restore();
     final stat = await File(path).stat();
     if (stat.size <= 0) throw StateError('导出文件为空');
     final previous = _items[task.id];
@@ -469,6 +471,7 @@ class MediaLibrary extends ChangeNotifier {
     taskId,
     () async {
       try {
+        await restore();
         final value = _items[taskId] ?? (throw StateError('媒体文件不存在'));
         late final Map<String, Object?> metadata;
         if (native == null) {
@@ -525,6 +528,7 @@ class MediaLibrary extends ChangeNotifier {
   /// app-private staging copy still exists. Returns null when regeneration
   /// from the task's HLS cache is required.
   Future<MediaArtifact?> recoverMissingArtifact(String taskId) async {
+    await restore();
     final value = _items[taskId];
     if (value == null) return null;
     for (final path in [value.libraryCopy, value.materializedCopy]) {
@@ -591,6 +595,7 @@ class MediaLibrary extends ChangeNotifier {
     String taskId, {
     required bool exclusiveAlreadyHeld,
   }) async {
+    await restore();
     final value = _items[taskId];
     if (value == null) return null;
     final source = value.location;
@@ -645,6 +650,7 @@ class MediaLibrary extends ChangeNotifier {
     Future<T> Function(MediaArtifact) action, {
     bool exclusiveAlreadyHeld = false,
   }) async {
+    await restore();
     if ((!exclusiveAlreadyHeld && !tasks.canDelete(taskId)) ||
         (exclusiveAlreadyHeld && !tasks.isExclusive(taskId)) ||
         !_busy.add(taskId)) {
@@ -667,6 +673,7 @@ class MediaLibrary extends ChangeNotifier {
   /// Delivers the verified MP4 and releases the private staging copy when it
   /// owns the source. The task's HLS cache remains independent of this file.
   Future<void> deliver(String taskId, String? directory) async {
+    await restore();
     var value = _items[taskId] ?? (throw StateError('媒体文件不存在'));
     if (directory == null || directory.trim().isEmpty) {
       await _verifyReadable(value);
@@ -849,6 +856,7 @@ class MediaLibrary extends ChangeNotifier {
   /// Removes the temporary filesystem copy created only to relay a SAF
   /// document to a DLNA receiver. The user-owned document remains intact.
   Future<void> releaseMaterializedCopy(String taskId) async {
+    await restore();
     final value = _items[taskId];
     final path = value?.materializedCopy;
     if (value == null || path == null || path == value.location) return;
@@ -872,6 +880,7 @@ class MediaLibrary extends ChangeNotifier {
     String taskId, {
     bool exclusiveAlreadyHeld = false,
   }) async {
+    await restore();
     if (!exclusiveAlreadyHeld) {
       return tasks.withExclusive(
         taskId,

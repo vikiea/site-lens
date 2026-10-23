@@ -9,7 +9,9 @@ import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'background/health_worker.dart';
 import 'data/database.dart';
 import 'diagnostics/error_log.dart';
+import 'diagnostics/startup_trace.dart';
 import 'ui/app_controller.dart';
+import 'ui/browser_dock.dart';
 import 'ui/app_theme.dart';
 import 'ui/glass_surface.dart';
 import 'ui/navigation_observer.dart';
@@ -17,10 +19,30 @@ import 'ui/screens.dart';
 import 'ui/update_notice.dart';
 
 Future<void> main() async {
+  final startup = StartupTrace.process;
+  startup.markOnce(StartupPhase.appEntry);
   await runZonedGuarded(
     () async {
       // Framework initialization, error callbacks and runApp share this zone.
       WidgetsFlutterBinding.ensureInitialized();
+      startup.markOnce(StartupPhase.bindingReady);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        startup.markOnce(StartupPhase.firstFrameworkFrame);
+      });
+      if (startup.enabled) {
+        void firstRaster(List<FrameTiming> timings) {
+          if (timings.isEmpty) return;
+          final first = timings.first;
+          startup.firstRasterFrame(
+            buildUs: first.buildDuration.inMicroseconds,
+            rasterUs: first.rasterDuration.inMicroseconds,
+            totalUs: first.totalSpan.inMicroseconds,
+          );
+          WidgetsBinding.instance.removeTimingsCallback(firstRaster);
+        }
+
+        WidgetsBinding.instance.addTimingsCallback(firstRaster);
+      }
       FlutterError.onError = (details) {
         FlutterError.presentError(details);
         AppErrorLogger.capture(
@@ -35,10 +57,10 @@ Future<void> main() async {
         return true;
       };
       try {
-        final database = await AppDatabase.open();
-        final logger = AppErrorLogger(database);
-        await logger.recoverPending();
-        await logger.recoverNativeReports();
+        final database = await startup.measure(
+          StartupPhase.databaseOpen,
+          AppDatabase.open,
+        );
         // Liquid glass is composed through wrap() below and loads shader programs
         // on demand. Do not prewarm during Android startup: emulator Impeller
         // rasterization can crash while a warmup future is active.
@@ -122,7 +144,10 @@ class SiteLensApp extends ConsumerWidget {
                   // download can surface on any page, WebView included.
                   child: SiteLensBackdrop(
                     child: SiteLensUpdateNoticeLayer(
-                      child: child ?? const SizedBox(),
+                      child: BrowserDock(
+                        app: app,
+                        child: child ?? const SizedBox(),
+                      ),
                     ),
                   ),
                 ),

@@ -2,9 +2,9 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../domain/models.dart';
+import '../diagnostics/startup_trace.dart';
 import 'app_controller.dart';
 import 'app_theme.dart';
-import 'browser_entry.dart';
 import 'glass_surface.dart';
 import 'help_notice.dart';
 import 'ui_util.dart';
@@ -29,63 +29,73 @@ class ProfilesPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: app,
-    builder: (context, _) => RefreshIndicator(
-      onRefresh: app.detect,
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(
-          SiteLensMetrics.pagePadding,
-          4,
-          SiteLensMetrics.pagePadding,
-          32,
-        ),
-        children: [
-          ResumeBrowserBar(app: app, onResume: onResume),
-          if (app.activeBrowser != null)
-            const SizedBox(height: SiteLensMetrics.itemGap),
-          if (app.probes.running || app.refreshing)
-            const Padding(
-              padding: EdgeInsets.only(bottom: SiteLensMetrics.itemGap),
-              child: LinearProgressIndicator(),
-            ),
-          if (app.error != null) ...[
-            SiteLensErrorBanner(text: app.error!, onDismiss: app.clearError),
-            const SizedBox(height: SiteLensMetrics.itemGap),
-          ],
-          const SizedBox(height: SiteLensMetrics.itemGap),
-          if (!app.persistentStateLoaded)
-            const SizedBox(
-              height: 280,
-              child: Center(child: CircularProgressIndicator()),
-            )
-          else if (app.profiles.isEmpty)
-            SiteLensEmptyState(
-              icon: Icons.travel_explore,
-              title: '还没有站点档案',
-              message: '添加一个发布页，先检测，再按当前可用性进入站点。',
-              action: FilledButton.icon(
-                onPressed: () => showAddProfileDialog(context, app),
-                icon: const Icon(Icons.add_link),
-                label: const Text('添加站点'),
+    builder: (context, _) {
+      if (app.startupTrace.needsMark(StartupPhase.homeMetadataFrameworkFrame) &&
+          app.persistentStateLoaded) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (context.mounted && app.persistentStateLoaded) {
+            app.startupTrace.markOnce(
+              StartupPhase.homeMetadataFrameworkFrame,
+              itemCount: app.profiles.length,
+            );
+          }
+        });
+      }
+      return RefreshIndicator(
+        onRefresh: app.detect,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(
+            SiteLensMetrics.pagePadding,
+            4,
+            SiteLensMetrics.pagePadding,
+            32,
+          ),
+          children: [
+            if (app.probes.running || app.refreshing)
+              const Padding(
+                padding: EdgeInsets.only(bottom: SiteLensMetrics.itemGap),
+                child: LinearProgressIndicator(),
               ),
-            ),
-          for (final profile in app.profiles) ...[
-            _ProfileCard(
-              app: app,
-              profile: profile,
-              onOpen: () => onOpen(profile),
-              onEnter: () => safely(context, () async {
-                if (onEnterProfile != null) {
-                  await onEnterProfile!(profile);
-                } else {
-                  onOpen(profile);
-                }
-              }),
-            ),
-            const SizedBox(height: SiteLensMetrics.listGap),
+            if (app.error != null) ...[
+              SiteLensErrorBanner(text: app.error!, onDismiss: app.clearError),
+              const SizedBox(height: SiteLensMetrics.itemGap),
+            ],
+            const SizedBox(height: SiteLensMetrics.itemGap),
+            if (!app.persistentStateLoaded)
+              const SizedBox(
+                height: 280,
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (app.profiles.isEmpty)
+              SiteLensEmptyState(
+                icon: Icons.travel_explore,
+                title: '还没有站点档案',
+                message: '添加一个发布页，先检测，再按当前可用性进入站点。',
+                action: FilledButton.icon(
+                  onPressed: () => showAddProfileDialog(context, app),
+                  icon: const Icon(Icons.add_link),
+                  label: const Text('添加站点'),
+                ),
+              ),
+            for (final profile in app.profiles) ...[
+              _ProfileCard(
+                app: app,
+                profile: profile,
+                onOpen: () => onOpen(profile),
+                onEnter: () => safely(context, () async {
+                  if (onEnterProfile != null) {
+                    await onEnterProfile!(profile);
+                  } else {
+                    onOpen(profile);
+                  }
+                }),
+              ),
+              const SizedBox(height: SiteLensMetrics.listGap),
+            ],
           ],
-        ],
-      ),
-    ),
+        ),
+      );
+    },
   );
 }
 
@@ -493,9 +503,6 @@ class ProfileDetailScreen extends StatelessWidget {
             32,
           ),
           children: [
-            ResumeBrowserBar(app: app, onResume: onResume),
-            if (app.activeBrowser != null)
-              const SizedBox(height: SiteLensMetrics.itemGap),
             SiteLensPanel(
               scrollingContent: true,
               child: Column(

@@ -1,0 +1,442 @@
+import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+
+import '../diagnostics/error_log.dart';
+import '../diagnostics/startup_trace.dart';
+import 'app_controller.dart';
+import 'app_theme.dart';
+import 'glass_surface.dart';
+import 'navigation_observer.dart';
+import 'screens.dart' show BrowserScreen;
+import 'ui_primitives.dart';
+import 'ui_util.dart';
+
+/// Root overlay for ordinary Flutter routes, including nested settings pages.
+/// Place around MaterialApp.builder's navigator child, under the glass policy.
+/// Route eligibility comes from the same observer installed on that navigator.
+class BrowserDock extends StatelessWidget {
+  const BrowserDock({
+    super.key,
+    required this.app,
+    required this.child,
+    this.observer,
+    this.bottomClearance =
+        SiteLensMetrics.navBarHeight + SiteLensMetrics.toolbarInset,
+  });
+
+  final AppController app;
+  final Widget child;
+  final SiteLensRouteObserver? observer;
+
+  /// Space above the bottom safe area reserved for the app navigation chrome.
+  final double bottomClearance;
+
+  @override
+  Widget build(BuildContext context) =>
+      Overlay.wrap(child: _BrowserDockBody(dock: this));
+}
+
+// The state lives inside the overlay so route notifications rebuild its entry
+// in the same frame, and Material tooltips have a valid Overlay ancestor.
+class _BrowserDockBody extends StatefulWidget {
+  const _BrowserDockBody({required this.dock});
+  final BrowserDock dock;
+  AppController get app => dock.app;
+  Widget get child => dock.child;
+  SiteLensRouteObserver? get observer => dock.observer;
+  double get bottomClearance => dock.bottomClearance;
+
+  @override
+  State<_BrowserDockBody> createState() => _BrowserDockState();
+}
+
+class _BrowserDockState extends State<_BrowserDockBody> {
+  SiteLensRouteObserver get _observer =>
+      widget.observer ?? browserRouteObserver;
+  bool _expanded = false;
+  bool _busy = false;
+  String? _activeId;
+  Offset? _drag;
+  Offset? _pointerOrigin;
+  Offset? _dockOrigin;
+  bool _positionPending = false;
+  bool _frameMarkPending = false;
+  bool? _localRight;
+  double? _localY;
+  Future<void> _positionWrites = Future.value();
+
+  ActiveBrowserSession? get _current {
+    final active = widget.app.activeBrowser;
+    return active != null && widget.app.browserTabs.contains(active)
+        ? active
+        : null;
+  }
+
+  bool get _eligible =>
+      _current != null &&
+      !widget.app.restoringData &&
+      _observer.allowsBrowserDock &&
+      MediaQuery.viewInsetsOf(context).bottom == 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _activeId = _current?.id;
+    widget.app.addListener(_changed);
+    _observer.addListener(_changed);
+  }
+
+  @override
+  void didUpdateWidget(_BrowserDockBody oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.app != widget.app) {
+      oldWidget.app.removeListener(_changed);
+      widget.app.addListener(_changed);
+      _expanded = false;
+      _localRight = null;
+      _localY = null;
+    }
+    final oldObserver = oldWidget.observer ?? browserRouteObserver;
+    if (oldObserver != _observer) {
+      oldObserver.removeListener(_changed);
+      _observer.addListener(_changed);
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_eligible) _resetTransient();
+  }
+
+  void _resetTransient() {
+    _expanded = false;
+    _drag = null;
+    _pointerOrigin = null;
+    _dockOrigin = null;
+  }
+
+  void _changed() {
+    if (!mounted) return;
+    setState(() {
+      final id = _current?.id;
+      if (id != _activeId || !_eligible) _resetTransient();
+      _activeId = id;
+      if (!_positionPending && _drag == null) {
+        _localRight = null;
+        _localY = null;
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    widget.app.removeListener(_changed);
+    _observer.removeListener(_changed);
+    super.dispose();
+  }
+
+  Future<void> _open(String id) async {
+    if (_busy || !_eligible || _current?.id != id) return;
+    final app = widget.app;
+    final tab = _current!;
+    final route = _observer.topRoute;
+    final revision = _observer.revision;
+    final navigator = siteLensNavigatorKey.currentState;
+    if (navigator == null) return;
+    setState(() => _busy = true);
+    try {
+      await safely(context, () async {
+        await app.activateTab(tab);
+        if (!mounted ||
+            !_eligible ||
+            !identical(route, _observer.topRoute) ||
+            revision != _observer.revision ||
+            !identical(navigator, siteLensNavigatorKey.currentState) ||
+            app.activeBrowser?.id != id ||
+            !app.browserTabs.contains(tab)) {
+          return;
+        }
+        setState(_resetTransient);
+        unawaited(
+          navigator.push<void>(
+            MaterialPageRoute<void>(
+              settings: const RouteSettings(name: siteLensBrowserRouteName),
+              builder: (_) => BrowserScreen(app: app, site: tab.site),
+            ),
+          ),
+        );
+      });
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _close(String id) async {
+    if (_busy || !_eligible || _current?.id != id) return;
+    final app = widget.app;
+    final tab = _current!;
+    setState(() => _busy = true);
+    try {
+      await safely(context, () async {
+        await app.closeTab(tab);
+        if (!mounted) return;
+        // Closing can select a neighbour. Never activate it here: this route
+        // still belongs to Flutter and metadata alone is enough for the dock.
+        if (!app.browserTabs.contains(tab) || app.activeBrowser?.id != id) {
+          setState(_resetTransient);
+        }
+      });
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _savePosition(bool right, double y) {
+    final app = widget.app;
+    _positionPending = true;
+    // Serialise end-of-gesture patches without replacing unrelated settings.
+    final write = _positionWrites.then((_) async {
+      try {
+        await app.updateSettings({'dockRight': right, 'dockY': y});
+      } catch (error) {
+        AppErrorLogger.capture(error, module: 'ui');
+        if (mounted) showError(context, error);
+      }
+    });
+    _positionWrites = write;
+    unawaited(
+      write.whenComplete(() {
+        if (!mounted || !identical(_positionWrites, write)) return;
+        setState(() {
+          _positionPending = false;
+          _localRight = null;
+          _localY = null;
+        });
+      }),
+    );
+  }
+
+  void _markVisibleFrame() {
+    final trace = widget.app.startupTrace;
+    if (_frameMarkPending ||
+        !trace.needsMark(StartupPhase.resumeEntryFrameworkFrame)) {
+      return;
+    }
+    _frameMarkPending = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _frameMarkPending = false;
+      if (mounted &&
+          identical(trace, widget.app.startupTrace) &&
+          _eligible &&
+          _current != null) {
+        trace.markOnce(
+          StartupPhase.resumeEntryFrameworkFrame,
+          itemCount: widget.app.browserTabs.length,
+        );
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        widget.child,
+        if (_eligible)
+          Positioned.fill(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final safe = MediaQuery.paddingOf(context);
+                final availableWidth = constraints.maxWidth - safe.horizontal;
+                final top = safe.top + SiteLensMetrics.toolbarInset;
+                final bottom =
+                    constraints.maxHeight -
+                    safe.bottom -
+                    math.max(0, widget.bottomClearance);
+                final handleWidth = SiteLensMetrics.toolbarHeight;
+                final handleHeight = SiteLensMetrics.compactRowMinHeight;
+                final scale = MediaQuery.textScalerOf(context);
+                final barHeight = math.max(
+                  handleWidth,
+                  scale.scale(SiteLensTypography.rowTitle) +
+                      SiteLensMetrics.itemGap * 2,
+                );
+                final height = _expanded ? barHeight : handleHeight;
+                if (availableWidth < handleWidth * 3 || bottom - top < height) {
+                  return const SizedBox.shrink();
+                }
+                _markVisibleFrame();
+                final width = _expanded
+                    ? math.min(360.0, availableWidth)
+                    : handleWidth;
+                final left = safe.left;
+                final right = constraints.maxWidth - safe.right - width;
+                final travel = bottom - top - height;
+                final dockRight = _localRight ?? widget.app.settings.dockRight;
+                final savedY = _localY ?? widget.app.settings.dockY;
+                final y = savedY.isFinite ? savedY.clamp(0.0, 1.0) : 0.5;
+                final position =
+                    _drag ?? Offset(dockRight ? right : left, top + travel * y);
+                final bounded = Offset(
+                  position.dx.clamp(left, right),
+                  position.dy.clamp(top, top + travel),
+                );
+                final tab = _current!;
+                final label = tab.title.trim().isEmpty
+                    ? tab.currentUrl.host
+                    : tab.title;
+                return Stack(
+                  children: [
+                    Positioned(
+                      left: bounded.dx,
+                      top: bounded.dy,
+                      width: width,
+                      height: height,
+                      child: Listener(
+                        onPointerCancel: (_) => setState(_resetTransient),
+                        child: SiteLensGlassSurface(
+                          role: SiteLensSurfaceRole.chrome,
+                          radius: SiteLensMetrics.inputRadius,
+                          child: _expanded
+                              ? Row(
+                                  children: [
+                                    IconButton(
+                                      tooltip: '收起浏览浮条',
+                                      onPressed: _busy
+                                          ? null
+                                          : () => setState(
+                                              () => _expanded = false,
+                                            ),
+                                      icon: Icon(
+                                        dockRight
+                                            ? Icons.chevron_right
+                                            : Icons.chevron_left,
+                                      ),
+                                    ),
+                                    Expanded(
+                                      child: Semantics(
+                                        button: true,
+                                        label: '进入标签页 $label',
+                                        child: InkWell(
+                                          key: const ValueKey(
+                                            'browser-dock-title',
+                                          ),
+                                          onTap: _busy
+                                              ? null
+                                              : () => unawaited(_open(tab.id)),
+                                          child: SizedBox.expand(
+                                            child: Align(
+                                              alignment: Alignment.centerLeft,
+                                              child: ExcludeSemantics(
+                                                child: SiteLensRowText(
+                                                  label,
+                                                  style: Theme.of(context)
+                                                      .textTheme
+                                                      .titleSmall,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                    IconButton(
+                                      key: const ValueKey('browser-dock-close'),
+                                      tooltip: '关闭当前标签页',
+                                      onPressed: _busy
+                                          ? null
+                                          : () => unawaited(_close(tab.id)),
+                                      icon: const Icon(Icons.close),
+                                    ),
+                                  ],
+                                )
+                              : GestureDetector(
+                                  key: const ValueKey('browser-dock-handle'),
+                                  onPanStart: _busy
+                                      ? null
+                                      : (details) {
+                                          _pointerOrigin =
+                                              details.globalPosition;
+                                          _dockOrigin = bounded;
+                                        },
+                                  onPanUpdate: _busy
+                                      ? null
+                                      : (details) {
+                                          if (_pointerOrigin == null ||
+                                              _dockOrigin == null) {
+                                            return;
+                                          }
+                                          final next =
+                                              _dockOrigin! +
+                                              details.globalPosition -
+                                              _pointerOrigin!;
+                                          setState(
+                                            () => _drag = Offset(
+                                              next.dx.clamp(left, right),
+                                              next.dy.clamp(top, top + travel),
+                                            ),
+                                          );
+                                        },
+                                  onPanEnd: (_) {
+                                    if (_drag == null) return;
+                                    final end = _drag!;
+                                    final nextRight =
+                                        end.dx + width / 2 >=
+                                        (left + right + width) / 2;
+                                    final nextY = travel > 0
+                                        ? ((end.dy - top) / travel).clamp(
+                                            0.0,
+                                            1.0,
+                                          )
+                                        : 0.0;
+                                    setState(() {
+                                      _resetTransient();
+                                      _localRight = nextRight;
+                                      _localY = nextY;
+                                    });
+                                    _savePosition(nextRight, nextY);
+                                  },
+                                  onPanCancel: () => setState(() {
+                                    _drag = null;
+                                    _pointerOrigin = null;
+                                    _dockOrigin = null;
+                                  }),
+                                  child: Semantics(
+                                    button: true,
+                                    label:
+                                        '展开浏览浮条，$label，${widget.app.browserTabs.length} 个标签页',
+                                    hint: '可拖动到左侧或右侧并上下调整位置',
+                                    child: InkWell(
+                                      onTap: _busy
+                                          ? null
+                                          : () => setState(
+                                              () => _expanded = true,
+                                            ),
+                                      child: Center(
+                                        child: Icon(
+                                          Icons.drag_indicator,
+                                          size: SiteLensMetrics.toolbarIconSize,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .primary,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+      ],
+    );
+  }
+}

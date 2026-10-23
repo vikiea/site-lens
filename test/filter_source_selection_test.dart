@@ -60,6 +60,170 @@ void main() {
     expect(FilterSource.fromJson(disabled.toJson()).enabled, isFalse);
   });
 
+  test('cold exact-selection cache loads one bundle without recompiling four sources', () async {
+    for (var id = 1; id <= 4; id++) {
+      await seed(
+        id,
+        List.generate(1000, (i) => '||ads$id-$i.example^').join('\n'),
+      );
+    }
+    final bundle = (await manager.rebuildBundle())!;
+    final reopened = _RecordingFilterStore(
+      directoryProvider: () => throw StateError('cache hit must not republish'),
+    );
+    final files = {
+      bundle.fileRef: File(bundle.fileRef),
+      for (final snapshot in await db.latestFilterSnapshotsBySource())
+        snapshot.fileRef: File(snapshot.fileRef),
+    };
+    final opened = <String>[];
+    final restored = await IOOverrides.runZoned(
+      () => FilterSourceManager(store: reopened, db: db).rebuildBundle(),
+      createFile: (path) {
+        opened.add(path);
+        return files[path]!;
+      },
+    );
+    expect(restored!.id, bundle.id);
+    expect(opened, [bundle.fileRef]);
+    expect(reopened.compiledIds, [bundle.id]);
+    expect(reopened.activeEngine!.rules, hasLength(4000));
+    expect(await db.filterBundles(bundle.version), hasLength(1));
+  });
+
+  test(
+    'corrupt cached bundle is rebuilt from verified source snapshots',
+    () async {
+      await seed(1, '||ads.example^');
+      await seed(2, 'example.com##.sponsor');
+      final cached = (await manager.rebuildBundle())!;
+      await File(cached.fileRef).writeAsString('tampered');
+      final reopened = FilterSnapshotStore(directoryProvider: () async => root);
+      final rebuilt = (await FilterSourceManager(
+        store: reopened,
+        db: db,
+      ).rebuildBundle())!;
+      expect(rebuilt.id, isNot(cached.id));
+      expect(rebuilt.version, cached.version);
+      expect(rebuilt.sha256, cached.sha256);
+      expect(reopened.activeEngine!.rules, hasLength(2));
+      expect(reopened.activeSnapshot, same(rebuilt));
+      expect(await db.filterBundles(cached.version), hasLength(2));
+    },
+  );
+
+  test('cache lookup skips a broken newest bundle and keeps the verified older selection', () async {
+    await seed(1, '||ads.example^');
+    final cached = (await manager.rebuildBundle())!;
+    final bad = await store.publish(
+      id: 'bad-newest-bundle',
+      sourceId: null,
+      version: cached.version,
+      sourceUrl: cached.sourceUrl,
+      source: await File(cached.fileRef).readAsString(),
+      fileRef: 'bad-newest-bundle',
+      activate: false,
+    );
+    await db.saveFilterSnapshot(bad);
+    await File(bad.fileRef).writeAsString('tampered');
+    final reopened = FilterSnapshotStore(
+      directoryProvider: () => throw StateError('cache hit must not republish'),
+    );
+    final restored = await FilterSourceManager(
+      store: reopened,
+      db: db,
+    ).rebuildBundle();
+    expect(restored!.id, cached.id);
+    expect(reopened.activeEngine!.rules.single.pattern, '||ads.example^');
+  });
+
+  test('isolate bundle serialization preserves order, rule semantics and source diagnostics', () async {
+    await seed(
+      1,
+      'example.com##.sponsor\nexample.com#@#.sponsor\nexample.com##+js(unknown,x)',
+    );
+    await seed(
+      2,
+      '@@||ads.example^\$script,third-party,domain=site.example|~news.example\nexample.com##+js(set-constant,tracker,false)',
+    );
+    final bundle = (await manager.rebuildBundle())!;
+    expect(
+      await File(bundle.fileRef).readAsString(),
+      '! Site Lens source 2\n\n'
+      '@@||ads.example^\$domain=site.example|~news.example,third-party,script\n'
+      'example.com##+js(set-constant,tracker,false)\n'
+      '! Site Lens source 1\n\n'
+      'example.com##.sponsor\n'
+      'example.com#@#.sponsor',
+    );
+    expect(bundle.unsupportedRuleCount, 1);
+    expect(bundle.state, FilterSnapshotState.degraded);
+    expect(store.activeEngine!.snapshotId, bundle.id);
+    expect(
+      store.activeEngine!.cosmeticSelectors(Uri.parse('https://example.com/')),
+      isEmpty,
+    );
+  });
+
+  test('cached bundles cannot bypass a stricter rule or byte budget', () async {
+    await seed(1, '||ads.example^\n||tracker.example^');
+    await manager.rebuildBundle();
+    for (final limited in [
+      FilterSnapshotStore(directoryProvider: () async => root, maxRuleCount: 1),
+      FilterSnapshotStore(
+        directoryProvider: () async => root,
+        maxPayloadBytes: 1,
+      ),
+    ]) {
+      await expectLater(
+        FilterSourceManager(store: limited, db: db).rebuildBundle(),
+        throwsStateError,
+      );
+      expect(limited.activeEngine, isNull);
+      expect(limited.activeSnapshot, isNull);
+    }
+  });
+
+  for (final changed in [
+    'subscription URL',
+    'snapshot ID',
+    'snapshot digest',
+  ]) {
+    test('cached bundle cannot cross a changed $changed', () async {
+      final source = await seed(1, '||ads.example^');
+      await manager.rebuildBundle();
+      final previous = store.activeEngine;
+      final raw = (await db.latestFilterSnapshotsBySource()).single;
+      if (changed == 'subscription URL') {
+        await db.saveFilterSource(
+          FilterSource(
+            id: source.id,
+            label: source.label,
+            url: Uri.parse('https://filters.example/replaced.txt'),
+          ),
+        );
+      } else {
+        await db.saveFilterSnapshot(
+          FilterSnapshot(
+            id: changed == 'snapshot ID' ? 'replacement' : raw.id,
+            sourceId: raw.sourceId,
+            version: raw.version,
+            sourceUrl: raw.sourceUrl,
+            sha256: changed == 'snapshot digest'
+                ? 'invalid-digest'
+                : raw.sha256,
+            state: raw.state,
+            createdAt: raw.createdAt.add(const Duration(seconds: 1)),
+            fileRef: raw.fileRef,
+          ),
+        );
+      }
+      await File(raw.fileRef).writeAsString('tampered');
+      await expectLater(manager.rebuildBundle(), throwsStateError);
+      expect(store.activeEngine, same(previous));
+    });
+  }
+
   test(
     'built-in and custom switches retain caches and rebuild after restart',
     () async {
@@ -409,6 +573,18 @@ void main() {
     expect(store.activeSnapshot, same(previousBundle));
     expect(store.activeEngine!.rules, hasLength(2));
   });
+}
+
+class _RecordingFilterStore extends FilterSnapshotStore {
+  _RecordingFilterStore({required super.directoryProvider});
+
+  final compiledIds = <String>[];
+
+  @override
+  Future<FilterCompileResult> compileSnapshot(FilterSnapshot snapshot) {
+    compiledIds.add(snapshot.id);
+    return super.compileSnapshot(snapshot);
+  }
 }
 
 class _PendingFilterHttp extends ControlledHttp {

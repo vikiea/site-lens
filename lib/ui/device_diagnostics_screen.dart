@@ -113,7 +113,7 @@ class _DeviceDiagnosticsScreenState extends State<DeviceDiagnosticsScreen>
                     SiteLensActionRow(
                       icon: Icons.video_settings_outlined,
                       title: '编解码器清单',
-                      subtitle: '按需读取完整清单',
+                      subtitle: '进入后读取，缓存五分钟',
                       onTap: () => Navigator.of(context).push<void>(
                         MaterialPageRoute(
                           builder: (_) => CodecInventoryScreen(app: app),
@@ -596,6 +596,13 @@ class _CodecInventoryScreenState extends State<CodecInventoryScreen> {
   final _scroll = ScrollController();
   final _accordion = SiteLensAccordionController();
 
+  @override
+  void initState() {
+    super.initState();
+    _future = widget.app.deviceDiagnostics.readCodecInventory();
+    _future!.ignore();
+  }
+
   void _read() => setState(() {
     _future = widget.app.deviceDiagnostics.readCodecInventory();
     // FutureBuilder subscribes on the next frame; an immediate host failure
@@ -615,6 +622,7 @@ class _CodecInventoryScreenState extends State<CodecInventoryScreen> {
     body: SiteLensGlassGroup(
       child: FutureBuilder<List<CodecDescriptor>>(
         future: _future,
+        initialData: widget.app.deviceDiagnostics.cachedCodecInventory,
         builder: (context, snapshot) {
           final codecs = snapshot.data ?? const <CodecDescriptor>[];
           return SiteLensListPanel(
@@ -628,25 +636,18 @@ class _CodecInventoryScreenState extends State<CodecInventoryScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text('只读取系统描述，不实例化编解码器。'),
-                      TextButton.icon(
-                        onPressed:
-                            snapshot.connectionState == ConnectionState.waiting
-                            ? null
-                            : _read,
-                        icon: const Icon(Icons.list_alt),
-                        label: Text(
-                          _future == null
-                              ? '读取清单'
-                              : snapshot.hasError
-                              ? '重试'
-                              : '读取已缓存清单',
+                      if (snapshot.hasError)
+                        TextButton.icon(
+                          onPressed: _read,
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('重试'),
                         ),
-                      ),
                     ],
                   ),
                 ),
               ),
-              if (snapshot.connectionState == ConnectionState.waiting)
+              if (snapshot.connectionState == ConnectionState.waiting &&
+                  !snapshot.hasData)
                 const SliverToBoxAdapter(child: LinearProgressIndicator())
               else if (snapshot.hasError)
                 const SliverToBoxAdapter(

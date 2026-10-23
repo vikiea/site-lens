@@ -209,51 +209,42 @@ class _OpacitySetting extends StatelessWidget {
   final AppController app;
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, constraints) {
-      final scaler = MediaQuery.textScalerOf(context).scale(1);
-      final inline = constraints.maxWidth >= 360 * scaler;
-      if (!inline) {
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SiteLensCompactRow(
-              leading: const Icon(Icons.opacity_outlined, size: 18),
-              title: const Text('不透明度'),
-              subtitle: Text('${app.settings.glassOpacity} / 100'),
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(
+      horizontal: SiteLensMetrics.compactRowHorizontalPadding,
+    ),
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(
+        minHeight: SiteLensMetrics.compactRowMinHeight,
+      ),
+      child: Row(
+        children: [
+          Flexible(
+            flex: 2,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: AlignmentDirectional.centerStart,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('不透明度', style: Theme.of(context).textTheme.titleSmall),
+                  const SizedBox(width: SiteLensMetrics.itemGap),
+                  Text(
+                    '${app.settings.glassOpacity}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(18, 0, 18, 10),
-              child: _GlassOpacitySlider(app: app, width: double.infinity),
-            ),
-          ],
-        );
-      }
-      final sliderWidth = (constraints.maxWidth - 164)
-          .clamp(110.0, 180.0)
-          .toDouble();
-      return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-        child: Row(
-          children: [
-            const Icon(Icons.opacity_outlined, size: 18),
-            const SizedBox(width: 8),
-            const Text('不透明度', maxLines: 1, softWrap: false),
-            const SizedBox(width: 8),
-            Text(
-              '${app.settings.glassOpacity} / 100',
-              maxLines: 1,
-              softWrap: false,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(width: 8),
-            Flexible(
-              child: _GlassOpacitySlider(app: app, width: sliderWidth),
-            ),
-          ],
-        ),
-      );
-    },
+          ),
+          const SizedBox(width: SiteLensMetrics.itemGap),
+          Expanded(
+            flex: 3,
+            child: _GlassOpacitySlider(app: app, width: double.infinity),
+          ),
+        ],
+      ),
+    ),
   );
 }
 

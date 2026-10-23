@@ -34,7 +34,18 @@ class DeviceDiagnosticsService extends ChangeNotifier {
   DeviceDiagnosticsSnapshot? snapshot;
   Future<void>? _hcppPending;
   Future<DeviceDiagnosticsSnapshot>? _snapshotPending;
-  Future<List<CodecDescriptor>>? _codecs;
+  Future<List<CodecDescriptor>>? _codecPending;
+  List<CodecDescriptor>? _codecs;
+  DateTime? _codecsCapturedAt;
+  static const codecCacheLifetime = Duration(minutes: 5);
+
+  List<CodecDescriptor>? get cachedCodecInventory {
+    final captured = _codecsCapturedAt;
+    if (captured == null) return null;
+    final age = _now().difference(captured);
+    return !age.isNegative && age < codecCacheLifetime ? _codecs : null;
+  }
+
   final _observations = <String, CapabilityRecord>{};
 
   bool get effectiveHcpp => platform == 'android' && hcppSupported == true;
@@ -96,19 +107,25 @@ class DeviceDiagnosticsService extends ChangeNotifier {
     return result;
   }
 
-  /// Lazy in Dart; Android also caches the inventory across engine lifetimes.
-  /// Query failure clears the future so a deliberate retry remains possible.
+  /// Page entry starts the read; repeated entries share one five-minute cache.
+  /// Failures are never cached and concurrent readers share the pending query.
   Future<List<CodecDescriptor>> readCodecInventory() {
-    return _codecs ??= _api
-        .readCodecInventory()
-        .timeout(const Duration(seconds: 15))
-        .then(
-          (rows) => rows,
-          onError: (Object error, StackTrace stack) {
-            _codecs = null;
-            Error.throwWithStackTrace(error, stack);
-          },
-        );
+    final cached = cachedCodecInventory;
+    if (cached != null) return Future.value(cached);
+    return _codecPending ??= _readCodecs().whenComplete(
+      () => _codecPending = null,
+    );
+  }
+
+  Future<List<CodecDescriptor>> _readCodecs() async {
+    final rows = List<CodecDescriptor>.unmodifiable(
+      await _api.readCodecInventory().timeout(const Duration(seconds: 15)),
+    );
+    if (!_disposed) {
+      _codecs = rows;
+      _codecsCapturedAt = _now();
+    }
+    return rows;
   }
 
   /// Called only by existing playback/cast event streams, never by refresh.

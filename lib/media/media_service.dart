@@ -374,8 +374,48 @@ class MediaCandidateCollector {
 }
 
 class MediaTaskStore extends ChangeNotifier {
-  MediaTaskStore({Future<Directory> Function()? directoryProvider, this.db})
-    : _directoryProvider = directoryProvider ?? getApplicationSupportDirectory;
+  MediaTaskStore({
+    Future<Directory> Function()? directoryProvider,
+    this.db,
+    bool restoreBeforeUse = false,
+  }) : _directoryProvider = directoryProvider ?? getApplicationSupportDirectory,
+       _ready = !restoreBeforeUse;
+
+  bool _ready;
+  bool get available => _ready && _restoreRun == null;
+  final Zone _listenerZone = Zone.current;
+
+  @override
+  void notifyListeners() => _listenerZone.run(super.notifyListeners);
+
+  Future<void>? _restoreRun;
+  (Object, StackTrace)? _restoreFailure;
+  static final _restoreZoneKey = Object();
+  bool get _ownsRestore => identical(Zone.current[_restoreZoneKey], this);
+
+  /// Arm the cold-start fence before publishing any UI metadata.
+  void requireRestore() {
+    if (_references.isNotEmpty || _exclusive.isNotEmpty) {
+      throw StateError('媒体正在使用，不能开始恢复');
+    }
+    _ready = false;
+    _restoreFailure = null;
+  }
+
+  Future<void> get ready {
+    if (_ownsRestore) return Future<void>.value();
+    final running = _restoreRun;
+    if (running != null) return running;
+    final failure = _restoreFailure;
+    if (failure != null) return Future<void>.error(failure.$1, failure.$2);
+    return _ready ? Future<void>.value() : restore();
+  }
+
+  void _requireReady() {
+    if (!_ready || _restoreRun != null) {
+      throw StateError('媒体任务正在恢复，请稍后重试');
+    }
+  }
 
   final Future<Directory> Function() _directoryProvider;
   final AppDatabase? db;
@@ -472,6 +512,7 @@ class MediaTaskStore extends ChangeNotifier {
   /// or acquiring a synthetic network candidate.
   MediaTask? referenceTask(String id) => task(id) ?? _localMediaReferences[id];
   void registerLocalMediaReference(MediaTask reference) {
+    _requireReady();
     _localMediaReferences[reference.id] = reference;
   }
 
@@ -489,6 +530,7 @@ class MediaTaskStore extends ChangeNotifier {
     MediaCandidate candidate, {
     bool allowAuthorizationRefresh = false,
   }) {
+    _requireReady();
     const validator = MediaCandidateValidator();
     validator.validate(candidate);
     final canonicalId = _resolveId(taskId);
@@ -535,6 +577,7 @@ class MediaTaskStore extends ChangeNotifier {
     String audio = '',
     String? batchDirectory,
   }) {
+    _requireReady();
     const validator = MediaCandidateValidator();
     validator.validate(candidate);
     final key = cacheKey(candidate, quality: quality, audio: audio);
@@ -630,7 +673,34 @@ class MediaTaskStore extends ChangeNotifier {
     return null;
   }
 
-  Future<void> restore() async {
+  Future<void> restore() {
+    final running = _restoreRun;
+    if (running != null) return running;
+    if (_references.isNotEmpty || _exclusive.isNotEmpty) {
+      return Future.error(StateError('媒体正在使用，停止播放、投屏或文件操作后才能重新载入任务'));
+    }
+    _ready = false;
+    _restoreFailure = null;
+    return _restoreRun = runZoned<Future<void>>(
+      () => _restore()
+          .then<void>(
+            (_) {
+              _ready = true;
+            },
+            onError: (Object error, StackTrace stack) {
+              _restoreFailure = (error, stack);
+              Error.throwWithStackTrace(error, stack);
+            },
+          )
+          .whenComplete(() {
+            _restoreRun = null;
+            notifyListeners();
+          }),
+      zoneValues: {_restoreZoneKey: this},
+    );
+  }
+
+  Future<void> _restore() async {
     if (_references.isNotEmpty || _exclusive.isNotEmpty) {
       throw StateError('媒体正在使用，停止播放、投屏或文件操作后才能重新载入任务');
     }
@@ -723,6 +793,21 @@ class MediaTaskStore extends ChangeNotifier {
     Object? errorCode = _unset,
     Object? errorReason = _unset,
   }) {
+    _requireReady();
+    return _transition(
+      id,
+      state,
+      errorCode: errorCode,
+      errorReason: errorReason,
+    );
+  }
+
+  MediaTask _transition(
+    String id,
+    MediaTaskState state, {
+    Object? errorCode = _unset,
+    Object? errorReason = _unset,
+  }) {
     final canonicalId = _resolveId(id);
     final task = _tasks[canonicalId];
     if (task == null) throw StateError('媒体任务不存在');
@@ -789,6 +874,11 @@ class MediaTaskStore extends ChangeNotifier {
   static const _unset = Object();
 
   MediaTask updateProgress(String id, int bytesDownloaded, {int? totalBytes}) {
+    _requireReady();
+    return _updateProgress(id, bytesDownloaded, totalBytes: totalBytes);
+  }
+
+  MediaTask _updateProgress(String id, int bytesDownloaded, {int? totalBytes}) {
     final canonicalId = _resolveId(id);
     final task = _tasks[canonicalId];
     if (task == null) throw StateError('媒体任务不存在');
@@ -810,6 +900,11 @@ class MediaTaskStore extends ChangeNotifier {
   }
 
   MediaTask setLocalRef(String id, String? localRef) {
+    _requireReady();
+    return _setLocalRef(id, localRef);
+  }
+
+  MediaTask _setLocalRef(String id, String? localRef) {
     final canonicalId = _resolveId(id);
     final task = _tasks[canonicalId];
     if (task == null) throw StateError('媒体任务不存在');
@@ -820,6 +915,7 @@ class MediaTaskStore extends ChangeNotifier {
   }
 
   void retain(String taskId) {
+    _requireReady();
     final canonicalId = _resolveId(taskId);
     if (referenceTask(canonicalId) == null) throw StateError('媒体文件不存在');
     if (_exclusive.contains(canonicalId)) {
@@ -845,6 +941,7 @@ class MediaTaskStore extends ChangeNotifier {
   bool isExclusive(String taskId) => _exclusive.contains(_resolveId(taskId));
 
   void acquireExclusive(String taskId) {
+    _requireReady();
     final canonicalId = _resolveId(taskId);
     if (referenceTask(canonicalId) == null) throw StateError('媒体文件不存在');
     if (!canDelete(canonicalId) || !_exclusive.add(canonicalId)) {
@@ -855,6 +952,7 @@ class MediaTaskStore extends ChangeNotifier {
   void releaseExclusive(String taskId) => _exclusive.remove(_resolveId(taskId));
 
   Future<T> withExclusive<T>(String taskId, Future<T> Function() action) async {
+    await ready;
     acquireExclusive(taskId);
     try {
       return await action();
@@ -867,6 +965,7 @@ class MediaTaskStore extends ChangeNotifier {
     String taskId, {
     bool exclusiveAlreadyHeld = false,
   }) async {
+    await ready;
     if (!exclusiveAlreadyHeld) {
       await withExclusive(
         taskId,
@@ -888,6 +987,7 @@ class MediaTaskStore extends ChangeNotifier {
   }
 
   Future<void> reconcileCachedFiles() async {
+    await ready;
     for (final task in tasks) {
       if ((task.state == MediaTaskState.playable ||
               task.state == MediaTaskState.completed) &&
@@ -895,13 +995,13 @@ class MediaTaskStore extends ChangeNotifier {
         final file = await cachedFile(task.id);
         if (!identical(this.task(task.id), task)) continue;
         if (file == null) {
-          markCacheMissing(task.id);
+          _markCacheMissing(task.id);
         } else {
           final bytes = await cachedBytes(task.id);
           if (!identical(this.task(task.id), task)) continue;
           if (bytes != null &&
               (task.bytesDownloaded != bytes || task.totalBytes != bytes)) {
-            updateProgress(task.id, bytes, totalBytes: bytes);
+            _updateProgress(task.id, bytes, totalBytes: bytes);
           }
         }
       }
@@ -909,14 +1009,19 @@ class MediaTaskStore extends ChangeNotifier {
   }
 
   MediaTask markCacheMissing(String taskId) {
+    _requireReady();
+    return _markCacheMissing(taskId);
+  }
+
+  MediaTask _markCacheMissing(String taskId) {
     final current = task(taskId) ?? (throw StateError('媒体任务不存在'));
     if (current.state != MediaTaskState.completed &&
         current.state != MediaTaskState.playable) {
       return current;
     }
-    setLocalRef(taskId, null);
-    updateProgress(taskId, 0, totalBytes: current.totalBytes);
-    return transition(
+    _setLocalRef(taskId, null);
+    _updateProgress(taskId, 0, totalBytes: current.totalBytes);
+    return _transition(
       taskId,
       MediaTaskState.failed,
       errorCode: MediaErrorCode.cacheMissing,
@@ -928,6 +1033,7 @@ class MediaTaskStore extends ChangeNotifier {
     String taskId, {
     bool exclusiveAlreadyHeld = false,
   }) async {
+    await ready;
     if (!exclusiveAlreadyHeld) {
       await withExclusive(
         taskId,
@@ -949,12 +1055,14 @@ class MediaTaskStore extends ChangeNotifier {
   }
 
   void cacheFilesDeleted(String taskId) {
+    _requireReady();
     if (!isExclusive(taskId)) throw StateError('媒体任务未持有排他操作锁');
     markCacheMissing(taskId);
     setLocalRef(taskId, null);
   }
 
   Future<MediaCacheDeletionPlan> cacheDeletionPlan(String taskId) async {
+    await ready;
     final current = task(taskId) ?? (throw StateError('媒体任务不存在'));
     final file = await cachedFile(taskId, validateHls: false);
     final appRoot = await _directoryProvider();
@@ -1015,6 +1123,7 @@ class MediaTaskStore extends ChangeNotifier {
     String? seriesDirectory,
     String? storageDirectory,
   }) async {
+    await ready;
     final root = await _directoryProvider();
     final base = Directory('${root.path}/media_cache');
     final requested = storageDirectory ?? seriesDirectory;
@@ -1046,6 +1155,7 @@ class MediaTaskStore extends ChangeNotifier {
     String taskId, {
     bool exclusiveAlreadyHeld = false,
   }) async {
+    await ready;
     if (!exclusiveAlreadyHeld) {
       return withExclusive(
         taskId,
@@ -1123,6 +1233,7 @@ class MediaTaskStore extends ChangeNotifier {
   /// segments, init segment and encryption keys instead of reporting the
   /// manifest's few kilobytes.
   Future<int?> cachedBytes(String taskId) async {
+    await ready;
     final playlist = await cachedFile(taskId, validateHls: false);
     if (playlist == null) return null;
     final files = <String, File>{playlist.path: playlist};
@@ -1163,6 +1274,7 @@ class MediaTaskStore extends ChangeNotifier {
   }
 
   Future<File?> cachedFile(String taskId, {bool validateHls = true}) async {
+    await ready;
     final task = this.task(taskId);
     final ref = task?.localRef;
     if (ref == null) return null;

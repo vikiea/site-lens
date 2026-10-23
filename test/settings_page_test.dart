@@ -72,6 +72,10 @@ Future<void> pumpSettings(
   AppController app, {
   UpdateController? update,
 }) async {
+  addTearDown(() async {
+    await tester.pumpWidget(const SizedBox());
+    await tester.runAsync(app.shutdown);
+  });
   await tester.pumpWidget(settingsApp(app, update ?? quietUpdateController()));
   await tester.pumpAndSettle();
 }
@@ -81,6 +85,42 @@ Future<void> scrollSettingsToEnd(WidgetTester tester) async {
   for (var i = 0; i < 6; i++) {
     await tester.drag(scrollable, const Offset(0, -500));
     await tester.pumpAndSettle();
+  }
+}
+
+Future<void> tapSettingAndWait(
+  WidgetTester tester,
+  AppController app,
+  Finder target,
+  bool Function() applied, {
+  Offset? position,
+}) async {
+  var changed = false;
+  void listener() {
+    if (applied()) changed = true;
+  }
+
+  app.addListener(listener);
+  try {
+    if (position == null) {
+      await tester.tap(target);
+    } else {
+      await tester.tapAt(position);
+    }
+    for (var attempt = 0; attempt < 100 && !changed; attempt++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 5)),
+      );
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(
+      changed,
+      isTrue,
+      reason: 'setting did not publish its completed state',
+    );
+    await tester.pumpAndSettle();
+  } finally {
+    app.removeListener(listener);
   }
 }
 
@@ -154,12 +194,12 @@ void main() {
     'appearance keeps opacity compact and theme colors collapsed in six columns',
     (tester) async {
       await pumpSettings(tester, app);
-      expect(find.textContaining('55 / 100'), findsOneWidget);
+      expect(find.text('55'), findsOneWidget);
       expect(
         find.byKey(const ValueKey('default-glass-opacity-marker')),
         findsOneWidget,
       );
-      final opacityValue = tester.getRect(find.textContaining('55 / 100'));
+      final opacityValue = tester.getRect(find.text('55'));
       final opacitySlider = tester.getRect(find.byType(Slider));
       expect(
         (opacityValue.center.dy - opacitySlider.center.dy).abs(),
@@ -185,10 +225,12 @@ void main() {
       await tester.tap(find.bySemanticsLabel('主题色 雾松绿'));
       await tester.pumpAndSettle();
       expect(app.themePreset, ThemePresetId.mistPine);
-      expect(
-        (await SettingsRepository(db).read()).themePreset,
-        ThemePresetId.mistPine,
-      );
+      await tester.runAsync(() async {
+        expect(
+          (await SettingsRepository(db).read()).themePreset,
+          ThemePresetId.mistPine,
+        );
+      });
     },
   );
 
@@ -196,22 +238,50 @@ void main() {
     tester,
   ) async {
     await pumpSettings(tester, app);
-    await tester.tap(find.text('深色'));
-    await tester.pumpAndSettle();
-    expect(app.themeModePreference, ThemeModePreference.dark);
-    expect(
-      (await SettingsRepository(db).read()).themeMode,
-      ThemeModePreference.dark,
+    await tapSettingAndWait(
+      tester,
+      app,
+      find.text('深色'),
+      () => app.themeModePreference == ThemeModePreference.dark,
     );
+    expect(app.themeModePreference, ThemeModePreference.dark);
+    await tester.runAsync(() async {
+      expect(
+        (await SettingsRepository(db).read()).themeMode,
+        ThemeModePreference.dark,
+      );
+    });
 
-    await tester.tap(find.text('高质量'));
-    await tester.pumpAndSettle();
+    expect(find.text('当前有效质量'), findsOneWidget);
+    await tapSettingAndWait(
+      tester,
+      app,
+      find.text('高质量'),
+      () => app.settings.glassQualityMode == SiteLensGlassQualityMode.high,
+    );
     expect(app.effectiveGlassQuality, GlassQuality.premium);
+    await tester.runAsync(() async {
+      expect(
+        (await SettingsRepository(db).read()).glassQualityMode,
+        SiteLensGlassQualityMode.high,
+      );
+    });
     expect(find.text('当前有效质量'), findsNothing);
     expect(find.text('高质量覆盖全部面板'), findsOneWidget);
-    await tester.tap(find.text('高质量覆盖全部面板'));
-    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('高质量覆盖全部面板'));
+    await tapSettingAndWait(
+      tester,
+      app,
+      find.text('高质量覆盖全部面板'),
+      () => app.settings.highQualityAllSurfaces,
+    );
     expect(app.settings.highQualityAllSurfaces, isTrue);
+    await tester.runAsync(() async {
+      expect(
+        (await SettingsRepository(db).read()).highQualityAllSurfaces,
+        isTrue,
+      );
+    });
   });
 
   testWidgets('about and software update are direct routes', (tester) async {
@@ -264,7 +334,9 @@ void main() {
   testWidgets('beta token stays on the direct software update page', (
     tester,
   ) async {
-    await app.updateSettings({'updateChannel': UpdateChannel.beta.name});
+    await tester.runAsync(
+      () => app.updateSettings({'updateChannel': UpdateChannel.beta.name}),
+    );
     await pumpSettings(tester, app);
     await scrollSettingsToEnd(tester);
     await tester.tap(find.text('软件更新'));
@@ -281,13 +353,15 @@ void main() {
     tester.platformDispatcher.textScaleFactorTestValue = 2;
     addTearDown(tester.view.reset);
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
-    await app.updateSettings({
-      'themeMode': 'dark',
-      'themePreset': ThemePresetId.sunsetCoral.wireId,
-      'glassOpacity': 100,
-      'glassQualityMode': 'high',
-      'highQualityAllSurfaces': true,
-    });
+    await tester.runAsync(
+      () => app.updateSettings({
+        'themeMode': 'dark',
+        'themePreset': ThemePresetId.sunsetCoral.wireId,
+        'glassOpacity': 100,
+        'glassQualityMode': 'high',
+        'highQualityAllSurfaces': true,
+      }),
+    );
     await pumpSettings(tester, app);
     expect(find.byType(Scrollable), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -307,12 +381,14 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
-    for (final width in [320.0, 384.0, 412.0]) {
+    for (final width in [320.0, 412.0]) {
       tester.view.physicalSize = Size(width, 800);
-      for (final scale in [1.0, 1.3]) {
+      for (final scale in [1.0, 2.0]) {
         tester.platformDispatcher.textScaleFactorTestValue = scale;
         for (final opacity in [0, 55, 100]) {
-          await app.updateSettings({'glassOpacity': opacity});
+          await tester.runAsync(
+            () => app.updateSettings({'glassOpacity': opacity}),
+          );
           await pumpSettings(tester, app);
           expect(
             tester.takeException(),
@@ -320,11 +396,53 @@ void main() {
             reason: 'width=$width scale=$scale opacity=$opacity',
           );
           final slider = tester.getRect(find.byType(Slider));
+          final label = tester.getCenter(find.text('不透明度'));
+          final value = tester.getCenter(find.text('$opacity'));
+          expect(label.dy, closeTo(slider.center.dy, 1));
+          expect(value.dy, closeTo(slider.center.dy, 1));
+          expect(find.textContaining('/ 100'), findsNothing);
           expect(slider.left, greaterThanOrEqualTo(0));
           expect(slider.right, lessThanOrEqualTo(width));
           expect(slider.width, greaterThan(48));
         }
       }
     }
+  });
+
+  testWidgets('narrow opacity slider keeps default reset and dragging', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.runAsync(() => app.updateSettings({'glassOpacity': 0}));
+    await pumpSettings(tester, app);
+    await tapSettingAndWait(
+      tester,
+      app,
+      find.byType(Slider),
+      () => app.settings.glassOpacity == 55,
+      position: tester.getCenter(
+        find.byKey(const ValueKey('default-glass-opacity-marker')),
+      ),
+    );
+    expect(find.text('55'), findsOneWidget);
+    final slider = tester.getRect(find.byType(Slider));
+    final drag = await tester.startGesture(
+      tester.getCenter(
+        find.byKey(const ValueKey('default-glass-opacity-marker')),
+      ),
+    );
+    await drag.moveTo(Offset(slider.right - 24, slider.center.dy));
+    await drag.up();
+    await tester.pumpAndSettle();
+    expect(app.settings.glassOpacity, greaterThan(55));
+    await tester.runAsync(() async {
+      expect(
+        (await SettingsRepository(db).read()).glassOpacity,
+        app.settings.glassOpacity,
+      );
+    });
+    expect(tester.takeException(), isNull);
   });
 }

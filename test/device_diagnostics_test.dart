@@ -115,6 +115,32 @@ void main() {
     },
   );
 
+  test('codec cache expires five minutes after completion without extending on reads', () async {
+    var now = DateTime.utc(2026, 10, 23);
+    final api = FakeDeviceDiagnosticsApi();
+    final service = DeviceDiagnosticsService(
+      api: api,
+      platform: 'android',
+      now: () => now,
+    );
+    addTearDown(service.dispose);
+    final reads = await Future.wait([
+      service.readCodecInventory(),
+      service.readCodecInventory(),
+    ]);
+    expect(api.codecReads, 1);
+    expect(identical(reads.first, reads.last), isTrue);
+    now = now.add(const Duration(minutes: 4, seconds: 59));
+    await service.readCodecInventory();
+    expect(api.codecReads, 1);
+    now = now.add(const Duration(seconds: 1));
+    expect(service.cachedCodecInventory, isNull);
+    api.codecs = [];
+    expect(await service.readCodecInventory(), isEmpty);
+    expect(api.codecReads, 2);
+    expect(service.cachedCodecInventory, isEmpty);
+  });
+
   test('refresh never retimestamps historical session observations', () async {
     var now = DateTime.fromMillisecondsSinceEpoch(1234);
     final service = DeviceDiagnosticsService(
@@ -377,14 +403,7 @@ void main() {
           await tester.pumpAndSettle();
           final viewport = find.byType(Scrollable);
           expect(viewport, findsOneWidget);
-          expect(api.codecReads, 0);
-          await tester.scrollUntilVisible(
-            find.text('读取清单'),
-            100,
-            scrollable: viewport,
-          );
-          await tester.tap(find.text('读取清单'));
-          await tester.pumpAndSettle();
+          expect(find.text('读取清单'), findsNothing);
           expect(api.codecReads, 1);
           expect(find.text('test.codec.299'), findsNothing);
           final list = find.byKey(const PageStorageKey('device-codec-list'));
@@ -448,7 +467,6 @@ void main() {
         await tester.pumpWidget(
           MaterialApp(home: CodecInventoryScreen(app: app)),
         );
-        await tester.tap(find.text('读取清单'));
         await tester.pumpAndSettle();
         expect(find.text('读取失败，请重试'), findsOneWidget);
         expect(find.byKey(const ValueKey('codec-list-end')), findsNothing);
@@ -458,7 +476,10 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text('系统没有返回编解码器描述'), findsOneWidget);
         expect(find.text('清单结束，共 0 项'), findsOneWidget);
-        await tester.tap(find.text('读取已缓存清单'));
+        await tester.pumpWidget(const SizedBox());
+        await tester.pumpWidget(
+          MaterialApp(home: CodecInventoryScreen(app: app)),
+        );
         await tester.pumpAndSettle();
         expect(api.codecReads, 2);
         expect(web.created, isEmpty);

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'app_theme.dart';
 import 'glass_surface.dart';
+import 'navigation_observer.dart';
 
 enum SiteLensNoticeTone { info, warning, error }
 
@@ -546,6 +547,24 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
   final _focusNode = FocusNode();
   final _menuController = MenuController();
   bool _expanded = false;
+  VoidCallback? _releasePopup;
+
+  void _menuOpened() {
+    _releasePopup?.call();
+    _releasePopup = Navigator.maybeOf(context, rootNavigator: true)
+        ?.widget
+        .observers
+        .whereType<SiteLensRouteObserver>()
+        .firstOrNull
+        ?.holdOverlayPopup();
+    setState(() => _expanded = true);
+  }
+
+  void _menuClosed() {
+    _releasePopup?.call();
+    _releasePopup = null;
+    if (mounted) setState(() => _expanded = false);
+  }
 
   bool get _enabled =>
       widget.onSelected != null &&
@@ -574,6 +593,8 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
   @override
   void dispose() {
     FocusManager.instance.removeHighlightModeListener(_highlightModeChanged);
+    _releasePopup?.call();
+    _releasePopup = null;
     _focusNode.dispose();
     super.dispose();
   }
@@ -669,8 +690,8 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
             childFocusNode: _focusNode,
             consumeOutsideTap: true,
             crossAxisUnconstrained: false,
-            onOpen: () => setState(() => _expanded = true),
-            onClose: () => setState(() => _expanded = false),
+            onOpen: _menuOpened,
+            onClose: _menuClosed,
             style: MenuStyle(
               alignment: AlignmentDirectional.bottomStart,
               backgroundColor: WidgetStatePropertyAll(fill),

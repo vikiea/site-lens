@@ -694,7 +694,6 @@ void main() {
           tester.getSize(glass).height,
           lessThanOrEqualTo(tester.getSize(screen).height),
         );
-        await tester.tap(find.text('读取清单'));
         await _wait(
           tester,
           () => find.byKey(const ValueKey('codec-0')).evaluate().isNotEmpty,

@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/update/update_controller.dart';
 import 'package:site_lens/update/update_service.dart';
 import 'package:site_lens/data/database.dart';
+import 'package:site_lens/diagnostics/startup_trace.dart';
 import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/browser_entry.dart';
@@ -22,7 +23,10 @@ void main() {
   ) async {
     final db = AppDatabase(NativeDatabase.memory());
     final app = AppController(db, api: FakeWebHostApi());
-    await app.load();
+    await tester.runAsync(() async {
+      await app.initialize();
+      await app.startupSettled;
+    });
     await tester.pumpWidget(
       ProviderScope(
         overrides: [appControllerProvider.overrideWithValue(app)],
@@ -50,8 +54,10 @@ void main() {
     expect(find.text('Site Lens'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
-    await app.shutdown();
-    await db.close();
+    await tester.runAsync(() async {
+      await app.shutdown();
+      await db.close();
+    });
   });
 
   testWidgets('site cards label stale recommendations and expose detection', (
@@ -142,7 +148,11 @@ void main() {
     'startup loading does not present an empty profile state before hydration',
     (tester) async {
       final db = AppDatabase(NativeDatabase.memory());
-      final app = AppController(db);
+      final timing = <Map<String, Object>>[];
+      final app = AppController(
+        db,
+        startupTrace: StartupTrace(enabled: true, emit: timing.add),
+      );
       try {
         await db.createProfile('已保存站点');
         await tester.pumpWidget(
@@ -158,12 +168,20 @@ void main() {
         expect(find.byType(CircularProgressIndicator), findsOneWidget);
 
         await tester.runAsync(app.load);
+        expect(
+          timing.where((row) => row['phase'] == 'homeMetadataFrameworkFrame'),
+          isEmpty,
+        );
         await tester.pump();
 
         expect(app.persistentStateLoaded, isTrue);
         expect(find.text('已保存站点'), findsOneWidget);
         expect(find.textContaining('还没有站点档案'), findsNothing);
         expect(find.byType(CircularProgressIndicator), findsNothing);
+        expect(
+          timing.where((row) => row['phase'] == 'homeMetadataFrameworkFrame'),
+          hasLength(1),
+        );
       } finally {
         // Shutdown awaits futures created in the widget test's fake async zone.
         // Keep cleanup in that zone so addTearDown cannot strand those futures.
@@ -278,9 +296,7 @@ void main() {
     await db.close();
   });
 
-  testWidgets('browser tab page and resume row are inert without a session', (
-    tester,
-  ) async {
+  testWidgets('browser tab page is empty without a session', (tester) async {
     final db = AppDatabase(NativeDatabase.memory());
     final app = AppController(db);
     await app.load();
@@ -292,16 +308,6 @@ void main() {
       ),
     );
     expect(find.text('还没有打开的标签页'), findsOneWidget);
-
-    // Without an open session the in-page resume row must not appear.
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: ResumeBrowserBar(app: app, onResume: () {}),
-        ),
-      ),
-    );
-    expect(find.byType(ListTile), findsNothing);
 
     await tester.pumpWidget(const SizedBox());
     await app.shutdown();

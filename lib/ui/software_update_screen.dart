@@ -38,6 +38,8 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
   UpdateDownloadState? _lastState;
   String? _autoInstalledTag;
   late UpdateChannel _channel;
+  int _channelChangeGeneration = 0;
+  bool _channelChangeInFlight = false;
 
   @override
   void initState() {
@@ -50,24 +52,49 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
   }
 
   Future<void> _changeChannel(UpdateChannel value) async {
-    if (value == _channel || _controller.busy) return;
+    if (value == _channel || _controller.busy || _channelChangeInFlight) return;
+    final previous = _channel;
+    final app = widget.app;
+    final generation = ++_channelChangeGeneration;
+    setState(() {
+      _channel = value;
+      _channelChangeInFlight = true;
+    });
     try {
       await _controller.setChannel(value);
-      if (!mounted) return;
-      setState(() => _channel = value);
-      final app = widget.app;
-      if (app != null) {
+      if (generation != _channelChangeGeneration) return;
+      if (app != null && app.settings.updateChannel != value) {
         await app.updateSettings({'updateChannel': value.name});
       }
     } catch (error) {
-      if (mounted) showError(context, error);
+      if (generation == _channelChangeGeneration) {
+        // updateSettings publishes settings only after the database commit.
+        // A later host failure must retain that committed preference instead
+        // of making the page and update service disagree with storage.
+        final committed = app?.settings.updateChannel ?? previous;
+        try {
+          await _controller.setChannel(committed);
+        } catch (_) {
+          // Keep the original failure visible; the controller will expose its
+          // current channel if a best-effort rollback cannot complete.
+        }
+        if (mounted) {
+          setState(() => _channel = _controller.channel);
+          showError(context, error);
+        }
+      }
+    } finally {
+      if (mounted && generation == _channelChangeGeneration) {
+        setState(() => _channelChangeInFlight = false);
+      }
     }
   }
 
   Future<void> _initializeUpdatePage() async {
+    final generation = _channelChangeGeneration;
     try {
       await _controller.setChannel(widget.channel);
-      if (!mounted) return;
+      if (!mounted || generation != _channelChangeGeneration) return;
       await _controller.openUpdatePage();
     } catch (_) {
       // The page remains usable; an explicit check exposes the normal
@@ -118,16 +145,10 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
           _UpdatePreferencesPanel(
             app: widget.app,
             channel: _channel,
-            busy: _controller.busy,
+            busy: _controller.busy || _channelChangeInFlight,
             onChannelChanged: _changeChannel,
           ),
-          SiteLensSectionHeader(
-            title: '当前版本',
-            subtitle: _controller.currentVersion == null
-                ? '读取应用版本中…'
-                : '${_controller.currentVersion} · '
-                      '下载由你主动开始；离开页面后会继续，完成后在应用内提示。',
-          ),
+          const SizedBox(height: SiteLensMetrics.itemGap),
           SiteLensPanel(
             padding: EdgeInsets.zero,
             child: Column(
@@ -137,11 +158,9 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
                     Icons.phone_android_outlined,
                     size: SiteLensMetrics.compactIconSize,
                   ),
-                  title: const Text('Site Lens'),
+                  title: const Text('当前版本'),
                   subtitle: Text(
-                    _controller.release == null
-                        ? '获取最新版本信息'
-                        : '发现 ${_controller.release!.tagName}',
+                    _controller.currentVersion?.toString() ?? '读取应用版本中…',
                   ),
                   trailing: _controller.checking
                       ? const SizedBox(
@@ -150,7 +169,10 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : FilledButton.tonal(
-                          onPressed: _controller.busy || _controller.checking
+                          onPressed:
+                              _controller.busy ||
+                                  _controller.checking ||
+                                  _channelChangeInFlight
                               ? null
                               : () => _controller.check(),
                           child: const Text('检查更新'),
@@ -410,31 +432,14 @@ class _UpdatePreferencesPanelState extends State<_UpdatePreferencesPanel> {
         SiteLensCompactRow(
           leading: const Icon(Icons.tune_outlined, size: 18),
           title: const Text('更新渠道'),
-          subtitle: Text(widget.channel.description),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-          child: SegmentedButton<UpdateChannel>(
-            segments: const [
-              ButtonSegment(
-                value: UpdateChannel.stable,
-                label: Text('稳定版'),
-                icon: Icon(Icons.verified_outlined),
-              ),
-              ButtonSegment(
-                value: UpdateChannel.beta,
-                label: Text('测试版'),
-                icon: Icon(Icons.science_outlined),
-              ),
+          trailing: SiteLensMenuSelector<UpdateChannel>(
+            label: '选择更新渠道',
+            value: widget.channel,
+            options: const [
+              SiteLensMenuOption(value: UpdateChannel.stable, label: '稳定版'),
+              SiteLensMenuOption(value: UpdateChannel.beta, label: '测试版'),
             ],
-            selected: {widget.channel},
-            onSelectionChanged: widget.busy
-                ? null
-                : (values) {
-                    if (values.isNotEmpty) {
-                      widget.onChannelChanged(values.first);
-                    }
-                  },
+            onSelected: widget.busy ? null : widget.onChannelChanged,
           ),
         ),
         if (widget.channel == UpdateChannel.beta) ...[

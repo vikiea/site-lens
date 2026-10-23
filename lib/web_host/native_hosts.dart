@@ -78,6 +78,7 @@ class NativeHosts extends WebHostEvents {
     this.http, {
     WebHostApi? api,
     this.probeRoute,
+    this.beforeCreate,
   }) : api = api ?? WebHostApi() {
     WebHostEvents.setUp(this);
   }
@@ -85,6 +86,7 @@ class NativeHosts extends WebHostEvents {
   final ScriptService scripts;
   final ControlledHttp http;
   final WebHostApi api;
+  final Future<void> Function()? beforeCreate;
   final Future<MediaNetworkRoute> Function(Uri)? probeRoute;
   final _filterPayloads = FilterPayloadStore();
   final sessions = <int, HostSession>{};
@@ -198,6 +200,7 @@ class NativeHosts extends WebHostEvents {
   final _aborted = <String>{};
   int _nextId = 0;
   Future<HostSession> create(HostPurpose purpose, {int? profileId}) async {
+    await beforeCreate?.call();
     final id = ++_nextId;
     final capabilities = await api.create(id, purpose, preferences);
     final session = HostSession(

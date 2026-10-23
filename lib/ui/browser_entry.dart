@@ -20,44 +20,6 @@ const browserToolbarItemCount = 7;
 double browserToolbarItemWidth(double available) =>
     (available - 2 * SiteLensMetrics.toolbarInset) / browserToolbarItemCount;
 
-/// In-page "get back to the WebView" row. Shown on the site panel and the
-/// profile detail, where leaving a browsing session would otherwise bury it.
-///
-/// It sits in the page instead of floating over it: one compact row, no
-/// elevation, and closing tabs stays in the browsing list where it belongs.
-class ResumeBrowserBar extends StatelessWidget {
-  const ResumeBrowserBar({
-    super.key,
-    required this.app,
-    required this.onResume,
-  });
-  final AppController app;
-  final VoidCallback onResume;
-
-  @override
-  Widget build(BuildContext context) {
-    final active = app.activeBrowser;
-    if (active == null) return const SizedBox.shrink();
-    final extra = app.browserTabs.length - 1;
-    return SiteLensPanel(
-      padding: EdgeInsets.zero,
-      child: ListTile(
-        leading: const Icon(Icons.open_in_browser, size: 20),
-        title: Text(
-          extra > 0
-              ? '切回 ${active.site.label} +$extra'
-              : '切回 ${active.site.label}',
-        ),
-        subtitle: Text(
-          extra > 0 ? '共 ${app.browserTabs.length} 个标签页正在运行' : '浏览会话仍在后台运行',
-        ),
-        trailing: const Icon(Icons.chevron_right),
-        onTap: onResume,
-      ),
-    );
-  }
-}
-
 String tabHost(ActiveBrowserSession tab) {
   final current = tab.currentUrl;
   return current.host.isNotEmpty ? current.host : tab.site.label;

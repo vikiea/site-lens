@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/ui/software_update_screen.dart';
+import 'package:site_lens/settings/app_settings.dart';
+import 'package:site_lens/ui/ui_primitives.dart';
 import 'package:site_lens/update/update_controller.dart';
 import 'package:site_lens/update/update_service.dart';
 
@@ -65,6 +67,88 @@ void main() {
     overrides: [updateControllerProvider.overrideWithValue(controller)],
     child: const MaterialApp(home: SoftwareUpdateScreen()),
   );
+
+  Future<void> waitForChannel(
+    WidgetTester tester,
+    UpdateChannel channel,
+  ) async {
+    for (var attempt = 0; attempt < 100; attempt++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+      await tester.pump();
+      final selector = tester.widget<SiteLensMenuSelector<UpdateChannel>>(
+        find.byType(SiteLensMenuSelector<UpdateChannel>),
+      );
+      if (selector.value == channel && selector.onSelected != null) return;
+    }
+    fail('channel selector did not finish saving $channel');
+  }
+
+  testWidgets('channel and current version stay compact with a working check', (
+    tester,
+  ) async {
+    final harness = build(tag: 'v0.1.0');
+    final controller = harness.controller;
+    await runReal(tester, controller.loadLocalState);
+    await tester.pumpWidget(screenApp(controller));
+    await tester.pumpAndSettle();
+
+    final selector = find.byType(SiteLensMenuSelector<UpdateChannel>);
+    expect(
+      tester.getCenter(find.text('更新渠道')).dy,
+      closeTo(tester.getCenter(selector).dy, 1),
+    );
+    expect(find.text(UpdateChannel.stable.description), findsNothing);
+    expect(find.text(UpdateChannel.beta.description), findsNothing);
+    expect(find.byType(SiteLensSectionHeader), findsNothing);
+    final versionRow = find.ancestor(
+      of: find.text('当前版本'),
+      matching: find.byType(SiteLensCompactRow),
+    );
+    expect(
+      find.descendant(of: versionRow, matching: find.text('0.1.0')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: versionRow, matching: find.text('检查更新')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('下载由你主动开始'), findsNothing);
+    await runReal(tester, () async {
+      await tester.tap(find.text('检查更新'));
+      expect(await realWait(() => !controller.checking), isTrue);
+    });
+    await tester.pumpAndSettle();
+    expect(find.text('暂无更新'), findsOneWidget);
+    expect(harness.server.assetRequests, 0);
+  });
+
+  testWidgets('channel selection stays inline at narrow width and large text', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 800);
+    tester.view.devicePixelRatio = 1;
+    tester.platformDispatcher.textScaleFactorTestValue = 2;
+    addTearDown(tester.view.reset);
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    final controller = build().controller;
+    await runReal(tester, controller.loadLocalState);
+    await tester.pumpWidget(screenApp(controller));
+    await tester.pumpAndSettle();
+    final selector = find.byType(SiteLensMenuSelector<UpdateChannel>);
+    expect(
+      tester.getCenter(find.text('更新渠道')).dy,
+      closeTo(tester.getCenter(selector).dy, 1),
+    );
+    await tester.tap(selector);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(MenuItemButton, '测试版'));
+    await waitForChannel(tester, UpdateChannel.beta);
+    expect(controller.channel, UpdateChannel.beta);
+    expect(find.text('GitHub API Token'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('shows no update without offering a download', (tester) async {
     final harness = build(tag: 'v0.1.0', version: '0.1.0');

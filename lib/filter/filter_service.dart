@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
@@ -598,6 +599,177 @@ class FilterCompiler {
   }
 }
 
+// Isolate entry closures live in top-level functions whose arguments are data
+// only. Never capture a store, database, HTTP client or directory provider here.
+typedef _PreparedFilterSource = ({
+  FilterCompileResult compiled,
+  List<int> bytes,
+  String digest,
+});
+
+void _validateFilterLoadable(
+  FilterEngine engine,
+  int maxRuleCount,
+  int maxPayloadBytes,
+) {
+  if (engine.rules.length > maxRuleCount) {
+    throw StateError('过滤规则数量超过内存保护上限（$maxRuleCount 条），请减少启用的规则源');
+  }
+  // Count exact host JSON bytes without another complete bundle-sized copy.
+  var size = 2; // []
+  for (var index = 0; index < engine.rules.length; index++) {
+    size += utf8.encode(jsonEncode(engine.rules[index].toHostJson())).length;
+    if (index > 0) size++;
+    if (size > maxPayloadBytes) {
+      throw StateError(
+        '过滤规则超过内存保护上限（${maxPayloadBytes ~/ (1024 * 1024)} MiB），请减少启用的规则源',
+      );
+    }
+  }
+}
+
+FilterCompileResult _compileFilterText(
+  String source,
+  String id,
+  int maxRuleCount,
+  int maxPayloadBytes,
+) {
+  final compiled = const FilterCompiler().compile(source, snapshotId: id);
+  _validateFilterLoadable(compiled.engine, maxRuleCount, maxPayloadBytes);
+  return compiled;
+}
+
+FilterCompileResult _compileVerifiedFilterBytes(
+  List<int> bytes,
+  String digest,
+  String id,
+  int maxRuleCount,
+  int maxPayloadBytes,
+) {
+  if (sha256.convert(bytes).toString() != digest) {
+    throw StateError('规则快照文件摘要不匹配');
+  }
+  return _compileFilterText(
+    utf8.decode(bytes),
+    id,
+    maxRuleCount,
+    maxPayloadBytes,
+  );
+}
+
+Future<_PreparedFilterSource> _prepareFilterSource(
+  String id,
+  List<String> parts,
+  int maxRuleCount,
+  int maxPayloadBytes,
+) => Isolate.run(() {
+  final source = parts.join('\n');
+  final compiled = _compileFilterText(
+    source,
+    id,
+    maxRuleCount,
+    maxPayloadBytes,
+  );
+  final bytes = utf8.encode(source);
+  return (
+    compiled: compiled,
+    bytes: bytes,
+    digest: sha256.convert(bytes).toString(),
+  );
+}, debugName: 'filter-publish');
+
+Future<FilterCompileResult> _loadFilterSource(
+  List<int> bytes,
+  String digest,
+  String id,
+  int maxRuleCount,
+  int maxPayloadBytes,
+) => Isolate.run(
+  () => _compileVerifiedFilterBytes(
+    bytes,
+    digest,
+    id,
+    maxRuleCount,
+    maxPayloadBytes,
+  ),
+  debugName: 'filter-load',
+);
+
+Future<String> _serializeFilterSource(
+  List<int> bytes,
+  String digest,
+  String id,
+  int sourceId,
+  int maxRuleCount,
+  int maxPayloadBytes,
+) => Isolate.run(() {
+  final compiled = _compileVerifiedFilterBytes(
+    bytes,
+    digest,
+    id,
+    maxRuleCount,
+    maxPayloadBytes,
+  );
+  final source = StringBuffer('! Site Lens source $sourceId\n');
+  for (final rule in compiled.engine.rules) {
+    source.write('\n');
+    source.write(_filterRuleToSource(rule));
+  }
+  return source.toString();
+}, debugName: 'filter-serialize');
+
+Future<String> _filterDigest(List<int> bytes) => Isolate.run(
+  () => sha256.convert(bytes).toString(),
+  debugName: 'filter-digest',
+);
+
+Future<({String source, String digest})> _decodeFilterSource(List<int> bytes) =>
+    Isolate.run(
+      () => (
+        source: utf8.decode(bytes),
+        digest: sha256.convert(bytes).toString(),
+      ),
+      debugName: 'filter-decode',
+    );
+
+Future<String> _filterBundleVersion(List<List<Object>> selection) =>
+    Isolate.run(
+      () => 'bundle-v3-${sha256.convert(utf8.encode(jsonEncode(selection)))}',
+      debugName: 'filter-selection',
+    );
+
+String _filterRuleToSource(FilterRule rule) {
+  if (rule.scriptlet != null) {
+    final domain = rule.pattern == '*' ? '' : rule.pattern;
+    final args = rule.scriptletArgs.join(',');
+    return '$domain##+js(${rule.scriptlet}${args.isEmpty ? '' : ',$args'})';
+  }
+  if (rule.cosmetic) {
+    final included = rule.domains.isEmpty
+        ? [if (rule.domain != null && rule.domain != '*') rule.domain!]
+        : rule.domains;
+    final domains = [
+      ...included,
+      ...rule.excludedDomains.map((domain) => '~$domain'),
+    ].join(',');
+    return '$domains${rule.exception ? '#@#' : '##'}${rule.pattern}';
+  }
+  final options = <String>[];
+  if (rule.domains.isNotEmpty || rule.excludedDomains.isNotEmpty) {
+    final domainOptions = [
+      ...rule.domains,
+      ...rule.excludedDomains.map((domain) => '~$domain'),
+    ]..sort();
+    options.add('domain=${domainOptions.join('|')}');
+  }
+  if (rule.thirdParty == true) options.add('third-party');
+  if (rule.thirdParty == false) options.add('~third-party');
+  final resourceTypes = rule.resourceTypes.toList()..sort();
+  options.addAll(resourceTypes);
+  final suffix = options.isEmpty ? '' : '\$${options.join(',')}';
+  return '${rule.exception ? '@@' : ''}${rule.pattern}$suffix';
+}
+
 /// Atomic snapshot publisher.  It writes a temp file, verifies the digest,
 /// then renames it and only afterwards returns the immutable metadata.
 class FilterSnapshotStore {
@@ -620,24 +792,6 @@ class FilterSnapshotStore {
     _activeSnapshot = null;
   }
 
-  void _validateLoadable(FilterEngine engine) {
-    if (engine.rules.length > maxRuleCount) {
-      throw StateError('过滤规则数量超过内存保护上限（$maxRuleCount 条），请减少启用的规则源');
-    }
-    // Count the exact JSON/UTF-8 representation one rule at a time. A preflight
-    // must not build an additional complete map/JSON/byte copy of the bundle.
-    var size = 2; // []
-    for (var index = 0; index < engine.rules.length; index++) {
-      size += utf8.encode(jsonEncode(engine.rules[index].toHostJson())).length;
-      if (index > 0) size++;
-      if (size > maxPayloadBytes) {
-        throw StateError(
-          '过滤规则超过内存保护上限（${maxPayloadBytes ~/ (1024 * 1024)} MiB），请减少启用的规则源',
-        );
-      }
-    }
-  }
-
   Future<FilterSnapshot> publish({
     required String id,
     required int? sourceId,
@@ -647,10 +801,32 @@ class FilterSnapshotStore {
     required String fileRef,
     bool activate = true,
   }) async {
-    final compiled = const FilterCompiler().compile(source, snapshotId: id);
-    _validateLoadable(compiled.engine);
-    final bytes = utf8.encode(source);
-    final digest = sha256.convert(bytes).toString();
+    final prepared = await _prepareFilterSource(
+      id,
+      [source],
+      maxRuleCount,
+      maxPayloadBytes,
+    );
+    return _publishPrepared(
+      id: id,
+      sourceId: sourceId,
+      version: version,
+      sourceUrl: sourceUrl,
+      prepared: prepared,
+      fileRef: fileRef,
+      activate: activate,
+    );
+  }
+
+  Future<FilterSnapshot> _publishPrepared({
+    required String id,
+    required int? sourceId,
+    required String version,
+    required Uri sourceUrl,
+    required _PreparedFilterSource prepared,
+    required String fileRef,
+    bool activate = true,
+  }) async {
     final directory = await _directoryProvider();
     final root = Directory('${directory.path}/filter_snapshots');
     await root.create(recursive: true);
@@ -658,9 +834,9 @@ class FilterSnapshotStore {
     final destination = File('${root.path}/$safeRef.rules');
     final staging = File('${root.path}/.$safeRef.tmp');
     try {
-      await staging.writeAsBytes(bytes, flush: true);
-      final check = sha256.convert(await staging.readAsBytes()).toString();
-      if (check != digest) throw StateError('规则快照摘要不匹配');
+      await staging.writeAsBytes(prepared.bytes, flush: true);
+      final check = await _filterDigest(await staging.readAsBytes());
+      if (check != prepared.digest) throw StateError('规则快照摘要不匹配');
       await staging.rename(destination.path);
     } catch (_) {
       if (await staging.exists()) await staging.delete();
@@ -671,16 +847,16 @@ class FilterSnapshotStore {
       sourceId: sourceId,
       version: version,
       sourceUrl: sourceUrl,
-      sha256: digest,
-      state: compiled.unsupportedRules.isEmpty
+      sha256: prepared.digest,
+      state: prepared.compiled.unsupportedRules.isEmpty
           ? FilterSnapshotState.valid
           : FilterSnapshotState.degraded,
       createdAt: DateTime.now().toUtc(),
       fileRef: destination.path,
-      unsupportedRuleCount: compiled.unsupportedRules.length,
+      unsupportedRuleCount: prepared.compiled.unsupportedRules.length,
     );
     if (activate) {
-      _active = compiled.engine;
+      _active = prepared.compiled.engine;
       _activeSnapshot = snapshot;
     }
     return snapshot;
@@ -706,22 +882,36 @@ class FilterSnapshotStore {
   }
 
   Future<FilterCompileResult> compileSnapshot(FilterSnapshot snapshot) async {
+    final bytes = await _readSnapshot(snapshot);
+    return _loadFilterSource(
+      bytes,
+      snapshot.sha256,
+      snapshot.id,
+      maxRuleCount,
+      maxPayloadBytes,
+    );
+  }
+
+  Future<String> _bundlePart(FilterSnapshot snapshot) async {
+    final bytes = await _readSnapshot(snapshot);
+    return _serializeFilterSource(
+      bytes,
+      snapshot.sha256,
+      snapshot.id,
+      snapshot.sourceId!,
+      maxRuleCount,
+      maxPayloadBytes,
+    );
+  }
+
+  Future<List<int>> _readSnapshot(FilterSnapshot snapshot) async {
     if (snapshot.state == FilterSnapshotState.corrupt ||
         snapshot.fileRef.isEmpty) {
       throw StateError('规则快照不可用');
     }
     final file = File(snapshot.fileRef);
     if (!await file.exists()) throw StateError('规则快照文件缺失');
-    final bytes = await file.readAsBytes();
-    if (sha256.convert(bytes).toString() != snapshot.sha256) {
-      throw StateError('规则快照文件摘要不匹配');
-    }
-    final result = const FilterCompiler().compile(
-      utf8.decode(bytes),
-      snapshotId: snapshot.id,
-    );
-    _validateLoadable(result.engine);
-    return result;
+    return file.readAsBytes();
   }
 }
 
@@ -825,16 +1015,26 @@ class FilterSourceManager {
           snapshotsBySource[id]?.sha256 ?? '',
         ],
     ];
-    final version =
-        'bundle-v3-${sha256.convert(utf8.encode(jsonEncode(selection)))}';
+    final version = await _filterBundleVersion(selection);
+    if (allowHistoricalFallback) {
+      for (final bundle in await database.filterBundles(version)) {
+        try {
+          // Exact source IDs, subscription URLs, snapshot IDs and digests are
+          // all bound by version. Still verify the cached file and load limits.
+          await store.load(bundle);
+          return bundle;
+        } catch (_) {
+          // An unavailable cache is disposable; rebuild from the source files.
+        }
+      }
+    }
     try {
       for (final snapshot in selectedSnapshots.reversed) {
         final sourceId = snapshot.sourceId;
         if (sourceId == null) continue;
-        final compiled = await store.compileSnapshot(snapshot);
+        final part = await store._bundlePart(snapshot);
         unsupported += snapshot.unsupportedRuleCount;
-        parts.add('! Site Lens source ${snapshot.sourceId}\n');
-        parts.addAll(compiled.engine.rules.map((rule) => _ruleToSource(rule)));
+        parts.add(part);
       }
     } catch (error, stack) {
       if (!allowHistoricalFallback) Error.throwWithStackTrace(error, stack);
@@ -848,19 +1048,24 @@ class FilterSourceManager {
       }
       Error.throwWithStackTrace(error, stack);
     }
-    final source = parts.join('\n');
     final first = selectedSnapshots.isNotEmpty
         ? selectedSnapshots.first
         : sourceSnapshots.first;
     final bundleId =
         'filter-bundle-${DateTime.now().toUtc().microsecondsSinceEpoch}';
-    final bundle = await store.publish(
+    final prepared = await _prepareFilterSource(
+      bundleId,
+      parts,
+      store.maxRuleCount,
+      store.maxPayloadBytes,
+    );
+    final bundle = await store._publishPrepared(
       id: bundleId,
       sourceId: null,
       version: version,
       sourceUrl: first.sourceUrl,
-      source: source,
-      fileRef: 'bundle-${sha256.convert(utf8.encode(source)).toString()}',
+      prepared: prepared,
+      fileRef: 'bundle-${prepared.digest}',
     );
     final result = bundle.unsupportedRuleCount == unsupported
         ? bundle
@@ -881,38 +1086,6 @@ class FilterSourceManager {
     await database.saveFilterSnapshot(result);
     await store.load(result);
     return result;
-  }
-
-  String _ruleToSource(FilterRule rule) {
-    if (rule.scriptlet != null) {
-      final domain = rule.pattern == '*' ? '' : rule.pattern;
-      final args = rule.scriptletArgs.join(',');
-      return '$domain##+js(${rule.scriptlet}${args.isEmpty ? '' : ',$args'})';
-    }
-    if (rule.cosmetic) {
-      final included = rule.domains.isEmpty
-          ? [if (rule.domain != null && rule.domain != '*') rule.domain!]
-          : rule.domains;
-      final domains = [
-        ...included,
-        ...rule.excludedDomains.map((domain) => '~$domain'),
-      ].join(',');
-      return '$domains${rule.exception ? '#@#' : '##'}${rule.pattern}';
-    }
-    final options = <String>[];
-    if (rule.domains.isNotEmpty || rule.excludedDomains.isNotEmpty) {
-      final domainOptions = [
-        ...rule.domains,
-        ...rule.excludedDomains.map((domain) => '~$domain'),
-      ]..sort();
-      options.add('domain=${domainOptions.join('|')}');
-    }
-    if (rule.thirdParty == true) options.add('third-party');
-    if (rule.thirdParty == false) options.add('~third-party');
-    final resourceTypes = rule.resourceTypes.toList()..sort();
-    options.addAll(resourceTypes);
-    final suffix = options.isEmpty ? '' : '\$${options.join(',')}';
-    return '${rule.exception ? '@@' : ''}${rule.pattern}$suffix';
   }
 
   List<Uri> _candidateUrls(FilterSource source) {
@@ -1003,7 +1176,7 @@ class FilterSourceManager {
         }
       }
       final loaded = response ?? (throw lastError ?? StateError('规则源不可用'));
-      final text = utf8.decode(loaded.bytes);
+      final decoded = await _decodeFilterSource(loaded.bytes);
       cancel.check();
       final id =
           'filter-${source.id}-${DateTime.now().toUtc().microsecondsSinceEpoch}';
@@ -1012,8 +1185,8 @@ class FilterSourceManager {
         sourceId: source.id,
         version: source.version,
         sourceUrl: loaded.url,
-        source: text,
-        fileRef: '$id-${sha256.convert(loaded.bytes)}',
+        source: decoded.source,
+        fileRef: '$id-${decoded.digest}',
         activate: db == null,
       );
       if (db == null) return snapshot;

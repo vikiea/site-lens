@@ -21,6 +21,7 @@ import 'ui_primitives.dart';
 import 'ui_util.dart';
 import 'app_theme.dart';
 import 'player_gestures_screen.dart';
+import 'navigation_observer.dart';
 import 'media_browser.dart';
 
 enum _VideoFitMode { contain, cover, fill }
@@ -975,6 +976,7 @@ Future<void> openMediaTaskPlayer(
       }
       await Navigator.of(context).push(
         MaterialPageRoute<void>(
+          settings: const RouteSettings(name: siteLensPlayerRouteName),
           builder: (_) => NativeMediaPlayerScreen(
             app: app,
             session: session,
@@ -1950,15 +1952,25 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     unawaited(_syncOrganization());
   }
 
+  String? _startupError;
   Future<void> _syncOrganization() async {
-    await _organization.restoreAndSync(
-      widget.app.mediaTasks.tasks.map(
-        (task) => MediaOrganizationSeed(
-          itemId: task.id,
-          legacyFolder: task.batchDirectory,
+    try {
+      await widget.app.mediaTasks.ready;
+      if (!mounted) return;
+      await _organization.restoreAndSync(
+        widget.app.mediaTasks.tasks.map(
+          (task) => MediaOrganizationSeed(
+            itemId: task.id,
+            legacyFolder: task.batchDirectory,
+          ),
         ),
-      ),
-    );
+      );
+      if (mounted && _startupError != null) {
+        setState(() => _startupError = null);
+      }
+    } catch (error) {
+      if (mounted) setState(() => _startupError = friendlyError(error));
+    }
   }
 
   MediaBrowserOperations get _browserOperations => MediaBrowserOperations(
@@ -2463,6 +2475,18 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                 child: CustomScrollView(
                   key: const PageStorageKey('media-tasks-scroll'),
                   slivers: [
+                    if (_startupError != null)
+                      SliverToBoxAdapter(
+                        child: SiteLensCompactRow(
+                          leading: const Icon(Icons.error_outline),
+                          title: const Text('媒体任务恢复失败'),
+                          subtitle: Text(_startupError!),
+                        ),
+                      )
+                    else if (!widget.app.mediaTasks.available)
+                      const SliverToBoxAdapter(
+                        child: LinearProgressIndicator(),
+                      ),
                     if (activePlayback != null)
                       SliverToBoxAdapter(
                         child: _ActiveMediaPlaybackRow(
@@ -2507,7 +2531,9 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                           );
                         },
                       ),
-                    if (visibleTasks.isEmpty &&
+                    if (widget.app.mediaTasks.available &&
+                        _startupError == null &&
+                        visibleTasks.isEmpty &&
                         (current != null ||
                             (folders.isEmpty && allTasks.isEmpty)))
                       SliverToBoxAdapter(

@@ -102,6 +102,8 @@ class AppSettings {
     this.pullToRefresh = false,
     this.replaceSameSiteTabs = false,
     this.scriptsDisabled = false,
+    this.dockRight = true,
+    this.dockY = 0.5,
     this.controlsX = 0.5,
     this.controlsY = 1,
   });
@@ -127,6 +129,8 @@ class AppSettings {
   final bool pullToRefresh;
   final bool replaceSameSiteTabs;
   final bool scriptsDisabled;
+  final bool dockRight;
+  final double dockY;
   final double controlsX;
   final double controlsY;
 
@@ -152,6 +156,8 @@ class AppSettings {
     'pullToRefresh': pullToRefresh,
     'replaceSameSiteTabs': replaceSameSiteTabs,
     'scriptsDisabled': scriptsDisabled,
+    'dockRight': dockRight,
+    'dockY': dockY,
     'controlsX': controlsX,
     'controlsY': controlsY,
   };
@@ -247,6 +253,8 @@ class AppSettings {
       scriptsDisabled: json.containsKey('scriptsDisabled')
           ? flag('scriptsDisabled', true)
           : false,
+      dockRight: flag('dockRight', true),
+      dockY: coordinate('dockY', 0.5),
       controlsX: coordinate('controlsX', 0.5),
       controlsY: coordinate('controlsY', 1),
     );
@@ -274,6 +282,8 @@ class AppSettings {
       'pullToRefresh',
       'replaceSameSiteTabs',
       'scriptsDisabled',
+      'dockRight',
+      'dockY',
       'controlsX',
       'controlsY',
     };
@@ -310,7 +320,7 @@ class AppSettings {
         if (value is! num || !value.isFinite || value < 0 || value > 100) {
           throw const FormatException('不透明度必须在 0 到 100 之间');
         }
-      } else if (entry.key.startsWith('controls')) {
+      } else if (entry.key == 'dockY' || entry.key.startsWith('controls')) {
         final value = entry.value;
         if (value is! num || !value.isFinite || value < 0 || value > 1) {
           throw const FormatException('位置必须在有效范围内');

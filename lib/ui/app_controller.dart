@@ -15,6 +15,7 @@ import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import '../data/database.dart';
 import '../diagnostics/error_log.dart';
 import '../diagnostics/device_diagnostics.dart';
+import '../diagnostics/startup_trace.dart';
 import '../browser/browser_session.dart';
 import '../browser/browser_session_store.dart';
 export '../browser/browser_session.dart'
@@ -51,7 +52,10 @@ final databaseProvider = Provider<AppDatabase>(
   (ref) => throw StateError('Database not initialized'),
 );
 final appControllerProvider = Provider<AppController>((ref) {
-  final controller = AppController(ref.watch(databaseProvider));
+  final controller = AppController(
+    ref.watch(databaseProvider),
+    startupTrace: StartupTrace.process,
+  );
   ref.onDispose(controller.dispose);
   return controller;
 });
@@ -69,7 +73,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     HomepageVerifier? homepageVerifier,
     BrowserSessionStore? sessionStore,
     DeviceDiagnosticsService? diagnostics,
-  }) {
+    StartupTrace? startupTrace,
+    Future<Directory> Function()? mediaDirectoryProvider,
+  }) : startupTrace = startupTrace ?? StartupTrace() {
     deviceDiagnostics = diagnostics ?? DeviceDiagnosticsService();
     deviceDiagnostics.addListener(_diagnosticsChanged);
     unawaited(deviceDiagnostics.refreshHcpp());
@@ -84,10 +90,14 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       ControlledHttp(),
       api: api,
       probeRoute: Platform.isAndroid ? MediaNetwork().probeRoute : null,
+      beforeCreate: _ensureBrowserPrepared,
     );
     filterSnapshots = FilterSnapshotStore();
     filterSources = FilterSourceManager(store: filterSnapshots, db: db);
-    mediaTasks = MediaTaskStore(db: db);
+    mediaTasks = MediaTaskStore(
+      db: db,
+      directoryProvider: mediaDirectoryProvider,
+    );
     nativeDownloads = Platform.isAndroid ? NativeDownloadRuntime() : null;
     nativeExports = Platform.isAndroid ? NativeExportRuntime() : null;
     nativeMedia = NativeMediaRuntime();
@@ -162,6 +172,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     )..addListener(notifyListeners);
   }
   final AppDatabase db;
+  final StartupTrace startupTrace;
   late final DeviceDiagnosticsService deviceDiagnostics;
   StreamSubscription<NativePlaybackSession>? _diagnosticPlaybackEvents;
 
@@ -441,42 +452,187 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<void> initialize() async {
-    WidgetsBinding.instance.addObserver(this);
-    await mediaTasks.restore();
-    await mediaLibrary.restore();
+  Future<void>? _initialization;
+  Future<void>? _browserPreparation;
+  Future<void>? _deferredStartup;
+  bool _profilesKnown = false;
+  bool _browserPreparationFailed = false;
+  bool mediaReady = false;
+  String? mediaStartupError;
+
+  Future<void> initialize() => _initialization ??= _initialize();
+
+  /// Lifecycle/backup callers wait for all accepted startup work before close.
+  Future<void> get startupSettled async {
+    await _initialization;
+    await _deferredStartup;
+    await _waitForBrowserPreparation();
+  }
+
+  Future<void> _waitForBrowserPreparation() async {
     try {
-      await mediaDownloads.reconcileNative();
-    } catch (error) {
-      AppErrorLogger.capture(error, module: 'media.reconcile');
+      await _browserPreparation;
+    } catch (_) {
+      // Settings and repair actions remain available after a failed startup.
     }
-    // A damaged legacy row must not abort the first frame; load keeps every
-    // successfully read collection and publishes the partial state together.
-    await load(suppressCorruption: true);
-    await restoreSavedSessions();
-    // Schedule/cancel the periodic survival check in the background. It waits
-    // for WorkManager's shared startup Future before registering, but never
-    // blocks the first product screen on a slow device plugin initialization.
-    unawaited(_applyBackgroundHealthSchedule());
-    await drainBackgroundNotice();
-    // Capabilities are observed on the first real host; cold-start restoration
-    // must not construct an otherwise unused native WebView.
+  }
+
+  Future<void> _ensureBrowserPrepared() async {
+    if (_disposed || restoringData) throw const Cancelled();
+    if (_browserPreparationFailed) {
+      _browserPreparationFailed = false;
+      final retry = _prepareBrowserRuntime(suppressCorruption: true);
+      _browserPreparation = retry;
+      unawaited(
+        retry.then<void>(
+          (_) {},
+          onError: (Object _, StackTrace _) {
+            _browserPreparationFailed = true;
+          },
+        ),
+      );
+    }
+    await _browserPreparation;
+    if (_disposed || restoringData) throw const Cancelled();
+  }
+
+  Future<void> _initialize() async {
+    WidgetsBinding.instance.addObserver(this);
+    mediaTasks.requireRestore();
+    final navigation = Completer<void>();
+    _browserPreparation = navigation.future;
+    // Keep failures observable by navigation without an unhandled background
+    // error when the user never opens a web page.
+    unawaited(
+      navigation.future.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) {},
+      ),
+    );
     try {
-      var previous = (await Connectivity().checkConnectivity())
-          .map((e) => e.name)
-          .join(',');
-      _network = Connectivity().onConnectivityChanged.listen((state) {
-        final current = state.map((e) => e.name).join(',');
-        if (current != previous) {
-          previous = current;
-          cancel('网络发生变化，请重新检测；旧结果不参与推荐');
+      // Only local presentation metadata belongs on the first-screen path.
+      await _loadMetadata(suppressCorruption: true, prepareRuntime: false);
+      if (_disposed) throw const Cancelled();
+      await startupTrace.measure(
+        StartupPhase.savedTabsRestore,
+        restoreSavedSessions,
+      );
+      startupTrace.markOnce(
+        StartupPhase.savedTabsReady,
+        itemCount: browserTabs.length,
+      );
+      if (_disposed) throw const Cancelled();
+      startupTrace.markOnce(StartupPhase.controllerReady);
+      // Queue independent maintenance after publishing ready home/tab metadata.
+      final browser = Future<void>.microtask(() async {
+        try {
+          if (_disposed) throw const Cancelled();
+          await _prepareBrowserRuntime(suppressCorruption: true);
+          navigation.complete();
+        } catch (error, stack) {
+          _browserPreparationFailed = true;
+          navigation.completeError(error, stack);
+          if (!_disposed) {
+            AppErrorLogger.capture(
+              error,
+              module: 'startup.browser',
+              stack: stack,
+            );
+          }
         }
       });
-    } catch (_) {
-      // Connectivity is advisory. A plugin failure must not turn a successful
-      // data restore into a startup error banner or snackbar.
+      final media = Future<void>.microtask(() async {
+        try {
+          if (_disposed) return;
+          await startupTrace.measure(
+            StartupPhase.mediaTasksRestore,
+            () => mediaTasks.ready,
+          );
+          if (_disposed) return;
+          startupTrace.markOnce(
+            StartupPhase.mediaTasksReady,
+            itemCount: mediaTasks.tasks.length,
+          );
+          await startupTrace.measure(
+            StartupPhase.mediaLibraryRestore,
+            mediaLibrary.restore,
+          );
+          if (_disposed) return;
+          startupTrace.markOnce(
+            StartupPhase.mediaLibraryReady,
+            itemCount: mediaLibrary.items.length,
+          );
+          try {
+            await startupTrace.measure(
+              StartupPhase.nativeDownloadReconcile,
+              mediaDownloads.reconcileNative,
+            );
+          } catch (error) {
+            AppErrorLogger.capture(error, module: 'media.reconcile');
+          }
+          mediaReady = true;
+        } catch (error, stack) {
+          mediaStartupError = friendlyError(error);
+          AppErrorLogger.capture(error, module: 'startup.media', stack: stack);
+        }
+        if (!_disposed) notifyListeners();
+      });
+      final maintenance =
+          Future<void>.microtask(() async {
+            if (_disposed) return;
+            await startupTrace.measure(
+              StartupPhase.pendingLogRecovery,
+              errorLogger.recoverPending,
+            );
+            if (_disposed) return;
+            await startupTrace.measure(
+              StartupPhase.nativeLogRecovery,
+              errorLogger.recoverNativeReports,
+            );
+            if (_disposed) return;
+            await startupTrace.measure(
+              StartupPhase.backgroundNotice,
+              drainBackgroundNotice,
+            );
+            if (_disposed) return;
+            unawaited(_applyBackgroundHealthSchedule());
+            try {
+              var previous = (await startupTrace.measure(
+                StartupPhase.connectivitySetup,
+                Connectivity().checkConnectivity,
+              )).map((e) => e.name).join(',');
+              if (_disposed) return;
+              _network = Connectivity().onConnectivityChanged.listen((state) {
+                final current = state.map((e) => e.name).join(',');
+                if (current != previous) {
+                  previous = current;
+                  cancel('网络发生变化，请重新检测；旧结果不参与推荐');
+                }
+              });
+            } catch (_) {
+              // Advisory network state never gates the product screen.
+            }
+          }).catchError((Object error, StackTrace stack) {
+            if (!_disposed) {
+              AppErrorLogger.capture(
+                error,
+                module: 'startup.maintenance',
+                stack: stack,
+              );
+            }
+          });
+      _deferredStartup = Future.wait<void>([browser, media, maintenance])
+          .then<void>((_) {});
+    } catch (error, stack) {
+      navigation.completeError(error, stack);
+      rethrow;
     }
-    // Startup restores metadata only; discovery runs on explicit user entry.
+  }
+
+  /// Wait only where media is actually used; home and tab metadata never do.
+  Future<void> get mediaRestored async {
+    await mediaTasks.ready;
+    await mediaLibrary.restore();
   }
 
   String get glassQualityFingerprint =>
@@ -579,6 +735,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> updateFilterPolicy(FilterPolicy next, {int? profileId}) async {
+    await _waitForBrowserPreparation();
     await db.saveFilterPolicy(next, profileId: profileId);
     if (profileId == null) {
       filterPolicy = next;
@@ -598,6 +755,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   /// policy again. The native hosts are updated immediately; the next
   /// navigation also receives the inherited policy through [setFilterEngine].
   Future<void> clearFilterPolicy({int? profileId}) async {
+    await _waitForBrowserPreparation();
     await db.deleteFilterPolicy(profileId: profileId);
     if (profileId == null) {
       filterPolicy = const FilterPolicy();
@@ -678,6 +836,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     String version = '',
     String license = '',
   }) async {
+    await _waitForBrowserPreparation();
     final source = FilterSource(
       id: await db.nextFilterSourceId(),
       label: label.trim().isEmpty ? '自定义规则源' : label.trim(),
@@ -692,6 +851,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> deleteFilterSource(int id) async {
+    await _waitForBrowserPreparation();
     final bundle = await filterSources.delete(id);
     hosts.setFilterEngine(
       filterSnapshots.activeEngine,
@@ -704,6 +864,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<FilterSnapshot> refreshFilterSource(FilterSource source) async {
+    await _waitForBrowserPreparation();
     try {
       final snapshot = await filterSources.refresh(source);
       hosts.setFilterEngine(
@@ -722,6 +883,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<FilterSnapshot> refreshFilterSourceById(int id) async {
+    await _waitForBrowserPreparation();
     final source = filterSourceList.firstWhere(
       (item) => item.id == id,
       orElse: () => throw StateError('规则源不存在'),
@@ -730,6 +892,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> setFilterSourceEnabled(int id, bool enabled) async {
+    await _waitForBrowserPreparation();
     final bundle = await filterSources.setEnabled(id, enabled);
     hosts.setFilterEngine(
       filterSnapshots.activeEngine,
@@ -1083,7 +1246,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       _restorationValid = true;
       final ids = profiles.map((p) => p.id).toSet();
       for (final record in saved.tabs) {
-        final profile = ids.contains(record.profileId)
+        final profile = !_profilesKnown || ids.contains(record.profileId)
             ? record.profileId
             : null;
         browserTabs.add(
@@ -1174,6 +1337,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> ensureTabLoaded(ActiveBrowserSession tab) async {
+    await _ensureBrowserPrepared();
     if (!browserTabs.contains(tab)) throw const Cancelled();
     if (tab.loadedHost == null || tab.loadedHost!.disposed) {
       await _recoverTab(tab);
@@ -1202,7 +1366,15 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     await load();
   }
 
-  Future<void> load({bool suppressCorruption = false}) async {
+  Future<void> load({bool suppressCorruption = false}) =>
+      _loadMetadata(suppressCorruption: suppressCorruption);
+
+  Future<void> _loadMetadata({
+    bool suppressCorruption = false,
+    bool prepareRuntime = true,
+  }) async {
+    if (prepareRuntime) await _waitForBrowserPreparation();
+    final trace = _persistentStateLoaded ? StartupTrace() : startupTrace;
     Future<T> read<T>(Future<T> Function() action, T fallback) async {
       if (!suppressCorruption) return action();
       try {
@@ -1213,39 +1385,26 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     if (suppressCorruption) error = null;
-    sites = await read(db.candidates, sites);
-    sources = await read(db.sources, sources);
-    profiles = await read(db.profiles, profiles);
-    profilePages = await read(db.profilePages, profilePages);
-    profileHealth = await read(db.profileHealthAll, profileHealth);
-    profileScriptLinks = await read(db.profileScripts, profileScriptLinks);
-    installed = await read(db.scripts, installed);
-    filterPolicy = await read(db.filterPolicy, filterPolicy);
-    profileFilterPolicies = await read(
-      db.explicitProfileFilterPolicies,
-      profileFilterPolicies,
-    );
-    try {
-      await _seedBuiltInFilterSources();
-    } catch (_) {
-      if (!suppressCorruption) rethrow;
-    }
-    filterSourceList = await read(db.filterSources, filterSourceList);
-    final latestFilter = await read(db.latestFilterSnapshot, null);
-    if (latestFilter != null) {
+    await trace.measure(StartupPhase.storedMetadataRead, () async {
+      sites = await read(db.candidates, sites);
+      sources = await read(db.sources, sources);
       try {
-        await filterSources.rebuildBundle();
+        profiles = await db.profiles();
+        _profilesKnown = true;
       } catch (_) {
-        // Keep browsing available with no active snapshot; diagnostics are
-        // retained in Drift and the next manual refresh can recover it.
+        if (!suppressCorruption) rethrow;
       }
-    }
-    history = await read(db.recentProbes, history);
-    settings = await read(settingsRepository.read, settings);
-    glassQualityCache = await read(
-      glassQualityCacheRepository.read,
-      glassQualityCache,
-    );
+      profilePages = await read(db.profilePages, profilePages);
+      profileHealth = await read(db.profileHealthAll, profileHealth);
+      profileScriptLinks = await read(db.profileScripts, profileScriptLinks);
+    });
+    await trace.measure(StartupPhase.preferencesRead, () async {
+      settings = await read(settingsRepository.read, settings);
+      glassQualityCache = await read(
+        glassQualityCacheRepository.read,
+        glassQualityCache,
+      );
+    });
     final cached = glassQualityCache;
     if (cached == null || !cached.matches(glassQualityFingerprint)) {
       glassQualityCache = null;
@@ -1256,23 +1415,74 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       SiteLensGlassQualityMode.automatic =>
         glassQualityCache?.quality ?? GlassQuality.standard,
     };
-    _applySettings();
-    hosts.setFilterEngine(
-      filterSnapshots.activeEngine,
-      policy: filterPolicy,
-      snapshot: filterSnapshots.activeSnapshot,
-      profilePolicies: profileFilterPolicies,
+    trace.measureSync(StartupPhase.preferencesApply, _applySettings);
+    if (prepareRuntime) {
+      await _prepareBrowserRuntime(suppressCorruption: suppressCorruption);
+    }
+    if (_disposed) return;
+    _persistentStateLoaded = true;
+    trace.markOnce(
+      StartupPhase.persistentStateReady,
+      itemCount: profiles.length,
+    );
+    notifyListeners();
+  }
+
+  Future<void> _prepareBrowserRuntime({bool suppressCorruption = false}) async {
+    final trace = startupTrace;
+    Future<T> read<T>(Future<T> Function() action, T fallback) async {
+      try {
+        return await action();
+      } catch (_) {
+        if (!suppressCorruption) rethrow;
+        return fallback;
+      }
+    }
+
+    installed = await db.scripts();
+    filterPolicy = await db.filterPolicy();
+    profileFilterPolicies = await db.explicitProfileFilterPolicies();
+    history = await read(db.recentProbes, history);
+    await trace.measure(
+      StartupPhase.filterSourcesSeed,
+      _seedBuiltInFilterSources,
+    );
+    filterSourceList = await db.filterSources();
+    trace.markOnce(
+      StartupPhase.filterSourcesReady,
+      itemCount: filterSourceList.length,
+    );
+    if (await db.latestFilterSnapshot() != null) {
+      await trace.measure(
+        StartupPhase.filterBundleRebuild,
+        filterSources.rebuildBundle,
+      );
+    }
+    if (_disposed) return;
+    trace.measureSync(
+      StartupPhase.hostFiltersApply,
+      () => hosts.setFilterEngine(
+        filterSnapshots.activeEngine,
+        policy: filterPolicy,
+        snapshot: filterSnapshots.activeSnapshot,
+        profilePolicies: profileFilterPolicies,
+      ),
     );
     if (suppressCorruption) {
       try {
-        await hosts.applyPreferences(hostPreferences);
+        await trace.measure(
+          StartupPhase.hostPreferencesApply,
+          () => hosts.applyPreferences(hostPreferences),
+        );
       } catch (_) {}
     } else {
-      await hosts.applyPreferences(hostPreferences);
+      await trace.measure(
+        StartupPhase.hostPreferencesApply,
+        () => hosts.applyPreferences(hostPreferences),
+      );
     }
-    await syncMediaPolicy();
-    _persistentStateLoaded = true;
-    notifyListeners();
+    await trace.measure(StartupPhase.mediaPolicySync, syncMediaPolicy);
+    if (!_disposed) notifyListeners();
   }
 
   /// Candidates curating [profileId], in stable insertion order.
@@ -1599,6 +1809,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final cancelToken = _discovery = Cancellation();
     error = null;
     try {
+      await _ensureBrowserPrepared();
+      cancelToken.check();
       if (refreshSources && profilePages.isNotEmpty) {
         refreshing = true;
         notifyListeners();
@@ -2320,6 +2532,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     cancel('正在恢复备份');
     cancelRecon();
     try {
+      await startupSettled;
       final safety = await exportBackup();
       final folder = await getApplicationSupportDirectory();
       final file = File(
@@ -2406,6 +2619,16 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     _shutdownFuture = Future.wait<void>([
       flush,
       mediaFlush,
+      (() async {
+        try {
+          await _initialization;
+        } catch (_) {}
+        try {
+          await _deferredStartup;
+        } catch (_) {}
+        await _waitForBrowserPreparation();
+        await mediaTasks.flushAll();
+      })(),
       close,
       nativeMedia.dispose(),
       stopCast,

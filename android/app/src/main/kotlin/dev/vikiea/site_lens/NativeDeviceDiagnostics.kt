@@ -32,21 +32,14 @@ class NativeDeviceDiagnostics(
     private val pending = mutableMapOf<Long, () -> Unit>()
     private var requestId = 0L
 
-    companion object {
-        private val codecLock = Any()
-        private var codecCache: List<CodecDescriptor>? = null
-    }
-
     override fun readSnapshot(callback: (Result<DeviceDiagnosticsSnapshot>) -> Unit) {
         query(callback) { readSnapshotNow() }
     }
 
     override fun readCodecInventory(callback: (Result<List<CodecDescriptor>>) -> Unit) {
-        query(callback) {
-            synchronized(codecLock) {
-                codecCache ?: readCodecsNow().also { codecCache = it }
-            }
-        }
+        // The app-scoped Dart service owns the five-minute cache. A second
+        // engine-lifetime cache would extend stale results past that deadline.
+        query(callback) { readCodecsNow() }
     }
 
     private fun <T> query(callback: (Result<T>) -> Unit, read: () -> T) {
