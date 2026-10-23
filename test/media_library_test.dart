@@ -568,7 +568,10 @@ void main() {
         source: MediaCandidateSource.dom,
       );
       await db.saveMediaCandidate(batchedCandidate);
-      final batched = tasks.create(batchedCandidate, batchDirectory: '批次目录');
+      final batched = tasks.create(
+        batchedCandidate,
+        batchDirectory: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
+      );
       final batchedSource = File('${root.path}/batched-source.mp4')
         ..writeAsBytesSync([7, 8, 9]);
       await library.register(batched, batchedSource.path);
@@ -581,8 +584,11 @@ void main() {
       expect(library.item(batched.id)!.location, first.location);
       expect(
         first.location,
-        contains('${Platform.pathSeparator}批次目录${Platform.pathSeparator}'),
+        contains(
+          '${Platform.pathSeparator}系统带我攻略弟弟（漫剧版）${Platform.pathSeparator}',
+        ),
       );
+      expect(first.location, isNot(contains('批次1792686431921372')));
       expect(
         await directory
             .list(recursive: true)

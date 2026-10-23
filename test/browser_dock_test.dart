@@ -196,6 +196,38 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('collapsed dock hugs either edge with a compact visible handle', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    app.addTab('a');
+    await tester.pumpWidget(_harness(app, observer));
+    await tester.pumpAndSettle();
+
+    final surface = find.byKey(const ValueKey('browser-dock-handle-surface'));
+    expect(tester.getSize(handle).width, SiteLensMetrics.toolbarHeight);
+    expect(tester.getSize(handle).height, greaterThanOrEqualTo(48));
+    expect(tester.getSize(surface).width, SiteLensMetrics.browserDockWidth);
+    expect(tester.getRect(surface).right, closeTo(360, 1));
+    expect(
+      tester.widget<SiteLensGlassSurface>(surface).attachedEdge,
+      SiteLensGlassEdge.right,
+    );
+
+    await app.updateSettings({'dockRight': false});
+    await tester.pumpAndSettle();
+    expect(tester.getSize(surface).width, SiteLensMetrics.browserDockWidth);
+    expect(tester.getRect(surface).left, closeTo(0, 1));
+    expect(
+      tester.widget<SiteLensGlassSurface>(surface).attachedEdge,
+      SiteLensGlassEdge.left,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('second and third level pages show dock after transition only', (
     tester,
   ) async {

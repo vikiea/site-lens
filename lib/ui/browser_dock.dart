@@ -257,22 +257,23 @@ class _BrowserDockState extends State<_BrowserDockBody> {
                     constraints.maxHeight -
                     safe.bottom -
                     math.max(0, widget.bottomClearance);
-                final handleWidth = SiteLensMetrics.toolbarHeight;
+                final handleWidth = SiteLensMetrics.browserDockWidth;
                 final handleHeight = SiteLensMetrics.compactRowMinHeight;
                 final scale = MediaQuery.textScalerOf(context);
                 final barHeight = math.max(
-                  handleWidth,
+                  SiteLensMetrics.toolbarHeight,
                   scale.scale(SiteLensTypography.rowTitle) +
                       SiteLensMetrics.itemGap * 2,
                 );
                 final height = _expanded ? barHeight : handleHeight;
-                if (availableWidth < handleWidth * 3 || bottom - top < height) {
+                if (availableWidth < SiteLensMetrics.toolbarHeight * 3 ||
+                    bottom - top < height) {
                   return const SizedBox.shrink();
                 }
                 _markVisibleFrame();
                 final width = _expanded
                     ? math.min(360.0, availableWidth)
-                    : handleWidth;
+                    : SiteLensMetrics.toolbarHeight;
                 final left = safe.left;
                 final right = constraints.maxWidth - safe.right - width;
                 final travel = bottom - top - height;
@@ -298,11 +299,11 @@ class _BrowserDockState extends State<_BrowserDockBody> {
                       height: height,
                       child: Listener(
                         onPointerCancel: (_) => setState(_resetTransient),
-                        child: SiteLensGlassSurface(
-                          role: SiteLensSurfaceRole.chrome,
-                          radius: SiteLensMetrics.inputRadius,
-                          child: _expanded
-                              ? Row(
+                        child: _expanded
+                            ? SiteLensGlassSurface(
+                                role: SiteLensSurfaceRole.chrome,
+                                radius: SiteLensMetrics.inputRadius,
+                                child: Row(
                                   children: [
                                     IconButton(
                                       tooltip: '收起浏览浮条',
@@ -353,9 +354,13 @@ class _BrowserDockState extends State<_BrowserDockBody> {
                                       icon: const Icon(Icons.close),
                                     ),
                                   ],
-                                )
-                              : GestureDetector(
+                                ),
+                              )
+                            : Material(
+                                type: MaterialType.transparency,
+                                child: GestureDetector(
                                   key: const ValueKey('browser-dock-handle'),
+                                  behavior: HitTestBehavior.opaque,
                                   onPanStart: _busy
                                       ? null
                                       : (details) {
@@ -416,19 +421,39 @@ class _BrowserDockState extends State<_BrowserDockBody> {
                                           : () => setState(
                                               () => _expanded = true,
                                             ),
-                                      child: Center(
-                                        child: Icon(
-                                          Icons.drag_indicator,
-                                          size: SiteLensMetrics.toolbarIconSize,
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .primary,
+                                      child: Align(
+                                        alignment: dockRight
+                                            ? Alignment.centerRight
+                                            : Alignment.centerLeft,
+                                        child: SizedBox(
+                                          width: handleWidth,
+                                          height: height,
+                                          child: SiteLensGlassSurface(
+                                            key: const ValueKey(
+                                              'browser-dock-handle-surface',
+                                            ),
+                                            role: SiteLensSurfaceRole.chrome,
+                                            radius: SiteLensMetrics.inputRadius,
+                                            attachedEdge: dockRight
+                                                ? SiteLensGlassEdge.right
+                                                : SiteLensGlassEdge.left,
+                                            child: Center(
+                                              child: Icon(
+                                                Icons.drag_indicator,
+                                                size: SiteLensMetrics
+                                                    .browserDockIconSize,
+                                                color: Theme.of(context)
+                                                    .colorScheme
+                                                    .primary,
+                                              ),
+                                            ),
+                                          ),
                                         ),
                                       ),
                                     ),
                                   ),
                                 ),
-                        ),
+                              ),
                       ),
                     ),
                   ],

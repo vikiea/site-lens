@@ -142,17 +142,16 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
           32,
         ),
         children: [
-          _UpdatePreferencesPanel(
-            app: widget.app,
-            channel: _channel,
-            busy: _controller.busy || _channelChangeInFlight,
-            onChannelChanged: _changeChannel,
-          ),
-          const SizedBox(height: SiteLensMetrics.itemGap),
           SiteLensPanel(
             padding: EdgeInsets.zero,
             child: Column(
               children: [
+                _UpdatePreferencesRows(
+                  channel: _channel,
+                  busy: _controller.busy || _channelChangeInFlight,
+                  onChannelChanged: _changeChannel,
+                ),
+                const SiteLensPanelDivider(),
                 SiteLensCompactRow(
                   leading: const Icon(
                     Icons.phone_android_outlined,
@@ -404,50 +403,39 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
   }
 }
 
-class _UpdatePreferencesPanel extends StatefulWidget {
-  const _UpdatePreferencesPanel({
-    required this.app,
+class _UpdatePreferencesRows extends StatelessWidget {
+  const _UpdatePreferencesRows({
     required this.channel,
     required this.busy,
     required this.onChannelChanged,
   });
 
-  final AppController? app;
   final UpdateChannel channel;
   final bool busy;
   final ValueChanged<UpdateChannel> onChannelChanged;
 
   @override
-  State<_UpdatePreferencesPanel> createState() =>
-      _UpdatePreferencesPanelState();
-}
-
-class _UpdatePreferencesPanelState extends State<_UpdatePreferencesPanel> {
-  @override
-  Widget build(BuildContext context) => SiteLensPanel(
-    padding: EdgeInsets.zero,
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        SiteLensCompactRow(
-          leading: const Icon(Icons.tune_outlined, size: 18),
-          title: const Text('更新渠道'),
-          trailing: SiteLensMenuSelector<UpdateChannel>(
-            label: '选择更新渠道',
-            value: widget.channel,
-            options: const [
-              SiteLensMenuOption(value: UpdateChannel.stable, label: '稳定版'),
-              SiteLensMenuOption(value: UpdateChannel.beta, label: '测试版'),
-            ],
-            onSelected: widget.busy ? null : widget.onChannelChanged,
-          ),
+  Widget build(BuildContext context) => Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      SiteLensCompactRow(
+        leading: const Icon(Icons.tune_outlined, size: 18),
+        title: const Text('更新渠道'),
+        trailing: SiteLensMenuSelector<UpdateChannel>(
+          label: '选择更新渠道',
+          value: channel,
+          options: const [
+            SiteLensMenuOption(value: UpdateChannel.stable, label: '稳定版'),
+            SiteLensMenuOption(value: UpdateChannel.beta, label: '测试版'),
+          ],
+          onSelected: busy ? null : onChannelChanged,
         ),
-        if (widget.channel == UpdateChannel.beta) ...[
-          const SiteLensSettingsDivider(),
-          const _UpdateGitHubTokenEntry(),
-        ],
+      ),
+      if (channel == UpdateChannel.beta) ...[
+        const SiteLensSettingsDivider(),
+        const _UpdateGitHubTokenEntry(),
       ],
-    ),
+    ],
   );
 }
 

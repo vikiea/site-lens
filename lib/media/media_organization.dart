@@ -4,6 +4,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import '../data/database.dart';
+import '../domain/models.dart' show mediaFolderDisplayName;
 
 class MediaOrganizationSeed {
   const MediaOrganizationSeed({required this.itemId, this.legacyFolder});
@@ -102,7 +103,7 @@ class MediaOrganizationService extends ChangeNotifier {
     await restore();
     final seedList = seeds.toList();
     final currentIds = seedList.map((seed) => seed.itemId).toSet();
-    var changed = false;
+    var changed = _normalizeGeneratedFolders();
     final staleIds = {
       ..._itemFolders.keys,
       ..._itemNames.keys,
@@ -124,11 +125,13 @@ class MediaOrganizationService extends ChangeNotifier {
         _itemFolders[seed.itemId] = existing;
         continue;
       }
+      final displayName = mediaFolderDisplayName(legacy);
       final folder = _folders.values.firstWhere(
         (candidate) =>
             candidate.parentId == null &&
-            candidate.name.toLowerCase() == legacy.toLowerCase(),
-        orElse: () => _createInMemory(legacy, parentId: null, stable: legacy),
+            candidate.name.toLowerCase() == displayName.toLowerCase(),
+        orElse: () =>
+            _createInMemory(displayName, parentId: null, stable: legacy),
       );
       _itemFolders[seed.itemId] = folder.id;
       _legacyFolders[legacy] = folder.id;
@@ -138,6 +141,47 @@ class MediaOrganizationService extends ChangeNotifier {
       await _persist();
       notifyListeners();
     }
+  }
+
+  bool _normalizeGeneratedFolders() {
+    var changed = false;
+    for (final entry in _legacyFolders.entries.toList()) {
+      final folder = _folders[entry.value];
+      // Only untouched imported roots are automatic names. User renames,
+      // moves and nested folder structures remain user-owned.
+      if (folder == null ||
+          folder.parentId != null ||
+          folder.name != entry.key ||
+          folder.id != _legacyFolderId(entry.key)) {
+        continue;
+      }
+      if (_folders.values.any((child) => child.parentId == folder.id)) {
+        continue;
+      }
+      final name = mediaFolderDisplayName(entry.key);
+      if (name == folder.name) continue;
+      final target = _folders.values
+          .where(
+            (candidate) =>
+                candidate.id != folder.id &&
+                candidate.parentId == null &&
+                candidate.name.toLowerCase() == name.toLowerCase(),
+          )
+          .firstOrNull;
+      if (target == null) {
+        _folders[folder.id] = folder.copyWith(name: name);
+      } else {
+        for (final item in _itemFolders.entries.toList()) {
+          if (item.value == folder.id) _itemFolders[item.key] = target.id;
+        }
+        for (final legacy in _legacyFolders.entries.toList()) {
+          if (legacy.value == folder.id) _legacyFolders[legacy.key] = target.id;
+        }
+        _folders.remove(folder.id);
+      }
+      changed = true;
+    }
+    return changed;
   }
 
   Future<MediaOrganizationFolder> createFolder(
@@ -406,7 +450,7 @@ class MediaOrganizationService extends ChangeNotifier {
   }) {
     final base = stable == null
         ? 'folder_${DateTime.now().microsecondsSinceEpoch}'
-        : 'folder_${sha256.convert(utf8.encode(stable)).toString().substring(0, 24)}';
+        : _legacyFolderId(stable);
     var id = base;
     var suffix = 1;
     while (_folders.containsKey(id)) {
@@ -421,6 +465,9 @@ class MediaOrganizationService extends ChangeNotifier {
     _folders[id] = folder;
     return folder;
   }
+
+  String _legacyFolderId(String name) =>
+      'folder_${sha256.convert(utf8.encode(name)).toString().substring(0, 24)}';
 
   Future<void> _persist() async {
     final payload = jsonEncode({

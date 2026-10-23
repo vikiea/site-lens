@@ -64,6 +64,8 @@ LiquidGlassSettings siteLensGlassSettings(
 }) =>
     SiteLensGlassPolicyScope.of(context).resolve(context, role: role).settings;
 
+enum SiteLensGlassEdge { left, right }
+
 /// One material boundary for the whole app.
 class SiteLensGlassSurface extends StatelessWidget {
   const SiteLensGlassSurface({
@@ -71,6 +73,7 @@ class SiteLensGlassSurface extends StatelessWidget {
     required this.child,
     this.role = SiteLensSurfaceRole.panel,
     this.radius = SiteLensMetrics.panelRadius,
+    this.attachedEdge,
     this.padding,
     this.scrollingContent = false,
     this.scrollContent = true,
@@ -79,6 +82,7 @@ class SiteLensGlassSurface extends StatelessWidget {
   final Widget child;
   final SiteLensSurfaceRole role;
   final double radius;
+  final SiteLensGlassEdge? attachedEdge;
   final EdgeInsetsGeometry? padding;
 
   /// Bounds the material to the viewport and scrolls long content inside it.
@@ -98,13 +102,21 @@ class SiteLensGlassSurface extends StatelessWidget {
     );
     final plan = SiteLensGlassPolicyScope.of(context)
         .resolve(context, role: role);
+    // Rotate the library's asymmetric shape, keeping content upright inside.
+    final edge = attachedEdge;
+    final LiquidShape shape = edge == null
+        ? LiquidRoundedSuperellipse(borderRadius: radius)
+        : LiquidVerticalRoundedRectangle(
+            topRadius: edge == SiteLensGlassEdge.left ? radius : 0,
+            bottomRadius: edge == SiteLensGlassEdge.right ? radius : 0,
+          );
     Widget surface(Widget body) {
+      if (edge != null) body = RotatedBox(quarterTurns: 3, child: body);
+      late final Widget result;
       if (plan.useCompatibilityFallback) {
         final backer = plan.settings.effectiveBackerColor;
-        return ClipPath(
-          clipper: ShapeBorderClipper(
-            shape: LiquidRoundedSuperellipse(borderRadius: radius),
-          ),
+        result = ClipPath(
+          clipper: ShapeBorderClipper(shape: shape),
           child: Stack(
             fit: StackFit.passthrough,
             children: [
@@ -114,17 +126,19 @@ class SiteLensGlassSurface extends StatelessWidget {
             ],
           ),
         );
+      } else {
+        result = AdaptiveGlass(
+          shape: shape,
+          settings: plan.settings,
+          quality: plan.quality,
+          platformViewBackdrop: plan.platformViewBackdrop,
+          // Chrome and panels both provide the backdrop for their children: glass
+          // inside a bar is a nested surface and would only double the blur.
+          allowElevation: false,
+          child: body,
+        );
       }
-      return AdaptiveGlass(
-        shape: LiquidRoundedSuperellipse(borderRadius: radius),
-        settings: plan.settings,
-        quality: plan.quality,
-        platformViewBackdrop: plan.platformViewBackdrop,
-        // Chrome and panels both provide the backdrop for their children: glass
-        // inside a bar is a nested surface and would only double the blur.
-        allowElevation: false,
-        child: body,
-      );
+      return edge == null ? result : RotatedBox(quarterTurns: 1, child: result);
     }
 
     // Material quality must not add a second scrolling owner. Ordinary pages

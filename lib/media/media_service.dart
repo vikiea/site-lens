@@ -620,9 +620,6 @@ class MediaTaskStore extends ChangeNotifier {
         state: MediaTaskState.queued,
         errorCode: null,
         errorReason: null,
-        batchDirectory: batchDirectory == null
-            ? rebound.batchDirectory
-            : _normalizeBatchDirectory(batchDirectory),
       );
       _tasks[retry.id] = retry;
       _saveTask(retry);
@@ -2939,7 +2936,7 @@ class Mp4ExportService {
       final root = await _directoryProvider();
       final exportFolder = task.batchDirectory == null
           ? id
-          : '${mediaSeriesDirectoryName(task.batchDirectory!)}/$id';
+          : '${mediaSeriesDirectoryName(mediaFolderDisplayName(task.batchDirectory!))}/$id';
       outputDirectory = Directory('${root.path}/media_exports/$exportFolder');
       await outputDirectory.create(recursive: true);
       output = File('${outputDirectory.path}/${mediaExportFileName(task)}');

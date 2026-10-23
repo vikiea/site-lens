@@ -700,6 +700,11 @@ String mediaCandidateGroupKey(Uri url) {
   return mediaCandidateKey(clean);
 }
 
+/// Display/export name for folders created by the legacy batch downloader.
+/// Keep the persisted storage path unchanged so existing downloads can resume.
+String mediaFolderDisplayName(String name) =>
+    name.replaceFirst(RegExp(r' - 批次\d{16}$'), '');
+
 /// Stable, filesystem-safe directory name for a media series. Episode
 /// markers are removed so all episodes in one title share a parent folder.
 String mediaSeriesDirectoryName(String title) {

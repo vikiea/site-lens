@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import '../diagnostics/error_log.dart';
 import '../domain/models.dart';
 import 'media_service.dart';
+import 'media_network.dart';
 
 /// Minimal SSDP/AVTransport implementation for a single user-selected DLNA
 /// session. Discovery and SOAP are intentionally separate from the relay so a
@@ -363,10 +364,17 @@ class DlnaTransportException extends StateError {
 
 class DlnaRelayException extends StateError {
   DlnaRelayException({required this.stage, required this.cause})
-    : super('DLNA $stage失败：投屏文件不存在、为空或不可读取');
+    : super(
+        stage.contains('监听')
+            ? 'DLNA $stage失败：无法在当前网络接口启动媒体中继，请检查网络连接和端口权限'
+            : 'DLNA $stage失败：投屏文件不存在、为空或不可读取',
+      );
 
   final String stage;
   final Object cause;
+
+  @override
+  String toString() => '${super.toString()}\n原因：$cause';
 }
 
 /// An optional renderer command is unavailable. The active cast session stays
@@ -1487,28 +1495,78 @@ class DlnaRelayRoute {
     Uri receiver, {
     Duration timeout = const Duration(seconds: 3),
   }) async {
+    try {
+      if (Platform.isAndroid) {
+        return await MediaNetwork().relayAddress(receiver).timeout(timeout);
+      }
+      return await _forReceiver(receiver, timeout: timeout);
+    } on MediaRelayRouteException {
+      rethrow;
+    } catch (error) {
+      throw MediaRelayRouteException(error);
+    }
+  }
+
+  static Future<String> _forReceiver(
+    Uri receiver, {
+    required Duration timeout,
+  }) async {
     final addresses = await InternetAddress.lookup(
       receiver.host,
       type: InternetAddressType.IPv4,
     ).timeout(timeout);
+    final interfaces = await NetworkInterface.list(
+      type: InternetAddressType.IPv4,
+      includeLoopback: true,
+    );
+    final localAddresses = interfaces
+        .expand((interface) => interface.addresses)
+        .toList();
     Object? lastError;
     for (final address in addresses) {
-      Socket? socket;
-      try {
-        final port = receiver.hasPort
-            ? receiver.port
-            : (receiver.scheme == 'https' ? 443 : 80);
-        socket = await Socket.connect(address, port, timeout: timeout);
-        return socket.address.address;
-      } catch (error) {
-        lastError = error;
-      } finally {
-        socket?.destroy();
+      final candidates =
+          localAddresses
+              .where((local) => local.isLoopback == address.isLoopback)
+              .toList()
+            ..sort(
+              (a, b) => _commonPrefix(
+                b.rawAddress,
+                address.rawAddress,
+              ).compareTo(_commonPrefix(a.rawAddress, address.rawAddress)),
+            );
+      for (final local in candidates) {
+        Socket? socket;
+        try {
+          final port = receiver.hasPort
+              ? receiver.port
+              : (receiver.scheme == 'https' ? 443 : 80);
+          socket = await Socket.connect(
+            address,
+            port,
+            sourceAddress: local,
+            timeout: timeout,
+          );
+          return local.address;
+        } catch (error) {
+          lastError = error;
+        } finally {
+          socket?.destroy();
+        }
       }
     }
-    throw StateError(
-      '无法确定通往接收设备的局域网地址${lastError is TimeoutException ? '，连接超时' : ''}',
-    );
+    throw lastError ?? StateError('没有可用的本机 IPv4 接口');
+  }
+
+  static int _commonPrefix(List<int> local, List<int> remote) {
+    var count = 0;
+    for (var index = 0; index < local.length; index++) {
+      final difference = local[index] ^ remote[index];
+      for (var bit = 7; bit >= 0; bit--) {
+        if ((difference & (1 << bit)) != 0) return count;
+        count++;
+      }
+    }
+    return count;
   }
 }
 
@@ -1556,6 +1614,8 @@ class MediaRelayServer {
         throw StateError('媒体文件校验失败');
       }
     } on FileSystemException catch (error) {
+      throw DlnaRelayException(stage: '媒体文件中继', cause: error);
+    } on StateError catch (error) {
       throw DlnaRelayException(stage: '媒体文件中继', cause: error);
     }
     final host = advertisedHost ?? await _relayHost(receiver);
@@ -1745,6 +1805,8 @@ class HlsRelayServer {
         throw StateError('HLS 清单校验失败');
       }
     } on FileSystemException catch (error) {
+      throw DlnaRelayException(stage: 'HLS 中继', cause: error);
+    } on StateError catch (error) {
       throw DlnaRelayException(stage: 'HLS 中继', cause: error);
     }
     final host = advertisedHost ?? await _relayHost(receiver);

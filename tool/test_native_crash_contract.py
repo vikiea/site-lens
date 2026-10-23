@@ -64,6 +64,26 @@ class NativeCrashContractTests(unittest.TestCase):
         body = block(self.host, "private fun event")
         self.assertNotIn("webView.url", body)
         self.assertIn("lastKnownUrl", body)
+        self.assertIn("eventDispatcher.dispatch(expectedGeneration, expectedEpoch)", body)
+        self.assertIn("events.onEvent", body)
+        self.assertIn("expectedGeneration", body)
+        self.assertIn("expectedEpoch", body)
+        self.assertIn("Looper.myLooper() == Looper.getMainLooper()", self.host)
+        self.assertIn("mainHandler.post { delivery() }", self.host)
+
+    def test_renderer_invalidation_is_dispatched_before_host_cleanup(self):
+        body = block(self.host, "override fun onRenderProcessGone(view: WebView")
+        self.assertLess(
+            body.index('event("hostInvalidated"'),
+            body.index("disposeAfterRendererGone(view)"),
+        )
+
+    def test_background_filter_events_capture_request_identity_before_enqueue(self):
+        body = block(self.host, "override fun shouldInterceptRequest")
+        self.assertLess(body.index("val requestGeneration = generation"), body.index("event("))
+        self.assertLess(body.index("val requestEpoch = eventEpoch"), body.index("event("))
+        self.assertIn("expectedGeneration = requestGeneration", body)
+        self.assertIn("expectedEpoch = requestEpoch", body)
 
     def test_history_traversal_is_not_rewritten_as_load_url(self):
         body = block(self.host, "override fun shouldOverrideUrlLoading")

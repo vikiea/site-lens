@@ -26,6 +26,40 @@ import 'video_fixture.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
+  testWidgets('DLNA relay resolves a bindable local address through Android', (
+    tester,
+  ) async {
+    final receiver = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    receiver.listen((socket) => socket.destroy());
+    final root = await Directory.systemTemp.createTemp('dlna-local-route-');
+    MediaRelayServer? relay;
+    final http = HttpClient();
+    try {
+      final file = await File('${root.path}/fixture.mp4')
+          .writeAsBytes([1, 2, 3]);
+      relay = await MediaRelayServer.start(
+        authorization: const RelayAuthorizer().issue(
+          sessionId: 'local',
+          taskId: 'fixture',
+          deviceId: 'receiver',
+        ),
+        file: file,
+        receiver: Uri.parse('http://127.0.0.1:${receiver.port}/control'),
+      );
+      expect(relay.url.host, '127.0.0.1');
+      final request = await http.getUrl(relay.url);
+      final response = await request.close();
+      expect(response.statusCode, HttpStatus.ok);
+      expect(await response.expand((bytes) => bytes).toList(), [1, 2, 3]);
+      debugPrint('DLNA_LOCAL_ROUTE_PASS bindable=true bodyVerified=true');
+    } finally {
+      http.close(force: true);
+      await relay?.close();
+      await receiver.close();
+      await root.delete(recursive: true);
+    }
+  });
+
   testWidgets(
     'native playback leases reject destructive file operations without Dart references',
     (tester) async {
@@ -665,7 +699,7 @@ void main() {
         isTrue,
       );
       tasks.retain(task.id);
-      expect(() => tasks.delete(task.id), throwsStateError);
+      await expectLater(tasks.delete(task.id), throwsStateError);
       tasks.release(task.id);
       await tasks.delete(task.id);
       expect(tasks.tasks, isEmpty);

@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
@@ -69,5 +72,116 @@ void main() {
     ]);
 
     expect(organization.folderFor('task-1'), destination.id);
+  });
+
+  test(
+    'generated batch suffix is hidden while user folder names stay intact',
+    () async {
+      await organization.restoreAndSync([
+        const MediaOrganizationSeed(
+          itemId: 'task-batch',
+          legacyFolder: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
+        ),
+      ]);
+      final folderId = organization.folderFor('task-batch');
+      expect(organization.folder(folderId!)?.name, '系统带我攻略弟弟（漫剧版）');
+
+      await organization.renameFolder(folderId, '我的手动目录');
+      await organization.restoreAndSync([
+        const MediaOrganizationSeed(
+          itemId: 'task-batch',
+          legacyFolder: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
+        ),
+      ]);
+      expect(organization.folder(folderId)?.name, '我的手动目录');
+    },
+  );
+
+  test('ordinary legacy folder names are not normalized or merged', () async {
+    await organization.restoreAndSync([
+      const MediaOrganizationSeed(itemId: 'slash', legacyFolder: 'A/B'),
+      const MediaOrganizationSeed(itemId: 'underscore', legacyFolder: 'A_B'),
+    ]);
+
+    final slash = organization.folderFor('slash');
+    final underscore = organization.folderFor('underscore');
+    expect(slash, isNotNull);
+    expect(underscore, isNotNull);
+    expect(slash, isNot(underscore));
+    expect(organization.folder(slash!)?.name, 'A/B');
+    expect(organization.folder(underscore!)?.name, 'A_B');
+  });
+
+  test('automatic roots with children keep their legacy name', () async {
+    const legacy = '系统带我攻略弟弟（漫剧版） - 批次1792686431921372';
+    final automaticId =
+        'folder_${sha256.convert(utf8.encode(legacy)).toString().substring(0, 24)}';
+    await db.setSetting(
+      organization.settingKey,
+      jsonEncode({
+        'folders': [
+          {'id': automaticId, 'name': legacy, 'parentId': null},
+          {'id': 'child', 'name': '手动子目录', 'parentId': automaticId},
+        ],
+        'itemFolders': {'one': automaticId},
+        'itemNames': {},
+        'imported': ['one'],
+        'legacyFolders': {legacy: automaticId},
+      }),
+    );
+
+    await organization.restoreAndSync([
+      const MediaOrganizationSeed(itemId: 'one', legacyFolder: legacy),
+    ]);
+
+    expect(organization.folder(automaticId)?.name, legacy);
+    expect(organization.folder('child')?.parentId, automaticId);
+  });
+
+  test('restored automatic roots merge without disturbing user-owned folders', () async {
+    const legacy = '系统带我攻略弟弟（漫剧版） - 批次1792686431921372';
+    final automaticId =
+        'folder_${sha256.convert(utf8.encode(legacy)).toString().substring(0, 24)}';
+    await db.setSetting(
+      organization.settingKey,
+      jsonEncode({
+        'folders': [
+          {'id': automaticId, 'name': legacy, 'parentId': null},
+          {'id': 'series', 'name': '系统带我攻略弟弟（漫剧版）', 'parentId': null},
+          {
+            'id': 'manual',
+            'name': '手动系列 - 批次1792686431921372',
+            'parentId': null,
+          },
+        ],
+        'itemFolders': {'one': automaticId, 'two': 'series', 'three': 'manual'},
+        'itemNames': {'one': '我的剧集标题'},
+        'imported': ['one', 'two', 'three'],
+        'legacyFolders': {
+          legacy: automaticId,
+          '手动系列 - 批次1792686431921372': 'manual',
+        },
+      }),
+    );
+    const seeds = [
+      MediaOrganizationSeed(itemId: 'one', legacyFolder: legacy),
+      MediaOrganizationSeed(itemId: 'two'),
+      MediaOrganizationSeed(itemId: 'three'),
+    ];
+    await organization.restoreAndSync(seeds);
+    expect(organization.folder(automaticId), isNull);
+    expect(organization.folderFor('one'), 'series');
+    expect(organization.folderFor('two'), 'series');
+    expect(organization.nameFor('one', 'fallback'), '我的剧集标题');
+    expect(organization.folder('manual')?.name, '手动系列 - 批次1792686431921372');
+
+    final restored = MediaOrganizationService.reader(
+      db: db,
+      collection: organization.collection,
+    );
+    addTearDown(restored.dispose);
+    await restored.restoreAndSync(seeds);
+    expect(restored.folderFor('one'), 'series');
+    expect(restored.folder('manual')?.name, '手动系列 - 批次1792686431921372');
   });
 }

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/ui/software_update_screen.dart';
+import 'package:site_lens/ui/glass_surface.dart';
 import 'package:site_lens/settings/app_settings.dart';
 import 'package:site_lens/ui/ui_primitives.dart';
 import 'package:site_lens/update/update_controller.dart';
@@ -102,6 +103,7 @@ void main() {
     expect(find.text(UpdateChannel.stable.description), findsNothing);
     expect(find.text(UpdateChannel.beta.description), findsNothing);
     expect(find.byType(SiteLensSectionHeader), findsNothing);
+    expect(find.byType(SiteLensPanel), findsOneWidget);
     final versionRow = find.ancestor(
       of: find.text('当前版本'),
       matching: find.byType(SiteLensCompactRow),

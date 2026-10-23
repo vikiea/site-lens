@@ -697,7 +697,10 @@ class MediaLibrary extends ChangeNotifier {
         batchDirectory.trim().isNotEmpty &&
         uri.scheme != 'content') {
       targetDirectory = Directory(
-        p.join(targetDirectory!.path, mediaSeriesDirectoryName(batchDirectory)),
+        p.join(
+          targetDirectory!.path,
+          mediaSeriesDirectoryName(mediaFolderDisplayName(batchDirectory)),
+        ),
       );
       uri = targetDirectory.uri;
     }
@@ -732,7 +735,7 @@ class MediaLibrary extends ChangeNotifier {
         fileName: value.name,
         subdirectory: batchDirectory == null
             ? null
-            : mediaSeriesDirectoryName(batchDirectory),
+            : mediaSeriesDirectoryName(mediaFolderDisplayName(batchDirectory)),
       );
     } else {
       final dir = targetDirectory!;

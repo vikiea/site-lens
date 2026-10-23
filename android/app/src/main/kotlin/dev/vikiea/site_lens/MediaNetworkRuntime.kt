@@ -35,6 +35,19 @@ class MediaNetworkRuntime(
             enqueueTransfer(call, result)
             return
         }
+        if (call.method == "relayAddress") {
+            val receiver = call.argument<String>("url")
+            executor.execute {
+                val outcome = runCatching {
+                    DlnaRelayAddress.resolve(URI(receiver ?: error("缺少接收设备地址")))
+                }
+                main.post { outcome.fold(
+                    onSuccess = { result.success(it) },
+                    onFailure = { result.error("dlna_route", "无法读取本机投屏地址，请检查与接收设备的网络连接", DlnaRelayAddress.failureDetails(it)) },
+                ) }
+            }
+            return
+        }
         if (call.method != "route" && call.method != "probeRoute") { result.notImplemented(); return }
         executor.execute {
             val outcome = runCatching {

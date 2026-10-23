@@ -219,7 +219,7 @@ class _OpacitySetting extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Flexible(
+          Expanded(
             flex: 2,
             child: FittedBox(
               fit: BoxFit.scaleDown,
@@ -228,16 +228,16 @@ class _OpacitySetting extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text('不透明度', style: Theme.of(context).textTheme.titleSmall),
-                  const SizedBox(width: SiteLensMetrics.itemGap),
+                  const SizedBox(width: SiteLensMetrics.opacityLabelGap),
                   Text(
-                    '${app.settings.glassOpacity}',
+                    '${app.settings.glassOpacity} / 100',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
               ),
             ),
           ),
-          const SizedBox(width: SiteLensMetrics.itemGap),
+          const SizedBox(width: SiteLensMetrics.opacitySliderGap),
           Expanded(
             flex: 3,
             child: _GlassOpacitySlider(app: app, width: double.infinity),

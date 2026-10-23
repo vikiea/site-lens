@@ -314,14 +314,17 @@ void main() {
       // Exiting the browser returns to the profile detail; go back to the panel.
       await pumpUntil(tester, find.widgetWithText(FilledButton, '检测'));
       await tester.pageBack();
-      // Both the site panel and the profile detail carry a "切回" float; wait
-      // for the detail route to finish popping before tapping a single one.
+      // The global dock replaces the former page-local return button. Wait
+      // for the route transition, then reopen the current tab through it.
       await tester.pumpAndSettle();
-      await pumpUntil(tester, find.textContaining('切回 闭环站点'));
-      // Exactly one quick-entry float must remain once the detail route is
-      // gone; assert that instead of silently tapping `.first`.
-      expect(find.textContaining('切回 闭环站点'), findsOneWidget);
-      await tester.tap(find.textContaining('切回 闭环站点'));
+      final dock = find.byKey(const ValueKey('browser-dock-handle'));
+      await pumpUntil(tester, dock);
+      expect(dock, findsOneWidget);
+      await tester.tap(dock);
+      final dockTitle = find.byKey(const ValueKey('browser-dock-title'));
+      await pumpUntil(tester, dockTitle);
+      expect(dockTitle, findsOneWidget);
+      await tester.tap(dockTitle);
       await pumpUntil(tester, find.byType(AndroidView));
       expect(controller.activeBrowser, isNotNull);
     } finally {

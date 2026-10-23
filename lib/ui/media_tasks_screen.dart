@@ -1765,7 +1765,9 @@ Future<void> showMediaTaskDetails(
               _MediaDetailRow(label: '错误原因', value: _taskErrorLabel(task)),
             _MediaDetailRow(
               label: '文件夹',
-              value: readableMediaLocation(task.storageDirectoryName),
+              value: readableMediaLocation(
+                mediaFolderDisplayName(task.storageDirectoryName),
+              ),
             ),
             _MediaDetailRow(label: '来源页面', value: task.sourceUrl.toString()),
           ],
@@ -1792,6 +1794,7 @@ class MediaManagementScreen extends StatefulWidget {
 
 class _MediaManagementScreenState extends State<MediaManagementScreen> {
   AppController get app => widget.app;
+  String? _expandedDetail;
 
   Future<void> _pickMp4Directory() async {
     final selected = Platform.isAndroid && app.nativeExports != null
@@ -1807,6 +1810,20 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
     if (value == null || value.isEmpty) return '未配置，保存在应用媒体库';
     return readableMediaLocation(value);
   }
+
+  Widget _detailText(String text) => Padding(
+    padding: const EdgeInsets.fromLTRB(
+      SiteLensMetrics.accordionContentIndent,
+      0,
+      SiteLensMetrics.compactRowHorizontalPadding,
+      SiteLensMetrics.compactRowVerticalPadding + 8,
+    ),
+    child: SelectableText(
+      text,
+      style: Theme.of(context).textTheme.bodySmall,
+      textAlign: TextAlign.start,
+    ),
+  );
 
   @override
   Widget build(BuildContext context) => SiteLensPageScaffold(
@@ -1844,14 +1861,7 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
                   ),
                 ),
               ),
-            ],
-          ),
-        ),
-        const SizedBox(height: SiteLensMetrics.itemGap),
-        SiteLensPanel(
-          padding: EdgeInsets.zero,
-          child: Column(
-            children: [
+              const SiteLensPanelDivider(),
               SiteLensCompactRow(
                 title: const Text('下载完成自动导出 MP4'),
                 subtitle: const Text('保留原生HLS，MP4另存一份到媒体库'),
@@ -1867,22 +1877,68 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
                 ),
               ),
               const SiteLensPanelDivider(),
-              SiteLensActionRow(
-                icon: Icons.folder_outlined,
-                title: 'MP4 保存目录',
-                subtitle: _directoryLabel(),
-                onTap: () => safely(context, _pickMp4Directory),
-                trailing: const Icon(Icons.chevron_right),
+              SiteLensDisclosure(
+                leading: const Icon(Icons.folder_outlined),
+                title: const Text('MP4 保存目录'),
+                subtitle: Text(
+                  app.mp4ExportDirectory == null ? '使用应用媒体库' : '点击查看完整保存路径',
+                ),
+                expanded: _expandedDetail == 'mp4Directory',
+                onToggle: () => setState(() {
+                  _expandedDetail = _expandedDetail == 'mp4Directory'
+                      ? null
+                      : 'mp4Directory';
+                }),
+                details: (context) => Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _detailText(_directoryLabel()),
+                    Padding(
+                      padding: const EdgeInsets.only(
+                        left: SiteLensMetrics.accordionContentIndent,
+                        bottom: SiteLensMetrics.compactRowVerticalPadding + 8,
+                      ),
+                      child: TextButton.icon(
+                        onPressed: () => safely(context, _pickMp4Directory),
+                        icon: const Icon(Icons.folder_open_outlined),
+                        label: Text(
+                          app.mp4ExportDirectory == null ? '选择保存目录' : '更换保存目录',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
               if (app.mp4ExportDirectory != null) ...[
                 const SiteLensPanelDivider(),
-                SiteLensCompactRow(
+                SiteLensDisclosure(
+                  leading: const Icon(Icons.library_music_outlined),
                   title: const Text('恢复应用媒体库'),
-                  subtitle: const Text('清除目录配置，后续 MP4 只保存在应用媒体库'),
-                  trailing: TextButton(
-                    onPressed: () =>
-                        safely(context, () => app.setMp4ExportDirectory(null)),
-                    child: const Text('清除'),
+                  subtitle: const Text('点击查看并清除当前目录配置'),
+                  expanded: _expandedDetail == 'mediaLibrary',
+                  onToggle: () => setState(() {
+                    _expandedDetail = _expandedDetail == 'mediaLibrary'
+                        ? null
+                        : 'mediaLibrary';
+                  }),
+                  details: (context) => Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _detailText('清除目录配置后，后续 MP4 只保存在应用媒体库。已导出的文件不会被删除。'),
+                      Padding(
+                        padding: const EdgeInsets.only(
+                          left: SiteLensMetrics.accordionContentIndent,
+                          bottom: SiteLensMetrics.compactRowVerticalPadding + 8,
+                        ),
+                        child: TextButton(
+                          onPressed: () => safely(
+                            context,
+                            () => app.setMp4ExportDirectory(null),
+                          ),
+                          child: const Text('清除目录配置'),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],

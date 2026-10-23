@@ -525,8 +525,14 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     private val hasProfiles = webCapabilities.hasProfiles
     private val enhanced = webCapabilities.enhanced
     val capabilities: HostCapabilities
-    var generation = 0L
-    var destroyed = false
+    @Volatile var generation = 0L
+    @Volatile var destroyed = false
+    @Volatile private var eventEpoch = 0L
+    private val eventDispatcher = HostEventDispatcher(
+        isMainThread = { Looper.myLooper() == Looper.getMainLooper() },
+        post = { delivery -> mainHandler.post { delivery() } },
+        isCurrent = { ticket, epoch -> !destroyed && generation == ticket && eventEpoch == epoch },
+    )
     var pageError: String? = null
     var scripts = emptyList<ScriptRegistration>()
         private set
@@ -769,11 +775,13 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         }.build().toString()
     }
 
-    private fun recordFilterDecision(blocked: Boolean) {
-        if (!filterState.enabled) return
-        if (blocked) filterBlockedCount++ else filterAllowedCount++
-        val total = filterBlockedCount + filterAllowedCount
-        if (total % 32 == 0) emitFilterStats()
+    private fun recordFilterDecision(blocked: Boolean, requestGeneration: Long, requestEpoch: Long) {
+        eventDispatcher.dispatch(requestGeneration, requestEpoch) {
+            if (!filterState.enabled) return@dispatch
+            if (blocked) filterBlockedCount++ else filterAllowedCount++
+            val total = filterBlockedCount + filterAllowedCount
+            if (total % 32 == 0) emitFilterStats()
+        }
     }
 
     private fun emitFilterStats() {
@@ -933,6 +941,8 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         }
         webView.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                val requestGeneration = generation
+                val requestEpoch = eventEpoch
                 if (!available) return null
                 // Keep the top-level document available so a bad or stale
                 // snapshot cannot strand the user on a blank page. Subresources
@@ -943,11 +953,17 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                     // Keep the decision visible in diagnostics as an allowed
                     // bypass rather than returning a synthetic 204 response.
                     if (isMediaRequest(request)) {
-                        recordFilterDecision(blocked = false)
+                        recordFilterDecision(false, requestGeneration, requestEpoch)
                         return super.shouldInterceptRequest(view, request)
                     }
-                    recordFilterDecision(blocked = true)
-                    event("filtered", "请求已阻止", redactedFilterUrl(request.url))
+                    recordFilterDecision(true, requestGeneration, requestEpoch)
+                    event(
+                        "filtered",
+                        "请求已阻止",
+                        redactedFilterUrl(request.url),
+                        expectedGeneration = requestGeneration,
+                        expectedEpoch = requestEpoch,
+                    )
                     return WebResourceResponse(
                         "text/plain",
                         "utf-8",
@@ -957,7 +973,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                         ByteArrayInputStream(ByteArray(0)),
                     )
                 }
-                if (!request.isForMainFrame) recordFilterDecision(blocked = false)
+                if (!request.isForMainFrame) recordFilterDecision(false, requestGeneration, requestEpoch)
                 return super.shouldInterceptRequest(view, request)
             }
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -1180,26 +1196,33 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             override fun onGeolocationPermissionsShowPrompt(origin: String, callback: GeolocationPermissions.Callback) { callback.invoke(origin, false, false) }
         }
     }
-    private fun event(kind: String, detail: String = "", url: String? = null) {
-        // Pigeon can throw while Flutter is detaching the engine, and WebView
-        // may call us during renderer teardown. Host events are diagnostic;
-        // losing one is safer than crashing the process.
-        runCatching {
-            // Callbacks can run on worker threads and after renderer death.
-            // Read document identity from callbacks, never a WebView getter.
-            if (url != null && kind in setOf("started", "loaded", "committed", "redirected", "sameDocument")) lastKnownUrl = url
-            if (kind in setOf("networkError", "certificateError", "httpError")) pageError = detail
-            if (!destroyed) {
-                events.onEvent(HostEvent(id, generation, kind, url ?: lastKnownUrl ?: "", detail)) { _ -> }
+    private fun event(
+        kind: String,
+        detail: String = "",
+        url: String? = null,
+        expectedGeneration: Long = generation,
+        expectedEpoch: Long = eventEpoch,
+    ) {
+        // UI lifecycle notifications must arrive before teardown. Worker
+        // diagnostics wait for the UI thread and expire with their document.
+        eventDispatcher.dispatch(expectedGeneration, expectedEpoch) {
+            runCatching {
+                // WebView request callbacks may run on worker threads. Keep all
+                // event state and Pigeon dispatch on the Android UI thread.
+                if (url != null && kind in setOf("started", "loaded", "committed", "redirected", "sameDocument")) lastKnownUrl = url
+                if (kind in setOf("networkError", "certificateError", "httpError")) pageError = detail
+                events.onEvent(
+                    HostEvent(id, expectedGeneration, kind, url ?: lastKnownUrl ?: "", detail),
+                ) { _ -> }
+            }.onFailure { error ->
+                NativeCrashStore.append(
+                    activity,
+                    module = "android.webview.event",
+                    message = "网页事件上报失败",
+                    details = error.stackTraceToString(),
+                    contextValue = "kind=$kind host=$id generation=$generation",
+                )
             }
-        }.onFailure { error ->
-            NativeCrashStore.append(
-                activity,
-                module = "android.webview.event",
-                message = "网页事件上报失败",
-                details = error.stackTraceToString(),
-                contextValue = "kind=$kind host=$id generation=$generation",
-            )
         }
     }
     fun valid(binding: ScriptBinding): Boolean = available && accepting && binding.generation == generation && bindings.contains(binding)
@@ -1488,6 +1511,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     }
     private fun disposeAfterRendererGone(deadView: WebView) {
         if (destroyed) return
+        eventEpoch++
         viewLifetime.rendererGone()
         destroyed = true
         accepting = false
@@ -1529,6 +1553,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
             // Invalidate the document while the host is still available; the
             // actual provider removal remains deferred until the view release.
             runCatching { revoke() }
+            eventEpoch++
             mainHandler.removeCallbacks(bridgeCleanup)
             bridgeCleanupScheduled = false
             webView.unavailable = true
@@ -1546,6 +1571,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     private fun finishDispose() {
         if (destroyed) return
         if (rendererGone) { disposeAfterRendererGone(webView); return }
+        eventEpoch++
         destroyed = true
         clearPopupProbes()
         runCatching { media.dispose() }

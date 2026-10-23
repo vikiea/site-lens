@@ -1113,7 +1113,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
               .replaceFirst(RegExp(r'\.mp4$', caseSensitive: false), '');
           final folder = task.batchDirectory == null
               ? 'direct_${DateTime.now().microsecondsSinceEpoch}'
-              : mediaSeriesDirectoryName(task.batchDirectory!);
+              : mediaSeriesDirectoryName(
+                  mediaFolderDisplayName(task.batchDirectory!),
+                );
           final directory = Directory(
             '${(await mediaTasks.cacheRootDirectory()).parent.path}/media_exports/$folder/${task.cacheKey}',
           );

@@ -2251,7 +2251,9 @@ class _GlassOpacitySliderState extends State<_GlassOpacitySlider> {
               // Material's discrete value indicator is the local magnifier:
               // it enlarges the active value above the thumb without scaling
               // the surrounding settings row.
-              label: _dragging ? '${widget.app.settings.glassOpacity}' : null,
+              label: _dragging
+                  ? '${widget.app.settings.glassOpacity} / 100'
+                  : null,
               onChangeStart: (value) {
                 setState(() {
                   _dragging = true;
@@ -3586,12 +3588,6 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     var added = 0;
     var skipped = 0;
     var failed = 0;
-    final batchName = candidates.length > 1
-        ? mediaSeriesDirectoryName(
-            '${String.fromCharCodes(mediaSeriesDirectoryName(candidates.first.title).runes.take(48))}'
-            ' - 批次${DateTime.now().microsecondsSinceEpoch}',
-          )
-        : null;
     final pending = <({MediaTask task, MediaCandidate candidate})>[];
     for (final candidate in candidates) {
       try {
@@ -3610,7 +3606,9 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
         await widget.app.mediaTasks.ready;
         final task = widget.app.mediaTasks.create(
           authorized,
-          batchDirectory: batchName,
+          batchDirectory: candidates.length > 1
+              ? mediaSeriesDirectoryName(authorized.title)
+              : null,
         );
         added++;
         pending.add((task: task, candidate: authorized));

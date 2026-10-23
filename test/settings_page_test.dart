@@ -194,12 +194,12 @@ void main() {
     'appearance keeps opacity compact and theme colors collapsed in six columns',
     (tester) async {
       await pumpSettings(tester, app);
-      expect(find.text('55'), findsOneWidget);
+      expect(find.text('55 / 100'), findsOneWidget);
       expect(
         find.byKey(const ValueKey('default-glass-opacity-marker')),
         findsOneWidget,
       );
-      final opacityValue = tester.getRect(find.text('55'));
+      final opacityValue = tester.getRect(find.text('55 / 100'));
       final opacitySlider = tester.getRect(find.byType(Slider));
       expect(
         (opacityValue.center.dy - opacitySlider.center.dy).abs(),
@@ -396,11 +396,21 @@ void main() {
             reason: 'width=$width scale=$scale opacity=$opacity',
           );
           final slider = tester.getRect(find.byType(Slider));
+          expect(
+            slider.right,
+            closeTo(
+              width -
+                  SiteLensMetrics.pagePadding -
+                  SiteLensMetrics.compactRowHorizontalPadding,
+              1,
+            ),
+            reason: 'width=$width scale=$scale opacity=$opacity',
+          );
           final label = tester.getCenter(find.text('不透明度'));
-          final value = tester.getCenter(find.text('$opacity'));
+          final value = tester.getCenter(find.text('$opacity / 100'));
           expect(label.dy, closeTo(slider.center.dy, 1));
           expect(value.dy, closeTo(slider.center.dy, 1));
-          expect(find.textContaining('/ 100'), findsNothing);
+          expect(slider.right, greaterThan(value.dx));
           expect(slider.left, greaterThanOrEqualTo(0));
           expect(slider.right, lessThanOrEqualTo(width));
           expect(slider.width, greaterThan(48));
@@ -426,7 +436,7 @@ void main() {
         find.byKey(const ValueKey('default-glass-opacity-marker')),
       ),
     );
-    expect(find.text('55'), findsOneWidget);
+    expect(find.text('55 / 100'), findsOneWidget);
     final slider = tester.getRect(find.byType(Slider));
     final drag = await tester.startGesture(
       tester.getCenter(

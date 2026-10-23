@@ -99,6 +99,23 @@ class MediaNetwork {
     return _route(uri, attempt: attempt, media: false);
   }
 
+  /// Android returns Java Socket.localAddress; Dart Socket.address retains the
+  /// address passed to connect and therefore cannot identify the local route.
+  Future<String> relayAddress(Uri receiver) async {
+    final String? value;
+    try {
+      value = await _channel.invokeMethod<String>('relayAddress', {
+        'url': receiver.toString(),
+      });
+    } on PlatformException catch (error) {
+      throw MediaRelayRouteException(error);
+    }
+    if (value == null || value.trim().isEmpty) {
+      throw StateError('无法读取本机投屏地址');
+    }
+    return value;
+  }
+
   Future<MediaNetworkRoute> _route(
     Uri uri, {
     required int attempt,
@@ -118,4 +135,13 @@ class MediaNetwork {
       cookie: media ? value['cookie'] as String? : null,
     );
   }
+}
+
+class MediaRelayRouteException extends StateError {
+  MediaRelayRouteException(this.cause) : super('无法确定本机投屏地址，请检查与接收设备的网络连接');
+
+  final Object cause;
+
+  @override
+  String toString() => '${super.toString()}\n原因：$cause';
 }

@@ -90,4 +90,37 @@ void main() {
       }
     },
   );
+
+  test('relay route errors retain native cause details', () async {
+    const channel = MethodChannel('test/media_relay_route');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      throw PlatformException(
+        code: 'dlna_route',
+        message: '无法读取本机投屏地址',
+        details: {
+          'type': 'java.net.ConnectException',
+          'message': 'Connection refused',
+          'stack': 'java.net.ConnectException: Connection refused',
+        },
+      );
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    await expectLater(
+      MediaNetwork(channel: channel)
+          .relayAddress(Uri.parse('http://192.0.2.10:1400/control')),
+      throwsA(
+        isA<MediaRelayRouteException>().having(
+          (error) => error.toString(),
+          'diagnostic details',
+          allOf(
+            contains('java.net.ConnectException'),
+            contains('Connection refused'),
+          ),
+        ),
+      ),
+    );
+  });
 }

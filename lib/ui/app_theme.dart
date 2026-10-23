@@ -124,6 +124,12 @@ abstract final class SiteLensMetrics {
   static const toolbarIconSize = 18.0;
   static const toolbarInset = 12.0;
   static const toolbarRadius = 26.0;
+
+  /// Collapsed root browser dock: one third of the browser toolbar width.
+  static const browserDockWidth = toolbarHeight / 3;
+  static const browserDockIconSize = 16.0;
+  static const opacityLabelGap = 6.0;
+  static const opacitySliderGap = 8.0;
 }
 
 /// One type scale for page headings, sections, rows and secondary facts.

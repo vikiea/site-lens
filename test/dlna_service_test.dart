@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/media/dlna_service.dart';
+import 'package:site_lens/media/media_network.dart';
 import 'package:site_lens/media/media_service.dart';
 
 void main() {
@@ -151,6 +152,76 @@ void main() {
           (error) => error.message,
           'message',
           contains('媒体文件中继'),
+        ),
+      ),
+    );
+  });
+
+  test('relay diagnostics distinguish local files from listener failures', () {
+    final fileError = DlnaRelayException(
+      stage: '媒体文件中继',
+      cause: StateError('empty'),
+    );
+    final listenerError = DlnaRelayException(
+      stage: '媒体中继监听',
+      cause: StateError('bind failed'),
+    );
+
+    expect(fileError.message, contains('文件不存在、为空或不可读取'));
+    expect(listenerError.message, contains('当前网络接口启动媒体中继'));
+    expect(listenerError.message, isNot(contains('文件不存在')));
+    expect(listenerError.toString(), contains('bind failed'));
+
+    final routeError = MediaRelayRouteException(
+      StateError('connection refused'),
+    );
+    expect(routeError.toString(), contains('connection refused'));
+  });
+
+  test('empty relay files fail before a listener is opened', () async {
+    final root = await Directory.systemTemp.createTemp('dlna-empty-');
+    addTearDown(() => root.delete(recursive: true));
+    final empty = await File('${root.path}/empty.mp4').create();
+    await expectLater(
+      MediaRelayServer.start(
+        authorization: const RelayAuthorizer().issue(
+          sessionId: 's',
+          taskId: 't',
+          deviceId: 'd',
+        ),
+        file: empty,
+        advertisedHost: '127.0.0.1',
+      ),
+      throwsA(
+        isA<DlnaRelayException>().having(
+          (error) => error.stage,
+          'stage',
+          '媒体文件中继',
+        ),
+      ),
+    );
+  });
+
+  test('relay route returns the local interface address', () async {
+    final receiver = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(receiver.close);
+    receiver.listen((socket) => socket.destroy());
+    expect(
+      await DlnaRelayRoute.forReceiver(
+        Uri.parse('http://127.0.0.1:${receiver.port}/control'),
+      ),
+      '127.0.0.1',
+    );
+  });
+
+  test('relay route wraps connection failures with their cause', () async {
+    await expectLater(
+      DlnaRelayRoute.forReceiver(Uri.parse('http://127.0.0.1:1/control')),
+      throwsA(
+        isA<MediaRelayRouteException>().having(
+          (error) => error.toString(),
+          'cause',
+          contains('Connection refused'),
         ),
       ),
     );

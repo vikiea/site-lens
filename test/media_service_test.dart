@@ -377,10 +377,34 @@ void main() {
     expect(store.tasks, hasLength(1));
   });
 
+  test('retry keeps the persisted batch directory identity', () {
+    final store = MediaTaskStore();
+    final original = store.create(
+      candidate(id: 'retry-old'),
+      batchDirectory: '旧剧集 - 批次1792686431921372',
+    );
+    store.transition(original.id, MediaTaskState.downloading);
+    store.transition(original.id, MediaTaskState.failed);
+
+    final retry = store.create(
+      candidate(id: 'retry-new'),
+      batchDirectory: '新剧集 - 批次1792686431921373',
+    );
+
+    expect(retry.id, original.id);
+    expect(retry.batchDirectory, '旧剧集 - 批次1792686431921372');
+    expect(retry.candidateId, 'retry-new');
+  });
+
   test('series directory names remove episode markers safely', () {
     expect(mediaSeriesDirectoryName('母衣半暖默许春朝 - 第3集'), '母衣半暖默许春朝');
     expect(mediaSeriesDirectoryName('A/B: episode=12'), 'A_B');
     expect(mediaSeriesDirectoryName(''), '未命名媒体');
+    expect(mediaFolderDisplayName('A/B'), 'A/B');
+    expect(
+      mediaFolderDisplayName('系统带我攻略弟弟（漫剧版） - 批次1792686431921372'),
+      '系统带我攻略弟弟（漫剧版）',
+    );
   });
 
   test('batch directory becomes the storage directory', () async {
@@ -397,6 +421,21 @@ void main() {
     );
     expect(directory.path, endsWith('/media_cache/批量下载一'));
   });
+
+  test(
+    'legacy cache identity stays stable while its display name is clean',
+    () {
+      final store = MediaTaskStore();
+      final task = store.create(
+        candidate(title: '系统带我攻略弟弟（漫剧版） - 第1集'),
+        batchDirectory: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
+      );
+
+      expect(task.batchDirectory, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
+      expect(task.storageDirectoryName, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
+      expect(mediaFolderDisplayName(task.batchDirectory!), '系统带我攻略弟弟（漫剧版）');
+    },
+  );
 
   test('batch directory survives media task persistence and restore', () async {
     final db = AppDatabase(NativeDatabase.memory());
@@ -1253,7 +1292,10 @@ void main() {
         ..writeAsStringSync('#EXTM3U\n#EXTINF:1,\nseg.ts\n');
       final segment = File('${root.path}/seg.ts')..writeAsBytesSync([1, 2, 3]);
       final store = MediaTaskStore(directoryProvider: () async => root);
-      final task = store.create(candidate());
+      final task = store.create(
+        candidate(title: '系统带我攻略弟弟（漫剧版） - 第1集'),
+        batchDirectory: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
+      );
       store.transition(task.id, MediaTaskState.downloading);
       store.transition(task.id, MediaTaskState.completed);
       store.transition(task.id, MediaTaskState.playable);
@@ -1280,6 +1322,8 @@ void main() {
       );
       expect(successful.state, ExportState.deliverable);
       expect(await File(successful.outputPath!).exists(), isTrue);
+      expect(successful.outputPath, contains('系统带我攻略弟弟（漫剧版）'));
+      expect(successful.outputPath, isNot(contains('批次1792686431921372')));
       expect(store.task(task.id)?.localRef, isNull);
       expect(progress, containsAllInOrder([0, 50, 100]));
     },
