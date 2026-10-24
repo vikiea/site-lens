@@ -166,6 +166,7 @@
     return identities;
   }
   function elementEpisode(element) {
+    if (!element || typeof element.getAttribute !== 'function') return null;
     const explicit = element.getAttribute('data-episode') ||
       element.getAttribute('data-episode-index') || element.getAttribute('data-num');
     if (explicit) return episodeNumber(explicit);
@@ -781,6 +782,65 @@
       return matches.length === 1 ? matches : [];
     }).sort((left, right) => (left.episodeNumber ?? Infinity) - (right.episodeNumber ?? Infinity));
     if (!connected) { connect(); return; }
+    let activeNode = null;
+    if (lastActiveNode && nodes.has(lastActiveNode) &&
+        isPlaybackControlNode(lastActiveNode)) {
+      activeNode = lastActiveNode;
+    } else {
+      const playingNodes = currentNodes.filter(node =>
+        !node.paused && !node.ended && isPlaybackControlNode(node));
+      if (playingNodes.length === 1) activeNode = playingNodes[0];
+    }
+    let sourceUrl = null;
+    let sourceKey = '';
+    let episodeNumber = null;
+    let evidenceTitle = String(document.title || '').slice(0, 512);
+    if (activeNode) {
+      const rawSource = activeNode.currentSrc || activeNode.src || '';
+      try {
+        const source = new URL(rawSource, document.baseURI);
+        if (['http:', 'https:'].includes(source.protocol) && !source.username &&
+            !source.password && looksMedia(source.href, activeNode.type || '')) {
+          sourceUrl = source.href;
+          sourceKey = candidateKey(source);
+        }
+      } catch (_) {}
+      episodeNumber = elementEpisode(activeNode);
+      const matches = sourceKey
+        ? candidates.filter(item => {
+          try { return candidateKey(new URL(item.url, document.baseURI)) === sourceKey; }
+          catch (_) { return false; }
+        })
+        : [];
+      const labelled = matches.filter(item => item.episodeNumber != null);
+      if (episodeNumber == null && labelled.length === 1) {
+        episodeNumber = labelled[0].episodeNumber;
+      }
+      if (matches.length === 1 && matches[0].title) evidenceTitle = matches[0].title;
+    }
+    const evidenceState = playing
+      ? 'playing'
+      : (activeNode?.ended ? 'ended' : (activeNode ? 'paused' : 'idle'));
+    const evidence = {
+      frame: frameId,
+      document: documentId,
+      epoch,
+      pageUrl: pageUrl(),
+      sourceUrl,
+      sourceKey,
+      seriesKey: context?.series || null,
+      episodeNumber,
+      title: evidenceTitle,
+      state: evidenceState,
+      confirmed: Boolean(sourceUrl && sourceKey && candidates.some(item => {
+        try { return candidateKey(new URL(item.url, document.baseURI)) === sourceKey; }
+        catch (_) { return false; }
+      })),
+    };
+    // Keep the bridge fail-closed when an unusual page URL or media URL would
+    // consume the entire native message budget. A missing source then remains
+    // visible as an unconfirmed observation instead of being truncated into a
+    // different identity.
     const state = {
       playing,
       resumable: Array.from(resumeNodes).some(isPlaybackControlNode) || resumeContexts.size > 0 ||
@@ -788,6 +848,9 @@
           isPlaybackControlNode(lastActiveNode)),
       canSkip: canSwitchCandidate(),
       title: (document.title || '').slice(0, 512),
+      evidence: JSON.stringify(evidence).length <= 3500
+        ? evidence
+        : {...evidence, sourceUrl: null, sourceKey: '', title: '', seriesKey: null, confirmed: false},
     };
     const stateKey = JSON.stringify(state);
     if (stateKey !== lastState) { lastState = stateKey; post('state', state); }

@@ -47,7 +47,8 @@ class HostSession {
   final registered = <String, String>{};
   final mediaCandidates = <String, MediaCandidate>{};
   final mediaCandidateFrames =
-      <String, ({String frame, String document, bool main})>{};
+      <String, ({String frame, String document, bool main, int epoch})>{};
+  PlaybackEvidence? playbackEvidence;
   final _candidatePublications = <_CandidatePublication>{};
   FilterEngine? filterEngine;
   FilterPolicy filterPolicy = const FilterPolicy();
@@ -302,6 +303,7 @@ class NativeHosts extends WebHostEvents {
     session.menus.clear();
     session.mediaCandidates.clear();
     session.mediaCandidateFrames.clear();
+    session.playbackEvidence = null;
     _aborted.removeWhere((key) => key.startsWith('${session.id}:'));
     sessions.remove(session.id);
     await _drainCandidateWrites(session);
@@ -338,6 +340,7 @@ class NativeHosts extends WebHostEvents {
       session.menus.clear();
       session.mediaCandidates.clear();
       session.mediaCandidateFrames.clear();
+      session.playbackEvidence = null;
       session.generation = event.generation;
       session.filterBlocked = 0;
       session.filterAllowed = 0;
@@ -376,6 +379,7 @@ class NativeHosts extends WebHostEvents {
         final raw = jsonDecode(event.detail) as Map<String, dynamic>;
         final frame = (raw['frame'] as String? ?? '').trim();
         final document = (raw['document'] as String? ?? '').trim();
+        final reason = (raw['reason'] as String? ?? 'route').trim();
         final main = raw['main'] == true && raw['reason'] != 'snapshot';
         final previousPage = (raw['previousPageUrl'] as String? ?? '').trim();
         for (final publication in session._candidatePublications) {
@@ -414,8 +418,44 @@ class NativeHosts extends WebHostEvents {
           session.mediaCandidates.remove(id);
           session.mediaCandidateFrames.remove(id);
         }
+        final evidence = session.playbackEvidence;
+        if (evidence != null &&
+            (evidence.frame == frame ||
+                (main && evidence.document == document))) {
+          session.playbackEvidence = reason == 'snapshot'
+              ? evidence.withConfirmation(
+                  confirmed: false,
+                  reason: 'candidate_snapshot',
+                )
+              : null;
+        }
       } catch (_) {
         // Invalid page telemetry must not clear unrelated media candidates.
+      }
+      changed.value++;
+    }
+    if (event.kind == 'mediaPlaybackEvidence' &&
+        session.purpose == HostPurpose.browsing) {
+      try {
+        final raw = jsonDecode(event.detail) as Map<String, dynamic>;
+        final evidence = PlaybackEvidence.fromWire(
+          hostId: session.id,
+          generation: session.generation,
+          raw: raw,
+        );
+        if (evidence.epoch < 0) {
+          session.playbackEvidence = evidence.withConfirmation(
+            confirmed: false,
+            reason: 'invalid_epoch',
+          );
+        } else {
+          session.playbackEvidence = _reconcilePlaybackEvidence(
+            session,
+            evidence,
+          );
+        }
+      } catch (_) {
+        session.playbackEvidence = null;
       }
       changed.value++;
     }
@@ -433,6 +473,7 @@ class NativeHosts extends WebHostEvents {
         final frame = (raw['frame'] as String? ?? '').trim();
         final document = (raw['document'] as String? ?? '').trim();
         final main = raw['main'] == true;
+        final epoch = (raw['epoch'] as num?)?.toInt() ?? -1;
         final frameKey = frame.isEmpty ? 'host:${session.id}' : frame;
         final rawMime = (raw['mime'] as String? ?? '').trim();
         final thumbnailUrl = optionalMediaUri(raw['thumbnail'] as String?);
@@ -509,7 +550,17 @@ class NativeHosts extends WebHostEvents {
             frame: frameKey,
             document: document,
             main: main,
+            epoch: epoch,
           );
+          final evidence = session.playbackEvidence;
+          if (evidence != null &&
+              evidence.frame == frameKey &&
+              evidence.document == document) {
+            session.playbackEvidence = _reconcilePlaybackEvidence(
+              session,
+              evidence,
+            );
+          }
           changed.value++;
         }
       } catch (_) {
@@ -531,6 +582,7 @@ class NativeHosts extends WebHostEvents {
       session.registered.clear();
       session.mediaCandidates.clear();
       session.mediaCandidateFrames.clear();
+      session.playbackEvidence = null;
       sessions.remove(session.id);
       onInvalidated?.call(session);
       await _drainCandidateWrites(session);
@@ -864,7 +916,17 @@ class NativeHosts extends WebHostEvents {
             frame: 'host:${session.id}',
             document: sourceUrl.toString(),
             main: true,
+            epoch: -1,
           );
+          final evidence = session.playbackEvidence;
+          if (evidence != null &&
+              evidence.frame == 'host:${session.id}' &&
+              evidence.document == sourceUrl.toString()) {
+            session.playbackEvidence = _reconcilePlaybackEvidence(
+              session,
+              evidence,
+            );
+          }
           changed.value++;
           value = candidate.toJson();
         } finally {
@@ -937,5 +999,36 @@ class NativeHosts extends WebHostEvents {
             : readableError(e),
       });
     }
+  }
+
+  PlaybackEvidence _reconcilePlaybackEvidence(
+    HostSession session,
+    PlaybackEvidence evidence,
+  ) {
+    if (evidence.sourceUrl == null || evidence.sourceKey.isEmpty) {
+      return evidence.withConfirmation(
+        confirmed: false,
+        reason: 'unstable_source',
+      );
+    }
+    final matches = session.mediaCandidates.entries.where((entry) {
+      final frame = session.mediaCandidateFrames[entry.key];
+      return frame != null &&
+          (frame.frame == evidence.frame ||
+              frame.frame == 'host:${session.id}') &&
+          frame.document == evidence.document &&
+          frame.epoch == evidence.epoch &&
+          mediaCandidateAuthorizationKey(entry.value.mediaUrl) ==
+              evidence.sourceKey;
+    }).toList();
+    if (matches.length == 1) {
+      return evidence.withConfirmation(confirmed: true);
+    }
+    return evidence.withConfirmation(
+      confirmed: false,
+      reason: matches.isEmpty
+          ? 'candidate_not_published'
+          : 'ambiguous_candidate',
+    );
   }
 }

@@ -280,4 +280,126 @@ void main() {
       }
     },
   );
+
+  test(
+    'playback evidence requires a same-frame candidate and is revoked by route',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final http = ControlledHttp();
+      final hosts = NativeHosts(
+        db,
+        ScriptService(db, http),
+        http,
+        api: FakeWebHostApi(),
+      );
+      final session = _session(hosts);
+      const source = 'https://cdn.example/episode.m3u8?episode=3';
+      final sourceKey = source;
+      HostEvent evidence({String? key, int epoch = 4}) => HostEvent(
+        hostId: session.id,
+        generation: session.generation,
+        kind: 'mediaPlaybackEvidence',
+        url: session.url,
+        detail: jsonEncode({
+          'frame': 'child-1',
+          'document': 'document-1',
+          'epoch': epoch,
+          'pageUrl': 'https://player.example/embed/3',
+          'sourceUrl': source,
+          'sourceKey': key ?? sourceKey,
+          'seriesKey': 'https://player.example/video/42',
+          'episodeNumber': 3,
+          'title': '示例剧 - 第3集',
+          'state': 'playing',
+        }),
+      );
+      try {
+        await hosts.onEvent(
+          evidence(key: 'https://cdn.example/other.m3u8?episode=3'),
+        );
+        expect(session.playbackEvidence, isNull);
+
+        await hosts.onEvent(evidence());
+        expect(session.playbackEvidence?.confirmed, isFalse);
+        expect(session.playbackEvidence?.reason, 'candidate_not_published');
+
+        await hosts.onEvent(
+          HostEvent(
+            hostId: session.id,
+            generation: session.generation,
+            kind: 'mediaCandidate',
+            url: session.url,
+            detail: jsonEncode({
+              'url': source,
+              'title': '示例剧 - 第3集',
+              'mime': 'application/vnd.apple.mpegurl',
+              'pageUrl': 'https://player.example/embed/3',
+              'frame': 'child-1',
+              'document': 'document-1',
+              'main': false,
+              'epoch': 4,
+            }),
+          ),
+        );
+        expect(session.playbackEvidence?.confirmed, isTrue);
+        expect(session.playbackEvidence?.autoSaveEligible, isTrue);
+
+        await hosts.onEvent(
+          HostEvent(
+            hostId: session.id,
+            generation: session.generation,
+            kind: 'mediaCandidate',
+            url: session.url,
+            detail: jsonEncode({
+              'url': source,
+              'title': '示例剧 - 第3集',
+              'mime': 'application/vnd.apple.mpegurl',
+              'pageUrl': 'https://player.example/embed/3',
+              'frame': 'child-1',
+              'document': 'document-1',
+              'main': false,
+              'epoch': 5,
+            }),
+          ),
+        );
+        expect(session.playbackEvidence?.confirmed, isFalse);
+        expect(session.playbackEvidence?.reason, 'candidate_not_published');
+
+        await hosts.onEvent(
+          HostEvent(
+            hostId: session.id,
+            generation: session.generation,
+            kind: 'mediaCandidatesClear',
+            url: session.url,
+            detail: jsonEncode({
+              'frame': 'child-1',
+              'document': 'document-1',
+              'main': false,
+              'reason': 'snapshot',
+            }),
+          ),
+        );
+        expect(session.playbackEvidence, isNotNull);
+        expect(session.playbackEvidence?.confirmed, isFalse);
+
+        await hosts.onEvent(
+          HostEvent(
+            hostId: session.id,
+            generation: session.generation,
+            kind: 'mediaCandidatesClear',
+            url: session.url,
+            detail: jsonEncode({
+              'frame': 'child-1',
+              'document': 'document-1',
+              'main': false,
+              'reason': 'route',
+            }),
+          ),
+        );
+        expect(session.playbackEvidence, isNull);
+      } finally {
+        await db.close();
+      }
+    },
+  );
 }

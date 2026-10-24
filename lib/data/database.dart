@@ -128,6 +128,14 @@ const _v10TaskBatchDirectoryColumn =
 const _v12FilterSourceEnabledColumn =
     'ALTER TABLE filter_sources ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1';
 
+const _v13WatchSavesTable =
+    'CREATE TABLE IF NOT EXISTS watch_saves('
+    'owner_id TEXT PRIMARY KEY, source_key TEXT NOT NULL, source_url TEXT NOT NULL, '
+    'series_key TEXT NOT NULL, episode_number INTEGER NOT NULL, title TEXT NOT NULL, '
+    'page_url TEXT NOT NULL, host_id INTEGER NOT NULL, generation INTEGER NOT NULL, '
+    'state TEXT NOT NULL, profile_id INTEGER REFERENCES profiles(id) ON DELETE SET NULL, '
+    'created_at TEXT NOT NULL, updated_at TEXT NOT NULL)';
+
 // Drift's SQL API keeps the small schema explicit and permits in-memory tests.
 // No browser cookie or password is copied into this database.
 class AppDatabase extends GeneratedDatabase {
@@ -147,7 +155,7 @@ class AppDatabase extends GeneratedDatabase {
   static void Function(String step)? migrationDebugHook;
 
   @override
-  int get schemaVersion => 12;
+  int get schemaVersion => 13;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -170,6 +178,7 @@ class AppDatabase extends GeneratedDatabase {
         ..._v5Tables,
         _v8ErrorLogsTable,
         _v9MediaArtifactsTable,
+        _v13WatchSavesTable,
       ]) {
         await customStatement(sql);
       }
@@ -228,6 +237,7 @@ class AppDatabase extends GeneratedDatabase {
       if (from < 12 && !await _columnExists('filter_sources', 'enabled')) {
         await customStatement(_v12FilterSourceEnabledColumn);
       }
+      if (from < 13) await customStatement(_v13WatchSavesTable);
     },
     beforeOpen: (_) async {
       await customStatement('PRAGMA foreign_keys = ON');
@@ -1493,6 +1503,63 @@ class AppDatabase extends GeneratedDatabase {
             ),
           )
           .toList();
+
+  Future<bool> saveWatchSave(WatchSave save) => transaction(() async {
+    await customStatement(
+      'INSERT INTO watch_saves(owner_id,source_key,source_url,series_key,episode_number,title,page_url,host_id,generation,state,profile_id,created_at,updated_at) '
+      'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) '
+      'ON CONFLICT(owner_id) DO UPDATE SET source_key=excluded.source_key,source_url=excluded.source_url,series_key=excluded.series_key,episode_number=excluded.episode_number,title=excluded.title,page_url=excluded.page_url,host_id=excluded.host_id,generation=excluded.generation,state=excluded.state,profile_id=excluded.profile_id,updated_at=excluded.updated_at '
+      'WHERE substr(replace(excluded.updated_at,\'Z\',\'000\'),1,26) >= substr(replace(watch_saves.updated_at,\'Z\',\'000\'),1,26)',
+      [
+        save.ownerId,
+        save.sourceKey,
+        save.sourceUrl.toString(),
+        save.seriesKey,
+        save.episodeNumber,
+        save.title,
+        save.pageUrl.toString(),
+        save.hostId,
+        save.generation,
+        save.state.name,
+        save.profileId,
+        save.createdAt.toUtc().toIso8601String(),
+        save.updatedAt.toUtc().toIso8601String(),
+      ],
+    );
+    final changed = await customSelect('SELECT changes() AS c').getSingle();
+    return changed.read<int>('c') > 0;
+  });
+
+  Future<WatchSave?> watchSave(String ownerId) async {
+    final row = await customSelect(
+      'SELECT * FROM watch_saves WHERE owner_id=?',
+      variables: [Variable.withString(ownerId)],
+    ).getSingleOrNull();
+    return row == null ? null : _watchSaveFromRow(row);
+  }
+
+  Future<List<WatchSave>> watchSaves() async => (await customSelect(
+    'SELECT * FROM watch_saves ORDER BY updated_at DESC',
+  ).get()).map(_watchSaveFromRow).toList();
+
+  Future<void> deleteWatchSave(String ownerId) =>
+      customStatement('DELETE FROM watch_saves WHERE owner_id=?', [ownerId]);
+
+  WatchSave _watchSaveFromRow(QueryRow row) => WatchSave(
+    ownerId: row.read<String>('owner_id'),
+    sourceKey: row.read<String>('source_key'),
+    sourceUrl: webUri(row.read<String>('source_url')),
+    seriesKey: row.read<String>('series_key'),
+    episodeNumber: row.read<int>('episode_number'),
+    title: row.read<String>('title'),
+    pageUrl: webUri(row.read<String>('page_url')),
+    hostId: row.read<int>('host_id'),
+    generation: row.read<int>('generation'),
+    state: WatchSaveState.values.byName(row.read<String>('state')),
+    profileId: row.readNullable<int>('profile_id'),
+    createdAt: DateTime.parse(row.read<String>('created_at')),
+    updatedAt: DateTime.parse(row.read<String>('updated_at')),
+  );
 
   /// Rewrites media paths and advances the migration journal in one SQLite
   /// transaction. Physical files are prepared before this method is called;

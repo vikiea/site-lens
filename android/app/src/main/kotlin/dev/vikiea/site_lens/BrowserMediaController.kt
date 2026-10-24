@@ -177,6 +177,19 @@ class BrowserMediaController(
                 frame.canSkip = data.optBoolean("canSkip")
                 if (main) title = data.optString("title", "当前标签").take(512)
                 if (nextPlaying && (!allowed || manualPause)) send(frame, "pause")
+                val evidence = data.optJSONObject("evidence")
+                if (evidence != null) {
+                    observedPage(evidence.optString("pageUrl"), sourceOrigin)?.let { page ->
+                        evidence.put("pageUrl", page)
+                        evidence.put("frame", id)
+                        evidence.put("document", document)
+                        evidence.put("epoch", epoch)
+                        onCandidate?.invoke(mapOf(
+                            "kind" to "playbackEvidence",
+                            "payload" to evidence.toString(),
+                        ))
+                    }
+                }
                 updateNotification()
             }
             "candidates" -> {
@@ -194,6 +207,7 @@ class BrowserMediaController(
                         "frame" to id,
                         "document" to document,
                         "main" to main,
+                        "epoch" to data.optLong("epoch", -1),
                         "episodeNumber" to if (candidate.has("episodeNumber")) candidate.optInt("episodeNumber") else null,
                         "durationMs" to if (candidate.has("durationMs")) candidate.optLong("durationMs") else null,
                     ))

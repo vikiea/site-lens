@@ -190,7 +190,32 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 12);
+      expect(raw.userVersion, 13);
+      expect(
+        raw.select(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='watch_saves'",
+        ),
+        hasLength(1),
+      );
+      expect(
+        raw.select('PRAGMA table_info(watch_saves)').map((row) => row['name']),
+        containsAll([
+          'owner_id',
+          'source_key',
+          'source_url',
+          'series_key',
+          'episode_number',
+          'state',
+          'updated_at',
+        ]),
+      );
+      expect(
+        raw
+            .select('PRAGMA foreign_key_list(watch_saves)')
+            .where((row) => row['table'] == 'profiles')
+            .map((row) => row['on_delete']),
+        contains('SET NULL'),
+      );
       expect(raw.select('SELECT COUNT(*) AS c FROM probes').single['c'], 281);
 
       final scripts = await db.scripts();
@@ -426,7 +451,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 12);
+      expect(raw.userVersion, 13);
       expect(
         raw.select(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='filter_snapshots'",
@@ -487,7 +512,7 @@ void main() {
 
     final raw = sqlite3.open(file.path);
     addTearDown(raw.close);
-    expect(raw.userVersion, 12);
+    expect(raw.userVersion, 13);
     expect(
       raw.select('PRAGMA table_info(media_tasks)').map((row) => row['name']),
       contains('batch_directory'),
@@ -519,7 +544,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 12);
+      expect(raw.userVersion, 13);
       expect(
         raw
             .select('PRAGMA table_info(media_tasks)')

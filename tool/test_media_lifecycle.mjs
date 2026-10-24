@@ -152,6 +152,13 @@ mutation();
 await waitForReport();
 assert.equal(outbound.filter(value => value.kind === 'candidates').at(-1).kind, 'candidates');
 assert.ok(outbound.some(value => value.kind === 'state' && value.playing === true));
+const firstEvidence = outbound.filter(value => value.kind === 'state').at(-1).evidence;
+assert.equal(firstEvidence.state, 'playing');
+assert.equal(firstEvidence.frame, 'frame-main');
+assert.equal(firstEvidence.document, 'frame-main');
+assert.equal(firstEvidence.epoch, 0);
+assert.equal(firstEvidence.sourceUrl, nodes[0].currentSrc);
+assert.equal(firstEvidence.confirmed, true);
 assert.ok(outbound.every(value => JSON.stringify(value).length <= 4096));
 const mimeValues = outbound.filter(value => value.kind === 'candidates')
   .flatMap(value => value.candidates).map(value => value.mime);

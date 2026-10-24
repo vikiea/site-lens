@@ -605,6 +605,248 @@ class HostFilterContext {
 
 enum MediaCandidateSource { dom, registered }
 
+enum PlaybackEvidenceState { idle, playing, paused, ended, unknown }
+
+/// A document-scoped observation of the media that the page is actually using.
+///
+/// This is deliberately separate from [MediaCandidate]. A candidate is an
+/// authorized resource the page exposed; evidence additionally proves which
+/// frame/document/epoch was playing it. A watch-save owner may only be created
+/// after [confirmed] is true and [state] is [PlaybackEvidenceState.playing].
+class PlaybackEvidence {
+  const PlaybackEvidence({
+    required this.hostId,
+    required this.generation,
+    required this.frame,
+    required this.document,
+    required this.epoch,
+    required this.pageUrl,
+    required this.sourceUrl,
+    required this.sourceKey,
+    required this.seriesKey,
+    required this.episodeNumber,
+    required this.title,
+    required this.state,
+    required this.confirmed,
+    required this.reason,
+    required this.observedAt,
+  });
+
+  final int hostId;
+  final int generation;
+  final String frame;
+  final String document;
+  final int epoch;
+  final Uri pageUrl;
+  final Uri? sourceUrl;
+  final String sourceKey;
+  final String? seriesKey;
+  final int? episodeNumber;
+  final String title;
+  final PlaybackEvidenceState state;
+  final bool confirmed;
+  final String? reason;
+  final DateTime observedAt;
+
+  bool get isPlaying => state == PlaybackEvidenceState.playing;
+  bool get hasStableIdentity => confirmed && sourceKey.isNotEmpty;
+
+  /// The complete precondition for automatic viewing-save creation. Sites
+  /// without an explicit series/episode identity remain visible for manual
+  /// selection and are never guessed here.
+  bool get autoSaveEligible =>
+      hasStableIdentity &&
+      isPlaying &&
+      seriesKey != null &&
+      episodeNumber != null;
+
+  String get identityKey => [
+    seriesKey ?? '',
+    sourceKey,
+    episodeNumber?.toString() ?? '?',
+  ].join('\u0000');
+
+  factory PlaybackEvidence.fromWire({
+    required int hostId,
+    required int generation,
+    required Map<String, dynamic> raw,
+    DateTime? observedAt,
+  }) {
+    final frame = (raw['frame'] as String? ?? '').trim();
+    final document = (raw['document'] as String? ?? '').trim();
+    if (frame.isEmpty || document.isEmpty) {
+      throw const FormatException('播放证据缺少 frame/document');
+    }
+    final pageUrl = webUri(raw['pageUrl'] as String? ?? '');
+    final sourceUrl = optionalMediaUri(raw['sourceUrl'] as String?);
+    final suppliedSourceKey = (raw['sourceKey'] as String? ?? '').trim();
+    final sourceKey = sourceUrl == null
+        ? suppliedSourceKey
+        : mediaCandidateAuthorizationKey(sourceUrl);
+    if (sourceUrl != null && suppliedSourceKey.isNotEmpty) {
+      final suppliedUrl = Uri.tryParse(suppliedSourceKey);
+      if (suppliedUrl == null ||
+          mediaCandidateAuthorizationKey(suppliedUrl) != sourceKey) {
+        throw const FormatException('播放证据 sourceKey 与 sourceUrl 不一致');
+      }
+    }
+    if (sourceKey.length > 4096) {
+      throw const FormatException('播放证据 sourceKey 过长');
+    }
+    final rawSeries = (raw['seriesKey'] as String? ?? '').trim();
+    final rawTitle = (raw['title'] as String? ?? '').trim();
+    final episode = (raw['episodeNumber'] as num?)?.toInt();
+    final parsedEpisode = episode != null && episode > 0 && episode < 100000
+        ? episode
+        : null;
+    final rawState = (raw['state'] as String? ?? '').trim();
+    final state = switch (rawState) {
+      'idle' => PlaybackEvidenceState.idle,
+      'playing' => PlaybackEvidenceState.playing,
+      'paused' => PlaybackEvidenceState.paused,
+      'ended' => PlaybackEvidenceState.ended,
+      _ => PlaybackEvidenceState.unknown,
+    };
+    return PlaybackEvidence(
+      hostId: hostId,
+      generation: generation,
+      frame: frame,
+      document: document,
+      epoch: (raw['epoch'] as num?)?.toInt() ?? -1,
+      pageUrl: pageUrl,
+      sourceUrl: sourceUrl,
+      sourceKey: sourceKey,
+      seriesKey: rawSeries.isEmpty ? null : rawSeries,
+      episodeNumber: parsedEpisode,
+      title: rawTitle.substring(0, rawTitle.length.clamp(0, 512)),
+      state: state,
+      confirmed: false,
+      reason: null,
+      observedAt: observedAt ?? DateTime.now().toUtc(),
+    );
+  }
+
+  PlaybackEvidence withConfirmation({
+    required bool confirmed,
+    String? reason,
+  }) => PlaybackEvidence(
+    hostId: hostId,
+    generation: generation,
+    frame: frame,
+    document: document,
+    epoch: epoch,
+    pageUrl: pageUrl,
+    sourceUrl: sourceUrl,
+    sourceKey: sourceKey,
+    seriesKey: seriesKey,
+    episodeNumber: episodeNumber,
+    title: title,
+    state: state,
+    confirmed: confirmed,
+    reason: reason,
+    observedAt: observedAt,
+  );
+}
+
+enum WatchSaveState { playing, paused, ended, unknown }
+
+/// A durable automatic viewing-save owner. This is intentionally separate
+/// from [MediaTask]: observing playback does not enqueue a download or claim
+/// the task/cache ownership used by manual media actions.
+class WatchSave {
+  const WatchSave({
+    required this.ownerId,
+    required this.sourceKey,
+    required this.sourceUrl,
+    required this.seriesKey,
+    required this.episodeNumber,
+    required this.title,
+    required this.pageUrl,
+    required this.hostId,
+    required this.generation,
+    required this.state,
+    required this.createdAt,
+    required this.updatedAt,
+    this.profileId,
+  });
+
+  final String ownerId;
+  final String sourceKey;
+  final Uri sourceUrl;
+  final String seriesKey;
+  final int episodeNumber;
+  final String title;
+  final Uri pageUrl;
+  final int hostId;
+  final int generation;
+  final WatchSaveState state;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final int? profileId;
+
+  static String ownerIdFor(PlaybackEvidence evidence) =>
+      'watch:${base64Url.encode(utf8.encode(evidence.identityKey))}';
+
+  factory WatchSave.fromEvidence(
+    PlaybackEvidence evidence, {
+    int? profileId,
+    DateTime? now,
+  }) {
+    if (!evidence.autoSaveEligible || evidence.sourceUrl == null) {
+      throw StateError('播放证据不满足自动保存条件');
+    }
+    final timestamp = now ?? evidence.observedAt;
+    return WatchSave(
+      ownerId: ownerIdFor(evidence),
+      sourceKey: evidence.sourceKey,
+      sourceUrl: evidence.sourceUrl!,
+      seriesKey: evidence.seriesKey!,
+      episodeNumber: evidence.episodeNumber!,
+      title: evidence.title,
+      pageUrl: evidence.pageUrl,
+      hostId: evidence.hostId,
+      generation: evidence.generation,
+      state: switch (evidence.state) {
+        PlaybackEvidenceState.playing => WatchSaveState.playing,
+        PlaybackEvidenceState.paused => WatchSaveState.paused,
+        PlaybackEvidenceState.ended => WatchSaveState.ended,
+        _ => WatchSaveState.unknown,
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      profileId: profileId,
+    );
+  }
+
+  WatchSave copyWith({
+    String? title,
+    Uri? pageUrl,
+    int? hostId,
+    int? generation,
+    WatchSaveState? state,
+    DateTime? updatedAt,
+    Object? profileId = _unset,
+  }) => WatchSave(
+    ownerId: ownerId,
+    sourceKey: sourceKey,
+    sourceUrl: sourceUrl,
+    seriesKey: seriesKey,
+    episodeNumber: episodeNumber,
+    title: title ?? this.title,
+    pageUrl: pageUrl ?? this.pageUrl,
+    hostId: hostId ?? this.hostId,
+    generation: generation ?? this.generation,
+    state: state ?? this.state,
+    createdAt: createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+    profileId: identical(profileId, _unset)
+        ? this.profileId
+        : profileId as int?,
+  );
+
+  static const _unset = Object();
+}
+
 /// Infers a transport MIME from a media URL when a page did not expose a
 /// `type` attribute.  A URL is only metadata here; the native player still
 /// validates and opens the original address selected by the user.

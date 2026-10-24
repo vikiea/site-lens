@@ -41,6 +41,7 @@ import '../media/native_download_runtime.dart';
 import '../media/native_export_runtime.dart';
 import '../media/media_network.dart';
 import '../media/native_media_runtime.dart';
+import '../media/watch_save_store.dart';
 import 'glass_quality_cache.dart';
 import 'ui_util.dart';
 
@@ -98,6 +99,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       db: db,
       directoryProvider: mediaDirectoryProvider,
     );
+    watchSaves = WatchSaveStore(db);
     nativeDownloads = Platform.isAndroid ? NativeDownloadRuntime() : null;
     nativeExports = Platform.isAndroid ? NativeExportRuntime() : null;
     nativeMedia = NativeMediaRuntime();
@@ -370,6 +372,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   late final FilterSnapshotStore filterSnapshots;
   late final FilterSourceManager filterSources;
   late final MediaTaskStore mediaTasks;
+  late final WatchSaveStore watchSaves;
   late final MediaDownloadService mediaDownloads;
   late final Mp4ExportService mediaExports;
   late final MediaLibrary mediaLibrary;
@@ -409,6 +412,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   ThemePresetId themePreset = ThemePresetId.sunsetCoral;
   bool restoreBrowserSessions = true;
   bool allowBackgroundPlayback = false;
+  bool autoSaveWebPlayback = false;
   bool autoConvertToMp4 = false;
   String? mp4ExportDirectory;
   PlayerVerticalGestureMode playerVerticalGesture =
@@ -549,6 +553,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
             () => mediaTasks.ready,
           );
           if (_disposed) return;
+          await watchSaves.restore();
+          if (_disposed) return;
           startupTrace.markOnce(
             StartupPhase.mediaTasksReady,
             itemCount: mediaTasks.tasks.length,
@@ -633,6 +639,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> get mediaRestored async {
     await mediaTasks.ready;
     await mediaLibrary.restore();
+    await watchSaves.restore();
   }
 
   String get glassQualityFingerprint =>
@@ -909,6 +916,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     themePreset = settings.themePreset;
     restoreBrowserSessions = settings.restoreBrowserSessions;
     allowBackgroundPlayback = settings.allowBackgroundPlayback;
+    autoSaveWebPlayback = settings.autoSaveWebPlayback;
     autoConvertToMp4 = settings.autoConvertToMp4;
     mp4ExportDirectory = settings.mp4ExportDirectory;
     playerVerticalGesture = settings.playerVerticalGesture;
@@ -933,6 +941,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> setAllowBackgroundPlayback(bool value) =>
       updateSettings({'allowBackgroundPlayback': value});
+
+  Future<void> setAutoSaveWebPlayback(bool value) =>
+      updateSettings({'autoSaveWebPlayback': value});
 
   Future<void> setAutoConvertToMp4(bool value) =>
       updateSettings({'autoConvertToMp4': value});
@@ -994,6 +1005,12 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
     return stored;
   }
+
+  /// Returns the current document-scoped playback observation without creating
+  /// or reloading a browser host. Watch-save creation must still recheck the
+  /// tab, generation and candidate identity immediately before committing.
+  PlaybackEvidence? playbackEvidenceFor(ActiveBrowserSession tab) =>
+      tab.loadedHost?.playbackEvidence;
 
   MediaCandidate _authorizeMediaDownload(
     MediaTask task,
@@ -1291,6 +1308,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   void _hostMetadataChanged() {
     if (restoringData) return;
+    unawaited(_observeActivePlayback());
     var changed = false;
     for (final tab in browserTabs) {
       final current = tab.currentUrl;
@@ -1317,6 +1335,37 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         }),
       );
     });
+  }
+
+  Future<void> _observeActivePlayback() async {
+    if (_disposed || !autoSaveWebPlayback) return;
+    final tab = activeBrowser;
+    final host = tab?.loadedHost;
+    final evidence = host?.playbackEvidence;
+    if (tab == null ||
+        host == null ||
+        host.disposed ||
+        evidence == null ||
+        !evidence.autoSaveEligible ||
+        !browserTabs.contains(tab)) {
+      return;
+    }
+    try {
+      await watchSaves.observe(
+        evidence,
+        profileId: tab.site.profileId,
+        isCurrent: () =>
+            !_disposed &&
+            identical(activeBrowser, tab) &&
+            browserTabs.contains(tab) &&
+            identical(tab.loadedHost, host) &&
+            identical(host.playbackEvidence, evidence),
+      );
+    } catch (error, stack) {
+      if (!_disposed) {
+        AppErrorLogger.capture(error, module: 'media.watch_save', stack: stack);
+      }
+    }
   }
 
   Future<void> _persistSessions() {
@@ -2602,6 +2651,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         ? _persistSessions()
         : _sessionWrites;
     final mediaFlush = mediaTasks.flushAll();
+    final watchSaveFlush = watchSaves.flush();
     WidgetsBinding.instance.removeObserver(this);
     _disposed = true;
     deviceDiagnostics.removeListener(_diagnosticsChanged);
@@ -2622,9 +2672,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
             (_) {},
             onError: (Object _, StackTrace _) {},
           );
+    final nativeDispose = nativeMedia.dispose();
     _shutdownFuture = Future.wait<void>([
       flush,
       mediaFlush,
+      watchSaveFlush,
       (() async {
         try {
           await _initialization;
@@ -2636,7 +2688,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         await mediaTasks.flushAll();
       })(),
       close,
-      nativeMedia.dispose(),
+      nativeDispose,
       stopCast,
       if (_scriptToggleRun != null)
         _scriptToggleRun!.then<void>(
@@ -2649,6 +2701,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     );
     mediaLibrary.removeListener(notifyMediaChanged);
     mediaLibrary.dispose();
+    watchSaves.dispose();
     AppErrorLogger.detach(errorLogger);
     super.dispose();
   }

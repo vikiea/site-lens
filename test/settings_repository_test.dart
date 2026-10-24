@@ -46,6 +46,7 @@ void main() {
         'glassQualityMode': 'high',
         'highQualityAllSurfaces': true,
         'replaceSameSiteTabs': true,
+        'autoSaveWebPlayback': true,
         'themePreset': 'aurora_cyan',
       });
       final decoded = jsonDecode(
@@ -55,6 +56,7 @@ void main() {
       expect(decoded['glassQualityMode'], 'high');
       expect(decoded['highQualityAllSurfaces'], isTrue);
       expect(decoded['replaceSameSiteTabs'], isTrue);
+      expect(decoded['autoSaveWebPlayback'], isTrue);
       expect(decoded['themePreset'], 'aurora_cyan');
       expect(await db.setting('glassOpacity'), isNull);
       expect(await db.setting('replaceSameSiteTabs'), isNull);

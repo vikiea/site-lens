@@ -484,6 +484,9 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     ) { candidate ->
         if (candidate["kind"] == "clear") {
             event("mediaCandidatesClear", JSONObject(candidate).toString())
+        } else if (candidate["kind"] == "playbackEvidence") {
+            val payload = candidate["payload"] as? String
+            if (!payload.isNullOrBlank()) event("mediaPlaybackEvidence", payload)
         } else {
             val url = candidate["url"] as? String
             if (url != null && url.isNotBlank()) event("mediaCandidate", JSONObject(candidate).toString())

@@ -7,6 +7,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 ANDROID = ROOT / "android/app/src/main/kotlin/dev/vikiea/site_lens"
 CONTROLLER = (ANDROID / "BrowserMediaController.kt").read_text()
+HOST = (ANDROID / "NativeWebHost.kt").read_text()
 SERVICE = (ANDROID / "BrowserMediaService.kt").read_text()
 LIFECYCLE = (ROOT / "web_assets/media_lifecycle.js").read_text()
 TRANSFER = (ANDROID / "ResumableMediaTransfer.kt").read_text()
@@ -170,6 +171,9 @@ class NativeMediaContractTests(unittest.TestCase):
     def test_javascript_splits_candidate_telemetry(self):
         self.assertIn("post('state', state)", LIFECYCLE)
         self.assertIn("post('candidates'", LIFECYCLE)
+        self.assertIn("evidence:", LIFECYCLE)
+        self.assertIn('mediaPlaybackEvidence', HOST)
+        self.assertIn('"kind" to "playbackEvidence"', CONTROLLER)
         self.assertIn("raw.length <= 4096", LIFECYCLE)
 
     def test_media_snapshot_carries_frame_and_previous_page_identity(self):
