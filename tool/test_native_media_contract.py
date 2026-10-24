@@ -294,8 +294,10 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn("if (!disposed) fail(call, result, error)", export_call)
 
         cleanup = DOWNLOAD_RUNTIME.split("executor.execute {", 2)[2].split("companion object", 1)[0]
+        self.assertLess(cleanup.index("val cleaned"), cleanup.index("cancelUniqueWork"))
         self.assertLess(cleanup.index("cancelUniqueWork"), cleanup.index("withFileLock"))
-        self.assertLess(cleanup.index("withFileLock"), cleanup.index("reservation.lease.close()"))
+        self.assertLess(cleanup.index("withFileLock"), cleanup.index("if (cleaned &&"))
+        self.assertIn("if (cleaned && mutationReservations.remove(id, reservation))", cleanup)
 
 
 if __name__ == "__main__":

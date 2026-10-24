@@ -600,7 +600,7 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
         // the command executor and never hold the old Flutter engine hostage.
         executor.execute {
             owned.forEach { (id, reservation) ->
-                runCatching {
+                val cleaned = runCatching {
                     val record = repository.read(reservation.taskId)
                     record?.let {
                         repository.save(record.copy(paused = true, cancelled = true))
@@ -617,8 +617,13 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
                             record.seriesDirectory,
                         ) {}
                     }
-                }
-                if (mutationReservations.remove(id, reservation)) {
+                }.isSuccess
+                // Keep the reservation and its fence when cancellation or
+                // lock handoff fails. Releasing on uncertainty would let a
+                // new engine mutate files while the old worker may still be
+                // writing them; the next operation then fails closed on the
+                // retained fence instead.
+                if (cleaned && mutationReservations.remove(id, reservation)) {
                     reservation.lease.close()
                 }
             }
