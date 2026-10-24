@@ -1386,6 +1386,22 @@ class _AddProfileDialogState extends State<_AddProfileDialog> {
   String? error;
   int _reconGeneration = 0;
 
+  @override
+  void initState() {
+    super.initState();
+    url.addListener(_urlChanged);
+  }
+
+  void _urlChanged() {
+    if (!mounted || recon == null) return;
+    _invalidateRecon();
+    setState(() {
+      recon = null;
+      manual = false;
+      error = null;
+    });
+  }
+
   void _invalidateRecon() {
     _reconGeneration++;
     widget.app.cancelRecon();
@@ -1396,6 +1412,7 @@ class _AddProfileDialogState extends State<_AddProfileDialog> {
     // Dismissing the dialog must not leave a discovery WebView probing for
     // up to ~15s + selector inference.
     _invalidateRecon();
+    url.removeListener(_urlChanged);
     url.dispose();
     name.dispose();
     region.dispose();

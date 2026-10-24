@@ -21,7 +21,7 @@ import 'fake_web_host_api.dart';
 
 class _ReconTestApp extends AppController {
   _ReconTestApp(super.db) : super(api: FakeWebHostApi());
-  final result = Completer<ReconResult>();
+  Completer<ReconResult> result = Completer<ReconResult>();
   int calls = 0;
   @override
   Future<ReconResult> recon(String input) {
@@ -269,6 +269,80 @@ void main() {
     await app.shutdown();
     await db.close();
   });
+
+  testWidgets(
+    'editing the URL invalidates the previous reconnaissance result',
+    (tester) async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final app = _ReconTestApp(db);
+      await app.load();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () => showAddProfileDialog(context, app),
+                child: const Text('添加站点'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('添加站点'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byType(TextField).first,
+        'https://old.example.com/',
+      );
+      await tester.tap(find.widgetWithText(FilledButton, '开始侦察'));
+      await tester.pump();
+      app.result.complete(
+        ReconResult(
+          url: Uri.parse('https://old.example.com/'),
+          finalUrl: Uri.parse('https://old.example.com/'),
+          title: '旧站点',
+          regionSelector: '@latest-addresses',
+          regionFound: true,
+          links: const [],
+          inferredReadySelector: 'article',
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byType(TextField).first,
+        'https://new.example.com/',
+      );
+      app.result = Completer<ReconResult>();
+      await tester.tap(find.widgetWithText(FilledButton, '创建档案'));
+      await tester.pump();
+      expect(app.calls, 2);
+      expect(await db.profiles(), isEmpty);
+      app.result.complete(
+        ReconResult(
+          url: Uri.parse('https://new.example.com/'),
+          finalUrl: Uri.parse('https://new.example.com/'),
+          title: '新站点',
+          regionSelector: '@latest-addresses',
+          regionFound: true,
+          links: const [],
+          inferredReadySelector: 'main',
+        ),
+      );
+      await tester.pumpAndSettle();
+      final profile = (await db.profiles()).single;
+      // Preserve the user's existing name input while applying the new
+      // reconnaissance result to the URL and selector.
+      expect(profile.name, '旧站点');
+      expect(profile.readySelector, 'main');
+      expect(
+        (await db.profilePages()).single.url,
+        Uri.parse('https://new.example.com/'),
+      );
+      await tester.pumpWidget(const SizedBox());
+      await app.shutdown();
+      await db.close();
+    },
+  );
 
   testWidgets('reconnaissance without a ready selector stays in manual form', (
     tester,
