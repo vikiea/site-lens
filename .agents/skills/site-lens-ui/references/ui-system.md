@@ -31,6 +31,26 @@ Material elevation stays at zero. Depth comes from glass, tint, contrast, and sp
 
 Use `SiteLensMetrics`, `SiteLensColors`, `Theme.of(context).colorScheme`, and `Theme.of(context).textTheme` as the source of truth. Existing theme preset IDs and their persistence format are compatibility boundaries.
 
+### Canonical token snapshot
+
+`lib/ui/app_theme.dart` is the runtime source and this table is the agent-facing synchronization contract. If a value changes intentionally, update the runtime constant, this table, and the focused UI tests together. These values describe the current alpha19/stable `0.4.0` design; do not revive values from earlier alpha versions.
+
+| Token group | Current values |
+| --- | --- |
+| Page and panel | `pagePadding=16`, `itemGap=10`, `listGap=14`, `formGap=12`, `sectionGap=24`, `panelRadius=22`, `panelPadding=18`, `inputRadius=14` |
+| Compact rows | `compactRowHorizontalPadding=12`, `compactRowVerticalPadding=0`, `compactRowMinHeight=64`, `compactIconSize=18`, `compactIconButtonSize=36`, `compactSwitchScale=0.84` |
+| Row fitting | `rowTextMaxCharacters=20`, `rowTextMinScale=0.88`; use `SiteLensRowText` and preserve the full semantic label |
+| Details and diagnostics | `compactDividerIndent=12`, `accordionContentIndent=42`, `settingsDividerIndent=18`, `diagnosticLabelWidth=64`, `detailLabelWidth=64`, `detailColumnGap=10`, `detailContentIndent=26`, `diagnosticRowGap=4`, `diagnosticDetailMaxHeightFraction=0.42` |
+| Settings and media | `settingsSectionLabelHorizontalPadding=6`, `settingsSectionLabelBottom=8`, `mediaThumbnailSize=68x48` (the image keeps its source aspect ratio inside the slot) |
+| Navigation | `navBarHeight=72`, `navIconSize=20`, `navLabelSize=12`, `navRadius=30`, `navHorizontalInset=28`, `navCapsuleInset=6` |
+| Segmented controls | `segmentedHeight=40`, `segmentedInset=2` |
+| Browser chrome | `toolbarHeight=48`, `toolbarIconSize=18`, `toolbarInset=12`, `toolbarRadius=26` |
+| Browser dock | `browserDockWidth=toolbarHeight/3=16`, `browserDockIconSize=16`; the six-dot mark stays inside the 16 dp strip, outer edge straight and inward edge rounded |
+| Opacity layout | default `55`, value format `n / 100`, `opacityLabelGap=6`, `opacitySliderGap=8`; the slider is trailing-aligned |
+| Typography | page `20/w600`, section `16/w600`, row `15/w500`, body `14/w400`, description `12.5/w400`, caption `12/w400`, line height `1.35` |
+
+Theme preset IDs are compatibility data: `oceanBlue`, `mistPine`, `irisViolet`, `roseGray`, `sandstoneCopper`, `graphiteBlue`, `auroraCyan`, `sunsetCoral`, `lavenderInk`, `mintGlass`, `amberGlow`, and `midnightIndigo`. Their seed map remains in `ThemePresetId.seed`; changing a seed is a visual migration and must preserve the stored IDs.
+
 - Page padding: `SiteLensMetrics.pagePadding`.
 - Panel radius and padding: `SiteLensMetrics.panelRadius` and `SiteLensMetrics.panelPadding`.
 - Input/control radius: `SiteLensMetrics.inputRadius`.
@@ -51,6 +71,8 @@ Use `SiteLensMetrics`, `SiteLensColors`, `Theme.of(context).colorScheme`, and `T
 - Long media paths: keep the compact row title and subtitle to one line each. Tapping opens a detail area with the complete selectable path or explanation; do not put an ellipsized path in the only readable location, and do not let the collapsed row height change.
 
 Use `SiteLensColors.of(context)` for backdrop, panel, navigation, divider, section-label, success, warning, and danger roles. The glass fill token must remain visually separated from the static backdrop in both appearances; current defaults are neutral light gray `#E7EAEE` in light mode and neutral charcoal `#25272B` in dark mode. Do not use a raw `Colors.*` value in a screen unless it is a platform or asset color with an explicit reason.
+
+Full-screen video playback and its native-style transport controls are an explicit exception to the app-surface color rule: black video backdrops, white playback glyphs, and transparent control overlays may use raw colors so controls remain legible over arbitrary video frames. Keep those colors inside the playback surface; app panels, settings, notices, dialogs, and browser chrome still use `SiteLensColors` and theme text roles.
 
 ## Component rules
 
@@ -104,6 +126,7 @@ Use `SiteLensMenuSelector<T>` with typed `SiteLensMenuOption<T>` values for an i
 - Label the setting `不透明度`; show only the numeric value, without explanatory notes. The value is absolute body alpha for Flutter liquid-glass surfaces: 100 is fully opaque and 0 is transparent fill. The default is `55`, and the slider exposes a clickable default marker that restores `55`. Do not multiply by the library preset alpha. Keep frost at the material baseline for values at or above the default 55; keep the selected body alpha linear so the slider remains predictable, and use the neutral fill tokens to preserve contrast at low values while blur, refraction and rim treatment remain active. Chrome surfaces must retain a visible AdaptiveGlass material floor at 0 so navigation controls remain legible. Content panels retain the exact selected alpha; their neutral fill tokens provide contrast even near the low end. The backdrop itself stays opaque and controls over a native WebView retain their polarity-matched contrast backer.
 
 - Show `高质量覆盖全部面板` in `自动` and `高质量` modes. When enabled, Flutter content panels, dialogs, sheets, and glass cards follow the selected quality: adaptive standard/premium in automatic mode, premium in high mode. Standard mode keeps standard quality and retains the saved coverage preference. Keep the route-wide Android WebView composition fence when the current engine does not confirm HCPP. With effective HCPP, restore Flutter-owned standard/premium surfaces; direct native WebView overlays keep the platform-view backer/fill because HCPP does not expose native pixels to Flutter shaders.
+- Renderer evidence has two layers: `quality`, `fallback`, HCPP state, and the renderer policy describe the selected app policy; they do not prove the Flutter engine backend or alpha15 pixel equivalence. Claim actual refraction, rim treatment, edge consistency, no startup flash, or visual equivalence only from a current screenshot/compositor capture on the target device. Keep `siteLensForceSkia=true` as an explicit compatibility build option rather than turning WebView capability limits into a global design rule.
 
 ## Settings diagnostics and theme presets
 

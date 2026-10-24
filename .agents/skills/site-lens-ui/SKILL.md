@@ -29,10 +29,11 @@ Use this skill for UI work in this repository. Read [references/ui-system.md](re
 - Foldable panels use the shared foldable-panel primitive/theme; do not introduce raw `ExpansionTile` defaults with elevation, pressed shadows, opaque backgrounds, or page-local shape overrides.
 - Preserve existing business behavior, fail-closed navigation and script rules, WebView lifecycle, and data flows while changing presentation.
 - Media Library and Media Tasks share the same folder/file browser interaction primitives for navigation, selection, move, rename, copy and delete. User-visible organization is persisted separately from native download paths so folder operations never invalidate resumable cache identities.
+- Treat the canonical token snapshot in `references/ui-system.md` and the runtime values in `lib/ui/app_theme.dart` as one synchronization contract. When a shared metric, typography value, color role, opacity rule, surface role, or glass-quality rule changes intentionally, update both files and the focused UI tests in the same change.
 
 ## Implementation workflow
 
-1. Inspect the existing surface role and theme token before adding a new one.
+1. Inspect the existing surface role and the canonical token snapshot before adding a new one; compare against `lib/ui/app_theme.dart` when a value is involved.
 2. Reuse or extend the shared primitive layer before composing a page-local widget.
 3. Keep Material controls when they provide useful semantics and interaction; style them through the Site Lens theme or wrap them in a Site Lens surface.
 4. Check light mode, dark mode, a non-default theme preset, narrow phone width, long Chinese text, empty state, and error state.
