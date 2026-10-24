@@ -186,6 +186,51 @@ class NativeCrashContractTests(unittest.TestCase):
         self.assertIn("diagnosticsGeneration++", cleanup)
         self.assertIn("diagnosticsExecutor?.shutdown", cleanup)
 
+    def test_cookie_manager_access_is_main_thread_bridged(self):
+        cookie_reader = (SOURCE / "AndroidCookieReader.kt").read_text()
+        self.assertIn("Looper.myLooper() == Looper.getMainLooper()", cookie_reader)
+        self.assertIn("main.post", cookie_reader)
+        self.assertIn("CountDownLatch", cookie_reader)
+        for name in ("MediaNetworkRuntime.kt", "NativeMediaDownloadWorker.kt", "NativeMediaRuntime.kt"):
+            body = (SOURCE / name).read_text()
+            self.assertNotIn("CookieManager.getInstance().getCookie", body)
+            self.assertIn("AndroidCookieReader.get", body)
+
+    def test_android_16_uses_renderer_teardown_guard(self):
+        policy = (SOURCE / "FlutterRendererPolicy.kt").read_text()
+        activity = self.activity
+        diagnostics = (SOURCE / "NativeDeviceDiagnostics.kt").read_text()
+        self.assertIn("ANDROID_API_WITH_VULKAN_TEARDOWN_GUARD = 36", policy)
+        self.assertIn('soc == "qti"', policy)
+        self.assertIn('board == "qcom"', policy)
+        self.assertIn("--enable-impeller=false", policy)
+        self.assertIn("override fun getFlutterShellArgs", activity)
+        self.assertIn("FlutterRendererPolicy.shellArgs", activity)
+        self.assertIn("platform.renderer.policy", diagnostics)
+
+    def test_saf_scan_uses_the_controlled_media3_data_source(self):
+        export = (SOURCE / "NativeExportRuntime.kt").read_text()
+        scan = export.split("private fun scanMedia", 1)[1].split(
+            "private fun <T> awaitInspection", 1
+        )[0]
+        self.assertIn("inspectorDataSources(document)", scan)
+        self.assertIn("extractor.setDataSource(document, 0L)", scan)
+        self.assertNotIn("extractor.setDataSource(asset.fileDescriptor", scan)
+
+    def test_saf_inspection_stages_provider_bytes_before_media3(self):
+        export = (SOURCE / "NativeExportRuntime.kt").read_text()
+        inspect = export.split("private fun inspect(source: String)", 1)[1].split(
+            "private fun <T> withInspectionSource", 1
+        )[0]
+        self.assertIn("return withInspectionSource(source)", inspect)
+        helper = export.split("private fun <T> withInspectionSource", 1)[1]
+        self.assertIn("sourceStream(source)", helper)
+        self.assertIn("Uri.fromFile(temporary)", helper)
+        self.assertIn("MAX_INSPECTION_COPY_BYTES", export)
+        self.assertIn("checkActive", helper)
+        self.assertIn("STALE_INSPECTION_TEMP_MILLIS", export)
+        self.assertIn("temporary.delete()", helper)
+
 
 if __name__ == "__main__":
     unittest.main()

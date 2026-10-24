@@ -674,26 +674,45 @@ void main() {
         final plan = SiteLensGlassPolicyScope.of(tester.element(panel))
             .resolve(tester.element(panel), role: SiteLensSurfaceRole.panel);
         expect(plan.quality, GlassQuality.premium);
+        final rendererPolicy = {
+          for (final row in app.deviceDiagnosticRecords) row.id: row,
+        }['platform.renderer.policy'];
+        expect(
+          rendererPolicy,
+          isNotNull,
+          reason:
+              'Native renderer policy must be present on Android acceptance',
+        );
+        final rendererFallback =
+            rendererPolicy!.observed == 'Skia OpenGL compatibility fallback';
         expect(
           plan.useCompatibilityFallback,
-          isFalse,
-          reason: 'This acceptance requires the real high-quality shader path',
+          rendererFallback,
+          reason: rendererFallback
+              ? 'The protected Android renderer must use the compatibility fill'
+              : 'This acceptance requires the real high-quality shader path',
         );
         final glass = find.descendant(
           of: panel,
           matching: find.byType(AdaptiveGlass),
         );
-        expect(glass, findsOneWidget);
-        expect(
-          tester.widget<AdaptiveGlass>(glass).quality,
-          GlassQuality.premium,
-        );
+        if (rendererFallback) {
+          expect(glass, findsNothing);
+        } else {
+          expect(glass, findsOneWidget);
+          expect(
+            tester.widget<AdaptiveGlass>(glass).quality,
+            GlassQuality.premium,
+          );
+        }
         final position = tester.state<ScrollableState>(viewport).position;
         expect(position.viewportDimension, greaterThan(0));
-        expect(
-          tester.getSize(glass).height,
-          lessThanOrEqualTo(tester.getSize(screen).height),
-        );
+        if (!rendererFallback) {
+          expect(
+            tester.getSize(glass).height,
+            lessThanOrEqualTo(tester.getSize(screen).height),
+          );
+        }
         await _wait(
           tester,
           () => find.byKey(const ValueKey('codec-0')).evaluate().isNotEmpty,

@@ -10,10 +10,10 @@ The release workflow accepts a `channel`, `tag`, and `version_bump` policy when 
 每次发布前必须先更新同一提交中的 `pubspec.yaml`：
 
 ```yaml
-version: 0.4.0-alpha16+94
+version: 0.4.0-alpha17+95
 ```
 
-这里的版本名必须对应标签的 dotted 形式（`v0.4.0.alpha16` → `0.4.0-alpha16`），末尾的 build number 必须是本次 Android `versionCode`。`tool/verify_release_pubspec.py` 会在分配阶段拒绝不一致的标签；构建完成后，工作流还会从 APK manifest 回读 `versionName` 和 `versionCode`，两者任意不一致都会失败。冲突时更新 `pubspec.yaml` 并创建新标签，不在工作流里临时改写版本。
+这里的版本名必须对应标签的 dotted 形式（`v0.4.0.alpha17` → `0.4.0-alpha17`），末尾的 build number 必须是本次 Android `versionCode`。`tool/verify_release_pubspec.py` 会在分配阶段拒绝不一致的标签；构建完成后，工作流还会从 APK manifest 回读 `versionName` 和 `versionCode`，两者任意不一致都会失败。冲突时更新 `pubspec.yaml` 并创建新标签，不在工作流里临时改写版本。
 
 `versionCode` 的候选上限仍由已发布版本、不可变 reservation、当前 stable APK 和安装版本下限共同决定；标签中的 pubspec build number 必须严格高于这个上限。`version-code/<code>-<tag>` Git ref 用来防止并发发布重复占用数字，同一个标签重跑时复用它自己的 reservation。稳定版和测试版共用一条递增序列，CI run number 不参与默认版本号。手动输入 `version_code` 仅为兼容重跑保留，并且必须与标签 `pubspec.yaml` 中的 build number 完全相同。
 

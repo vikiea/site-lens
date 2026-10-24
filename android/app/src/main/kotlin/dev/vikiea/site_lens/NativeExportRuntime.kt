@@ -69,6 +69,9 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         private const val MAX_MEDIA_SAMPLES = 2_000_000
         private const val MAX_SAMPLE_BYTES = 32 * 1024 * 1024
         private const val REPORTED_SAMPLES = 512
+        private const val MAX_INSPECTION_COPY_BYTES = 256L * 1024 * 1024
+        private const val INSPECTION_COPY_BUFFER_BYTES = 128 * 1024
+        private const val STALE_INSPECTION_TEMP_MILLIS = 60 * 60 * 1000L
     }
 
     init { System.loadLibrary("site_lens_export") }
@@ -939,30 +942,32 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
     /** Bounded, read-only acceptance helper; no source path is returned. */
     private fun inspectSamples(source: String): Map<String, Any?> {
         stat(source)
-        val tracks = readSamples(localMediaUri(source), activeCancellation ?: AtomicBoolean(false), strict = false)
-        return mapOf("tracks" to tracks.values.map { track ->
-            val format = track.format
-            fun integer(key: String): Int? = if (format.containsKey(key)) format.getInteger(key) else null
-            val csd = (0..2).mapNotNull { index ->
-                val key = "csd-$index"
-                val bytes = format.getByteBuffer(key)?.duplicate() ?: return@mapNotNull null
-                key to ByteArray(bytes.remaining()).also { bytes.get(it) }.toHex()
-            }.toMap()
-            mapOf(
-                "mime" to format.getString(MediaFormat.KEY_MIME),
-                "sampleCount" to track.pts.size,
-                "sampleRate" to integer(MediaFormat.KEY_SAMPLE_RATE),
-                "channelCount" to integer(MediaFormat.KEY_CHANNEL_COUNT),
-                "width" to integer(MediaFormat.KEY_WIDTH), "height" to integer(MediaFormat.KEY_HEIGHT),
-                "csd" to csd,
-                "presentationTimesUs" to track.pts.take(REPORTED_SAMPLES),
-                "sampleSizes" to track.sizes,
-                "durationUs" to if (format.containsKey(MediaFormat.KEY_DURATION)) format.getLong(MediaFormat.KEY_DURATION) else null,
-                "keyFrameSampleIndices" to track.keyFrames.filter { it < REPORTED_SAMPLES },
-                "hasAdtsHeader" to track.hasAdtsHeader,
-                "reportedSamplesTruncated" to (track.pts.size > REPORTED_SAMPLES),
-            )
-        }, "maxScannedSamples" to MAX_MEDIA_SAMPLES)
+        return withInspectionSource(source) { uri ->
+            val tracks = readSamples(uri, activeCancellation ?: AtomicBoolean(false), strict = false)
+            mapOf("tracks" to tracks.values.map { track ->
+                val format = track.format
+                fun integer(key: String): Int? = if (format.containsKey(key)) format.getInteger(key) else null
+                val csd = (0..2).mapNotNull { index ->
+                    val key = "csd-$index"
+                    val bytes = format.getByteBuffer(key)?.duplicate() ?: return@mapNotNull null
+                    key to ByteArray(bytes.remaining()).also { bytes.get(it) }.toHex()
+                }.toMap()
+                mapOf(
+                    "mime" to format.getString(MediaFormat.KEY_MIME),
+                    "sampleCount" to track.pts.size,
+                    "sampleRate" to integer(MediaFormat.KEY_SAMPLE_RATE),
+                    "channelCount" to integer(MediaFormat.KEY_CHANNEL_COUNT),
+                    "width" to integer(MediaFormat.KEY_WIDTH), "height" to integer(MediaFormat.KEY_HEIGHT),
+                    "csd" to csd,
+                    "presentationTimesUs" to track.pts.take(REPORTED_SAMPLES),
+                    "sampleSizes" to track.sizes,
+                    "durationUs" to if (format.containsKey(MediaFormat.KEY_DURATION)) format.getLong(MediaFormat.KEY_DURATION) else null,
+                    "keyFrameSampleIndices" to track.keyFrames.filter { it < REPORTED_SAMPLES },
+                    "hasAdtsHeader" to track.hasAdtsHeader,
+                    "reportedSamplesTruncated" to (track.pts.size > REPORTED_SAMPLES),
+                )
+            }, "maxScannedSamples" to MAX_MEDIA_SAMPLES)
+        }
     }
 
     private fun validateOutput(path: String, expectedCounts: Map<String, Int>? = null): Boolean {
@@ -1317,28 +1322,36 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                             val document = DocumentsContract.buildDocumentUriUsingTree(tree, id)
                             // Reading track headers rejects a still-empty or incomplete
                             // document. No MP4 copy, thumbnail, or network request is made.
-                            val extractor = MediaExtractorCompat(context)
+                            val extractor = MediaExtractorCompat(
+                                androidx.media3.extractor.DefaultExtractorsFactory(),
+                                inspectorDataSources(document),
+                            )
                             try {
-                                context.contentResolver.openAssetFileDescriptor(document, "r")?.use { asset ->
-                                    if (asset.length >= 0) extractor.setDataSource(asset.fileDescriptor, asset.startOffset, asset.length)
-                                    else extractor.setDataSource(asset.fileDescriptor)
-                                    if ((0 until extractor.trackCount).none {
-                                            extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
-                                        }) continue
-                                    files += mapOf(
-                                        "uri" to document.toString(), "name" to name,
-                                        "size" to if (cursor.isNull(3)) asset.length else cursor.getLong(3),
-                                        "modifiedMs" to if (cursor.isNull(4)) 0L else cursor.getLong(4),
-                                        "folder" to folder.ifEmpty { null },
-                                    )
-                                }
+                                extractor.setDataSource(document, 0L)
+                                if ((0 until extractor.trackCount).none {
+                                        extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+                                    }) continue
+                                files += mapOf(
+                                    "uri" to document.toString(), "name" to name,
+                                    "size" to if (cursor.isNull(3)) {
+                                        runCatching {
+                                            context.contentResolver.openAssetFileDescriptor(document, "r")?.use { it.length }
+                                        }.getOrNull()?.takeIf { it > 0L } ?: 0L
+                                    } else {
+                                        cursor.getLong(3).coerceAtLeast(0L)
+                                    },
+                                    "modifiedMs" to if (cursor.isNull(4)) 0L else cursor.getLong(4),
+                                    "folder" to folder.ifEmpty { null },
+                                )
+                            } catch (error: SecurityException) {
+                                throw error
                             } catch (_: Exception) {
                                 warnings += "部分 MP4 暂不可读，已保留现有索引"
                             } finally { extractor.release() }
                         }
                     }
                 } catch (error: SecurityException) {
-                    warnings += "部分目录读取权限已失效，请重新选择保存目录"
+                    throw error
                 } catch (error: Exception) {
                     check(!cancelled.get() && !disposed) { "扫描已取消" }
                     warnings += "部分目录暂不可读，已保留现有索引"
@@ -1357,74 +1370,128 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 try { return future.get(50, TimeUnit.MILLISECONDS) }
                 catch (_: java.util.concurrent.TimeoutException) { /* Check cancellation/deadline. */ }
             }
-        } finally { if (!future.isDone) future.cancel(true) }
+        } finally {
+            if (!future.isDone) future.cancel(true)
+            if (!future.isDone) {
+                runCatching { future.get(1, TimeUnit.SECONDS) }
+            }
+        }
+    }
+
+    private fun preserveInspectionControl(error: Exception) {
+        if (error.message == "媒体检查超时") throw error
+        checkActive(activeCancellation ?: AtomicBoolean(false))
     }
 
     private fun inspect(source: String): Map<String, Any?> {
         val metadata = stat(source).toMutableMap()
-        val uri = localMediaUri(source)
-        val item = androidx.media3.common.MediaItem.fromUri(uri)
-        val sources = DefaultMediaSourceFactory(inspectorDataSources(uri))
-        try {
-            MetadataRetriever.Builder(context, item).setMediaSourceFactory(sources).build().use { reader ->
-                val groups = awaitInspection(reader.retrieveTrackGroups())
-                val duration = awaitInspection(reader.retrieveDurationUs())
-                if (duration != C.TIME_UNSET && duration >= 0) metadata["durationMs"] = duration / 1000L
-                for (groupIndex in 0 until groups.length) {
-                    val group = groups[groupIndex]
-                    for (index in 0 until group.length) {
-                        val format = group.getFormat(index)
-                        if (format.sampleMimeType?.startsWith("video/") == true) {
-                            if (format.width > 0) metadata["width"] = format.width
-                            if (format.height > 0) metadata["height"] = format.height
-                            metadata["mime"] = format.containerMimeType ?: format.sampleMimeType
+        return withInspectionSource(source) { uri ->
+            val item = androidx.media3.common.MediaItem.fromUri(uri)
+            val sources = DefaultMediaSourceFactory(inspectorDataSources(uri))
+            try {
+                MetadataRetriever.Builder(context, item).setMediaSourceFactory(sources).build().use { reader ->
+                    val groups = awaitInspection(reader.retrieveTrackGroups())
+                    val duration = awaitInspection(reader.retrieveDurationUs())
+                    if (duration != C.TIME_UNSET && duration >= 0) metadata["durationMs"] = duration / 1000L
+                    for (groupIndex in 0 until groups.length) {
+                        val group = groups[groupIndex]
+                        for (index in 0 until group.length) {
+                            val format = group.getFormat(index)
+                            if (format.sampleMimeType?.startsWith("video/") == true) {
+                                if (format.width > 0) metadata["width"] = format.width
+                                if (format.height > 0) metadata["height"] = format.height
+                                metadata["mime"] = format.containerMimeType ?: format.sampleMimeType
+                            }
                         }
                     }
                 }
+            } catch (error: Exception) {
+                preserveInspectionControl(error)
+                // Optional provider/codec metadata must not invalidate readable bytes.
             }
-        } catch (_: Exception) {
-            // Optional provider/codec metadata must not invalidate readable bytes.
-        }
-        if (metadata["durationMs"] == null || metadata["width"] == null || metadata["mime"] == null) {
-            val reader = MediaExtractorCompat(androidx.media3.extractor.DefaultExtractorsFactory(), inspectorDataSources(uri))
-            try {
-                reader.setDataSource(uri, 0L)
-                var durationUs = 0L
-                for (index in 0 until reader.trackCount) {
-                    val format = reader.getTrackFormat(index)
-                    if (format.containsKey(MediaFormat.KEY_DURATION)) durationUs = maxOf(durationUs, format.getLong(MediaFormat.KEY_DURATION))
-                    val mime = format.getString(MediaFormat.KEY_MIME)
-                    if (mime?.startsWith("video/") == true) {
-                        if (metadata["width"] == null && format.containsKey(MediaFormat.KEY_WIDTH)) metadata["width"] = format.getInteger(MediaFormat.KEY_WIDTH)
-                        if (metadata["height"] == null && format.containsKey(MediaFormat.KEY_HEIGHT)) metadata["height"] = format.getInteger(MediaFormat.KEY_HEIGHT)
-                        if (metadata["mime"] == null) metadata["mime"] = mime
-                    }
-                }
-                if (metadata["durationMs"] == null && durationUs > 0) metadata["durationMs"] = durationUs / 1000L
-            } catch (_: Exception) {
-                // Keep basic file facts even when optional extraction fails.
-            } finally { reader.release() }
-        }
-        val key = MessageDigest.getInstance("SHA-256").digest("$source:${metadata["size"]}:${metadata["modifiedMs"]}".toByteArray()).toHex()
-        // The old cache forced every frame to 16:9. A new namespace makes
-        // existing catalog entries regenerate their thumbnail on inspection.
-        val thumbnail = File(File(filesRoot, "media_thumbnails").apply { mkdirs() }, "v2-$key.jpg")
-        if (!thumbnail.isFile || thumbnail.length() == 0L) runCatching {
-            FrameExtractor.Builder(context, item).setMediaSourceFactory(sources).build().use { reader ->
-                val bitmap = awaitInspection(reader.getThumbnail()).bitmap
-                val temporary = File(thumbnail.path + ".part")
+            if (metadata["durationMs"] == null || metadata["width"] == null || metadata["mime"] == null) {
+                val reader = MediaExtractorCompat(androidx.media3.extractor.DefaultExtractorsFactory(), inspectorDataSources(uri))
                 try {
-                    val size = MediaThumbnailGeometry.fit(bitmap.width, bitmap.height)
-                    val scaled = Bitmap.createScaledBitmap(bitmap, size.width, size.height, true)
-                    try {
-                        temporary.outputStream().use { check(scaled.compress(Bitmap.CompressFormat.JPEG, 80, it)) }
-                        check(temporary.renameTo(thumbnail))
-                    } finally { if (scaled !== bitmap) scaled.recycle() }
-                } finally { bitmap.recycle(); temporary.delete() }
+                    reader.setDataSource(uri, 0L)
+                    var durationUs = 0L
+                    for (index in 0 until reader.trackCount) {
+                        val format = reader.getTrackFormat(index)
+                        if (format.containsKey(MediaFormat.KEY_DURATION)) durationUs = maxOf(durationUs, format.getLong(MediaFormat.KEY_DURATION))
+                        val mime = format.getString(MediaFormat.KEY_MIME)
+                        if (mime?.startsWith("video/") == true) {
+                            if (metadata["width"] == null && format.containsKey(MediaFormat.KEY_WIDTH)) metadata["width"] = format.getInteger(MediaFormat.KEY_WIDTH)
+                            if (metadata["height"] == null && format.containsKey(MediaFormat.KEY_HEIGHT)) metadata["height"] = format.getInteger(MediaFormat.KEY_HEIGHT)
+                            if (metadata["mime"] == null) metadata["mime"] = mime
+                        }
+                    }
+                    if (metadata["durationMs"] == null && durationUs > 0) metadata["durationMs"] = durationUs / 1000L
+                } catch (error: Exception) {
+                    preserveInspectionControl(error)
+                    // Keep basic file facts even when optional extraction fails.
+                } finally { reader.release() }
             }
+            val key = MessageDigest.getInstance("SHA-256").digest("$source:${metadata["size"]}:${metadata["modifiedMs"]}".toByteArray()).toHex()
+            // The old cache forced every frame to 16:9. A new namespace makes
+            // existing catalog entries regenerate their thumbnail on inspection.
+            val thumbnail = File(File(filesRoot, "media_thumbnails").apply { mkdirs() }, "v2-$key.jpg")
+            if (!thumbnail.isFile || thumbnail.length() == 0L) {
+                try {
+                    FrameExtractor.Builder(context, item).setMediaSourceFactory(sources).build().use { reader ->
+                        val bitmap = awaitInspection(reader.getThumbnail()).bitmap
+                        val temporary = File(thumbnail.path + ".part")
+                        try {
+                            val size = MediaThumbnailGeometry.fit(bitmap.width, bitmap.height)
+                            val scaled = Bitmap.createScaledBitmap(bitmap, size.width, size.height, true)
+                            try {
+                                temporary.outputStream().use { check(scaled.compress(Bitmap.CompressFormat.JPEG, 80, it)) }
+                                check(temporary.renameTo(thumbnail))
+                            } finally { if (scaled !== bitmap) scaled.recycle() }
+                        } finally { bitmap.recycle(); temporary.delete() }
+                    }
+                } catch (error: Exception) {
+                    preserveInspectionControl(error)
+                }
+            }
+            metadata["thumbnailPath"] = thumbnail.takeIf { it.isFile && it.length() > 0 }?.path
+            checkActive(activeCancellation ?: AtomicBoolean(false))
+            metadata
         }
-        metadata["thumbnailPath"] = thumbnail.takeIf { it.isFile && it.length() > 0 }?.path
-        checkActive(activeCancellation ?: AtomicBoolean(false))
-        return metadata
+    }
+
+    /** SAF providers can revoke a grant between stat() and Media3 inspection.
+     * Stage the bytes into app-private storage so Media3 never touches a stale
+     * provider descriptor and a revoked grant becomes a normal permission error. */
+    private fun <T> withInspectionSource(source: String, block: (Uri) -> T): T {
+        val uri = Uri.parse(source)
+        if (uri.scheme != "content") return block(localMediaUri(source))
+        val key = MessageDigest.getInstance("SHA-256").digest(source.toByteArray()).toHex()
+        val directory = File(filesRoot, "media_exports/inspection").apply { mkdirs() }
+        val staleBefore = System.currentTimeMillis() - STALE_INSPECTION_TEMP_MILLIS
+        directory.listFiles()?.filter { file ->
+            file.name.endsWith(".part") && file.lastModified() < staleBefore
+        }?.forEach { file -> file.delete() }
+        val temporary = File.createTempFile("$key-", ".part", directory)
+        try {
+            sourceStream(source).use { input ->
+                temporary.outputStream().use { output ->
+                    val buffer = ByteArray(INSPECTION_COPY_BUFFER_BYTES)
+                    var copied = 0L
+                    while (true) {
+                        checkActive(activeCancellation ?: AtomicBoolean(false))
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        require(count > 0) { "媒体文件读取无进展" }
+                        copied += count
+                        require(copied <= MAX_INSPECTION_COPY_BYTES) { "媒体文件过大，无法读取详细信息" }
+                        output.write(buffer, 0, count)
+                    }
+                    output.flush()
+                }
+            }
+            require(temporary.isFile && temporary.length() > 0L) { "媒体文件为空" }
+            return block(Uri.fromFile(temporary))
+        } finally {
+            if (temporary.exists()) temporary.delete()
+        }
     }
 }

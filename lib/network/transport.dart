@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/services.dart';
 
 import '../domain/models.dart';
 
@@ -36,6 +37,36 @@ class Cancelled implements Exception {
 String readableError(Object error) {
   if (error is Cancelled) return '操作已取消';
   if (error is TimeoutException) return '操作超时，请稍后重试';
+  if (error is PlatformException) {
+    if (error.code == 'media_permission') {
+      return '媒体目录访问权限已失效，请重新选择保存目录';
+    }
+    if (error.code == 'media_file_missing') {
+      return '媒体文件不存在或已被系统移除';
+    }
+    if (error.code == 'media_file_too_large') {
+      return '媒体文件超过详细检查上限，无法读取完整信息';
+    }
+    if (error.code == 'media_file_empty') {
+      return '媒体文件为空或尚未完成写入';
+    }
+    if (error.code == 'media_inspection_timeout') {
+      return '媒体详细信息读取超时，请稍后重试';
+    }
+    final mediaCode =
+        error.code == 'native_media' || error.code.startsWith('media_');
+    final message = error.message?.trim() ?? '';
+    final lowerMessage = message.toLowerCase();
+    if (mediaCode &&
+        (lowerMessage.contains('permission') || message.contains('权限'))) {
+      return '媒体目录访问权限已失效，请重新选择保存目录';
+    }
+    if (message.isNotEmpty &&
+        !lowerMessage.contains('exception') &&
+        !lowerMessage.contains('error')) {
+      return readableError(StateError(message));
+    }
+  }
   final raw = error is FormatException
       ? error.message.toString()
       : error is StateError

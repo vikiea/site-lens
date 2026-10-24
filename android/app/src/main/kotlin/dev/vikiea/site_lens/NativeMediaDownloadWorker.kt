@@ -15,7 +15,6 @@ import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
-import android.webkit.CookieManager
 
 /** Bounded native work slices. WorkManager reschedules interrupted work with
  * the same durable partial; no Flutter engine or Activity is needed. */
@@ -68,7 +67,7 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
                         android.webkit.WebSettings.getDefaultUserAgent(applicationContext),
                         requestCookies = { uri ->
                             runCatching {
-                                CookieManager.getInstance().getCookie(uri.toString())
+                                AndroidCookieReader.get(uri.toString())
                             }.getOrNull()
                         },
                         onProgress = { bytes, total ->

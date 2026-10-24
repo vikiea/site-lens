@@ -94,6 +94,25 @@ class NativeDeviceDiagnostics(
             source = "PackageManager.applicationInfo.metaData",
             now = now,
         )
+        val rendererGuard = FlutterRendererPolicy.shouldDisableImpeller(
+            Build.VERSION.SDK_INT,
+            Build.SOC_MANUFACTURER,
+            Build.HARDWARE,
+        )
+        rows += row(
+            id = "platform.renderer.policy",
+            state = CapabilityState.SUPPORTED,
+            configured = true,
+            effective = !rendererGuard,
+            observed = if (rendererGuard) "Skia OpenGL compatibility fallback" else null,
+            reason = if (rendererGuard) {
+                "Android 16+ Qualcomm/QTI 启用 Flutter Vulkan teardown 兼容保护，避免 Adreno 销毁帧缓冲时发生原生崩溃"
+            } else {
+                "当前设备未触发 Flutter Vulkan teardown 兼容保护"
+            },
+            source = "FlutterRendererPolicy",
+            now = now,
+        )
         rows += row(
             id = "webview.provider",
             state = if (web?.provider == null) CapabilityState.UNKNOWN else CapabilityState.SUPPORTED,

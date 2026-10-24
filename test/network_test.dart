@@ -28,6 +28,39 @@ void main() {
       readableError(PlatformException(code: 'media_file_missing')),
       '媒体文件不存在或已被系统移除',
     );
+    expect(
+      readableError(PlatformException(code: 'media_file_too_large')),
+      '媒体文件超过详细检查上限，无法读取完整信息',
+    );
+    expect(
+      readableError(PlatformException(code: 'media_file_empty')),
+      '媒体文件为空或尚未完成写入',
+    );
+    expect(
+      readableError(PlatformException(code: 'media_inspection_timeout')),
+      '媒体详细信息读取超时，请稍后重试',
+    );
+    expect(
+      readableError(
+        PlatformException(
+          code: 'media_export',
+          message: 'MP4 目录权限已失效，请重新选择保存目录',
+        ),
+      ),
+      '媒体目录访问权限已失效，请重新选择保存目录',
+    );
+    expect(
+      readableError(
+        PlatformException(code: 'media_export', message: 'Permission denied'),
+      ),
+      '媒体目录访问权限已失效，请重新选择保存目录',
+    );
+    expect(
+      readableError(
+        PlatformException(code: 'permission_denied', message: '权限不足'),
+      ),
+      '权限不足',
+    );
   });
 
   test('deny local, private, reserved, transition and mapped addresses', () {

@@ -12,6 +12,7 @@ import '../data/database.dart';
 import '../diagnostics/error_log.dart';
 import '../domain/models.dart';
 import '../domain/media_artifact_identity.dart';
+import '../network/transport.dart';
 import 'media_service.dart';
 import 'native_export_runtime.dart';
 
@@ -340,7 +341,7 @@ class MediaLibrary extends ChangeNotifier {
           );
         }
       } catch (error) {
-        warnings.add(error.toString());
+        warnings.add(readableError(error));
       }
     }
     final unique = <String, _ScannedMedia>{};
@@ -360,7 +361,7 @@ class MediaLibrary extends ChangeNotifier {
             item.materializedCopy != null &&
                 _sourceKey(item.materializedCopy!) == key,
       );
-      if (known || entry.size == 0) continue;
+      if (known || entry.size <= 0) continue;
       if (epoch != _catalogEpoch) break;
       // The document may later move while keeping this catalog identity. A
       // new file at its old path must receive a different identity.
@@ -531,6 +532,25 @@ class MediaLibrary extends ChangeNotifier {
         } else {
           try {
             metadata = await native!.inspect(value.location);
+          } on PlatformException catch (error) {
+            // A revoked SAF grant is a definitive storage error. Do not call
+            // stat() again: it only repeats the provider failure and can make
+            // a stale document look like a codec metadata problem.
+            if ({
+              'media_permission',
+              'media_file_missing',
+              'media_file_too_large',
+              'media_file_empty',
+              'media_inspection_timeout',
+            }.contains(error.code)) {
+              rethrow;
+            }
+            AppErrorLogger.capture(
+              error,
+              module: 'media.metadata',
+              context: 'stat-fallback:$taskId',
+            );
+            metadata = await native!.stat(value.location);
           } catch (error, stack) {
             // Codec metadata is best effort. A readable SAF document must
             // remain exportable when the device retriever is unavailable.

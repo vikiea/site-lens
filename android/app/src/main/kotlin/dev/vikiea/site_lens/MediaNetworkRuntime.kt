@@ -6,7 +6,6 @@ import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.webkit.CookieManager
 import android.webkit.WebSettings
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -60,9 +59,7 @@ class MediaNetworkRuntime(
                 // validates DNS for the DIRECT entry actually being used.
                 val vpn = allowsProxyFakeIp(uri)
                 val cookie = if (call.method == "route") {
-                    runCatching {
-                        CookieManager.getInstance().getCookie(uri.toString())
-                    }.getOrNull()
+                    AndroidCookieReader.get(uri.toString())
                 } else null
                 mapOf(
                     "proxy" to proxy,
@@ -134,7 +131,7 @@ class MediaNetworkRuntime(
             require(maxBytes in 1..(2L * 1024 * 1024 * 1024)) { "媒体大小上限无效" }
             var lastProgressAt: Long? = null
             transfer.transfer(url, document, output, userAgent, maxBytes = maxBytes,
-                requestCookies = { target -> CookieManager.getInstance().getCookie(target.toString()) },
+                requestCookies = { target -> AndroidCookieReader.get(target.toString()) },
                 onProgress = { bytes, _ ->
                     val now = SystemClock.elapsedRealtime()
                     if (lastProgressAt == null || now - lastProgressAt!! >= 250L) {

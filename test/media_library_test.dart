@@ -155,6 +155,34 @@ class _MissingArtifactRuntime extends NativeExportRuntime {
       Future.error(PlatformException(code: 'media_file_missing'));
 }
 
+class _PermissionMetadataRuntime extends NativeExportRuntime {
+  int statCalls = 0;
+
+  @override
+  Future<Map<String, Object?>> inspect(String source) =>
+      Future.error(PlatformException(code: 'media_permission'));
+
+  @override
+  Future<Map<String, Object?>> stat(String source) async {
+    statCalls++;
+    return {'size': 1};
+  }
+}
+
+class _OversizedMetadataRuntime extends NativeExportRuntime {
+  int statCalls = 0;
+
+  @override
+  Future<Map<String, Object?>> inspect(String source) =>
+      Future.error(PlatformException(code: 'media_file_too_large'));
+
+  @override
+  Future<Map<String, Object?>> stat(String source) async {
+    statCalls++;
+    return {'size': 1};
+  }
+}
+
 class _ScanRuntime extends NativeExportRuntime {
   _ScanRuntime(this.files);
 
@@ -806,6 +834,63 @@ void main() {
       expect(library.item(task.id)!.location, value.location);
     },
   );
+
+  test(
+    'revoked SAF metadata does not retry the provider as a codec fallback',
+    () async {
+      final runtime = _PermissionMetadataRuntime();
+      library.dispose();
+      library = MediaLibrary(db: db, tasks: tasks, native: runtime);
+      final value = MediaArtifact(
+        taskId: task.id,
+        location: 'content://provider/tree/root/document/revoked',
+        name: mediaExportFileName(task),
+        size: 600,
+        createdAt: DateTime.now().toUtc(),
+      );
+      await db.saveMediaArtifact(task.id, value.toJson());
+      await library.restore();
+
+      await expectLater(
+        library.inspect(task.id),
+        throwsA(
+          isA<PlatformException>().having(
+            (error) => error.code,
+            'code',
+            'media_permission',
+          ),
+        ),
+      );
+      expect(runtime.statCalls, 0);
+    },
+  );
+
+  test('bounded SAF metadata failures remain visible instead of falling back silently', () async {
+    final runtime = _OversizedMetadataRuntime();
+    library.dispose();
+    library = MediaLibrary(db: db, tasks: tasks, native: runtime);
+    final value = MediaArtifact(
+      taskId: task.id,
+      location: 'content://provider/tree/root/document/large',
+      name: mediaExportFileName(task),
+      size: 600,
+      createdAt: DateTime.now().toUtc(),
+    );
+    await db.saveMediaArtifact(task.id, value.toJson());
+    await library.restore();
+
+    await expectLater(
+      library.inspect(task.id),
+      throwsA(
+        isA<PlatformException>().having(
+          (error) => error.code,
+          'code',
+          'media_file_too_large',
+        ),
+      ),
+    );
+    expect(runtime.statCalls, 0);
+  });
 
   test('missing exported document remains indexed for recovery', () async {
     final runtime = _MissingArtifactRuntime();

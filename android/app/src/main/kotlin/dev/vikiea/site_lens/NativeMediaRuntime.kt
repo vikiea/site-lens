@@ -6,7 +6,6 @@ import android.media.AudioManager
 import android.net.Uri
 import android.view.Surface
 import android.webkit.WebSettings
-import android.webkit.CookieManager
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
@@ -258,8 +257,8 @@ class NativeMediaRuntime(
                         if (origin != null) put("Origin", origin)
                         put("Accept", "*/*")
                         put("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-                        val cookie = CookieManager.getInstance().getCookie(uri.toString())
-                            ?: referer?.let { CookieManager.getInstance().getCookie(it) }
+                        val cookie = AndroidCookieReader.get(uri.toString())
+                            ?: referer?.let { AndroidCookieReader.get(it) }
                         if (!cookie.isNullOrBlank()) put("Cookie", cookie)
                     },
                 )

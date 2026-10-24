@@ -7,13 +7,13 @@ Site Lens 通过 GitHub Actions 构建 Android 正式 APK，并把 APK 和 SHA-2
 发布提交必须同时更新 `pubspec.yaml` 和标签。版本名使用 Flutter 的连字符形式，标签使用 dotted 形式：
 
 ```yaml
-version: 0.4.0-alpha16+94
+version: 0.4.0-alpha17+95
 ```
 
-对应标签是 `v0.4.0.alpha16`，`94` 是本次 APK 的 Android `versionCode`。先运行：
+对应标签是 `v0.4.0.alpha17`，`95` 是本次 APK 的 Android `versionCode`。先运行：
 
 ```bash
-python3 tool/verify_release_pubspec.py --tag v0.4.0.alpha16
+python3 tool/verify_release_pubspec.py --tag v0.4.0.alpha17 --version-code 95
 ```
 
 校验通过后再创建标签。工作流会在构建前检查不可变 version-code reservation 和安装版本下限，构建后从 APK manifest 回读 `versionName` 与 `versionCode`；任何不一致都会停止发布。需要改版本或数字时，更新 `pubspec.yaml` 并创建新标签。
@@ -40,7 +40,7 @@ Workflow 会执行 `./tool/check.sh`、正式签名构建、包名/证书/manife
 
 ## 手动发布
 
-在 GitHub Actions 中运行 `Release Site Lens`，输入已经存在的标签。稳定版例如 `v0.1.1`；测试版例如 `v0.4.0.alpha16`。测试版必须在同一提交的 `pubspec.yaml` 中使用 `version: 0.4.0-alpha16+94` 这种连字符版本名，工作流的 `version_code` 只允许填写同一个 `94` 以兼容重跑。
+在 GitHub Actions 中运行 `Release Site Lens`，输入已经存在的标签。稳定版例如 `v0.1.1`；测试版例如 `v0.4.0.alpha17`。测试版必须在同一提交的 `pubspec.yaml` 中使用 `version: 0.4.0-alpha17+95` 这种连字符版本名，工作流的 `version_code` 只允许填写同一个 `95` 以兼容重跑。
 
 ## GitHub Secrets
 
@@ -56,7 +56,7 @@ keystore 必须对应 `tool/android_artifact.py` 中记录的正式证书指纹�
 本地正式构建仍使用仓库外的 `SITE_LENS_SIGNING_PROPERTIES`，例如：
 
 ```bash
-make build-release BUILD_NAME=0.4.0.alpha16 BUILD_NUMBER=94
+make build-release BUILD_NAME=0.4.0.alpha17 BUILD_NUMBER=95
 ```
 
 ## 应用内更新

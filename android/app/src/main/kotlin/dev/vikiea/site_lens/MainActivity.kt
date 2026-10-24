@@ -19,6 +19,7 @@ import androidx.webkit.ProfileStore
 import androidx.webkit.WebViewFeature
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.FlutterShellArgs
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.security.MessageDigest
@@ -39,6 +40,14 @@ class MainActivity : FlutterActivity() {
     private var dlnaMulticastLock: WifiManager.MulticastLock? = null
     private var diagnosticsExecutor: ExecutorService? = null
     private var diagnosticsGeneration = 0
+
+    override fun getFlutterShellArgs(): FlutterShellArgs =
+        FlutterRendererPolicy.shellArgs(
+            super.getFlutterShellArgs().toArray(),
+            Build.VERSION.SDK_INT,
+            Build.SOC_MANUFACTURER,
+            Build.HARDWARE,
+        )
 
     private fun postNotification(title: String, body: String) {
         val manager = getSystemService(NotificationManager::class.java)

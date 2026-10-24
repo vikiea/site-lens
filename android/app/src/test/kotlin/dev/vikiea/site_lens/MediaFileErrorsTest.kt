@@ -28,4 +28,30 @@ class MediaFileErrorsTest {
         assertNull(MediaFileErrors.code(IllegalArgumentException("Missing file name")))
         assertNull(MediaFileErrors.code(IllegalStateException("codec unavailable")))
     }
+
+    @Test fun revokedTreeGrantIsPermissionFailure() {
+        assertEquals(
+            "media_permission",
+            MediaFileErrors.code(IllegalArgumentException("MP4 目录权限已失效，请重新选择保存目录")),
+        )
+        assertEquals(
+            "media_permission",
+            MediaFileErrors.code(IllegalStateException("Permission denied by provider")),
+        )
+    }
+
+    @Test fun boundedInspectionFailuresKeepSpecificCodes() {
+        assertEquals(
+            "media_file_too_large",
+            MediaFileErrors.code(IllegalArgumentException("媒体文件过大，无法读取详细信息")),
+        )
+        assertEquals(
+            "media_file_empty",
+            MediaFileErrors.code(IllegalArgumentException("媒体文件为空")),
+        )
+        assertEquals(
+            "media_inspection_timeout",
+            MediaFileErrors.code(IllegalStateException("媒体检查超时")),
+        )
+    }
 }

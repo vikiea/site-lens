@@ -487,6 +487,7 @@ class _CapabilityRow extends StatelessWidget {
   String _label(String id) => switch (id) {
     'platform.hcpp.engine' => 'HCPP 当前引擎能力',
     'platform.renderer' => '渲染后端判断',
+    'platform.renderer.policy' => '渲染兼容策略',
     'platform.hcpp.manifest' => 'HCPP 应用配置',
     'glass.policy' => '液态玻璃平台策略',
     'webview.nativePixelSampling' => '网页原生像素采样',
