@@ -1,8 +1,11 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
+import '../settings/app_settings.dart';
 import 'app_theme.dart';
 import 'glass_quality_strategy.dart';
 
@@ -100,8 +103,8 @@ class SiteLensGlassSurface extends StatelessWidget {
       type: MaterialType.transparency,
       child: padding == null ? child : Padding(padding: padding!, child: child),
     );
-    final plan = SiteLensGlassPolicyScope.of(context)
-        .resolve(context, role: role);
+    final policy = SiteLensGlassPolicyScope.of(context);
+    final plan = policy.resolve(context, role: role);
     final edge = attachedEdge;
     final LiquidShape shape = edge == null
         ? LiquidRoundedSuperellipse(borderRadius: radius)
@@ -110,19 +113,46 @@ class SiteLensGlassSurface extends StatelessWidget {
             bottomRadius: edge == SiteLensGlassEdge.right ? radius : 0,
           );
     Widget surface(Widget body) {
-      // The asymmetric library shape is vertical. Rotate the content into the
-      // same coordinate space, then rotate the finished surface back so the
-      // mounted content remains upright and the clipped edge stays attached.
       if (edge != null) body = RotatedBox(quarterTurns: 3, child: body);
+
+      // The alpha15 high-quality path used one AdaptiveGlass boundary with the
+      // real content as its child. Keep that exact composition when Impeller
+      // is available: it preserves the package's full refraction, specular rim
+      // and edge geometry. The stable sibling path below is retained for Skia,
+      // compatibility fills and adaptive transitions where the child must not
+      // be remounted while the shader tier changes.
+      final useFullPremiumShader =
+          !kIsWeb &&
+          policy.mode == SiteLensGlassQualityMode.high &&
+          plan.quality == GlassQuality.premium &&
+          !plan.useCompatibilityFallback &&
+          ui.ImageFilter.isShaderFilterSupported;
+      if (useFullPremiumShader) {
+        final result = AdaptiveGlass(
+          shape: shape,
+          settings: plan.settings,
+          quality: plan.quality,
+          platformViewBackdrop: plan.platformViewBackdrop,
+          allowElevation: false,
+          child: body,
+        );
+        return edge == null
+            ? result
+            : RotatedBox(quarterTurns: 1, child: result);
+      }
+
       late final Widget decoration;
       if (plan.useCompatibilityFallback) {
         final backer = plan.settings.effectiveBackerColor;
-        decoration = Stack(
-          fit: StackFit.expand,
-          children: [
-            if (backer != null) ColoredBox(color: backer),
-            ColoredBox(color: plan.glassColor),
-          ],
+        decoration = ClipPath(
+          clipper: ShapeBorderClipper(shape: shape),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (backer != null) ColoredBox(color: backer),
+              ColoredBox(color: plan.glassColor),
+            ],
+          ),
         );
       } else {
         decoration = AdaptiveGlass(
@@ -148,17 +178,19 @@ class SiteLensGlassSurface extends StatelessWidget {
         isBlurProvidedByAncestor: !plan.useCompatibilityFallback,
         child: body,
       );
-      final result = ClipPath(
-        clipper: ShapeBorderClipper(shape: shape),
-        child: Stack(
-          fit: StackFit.passthrough,
-          children: [
-            Positioned.fill(
-              child: ExcludeSemantics(child: IgnorePointer(child: decoration)),
-            ),
-            stableBody,
-          ],
-        ),
+      // Clip only the content sibling. AdaptiveGlass/fallback decoration owns
+      // its own shape clip, so the same edge is not anti-aliased twice.
+      final result = Stack(
+        fit: StackFit.passthrough,
+        children: [
+          Positioned.fill(
+            child: ExcludeSemantics(child: IgnorePointer(child: decoration)),
+          ),
+          ClipPath(
+            clipper: ShapeBorderClipper(shape: shape),
+            child: stableBody,
+          ),
+        ],
       );
       return edge == null ? result : RotatedBox(quarterTurns: 1, child: result);
     }

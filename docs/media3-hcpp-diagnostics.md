@@ -65,9 +65,9 @@ The synthetic parity archive has 5 four-second fixtures: H.264 TS, H.264 fragmen
 
 ## HCPP and glass
 
-The application Manifest opts into HCPP. Flutter's engine checks API 34+, Impeller Vulkan and SurfaceControl at runtime. API level and a Vulkan feature declaration alone are not proof that HCPP is active. The service uses HybridAndroidViewController.checkIfSupported; missing/failed queries retain the legacy composition fence.
+The application Manifest opts into HCPP. Flutter's engine checks API 34+, Impeller Vulkan and SurfaceControl at runtime. API level and a Vulkan feature declaration alone are not proof that HCPP is active. The service uses HybridAndroidViewController.checkIfSupported; missing/failed queries remain diagnostic facts and do not trigger a device-model-based global Impeller downgrade.
 
-With effective HCPP, Flutter-owned panel/chrome surfaces regain the configured standard/premium shader path while controls directly over a native WebView retain their dedicated polarity backer and fill. Without HCPP, a mounted Android WebView keeps the existing route compatibility fence. Native WebView/video pixels remain outside Flutter shader sampling; no frame-capture bridge is added. Transparency 0/55/100, dark/light, high quality coverage and one-row navigation remain governed by the shared surface system.
+Flutter-owned panel/chrome surfaces use the configured standard/premium shader path whenever the selected Flutter renderer supports it. Controls directly over a native WebView retain their dedicated polarity backer and fill regardless of HCPP, because native WebView/video pixels remain outside Flutter shader sampling; no frame-capture bridge is added. HCPP remains a diagnostic capability and an input to platform-view composition decisions, while the optional `siteLensForceSkia=true` build is the explicit compatibility escape hatch. Transparency 0/55/100, dark/light, high quality coverage and one-row navigation remain governed by the shared surface system.
 
 ## Passive diagnostics contract
 

@@ -196,13 +196,12 @@ class NativeCrashContractTests(unittest.TestCase):
             self.assertNotIn("CookieManager.getInstance().getCookie", body)
             self.assertIn("AndroidCookieReader.get", body)
 
-    def test_android_16_uses_renderer_teardown_guard(self):
+    def test_renderer_compatibility_is_explicit_and_not_device_inferred(self):
         policy = (SOURCE / "FlutterRendererPolicy.kt").read_text()
         activity = self.activity
         diagnostics = (SOURCE / "NativeDeviceDiagnostics.kt").read_text()
-        self.assertIn("ANDROID_API_WITH_VULKAN_TEARDOWN_GUARD = 36", policy)
-        self.assertIn('soc == "qti"', policy)
-        self.assertIn('board == "qcom"', policy)
+        self.assertIn("BuildConfig.SITE_LENS_FORCE_SKIA", policy)
+        self.assertIn("siteLensForceSkia", (ROOT / "android/app/build.gradle.kts").read_text())
         self.assertIn("--enable-impeller=false", policy)
         self.assertIn("override fun getFlutterShellArgs", activity)
         self.assertIn("FlutterRendererPolicy.shellArgs", activity)

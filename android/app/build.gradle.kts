@@ -7,6 +7,7 @@ plugins {
 }
 
 val releaseRequested = gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = true) }
+val forceSkia = providers.gradleProperty("siteLensForceSkia").orNull == "true"
 val signerPath = System.getenv("SITE_LENS_SIGNING_PROPERTIES")
     ?.takeIf { it.isNotBlank() }
     ?: "${System.getProperty("user.home")}/.config/site-lens/signing.properties"
@@ -33,6 +34,10 @@ android {
     compileSdk = 36
     ndkVersion = "28.2.13676358"
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -46,6 +51,11 @@ android {
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 26
         targetSdk = 36
+        // Keep Impeller enabled by default so Flutter-owned glass can use the
+        // full premium shader path. A bounded compatibility build remains
+        // available for device diagnosis without making WebView limitations a
+        // global renderer downgrade.
+        buildConfigField("boolean", "SITE_LENS_FORCE_SKIA", forceSkia.toString())
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
         // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)
         // You can force using the value of versionCode by specifying the `-P force-version-code-ignoring-abi=true`

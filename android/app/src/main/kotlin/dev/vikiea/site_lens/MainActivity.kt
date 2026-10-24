@@ -44,9 +44,6 @@ class MainActivity : FlutterActivity() {
     override fun getFlutterShellArgs(): FlutterShellArgs =
         FlutterRendererPolicy.shellArgs(
             super.getFlutterShellArgs().toArray(),
-            Build.VERSION.SDK_INT,
-            Build.SOC_MANUFACTURER,
-            Build.HARDWARE,
         )
 
     private fun postNotification(title: String, body: String) {
