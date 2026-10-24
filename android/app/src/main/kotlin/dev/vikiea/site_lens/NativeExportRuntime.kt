@@ -76,7 +76,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
     private external fun nativeValidatePath(path: String, root: String): Boolean
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
-        if (disposed) { result.error("media_export", "媒体服务已关闭", null); return }
+        if (disposed) return
         if (call.method == "cancel") {
             val jobId = call.argument<String>("jobId")
             if (jobId == null) activeCancellation?.set(true)
@@ -97,7 +97,9 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         worker.execute {
             if (disposed) {
                 cancellations.remove(jobId)
-                main.post { result.error("media_export", "媒体服务已关闭", null) }
+                main.post {
+                    if (!disposed) result.error("media_export", "媒体服务已关闭", null)
+                }
                 return@execute
             }
             activeCancellation = cancellation
@@ -129,9 +131,9 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                         }
                     }
                 }
-                main.post { result.success(value) }
+                main.post { if (!disposed) result.success(value) }
             } catch (error: Exception) {
-                main.post { fail(call, result, error) }
+                main.post { if (!disposed) fail(call, result, error) }
             } finally {
                 activeCancellation = null
                 cancellations.remove(jobId)
@@ -288,13 +290,14 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
     }
 
     fun dispose() {
+        if (disposed) return
         disposed = true
         cancellations.values.forEach { it.set(true) }
         activeCancellation?.set(true)
-        pendingDirectoryResult?.error("media_export", "媒体服务已关闭", null)
+        // The pending result belongs to the old Flutter engine. Clear it
+        // without calling back into an engine that is being detached.
         pendingDirectoryResult = null
         worker.shutdownNow()
-        runCatching { worker.awaitTermination(2, TimeUnit.SECONDS) }
     }
 
     private fun pickDirectory(result: MethodChannel.Result) {

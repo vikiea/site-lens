@@ -278,6 +278,25 @@ class NativeMediaContractTests(unittest.TestCase):
         dead = dead[:dead.index("private fun clearProbeProfile")]
         self.assertLess(dead.index("deadView.destroy()"), dead.index("clearProbeProfile()"))
 
+    def test_engine_detach_cleanup_is_nonblocking_and_drops_old_engine_callbacks(self):
+        download_dispose = DOWNLOAD_RUNTIME.split("fun dispose()", 1)[1].split("companion object", 1)[0]
+        export_dispose = NATIVE_EXPORT.split("fun dispose()", 1)[1].split("private fun pickDirectory", 1)[0]
+        self.assertNotIn(".result.get", download_dispose)
+        self.assertNotIn("awaitTermination", export_dispose)
+        self.assertNotIn("pendingDirectoryResult?.error", export_dispose)
+
+        download_call = DOWNLOAD_RUNTIME.split("override fun onMethodCall", 1)[1].split("private fun start", 1)[0]
+        self.assertIn("if (disposed) return@execute", download_call)
+        self.assertIn("if (disposed) return@post", download_call)
+
+        export_call = NATIVE_EXPORT.split("override fun onMethodCall", 1)[1].split("private fun readScope", 1)[0]
+        self.assertIn("if (!disposed) result.success(value)", export_call)
+        self.assertIn("if (!disposed) fail(call, result, error)", export_call)
+
+        cleanup = DOWNLOAD_RUNTIME.split("executor.execute {", 2)[2].split("companion object", 1)[0]
+        self.assertLess(cleanup.index("cancelUniqueWork"), cleanup.index("withFileLock"))
+        self.assertLess(cleanup.index("withFileLock"), cleanup.index("reservation.lease.close()"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -37,10 +37,10 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         if (disposed) {
-            result.error("media_download", "媒体下载服务已关闭", null)
             return
         }
         executor.execute {
+            if (disposed) return@execute
             val outcome = runCatching {
                 when (call.method) {
                     "migrateLegacyDirectories" -> {
@@ -69,10 +69,15 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
                     }
                 }
             }
-            main.post { outcome.fold(
-                onSuccess = { result.success(it) },
-                onFailure = { result.error("media_download", it.message ?: "下载失败", null) },
-            ) }
+            main.post {
+                if (disposed) return@post
+                outcome.fold(
+                    onSuccess = { result.success(it) },
+                    onFailure = {
+                        result.error("media_download", it.message ?: "下载失败", null)
+                    },
+                )
+            }
         }
     }
 
@@ -582,19 +587,41 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
      * subsequent engine can then safely reconcile and retry it.
      */
     fun dispose() {
+        if (disposed) return
         disposed = true
-        mutationReservations.entries
+        val owned = mutationReservations.entries
             .filter { it.value.ownerRuntimeId == runtimeId }
             .toList()
-            .forEach { (id, reservation) ->
-            runCatching {
-                repository.read(reservation.taskId)?.let { record ->
-                    repository.save(record.copy(paused = true, cancelled = true))
+        owned.forEach { (_, reservation) ->
+            NativeMediaDownloadWorker.abort(reservation.taskId)
+        }
+        // cleanUpFlutterEngine runs on Android's main thread. WorkManager's
+        // Future.get can wait for cancellation, so finish the fence cleanup on
+        // the command executor and never hold the old Flutter engine hostage.
+        executor.execute {
+            owned.forEach { (id, reservation) ->
+                runCatching {
+                    val record = repository.read(reservation.taskId)
+                    record?.let {
+                        repository.save(record.copy(paused = true, cancelled = true))
+                    }
+                    workManager.cancelUniqueWork(workName(reservation.taskId))
+                    // WorkManager cancellation is asynchronous. Keep the
+                    // mutation lease until the worker has left its file and
+                    // directory locks, so a new Flutter engine cannot race
+                    // the old worker during handoff.
+                    record?.let {
+                        NativeMediaDownloadWorker.withFileLock(
+                            context,
+                            reservation.taskId,
+                            record.seriesDirectory,
+                        ) {}
+                    }
                 }
-                NativeMediaDownloadWorker.abort(reservation.taskId)
-                workManager.cancelUniqueWork(workName(reservation.taskId)).result.get(30, TimeUnit.SECONDS)
+                if (mutationReservations.remove(id, reservation)) {
+                    reservation.lease.close()
+                }
             }
-            mutationReservations.remove(id)?.lease?.close()
         }
     }
 
