@@ -99,10 +99,11 @@ List<MediaTask> mediaPlaylistForTasks(
   Iterable<MediaTask> tasks,
   MediaTask current,
 ) {
+  final group = _mediaPlaylistGroupKey(current);
   final items = tasks
       .where(
         (task) =>
-            task.seriesDirectoryName == current.seriesDirectoryName &&
+            _mediaPlaylistGroupKey(task) == group &&
             (task.state == MediaTaskState.completed ||
                 task.state == MediaTaskState.playable),
       )
@@ -129,6 +130,56 @@ List<MediaTask> mediaPlaylistForTasks(
     return title == 0 ? left.updatedAt.compareTo(right.updatedAt) : title;
   });
   return List.unmodifiable(items);
+}
+
+String _mediaPlaylistGroupKey(MediaTask task) {
+  final batch = task.batchDirectory?.trim() ?? '';
+  final series = _mediaPlaylistSourceKey(task.sourceUrl);
+  if (batch.isNotEmpty) {
+    return 'batch|${task.storageDirectoryName}|$series|${task.seriesDirectoryName}';
+  }
+  return 'series|$series|${task.seriesDirectoryName}';
+}
+
+String _mediaPlaylistSourceKey(Uri source) {
+  final clean = source.removeFragment();
+  if (!clean.hasAuthority) return clean.toString();
+  final knownSeries = RegExp(
+    r'^/video/([1-9]\d{0,11})(?:/ep-[1-9]\d{0,4})?/?$',
+    caseSensitive: false,
+  ).firstMatch(clean.path);
+  final path = knownSeries == null
+      ? clean.path.replaceAll(
+          RegExp(r'/(?:episode|ep|e)[-_]?\d+(?=/|$)', caseSensitive: false),
+          '/:episode',
+        )
+      : '/video/${knownSeries.group(1)}';
+  const volatile = {
+    'auth',
+    'auth_key',
+    'expires',
+    'expire',
+    'exp',
+    'hmac',
+    'sig',
+    'sign',
+    'signature',
+    't',
+    'time',
+    'timestamp',
+    'token',
+    'via',
+    'via_bm',
+  };
+  const episodeSelection = {'e', 'ep', 'episode', 'episode_number', 'chapter'};
+  final retained = <String, String>{};
+  for (final entry in clean.queryParameters.entries) {
+    final key = entry.key.toLowerCase();
+    if (!volatile.contains(key) && !episodeSelection.contains(key)) {
+      retained[entry.key] = entry.value;
+    }
+  }
+  return clean.replace(path: path, queryParameters: retained).toString();
 }
 
 enum NativePlaybackState {
@@ -663,12 +714,13 @@ class MediaTaskStore extends ChangeNotifier {
   }
 
   static String? _candidateEpisodeLabel(MediaCandidate candidate) {
-    // Prefer a concrete media identity, then the per-resource title (including
-    // explicit DOM episode metadata), then the current document URL.
+    // Prefer explicit page/resource metadata, then the current document URL,
+    // and use the media URL only as a fallback. CDN paths can retain a stale
+    // episode marker after a page changes its selected episode.
     for (final value in [
-      candidate.mediaUrl.toString(),
       candidate.title,
       candidate.sourceUrl.toString(),
+      candidate.mediaUrl.toString(),
     ]) {
       final label = mediaEpisodeLabel(value);
       if (label != null) return label;

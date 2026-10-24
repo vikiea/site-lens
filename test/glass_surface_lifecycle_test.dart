@@ -10,7 +10,7 @@ void main() {
       final policy = ValueNotifier(
         const SiteLensGlassQualityStrategy(
           mode: SiteLensGlassQualityMode.standard,
-          shaderSupported: true,
+          lightweightShaderSupported: true,
         ),
       );
       addTearDown(policy.dispose);
@@ -41,12 +41,12 @@ void main() {
       await tester.pump();
       initial.scroll.jumpTo(60);
       await tester.pump();
-      for (final shaderSupported in [true, false, true]) {
+      for (final lightweightShaderSupported in [true, false, true]) {
         for (final mode in SiteLensGlassQualityMode.values) {
           policy.value = SiteLensGlassQualityStrategy(
             mode: mode,
             allSurfacesHighQuality: true,
-            shaderSupported: shaderSupported,
+            lightweightShaderSupported: lightweightShaderSupported,
           );
           // Check the first frame as well as asynchronous shader completion.
           await tester.pump();

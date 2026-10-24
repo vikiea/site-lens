@@ -297,7 +297,7 @@ void main() {
     'artifact uses actual output bytes and persists title with current episode',
     () async {
       final item = await library.register(task, output.path);
-      expect(item.name, '示例系列 - 第3集.mp4');
+      expect(item.name, '示例系列 - 第1集.mp4');
       expect(item.size, 6);
       expect(tasks.task(task.id)?.localRef, isNull);
       final restored = MediaLibrary(db: db, tasks: tasks);
@@ -952,8 +952,8 @@ void main() {
       await tasks.restore();
       await library.restore();
       final restored = tasks.task(task.id)!;
-      expect(restored.displayName, '示例系列 - 第3集');
-      expect(library.items.single.name, '示例系列 - 第3集.mp4');
+      expect(restored.displayName, '示例系列 - 第1集');
+      expect(library.items.single.name, '示例系列 - 第1集.mp4');
       expect(library.items.single.size, 6);
     },
   );

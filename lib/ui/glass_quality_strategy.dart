@@ -1,5 +1,3 @@
-import 'dart:ui' as ui;
-
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
@@ -56,7 +54,7 @@ class SiteLensGlassQualityStrategy {
     this.allSurfacesHighQuality = false,
     this.webViewVisible = false,
     this.hcppEffective = false,
-    this.shaderSupported,
+    this.lightweightShaderSupported,
     this.adaptiveQualityOverride,
   });
 
@@ -68,10 +66,20 @@ class SiteLensGlassQualityStrategy {
   /// engine positively confirms HCPP.
   final bool webViewVisible;
 
-  /// Current engine HCPP predicate; an API level or GPU declaration alone
-  /// cannot remove the compatibility fence.
+  /// Current engine HCPP predicate, retained for diagnostics and policy
+  /// snapshots. Flutter-owned surfaces do not use it as a reason to drop their
+  /// shader path; only the native WebView role is fenced while that view is
+  /// mounted.
   final bool hcppEffective;
-  final bool? shaderSupported;
+
+  /// Optional override for the package's lightweight shader capability.
+  ///
+  /// `null` means unknown: let [AdaptiveGlass] select its Skia/Impeller path
+  /// and handle an asset or renderer failure internally. This must not be
+  /// populated from `ui.ImageFilter.isShaderFilterSupported`, because that
+  /// flag describes the full Impeller shader filter path while the lightweight
+  /// shader is specifically the Android/Skia fallback.
+  final bool? lightweightShaderSupported;
   final GlassQuality? adaptiveQualityOverride;
 
   SiteLensGlassRenderPlan resolve(
@@ -91,30 +99,26 @@ class SiteLensGlassQualityStrategy {
         GlassQuality.standard;
     final requestedQuality = _requestedQuality(
       role,
-      isAndroid: isAndroid,
       adaptiveQuality: adaptiveQuality,
     );
     // A live BackdropFilter over an Android hybrid-composed WebView forces the
     // rasterizer to sample a native video surface on every frame. That path is
     // the common trigger for playback-page raster crashes on affected WebView /
-    // GPU combinations. Keep the live backdrop on other platforms, while the
-    // Android browsing route uses the same clipped translucent fill as the
-    // renderer fallback below. This changes only the sampling path; controls,
-    // tint, shape, and interaction remain unchanged.
+    // GPU combinations. Keep only the platform-view role on the clipped
+    // translucent fill; Flutter-owned panels and chrome retain their shader
+    // path. This changes only native-surface sampling; controls, tint, shape,
+    // and interaction remain unchanged.
     final androidWebViewComposition = isAndroid && webViewVisible;
-    final legacyComposition = androidWebViewComposition && !hcppEffective;
     final platformViewBackdrop =
         role == SiteLensSurfaceRole.platformView && !androidWebViewComposition;
-    final shaderSupported =
-        this.shaderSupported ?? ui.ImageFilter.isShaderFilterSupported;
-    // HCPP removes the route-wide legacy fence for Flutter-owned surfaces.
-    // Native webpage pixels still have no sampling bridge, so controls over
-    // the platform view retain their clipped fill and polarity backer.
+    // liquid_glass_widgets has a lightweight shader path for Skia/Android even
+    // when the full Impeller renderer is unavailable. Keep that path for
+    // Flutter-owned surfaces; only the native WebView surface needs the
+    // clipped fill because its pixels cannot be captured by the glass shader.
     final useCompatibilityFallback =
-        legacyComposition ||
         (androidWebViewComposition &&
             role == SiteLensSurfaceRole.platformView) ||
-        (!shaderSupported && !platformViewBackdrop);
+        (lightweightShaderSupported == false && !platformViewBackdrop);
 
     return SiteLensGlassRenderPlan(
       quality: requestedQuality,
@@ -123,7 +127,6 @@ class SiteLensGlassQualityStrategy {
         context,
         role: role,
         isAndroid: isAndroid,
-        webViewVisible: webViewVisible,
         dark: dark,
         quality: requestedQuality,
         glassColor: glassColor,
@@ -136,15 +139,8 @@ class SiteLensGlassQualityStrategy {
 
   GlassQuality _requestedQuality(
     SiteLensSurfaceRole role, {
-    required bool isAndroid,
     required GlassQuality adaptiveQuality,
   }) {
-    if (isAndroid &&
-        webViewVisible &&
-        !hcppEffective &&
-        role != SiteLensSurfaceRole.platformView) {
-      return GlassQuality.standard;
-    }
     final selectedQuality = switch (mode) {
       SiteLensGlassQualityMode.standard => GlassQuality.standard,
       SiteLensGlassQualityMode.automatic => adaptiveQuality,
@@ -184,7 +180,6 @@ class SiteLensGlassQualityStrategy {
     BuildContext context, {
     required SiteLensSurfaceRole role,
     required bool isAndroid,
-    required bool webViewVisible,
     required bool dark,
     required GlassQuality quality,
     required Color glassColor,
@@ -200,7 +195,6 @@ class SiteLensGlassQualityStrategy {
         : 0.15 + 0.85 * Curves.easeOut.transform(lowAlphaProgress);
     final premiumSurface =
         isAndroid &&
-        (!webViewVisible || hcppEffective) &&
         role != SiteLensSurfaceRole.platformView &&
         quality == GlassQuality.premium;
     final adjusted = role == SiteLensSurfaceRole.platformView
@@ -212,11 +206,10 @@ class SiteLensGlassQualityStrategy {
             blur: base.blur,
             frost: base.frost,
             frostOpacity: base.frostOpacity * frostFactor,
-            // Android can report Impeller support while the full premium
-            // material still trips vendor GPU/WebView composition paths. Keep
-            // the Android optical parameters from 0.1.3 for standard surfaces
-            // and while a native WebView is visible; ordinary premium Flutter
-            // pages retain the full material.
+            // Native WebView overlays use the platform-view fallback, while
+            // Flutter-owned surfaces retain the requested optical parameters.
+            // On Skia, liquid_glass_widgets maps premium to its lightweight
+            // shader path; it still preserves refraction/rim treatment.
             thickness: isAndroid && !premiumSurface ? 12 : base.thickness,
             refractiveIndex: isAndroid && !premiumSurface
                 ? 1.08

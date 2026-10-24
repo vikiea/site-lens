@@ -56,7 +56,7 @@ Widget settingsApp(AppController app, UpdateController update) => ProviderScope(
           mode: app.settings.glassQualityMode,
           allSurfacesHighQuality: app.settings.highQualityAllSurfaces,
           adaptiveQualityOverride: app.effectiveGlassQuality,
-          shaderSupported: true,
+          lightweightShaderSupported: true,
         ),
         child: SiteLensBackdrop(child: child!),
       ),

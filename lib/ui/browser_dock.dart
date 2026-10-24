@@ -320,7 +320,11 @@ class _BrowserDockState extends State<_BrowserDockBody> {
                         onPointerCancel: (_) => setState(_resetTransient),
                         child: _expanded
                             ? SiteLensGlassSurface(
-                                role: SiteLensSurfaceRole.chrome,
+                                // The dock is mounted above the live native
+                                // WebView while a browser tab is active. Keep
+                                // it on the platform-view safety role so its
+                                // surface never samples native pixels.
+                                role: SiteLensSurfaceRole.platformView,
                                 radius: SiteLensMetrics.inputRadius,
                                 child: Row(
                                   children: [
@@ -451,7 +455,10 @@ class _BrowserDockState extends State<_BrowserDockBody> {
                                             key: const ValueKey(
                                               'browser-dock-handle-surface',
                                             ),
-                                            role: SiteLensSurfaceRole.chrome,
+                                            // This handle is also painted over
+                                            // the live native WebView.
+                                            role: SiteLensSurfaceRole
+                                                .platformView,
                                             radius: SiteLensMetrics.inputRadius,
                                             attachedEdge: dockRight
                                                 ? SiteLensGlassEdge.right

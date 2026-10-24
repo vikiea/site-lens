@@ -368,6 +368,126 @@ void main() {
     },
   );
 
+  test('HTTP screening advances the route attempt after a proxy connection failure', () async {
+    final proxy = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => proxy.close(force: true));
+    final closed = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final closedPort = closed.port;
+    await closed.close();
+    final attempts = <int>[];
+    proxy.listen((request) async {
+      request.response.statusCode = HttpStatus.ok;
+      request.response.write('fallback');
+      await request.response.close();
+    });
+    final probe = HttpProbe(
+      routeForAttempt: (_, attempt) async {
+        attempts.add(attempt);
+        return MediaNetworkRoute(
+          proxy: attempt == 0
+              ? 'PROXY 127.0.0.1:$closedPort'
+              : 'PROXY 127.0.0.1:${proxy.port}',
+        );
+      },
+    );
+
+    final result = await probe.run(
+      Candidate(
+        id: 1,
+        url: Uri.parse('http://cdn.example/watch'),
+        label: 'proxy fallback',
+      ),
+      1,
+      Cancellation(),
+    );
+
+    expect(result.status, ProbeStatus.reachable);
+    expect(attempts, [0, 1]);
+  });
+
+  test(
+    'ControlledHttp retries an idempotent transport failure on the next route',
+    () async {
+      final proxy = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => proxy.close(force: true));
+      final closed = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final closedPort = closed.port;
+      await closed.close();
+      final attempts = <int>[];
+      proxy.listen((request) async {
+        request.response.write('retry-success');
+        await request.response.close();
+      });
+      final http = ControlledHttp(
+        routeForAttempt: (_, attempt) async {
+          attempts.add(attempt);
+          return MediaNetworkRoute(
+            proxy: attempt == 0
+                ? 'PROXY 127.0.0.1:$closedPort'
+                : 'PROXY 127.0.0.1:${proxy.port}',
+          );
+        },
+      );
+
+      final response = await http.fetch(
+        Uri.parse('http://cdn.example/watch'),
+        connect: const {'*'},
+        document: Uri.parse('http://cdn.example/watch'),
+        cancel: Cancellation(),
+      );
+
+      expect(response.status, HttpStatus.ok);
+      expect(String.fromCharCodes(response.bytes), 'retry-success');
+      expect(attempts, [0, 1]);
+    },
+  );
+
+  test('HTTP screening does not retry certificate failures', () async {
+    final attempts = <int>[];
+    final probe = HttpProbe(
+      routeForAttempt: (_, attempt) async {
+        attempts.add(attempt);
+        throw HandshakeException('certificate rejected');
+      },
+    );
+
+    final result = await probe.run(
+      Candidate(
+        id: 1,
+        url: Uri.parse('https://cdn.example/watch'),
+        label: 'certificate failure',
+      ),
+      1,
+      Cancellation(),
+    );
+
+    expect(result.status, ProbeStatus.certificateError);
+    expect(attempts, [0]);
+  });
+
+  test('HTTP screening does not retry address policy failures', () async {
+    final attempts = <int>[];
+    final probe = HttpProbe(
+      routeForAttempt: (_, attempt) async {
+        attempts.add(attempt);
+        throw AddressPolicyException('blocked');
+      },
+    );
+
+    final result = await probe.run(
+      Candidate(
+        id: 1,
+        url: Uri.parse('https://cdn.example/watch'),
+        label: 'policy failure',
+      ),
+      1,
+      Cancellation(),
+    );
+
+    expect(result.status, ProbeStatus.offline);
+    expect(attempts, [0]);
+  });
+
   test(
     'navigation policy does not resolve the origin behind an HTTP proxy',
     () async {

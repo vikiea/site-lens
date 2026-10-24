@@ -24,7 +24,7 @@ void main() {
               strategy: const SiteLensGlassQualityStrategy(
                 mode: SiteLensGlassQualityMode.high,
                 allSurfacesHighQuality: true,
-                shaderSupported: true,
+                lightweightShaderSupported: true,
               ),
               child: ListView(
                 children: [
@@ -71,7 +71,7 @@ void main() {
             strategy: SiteLensGlassQualityStrategy(
               mode: mode,
               allSurfacesHighQuality: true,
-              shaderSupported: true,
+              lightweightShaderSupported: true,
               adaptiveQualityOverride: GlassQuality.premium,
             ),
             child: Scaffold(
@@ -130,7 +130,7 @@ void main() {
                   strategy: const SiteLensGlassQualityStrategy(
                     mode: SiteLensGlassQualityMode.high,
                     allSurfacesHighQuality: true,
-                    shaderSupported: true,
+                    lightweightShaderSupported: true,
                   ),
                   child: Scaffold(
                     body: ListView(
@@ -197,7 +197,7 @@ void main() {
           strategy: const SiteLensGlassQualityStrategy(
             mode: SiteLensGlassQualityMode.high,
             allSurfacesHighQuality: true,
-            shaderSupported: true,
+            lightweightShaderSupported: true,
           ),
           child: Scaffold(
             body: ListView(

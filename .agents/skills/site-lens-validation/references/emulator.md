@@ -51,7 +51,7 @@ Stop the validation and report the evidence when any of these occurs:
 - the emulator disappears from ADB or remains `offline` across two consecutive checks;
 - `sys.boot_completed` regresses or ADB shell probes repeatedly time out;
 - the test runner has no output progress for five minutes and the monitored process is idle;
-- the host enters high memory pressure, available memory falls below roughly 20%, or swap free space falls below 1 GiB;
+- the host enters high memory pressure or available memory stays below roughly 20%; record swap usage as diagnostic context, but do not stop on a fixed swap-free threshold alone;
 - the canonical runner reaches its timeout or fails its cleanup/restore step.
 
 On stop, capture the runner output, `/tmp` emulator log, recent logcat, AVD/GPU/RAM configuration, and the retained backup path. Stop the emulator after evidence is collected. Do not report a stopped or timed-out run as passed.

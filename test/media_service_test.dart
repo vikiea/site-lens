@@ -82,11 +82,14 @@ MediaCandidate candidate({
   String url = 'https://cdn.example/video.mp4',
   String mime = 'video/mp4',
   String title = 'video',
+  String sourceUrl = 'https://example.com/watch',
+  int hostId = 7,
+  int generation = 3,
 }) => MediaCandidate(
   id: id,
-  hostId: 7,
-  generation: 3,
-  sourceUrl: Uri.parse('https://example.com/watch'),
+  hostId: hostId,
+  generation: generation,
+  sourceUrl: Uri.parse(sourceUrl),
   mediaUrl: Uri.parse(url),
   title: title,
   mime: mime,
@@ -102,12 +105,22 @@ void main() {
     expect(task.displayName, '母衣半暖默许春朝 - 第3集');
   });
 
-  test('media task prefers the episode marker in the media URL', () {
+  test(
+    'media task prefers an explicit title over a stale media URL marker',
+    () {
+      final task = MediaTaskStore().create(
+        candidate(
+          title: '母衣半暖默许春朝 - 第1集',
+          url: 'https://cdn.example/episode-3/video.mp4',
+        ),
+      );
+      expect(task.episodeLabel, '第1集');
+    },
+  );
+
+  test('media task falls back to a media URL marker for a generic title', () {
     final task = MediaTaskStore().create(
-      candidate(
-        title: '母衣半暖默许春朝 - 第1集',
-        url: 'https://cdn.example/episode-3/video.mp4',
-      ),
+      candidate(title: 'video', url: 'https://cdn.example/episode-3/video.mp4'),
     );
     expect(task.episodeLabel, '第3集');
   });
@@ -603,6 +616,165 @@ void main() {
 
     final playlist = mediaPlaylistForTasks(store.tasks, second);
     expect(playlist.map((task) => task.episodeLabel), ['第1集', '第2集']);
+  });
+
+  test(
+    'media playlist isolates same-title tasks from another source origin',
+    () {
+      final store = MediaTaskStore();
+      final first = store.create(
+        candidate(
+          id: 'source-a-1',
+          title: '同名系列 - 第1集',
+          url: 'https://cdn-a.example/episode-1.mp4',
+        ),
+      );
+      final second = store.create(
+        candidate(
+          id: 'source-a-2',
+          title: '同名系列 - 第2集',
+          url: 'https://cdn-a.example/episode-2.mp4',
+        ),
+      );
+      final foreign = store.create(
+        candidate(
+          id: 'source-b-1',
+          title: '同名系列 - 第1集',
+          url: 'https://cdn-b.example/episode-1.mp4',
+          sourceUrl: 'https://site-b.example/watch/1',
+        ),
+      );
+      for (final task in [first, second, foreign]) {
+        store.transition(task.id, MediaTaskState.downloading);
+        store.transition(task.id, MediaTaskState.completed);
+        store.transition(task.id, MediaTaskState.playable);
+      }
+
+      final playlist = mediaPlaylistForTasks(store.tasks, first);
+      expect(playlist.map((task) => task.id), [first.id, second.id]);
+      expect(playlist, isNot(contains(foreign)));
+    },
+  );
+
+  test('media playlist keeps one series across document generations', () {
+    final store = MediaTaskStore();
+    final first = store.create(
+      candidate(
+        id: 'generation-1',
+        title: '系列 - 第1集',
+        url: 'https://cdn.example/episode-1.mp4',
+        sourceUrl: 'https://example.com/video/42/',
+        generation: 1,
+      ),
+    );
+    final second = store.create(
+      candidate(
+        id: 'generation-2',
+        title: '系列 - 第2集',
+        url: 'https://cdn.example/episode-2.mp4',
+        sourceUrl: 'https://example.com/video/42/ep-2/',
+        generation: 2,
+      ),
+    );
+    for (final task in [first, second]) {
+      store.transition(task.id, MediaTaskState.downloading);
+      store.transition(task.id, MediaTaskState.completed);
+      store.transition(task.id, MediaTaskState.playable);
+    }
+
+    expect(mediaPlaylistForTasks(store.tasks, first).map((task) => task.id), [
+      first.id,
+      second.id,
+    ]);
+  });
+
+  test('media playlist isolates same-origin series paths', () {
+    final store = MediaTaskStore();
+    final first = store.create(
+      candidate(
+        id: 'path-a',
+        title: '同名系列 - 第1集',
+        url: 'https://cdn.example/a.mp4',
+        sourceUrl: 'https://example.com/video/42/',
+      ),
+    );
+    final foreign = store.create(
+      candidate(
+        id: 'path-b',
+        title: '同名系列 - 第2集',
+        url: 'https://cdn.example/b.mp4',
+        sourceUrl: 'https://example.com/video/77/',
+      ),
+    );
+    for (final task in [first, foreign]) {
+      store.transition(task.id, MediaTaskState.downloading);
+      store.transition(task.id, MediaTaskState.completed);
+      store.transition(task.id, MediaTaskState.playable);
+    }
+
+    expect(mediaPlaylistForTasks(store.tasks, first).map((task) => task.id), [
+      first.id,
+    ]);
+  });
+
+  test(
+    'batch playlists stay isolated when one folder contains mixed series',
+    () {
+      final store = MediaTaskStore();
+      final first = store.create(
+        candidate(
+          id: 'mixed-a',
+          title: '系列甲 - 第1集',
+          url: 'https://cdn.example/mixed-a.mp4',
+          sourceUrl: 'https://example.com/video/42/',
+        ),
+        batchDirectory: '批量媒体',
+      );
+      final second = store.create(
+        candidate(
+          id: 'mixed-b',
+          title: '系列乙 - 第1集',
+          url: 'https://cdn.example/mixed-b.mp4',
+          sourceUrl: 'https://example.com/video/77/',
+        ),
+        batchDirectory: '批量媒体',
+      );
+      for (final task in [first, second]) {
+        store.transition(task.id, MediaTaskState.downloading);
+        store.transition(task.id, MediaTaskState.completed);
+        store.transition(task.id, MediaTaskState.playable);
+      }
+
+      expect(mediaPlaylistForTasks(store.tasks, first).map((task) => task.id), [
+        first.id,
+      ]);
+    },
+  );
+
+  test('batch directory selection ignores generic active-player labels', () {
+    final candidates = [
+      candidate(id: 'generic', title: '媒体 · 集数未确认'),
+      candidate(id: 'explicit-1', title: '系列 - 第1集'),
+      candidate(id: 'explicit-2', title: '系列 - 第2集'),
+    ];
+    expect(mediaBatchDirectoryName(candidates), '系列');
+    expect(
+      mediaBatchDirectoryName([
+        candidate(id: 'generic-only', title: '媒体 · 集数未确认'),
+      ]),
+      isNull,
+    );
+  });
+
+  test('mixed explicit series use a neutral batch directory', () {
+    expect(
+      mediaBatchDirectoryName([
+        candidate(id: 'a-1', title: '系列甲 - 第1集'),
+        candidate(id: 'a-2', title: '系列甲 - 第2集'),
+        candidate(id: 'b-1', title: '系列乙 - 第1集'),
+      ]),
+      isNull,
+    );
   });
 
   test('media retry clears the previous human-readable failure reason', () {

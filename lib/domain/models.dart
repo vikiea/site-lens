@@ -1060,6 +1060,46 @@ class MediaCandidate {
   }
 }
 
+/// Picks one human-readable directory for a user-triggered batch. Generic
+/// active-player labels must not win over explicit episode titles; when every
+/// candidate is generic, the caller can use a neutral batch fallback.
+String? mediaBatchDirectoryName(Iterable<MediaCandidate> candidates) {
+  final counts = <String, int>{};
+  final firstSeen = <String, int>{};
+  var order = 0;
+  for (final candidate in candidates) {
+    final title = candidate.title.trim();
+    final lower = title.toLowerCase();
+    if (title.isEmpty ||
+        {'媒体', 'video', 'media'}.contains(lower) ||
+        lower.contains('集数未确认')) {
+      order++;
+      continue;
+    }
+    final directory = mediaSeriesDirectoryName(title);
+    if (directory == '未命名媒体') {
+      order++;
+      continue;
+    }
+    counts[directory] = (counts[directory] ?? 0) + 1;
+    firstSeen.putIfAbsent(directory, () => order);
+    order++;
+  }
+  if (counts.isEmpty) return null;
+  // A single batch directory must never be named after only the most common
+  // series when the selection contains multiple explicit series. Keep the
+  // caller's neutral "批量媒体" fallback so the folder remains truthful.
+  if (counts.length > 1) return null;
+  final entries = counts.entries.toList()
+    ..sort((left, right) {
+      final count = right.value.compareTo(left.value);
+      return count == 0
+          ? firstSeen[left.key]!.compareTo(firstSeen[right.key]!)
+          : count;
+    });
+  return entries.first.key;
+}
+
 Uri? optionalMediaUri(String? raw) {
   if (raw == null || raw.trim().isEmpty) return null;
   final uri = Uri.tryParse(raw.trim());

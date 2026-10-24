@@ -3588,6 +3588,9 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     var added = 0;
     var skipped = 0;
     var failed = 0;
+    final batchDirectory = candidates.length > 1
+        ? mediaBatchDirectoryName(candidates) ?? '批量媒体'
+        : null;
     final pending = <({MediaTask task, MediaCandidate candidate})>[];
     for (final candidate in candidates) {
       try {
@@ -3606,9 +3609,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
         await widget.app.mediaTasks.ready;
         final task = widget.app.mediaTasks.create(
           authorized,
-          batchDirectory: candidates.length > 1
-              ? mediaSeriesDirectoryName(authorized.title)
-              : null,
+          batchDirectory: batchDirectory,
         );
         added++;
         pending.add((task: task, candidate: authorized));

@@ -451,6 +451,7 @@ class _HttpHopClients {
 }
 
 class ControlledHttp {
+  static const _maxTransportAttempts = 2;
   ControlledHttp({
     this.resolve = InternetAddress.lookup,
     this.allowLocal = false,
@@ -541,10 +542,15 @@ class ControlledHttp {
       mediaRequest,
       body,
       maxBytes,
+      timeout,
       routeAttempt,
     );
     try {
-      return await task.timeout(timeout);
+      // The timeout remains bounded per transport attempt. A transient proxy
+      // connection may need one fresh client and the next PAC route before it
+      // can complete; route resolution errors still surface immediately from
+      // _fetch rather than consuming this extra budget.
+      return await task.timeout(timeout * _maxTransportAttempts);
     } on TimeoutException {
       requestCancel.cancel();
       rethrow;
@@ -624,6 +630,7 @@ class ControlledHttp {
     bool mediaRequest,
     String? body,
     int maxBytes,
+    Duration timeout,
     int routeAttempt,
   ) async {
     if (![
@@ -638,36 +645,62 @@ class ControlledHttp {
       throw StateError('不支持 HTTP 方法');
     }
     _validateHeaders(headers);
+    final retryableMethod = const {'GET', 'HEAD', 'OPTIONS'}.contains(method);
+    var currentRouteAttempt = routeAttempt;
     for (var redirects = 0; redirects <= 5; redirects++) {
       cancel.check();
       if (!allowLocal) NetworkPolicy.validateTarget(uri, connect, document);
-      final client = clients.next();
-      final route = await _configureRoute(
-        client,
-        uri,
-        mediaRequest,
-        cancel,
-        routeAttempt,
-      );
-      final request = await client.openUrl(method, uri);
-      request.followRedirects = false;
-      headers.forEach(request.headers.set);
-      if (mediaRequest) {
-        // Media CDN edges often apply the same hotlink checks as the page's
-        // <video> element.  These values are derived from the authorized
-        // document; callers cannot inject arbitrary Referer/Origin headers.
-        request.headers.set(HttpHeaders.userAgentHeader, route.userAgent);
-        request.headers.set(HttpHeaders.acceptHeader, '*/*');
-        request.headers.set(HttpHeaders.refererHeader, document.toString());
-        if (document.scheme == 'http' || document.scheme == 'https') {
-          request.headers.set('origin', document.origin);
-        }
-        if (route.cookie != null && route.cookie!.isNotEmpty) {
-          request.headers.set(HttpHeaders.cookieHeader, route.cookie!);
+      late HttpClientResponse response;
+      for (var transportAttempt = 0; ; transportAttempt++) {
+        cancel.check();
+        final client = clients.next();
+        // Keep route lookup outside the transport retry catch. A PAC/route
+        // lookup timeout is a policy failure, while a socket/response timeout
+        // after a route was selected can safely use a fresh route.
+        final route = await _configureRoute(
+          client,
+          uri,
+          mediaRequest,
+          cancel,
+          currentRouteAttempt,
+        );
+        try {
+          final request = await client.openUrl(method, uri);
+          request.followRedirects = false;
+          headers.forEach(request.headers.set);
+          if (mediaRequest) {
+            // Media CDN edges often apply the same hotlink checks as the page's
+            // <video> element.  These values are derived from the authorized
+            // document; callers cannot inject arbitrary Referer/Origin headers.
+            request.headers.set(HttpHeaders.userAgentHeader, route.userAgent);
+            request.headers.set(HttpHeaders.acceptHeader, '*/*');
+            request.headers.set(HttpHeaders.refererHeader, document.toString());
+            if (document.scheme == 'http' || document.scheme == 'https') {
+              request.headers.set('origin', document.origin);
+            }
+            if (route.cookie != null && route.cookie!.isNotEmpty) {
+              request.headers.set(HttpHeaders.cookieHeader, route.cookie!);
+            }
+          }
+          if (body != null) request.write(body);
+          response = await request.close().timeout(timeout);
+          break;
+        } on Cancelled {
+          rethrow;
+        } on SocketException {
+          if (!retryableMethod ||
+              transportAttempt + 1 >= _maxTransportAttempts) {
+            rethrow;
+          }
+          currentRouteAttempt++;
+        } on TimeoutException {
+          if (!retryableMethod ||
+              transportAttempt + 1 >= _maxTransportAttempts) {
+            rethrow;
+          }
+          currentRouteAttempt++;
         }
       }
-      if (body != null) request.write(body);
-      final response = await request.close();
       final location = response.headers.value(HttpHeaders.locationHeader);
       if ([301, 302, 303, 307, 308].contains(response.statusCode) &&
           location != null) {
@@ -920,6 +953,10 @@ class ControlledHttp {
 }
 
 class HttpProbe {
+  static const _maxRouteAttempts = 2;
+  static const _probeAttemptTimeout = Duration(seconds: 4);
+  static const _probeOverallTimeout = Duration(seconds: 10);
+
   HttpProbe({
     this.allowLocal = allowLocalTestPages,
     this.routeForAttempt,
@@ -934,7 +971,7 @@ class HttpProbe {
     Cancellation cancel,
   ) async {
     final watch = Stopwatch()..start();
-    final clients = _HttpHopClients(const Duration(seconds: 6));
+    final clients = _HttpHopClients(_probeAttemptTimeout);
     final requestCancel = Cancellation();
     final detach = cancel.onCancel(requestCancel.cancel);
     final transport = ControlledHttp(
@@ -962,18 +999,48 @@ class HttpProbe {
           if (!allowLocal) {
             NetworkPolicy.validateTarget(current, const {'*'}, current);
           }
-          final client = clients.next();
-          await transport._configureRoute(
-            client,
-            current,
-            false,
-            requestCancel,
-            0,
-          );
-          final request = await client.getUrl(current);
-          request.followRedirects = false;
-          request.headers.set('Range', 'bytes=0-1023');
-          final response = await request.close();
+          HttpClientResponse? response;
+          Object? lastRouteError;
+          StackTrace? lastRouteStack;
+          for (
+            var routeAttempt = 0;
+            routeAttempt < _maxRouteAttempts;
+            routeAttempt++
+          ) {
+            try {
+              final client = clients.next();
+              await transport._configureRoute(
+                client,
+                current,
+                false,
+                requestCancel,
+                routeAttempt,
+              );
+              final request = await client.getUrl(current);
+              request.followRedirects = false;
+              request.headers.set('Range', 'bytes=0-1023');
+              response = await request.close().timeout(_probeAttemptTimeout);
+              break;
+            } on Cancelled {
+              rethrow;
+            } on AddressPolicyException {
+              rethrow;
+            } on SocketException catch (error, stack) {
+              lastRouteError = error;
+              lastRouteStack = stack;
+            } on TimeoutException catch (error, stack) {
+              lastRouteError = error;
+              lastRouteStack = stack;
+            }
+          }
+          if (response == null) {
+            final error = lastRouteError;
+            final stack = lastRouteStack;
+            if (error != null && stack != null) {
+              Error.throwWithStackTrace(error, stack);
+            }
+            throw StateError('HTTP 初筛未收到响应');
+          }
           final location = response.headers.value(HttpHeaders.locationHeader);
           if ([301, 302, 303, 307, 308].contains(response.statusCode) &&
               location != null) {
@@ -997,7 +1064,7 @@ class HttpProbe {
           );
         }
         return result(ProbeStatus.unavailable);
-      })().timeout(const Duration(seconds: 8));
+      })().timeout(_probeOverallTimeout);
     } on Cancelled {
       return result(ProbeStatus.cancelled);
     } on TimeoutException {

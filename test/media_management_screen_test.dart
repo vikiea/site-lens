@@ -45,7 +45,7 @@ void main() {
             theme: buildSiteLensTheme(ThemePresetId.mistPine, brightness),
             builder: (context, child) => SiteLensGlassPolicyScope(
               strategy: const SiteLensGlassQualityStrategy(
-                shaderSupported: true,
+                lightweightShaderSupported: true,
               ),
               child: SiteLensBackdrop(child: child!),
             ),

@@ -392,7 +392,7 @@ void main() {
                   strategy: const SiteLensGlassQualityStrategy(
                     mode: SiteLensGlassQualityMode.high,
                     allSurfacesHighQuality: true,
-                    shaderSupported: true,
+                    lightweightShaderSupported: true,
                   ),
                   child: child!,
                 ),

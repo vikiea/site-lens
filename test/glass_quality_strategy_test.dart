@@ -44,18 +44,15 @@ void main() {
               allSurfacesHighQuality: true,
               webViewVisible: true,
               hcppEffective: enabled,
-              shaderSupported: true,
+              lightweightShaderSupported: true,
             );
             for (final role in [
               SiteLensSurfaceRole.panel,
               SiteLensSurfaceRole.chrome,
             ]) {
               final plan = strategy.resolve(context, role: role);
-              expect(plan.useCompatibilityFallback, !enabled);
-              expect(
-                plan.quality,
-                enabled ? GlassQuality.premium : GlassQuality.standard,
-              );
+              expect(plan.useCompatibilityFallback, isFalse);
+              expect(plan.quality, GlassQuality.premium);
             }
             final overlay = strategy.resolve(
               context,
@@ -94,7 +91,7 @@ void main() {
       final strategy = SiteLensGlassQualityStrategy(
         mode: mode,
         adaptiveQualityOverride: GlassQuality.premium,
-        shaderSupported: true,
+        lightweightShaderSupported: true,
       );
       final panel = strategy.resolve(context, role: SiteLensSurfaceRole.panel);
       final chrome = strategy.resolve(
@@ -134,7 +131,7 @@ void main() {
     );
     final strategy = SiteLensGlassQualityStrategy(
       adaptiveQualityOverride: GlassQuality.standard,
-      shaderSupported: true,
+      lightweightShaderSupported: true,
     );
     expect(
       strategy.resolve(context, role: SiteLensSurfaceRole.chrome).quality,
@@ -159,7 +156,7 @@ void main() {
       mode: SiteLensGlassQualityMode.high,
       allSurfacesHighQuality: true,
       adaptiveQualityOverride: GlassQuality.premium,
-      shaderSupported: true,
+      lightweightShaderSupported: true,
     );
     expect(
       strategy.resolve(context, role: SiteLensSurfaceRole.panel).quality,
@@ -194,7 +191,7 @@ void main() {
           final strategy = SiteLensGlassQualityStrategy(
             allSurfacesHighQuality: coverage,
             adaptiveQualityOverride: quality,
-            shaderSupported: true,
+            lightweightShaderSupported: true,
           );
           expect(
             strategy.resolve(context, role: SiteLensSurfaceRole.panel).quality,
@@ -206,13 +203,36 @@ void main() {
             allSurfacesHighQuality: coverage,
             adaptiveQualityOverride: quality,
             webViewVisible: true,
-            shaderSupported: true,
+            lightweightShaderSupported: true,
           );
-          for (final role in SiteLensSurfaceRole.values) {
-            final plan = browsing.resolve(context, role: role);
-            expect(plan.quality, GlassQuality.standard);
-            expect(plan.useCompatibilityFallback, isTrue);
-          }
+          final panel = browsing.resolve(
+            context,
+            role: SiteLensSurfaceRole.panel,
+          );
+          final chrome = browsing.resolve(
+            context,
+            role: SiteLensSurfaceRole.chrome,
+          );
+          final platformView = browsing.resolve(
+            context,
+            role: SiteLensSurfaceRole.platformView,
+          );
+          expect(
+            panel.quality,
+            coverage && quality == GlassQuality.premium
+                ? GlassQuality.premium
+                : GlassQuality.standard,
+          );
+          expect(
+            chrome.quality,
+            quality == GlassQuality.premium
+                ? GlassQuality.premium
+                : GlassQuality.standard,
+          );
+          expect(panel.useCompatibilityFallback, isFalse);
+          expect(chrome.useCompatibilityFallback, isFalse);
+          expect(platformView.quality, GlassQuality.standard);
+          expect(platformView.useCompatibilityFallback, isTrue);
         }
       }
       const standard = SiteLensGlassQualityStrategy(
@@ -247,7 +267,7 @@ void main() {
       final strategy = const SiteLensGlassQualityStrategy(
         mode: SiteLensGlassQualityMode.high,
         adaptiveQualityOverride: GlassQuality.standard,
-        shaderSupported: true,
+        lightweightShaderSupported: true,
       );
       expect(
         strategy.resolve(context, role: SiteLensSurfaceRole.chrome).quality,
@@ -279,16 +299,16 @@ void main() {
         );
         final standard = const SiteLensGlassQualityStrategy(
           mode: SiteLensGlassQualityMode.standard,
-          shaderSupported: true,
+          lightweightShaderSupported: true,
         ).resolve(context, role: SiteLensSurfaceRole.panel);
         final highPanel = const SiteLensGlassQualityStrategy(
           mode: SiteLensGlassQualityMode.high,
           allSurfacesHighQuality: true,
-          shaderSupported: true,
+          lightweightShaderSupported: true,
         ).resolve(context, role: SiteLensSurfaceRole.panel);
         final highChrome = const SiteLensGlassQualityStrategy(
           mode: SiteLensGlassQualityMode.high,
-          shaderSupported: true,
+          lightweightShaderSupported: true,
         ).resolve(context, role: SiteLensSurfaceRole.chrome);
 
         expect(highPanel.quality, GlassQuality.premium);
@@ -307,15 +327,22 @@ void main() {
           mode: SiteLensGlassQualityMode.high,
           allSurfacesHighQuality: true,
           webViewVisible: true,
-          shaderSupported: true,
+          lightweightShaderSupported: true,
         );
         final browsingPanel = browsing.resolve(
           context,
           role: SiteLensSurfaceRole.panel,
         );
-        expect(browsingPanel.quality, GlassQuality.standard);
-        expect(browsingPanel.settings.thickness, standard.settings.thickness);
-        expect(browsingPanel.settings.rimLight, standard.settings.rimLight);
+        expect(browsingPanel.quality, GlassQuality.premium);
+        expect(
+          browsingPanel.settings.thickness,
+          greaterThan(standard.settings.thickness),
+        );
+        expect(
+          browsingPanel.settings.rimLight,
+          greaterThan(standard.settings.rimLight),
+        );
+        expect(browsingPanel.useCompatibilityFallback, isFalse);
         expect(browsingPanel.settings.blur, greaterThan(0));
         expect(browsingPanel.settings.frost, greaterThan(0));
       } finally {
@@ -344,11 +371,11 @@ void main() {
       );
       final standard = const SiteLensGlassQualityStrategy(
         mode: SiteLensGlassQualityMode.standard,
-        shaderSupported: true,
+        lightweightShaderSupported: true,
       ).resolve(context, role: SiteLensSurfaceRole.chrome);
       final high = const SiteLensGlassQualityStrategy(
         mode: SiteLensGlassQualityMode.high,
-        shaderSupported: true,
+        lightweightShaderSupported: true,
       ).resolve(context, role: SiteLensSurfaceRole.chrome);
 
       expect(high.quality, GlassQuality.premium);
@@ -358,15 +385,22 @@ void main() {
       const browsing = SiteLensGlassQualityStrategy(
         mode: SiteLensGlassQualityMode.high,
         webViewVisible: true,
-        shaderSupported: true,
+        lightweightShaderSupported: true,
       );
       final browsingChrome = browsing.resolve(
         context,
         role: SiteLensSurfaceRole.chrome,
       );
-      expect(browsingChrome.quality, GlassQuality.standard);
-      expect(browsingChrome.settings.thickness, standard.settings.thickness);
-      expect(browsingChrome.settings.rimLight, standard.settings.rimLight);
+      expect(browsingChrome.quality, GlassQuality.premium);
+      expect(
+        browsingChrome.settings.thickness,
+        greaterThan(standard.settings.thickness),
+      );
+      expect(
+        browsingChrome.settings.rimLight,
+        greaterThan(standard.settings.rimLight),
+      );
+      expect(browsingChrome.useCompatibilityFallback, isFalse);
     } finally {
       debugDefaultTargetPlatformOverride = previous;
     }
@@ -398,7 +432,7 @@ void main() {
           mode: SiteLensGlassQualityMode.high,
           allSurfacesHighQuality: true,
           webViewVisible: true,
-          shaderSupported: true,
+          lightweightShaderSupported: true,
         );
         final overlay = browsing.resolve(
           context,
@@ -411,18 +445,18 @@ void main() {
         final ordinaryChrome = const SiteLensGlassQualityStrategy(
           mode: SiteLensGlassQualityMode.high,
           allSurfacesHighQuality: true,
-          shaderSupported: true,
+          lightweightShaderSupported: true,
         ).resolve(context, role: SiteLensSurfaceRole.chrome);
         final idlePlatformView = const SiteLensGlassQualityStrategy(
           mode: SiteLensGlassQualityMode.high,
           allSurfacesHighQuality: true,
-          shaderSupported: true,
+          lightweightShaderSupported: true,
         ).resolve(context, role: SiteLensSurfaceRole.platformView);
 
         expect(overlay.platformViewBackdrop, isFalse);
         expect(overlay.useCompatibilityFallback, isTrue);
-        expect(panel.quality, GlassQuality.standard);
-        expect(panel.useCompatibilityFallback, isTrue);
+        expect(panel.quality, GlassQuality.premium);
+        expect(panel.useCompatibilityFallback, isFalse);
         expect(ordinaryChrome.quality, GlassQuality.premium);
         expect(ordinaryChrome.platformViewBackdrop, isFalse);
         expect(ordinaryChrome.useCompatibilityFallback, isFalse);
@@ -459,17 +493,30 @@ void main() {
           mode: SiteLensGlassQualityMode.high,
           allSurfacesHighQuality: true,
           webViewVisible: true,
-          shaderSupported: true,
+          lightweightShaderSupported: true,
         );
-        for (final role in SiteLensSurfaceRole.values) {
-          final plan = browsing.resolve(context, role: role);
-          expect(plan.useCompatibilityFallback, isTrue);
-          expect(plan.platformViewBackdrop, isFalse);
-        }
+        final panel = browsing.resolve(
+          context,
+          role: SiteLensSurfaceRole.panel,
+        );
+        final chrome = browsing.resolve(
+          context,
+          role: SiteLensSurfaceRole.chrome,
+        );
+        final platformView = browsing.resolve(
+          context,
+          role: SiteLensSurfaceRole.platformView,
+        );
+        expect(panel.useCompatibilityFallback, isFalse);
+        expect(chrome.useCompatibilityFallback, isFalse);
+        expect(platformView.useCompatibilityFallback, isTrue);
+        expect(panel.platformViewBackdrop, isFalse);
+        expect(chrome.platformViewBackdrop, isFalse);
+        expect(platformView.platformViewBackdrop, isFalse);
         const idle = SiteLensGlassQualityStrategy(
           mode: SiteLensGlassQualityMode.high,
           allSurfacesHighQuality: true,
-          shaderSupported: true,
+          lightweightShaderSupported: true,
         );
         expect(
           idle.resolve(context, role: SiteLensSurfaceRole.panel).quality,
@@ -487,42 +534,56 @@ void main() {
     },
   );
 
-  testWidgets('unsupported Android shader uses the compatibility plan', (
-    tester,
-  ) async {
-    final previous = debugDefaultTargetPlatformOverride;
-    debugDefaultTargetPlatformOverride = TargetPlatform.android;
-    try {
-      late BuildContext context;
-      await tester.pumpWidget(
-        MaterialApp(
-          theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
-          home: Builder(
-            builder: (value) {
-              context = value;
-              return const SizedBox();
-            },
+  testWidgets(
+    'unknown Skia shader capability keeps Flutter glass on AdaptiveGlass',
+    (tester) async {
+      final previous = debugDefaultTargetPlatformOverride;
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      try {
+        late BuildContext context;
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSiteLensTheme(
+              ThemePresetId.oceanBlue,
+              Brightness.light,
+            ),
+            home: Builder(
+              builder: (value) {
+                context = value;
+                return const SizedBox();
+              },
+            ),
           ),
-        ),
-      );
-      final plan = const SiteLensGlassQualityStrategy(shaderSupported: false)
-          .resolve(context, role: SiteLensSurfaceRole.panel);
-      final highPanel = const SiteLensGlassQualityStrategy(
-        mode: SiteLensGlassQualityMode.high,
-        allSurfacesHighQuality: true,
-        shaderSupported: false,
-      ).resolve(context, role: SiteLensSurfaceRole.panel);
-      final chrome = const SiteLensGlassQualityStrategy(shaderSupported: false)
-          .resolve(context, role: SiteLensSurfaceRole.chrome);
-      expect(plan.quality, GlassQuality.standard);
-      expect(plan.useCompatibilityFallback, isTrue);
-      expect(highPanel.quality, GlassQuality.premium);
-      expect(highPanel.useCompatibilityFallback, isTrue);
-      expect(chrome.useCompatibilityFallback, isTrue);
-    } finally {
-      debugDefaultTargetPlatformOverride = previous;
-    }
-  });
+        );
+        final plan = const SiteLensGlassQualityStrategy(
+          mode: SiteLensGlassQualityMode.high,
+          allSurfacesHighQuality: true,
+          webViewVisible: true,
+        ).resolve(context, role: SiteLensSurfaceRole.panel);
+        expect(plan.quality, GlassQuality.premium);
+        expect(plan.useCompatibilityFallback, isFalse);
+
+        final unsupported = const SiteLensGlassQualityStrategy(
+          lightweightShaderSupported: false,
+        ).resolve(context, role: SiteLensSurfaceRole.panel);
+        final highPanel = const SiteLensGlassQualityStrategy(
+          mode: SiteLensGlassQualityMode.high,
+          allSurfacesHighQuality: true,
+          lightweightShaderSupported: false,
+        ).resolve(context, role: SiteLensSurfaceRole.panel);
+        final chrome = const SiteLensGlassQualityStrategy(
+          lightweightShaderSupported: false,
+        ).resolve(context, role: SiteLensSurfaceRole.chrome);
+        expect(unsupported.quality, GlassQuality.standard);
+        expect(unsupported.useCompatibilityFallback, isTrue);
+        expect(highPanel.quality, GlassQuality.premium);
+        expect(highPanel.useCompatibilityFallback, isTrue);
+        expect(chrome.useCompatibilityFallback, isTrue);
+      } finally {
+        debugDefaultTargetPlatformOverride = previous;
+      }
+    },
+  );
 
   test(
     'quality cache persists and validates its renderer fingerprint',

@@ -687,22 +687,30 @@ void main() {
             rendererPolicy!.observed == 'Skia OpenGL compatibility fallback';
         expect(
           plan.useCompatibilityFallback,
-          rendererFallback,
-          reason: rendererFallback
-              ? 'The protected Android renderer must use the compatibility fill'
-              : 'This acceptance requires the real high-quality shader path',
+          isFalse,
+          reason:
+              'Flutter-owned high-quality panels must keep the shader path even '
+              'when the native WebView role uses a compatibility fill',
         );
         final glass = find.descendant(
           of: panel,
           matching: find.byType(AdaptiveGlass),
         );
+        expect(glass, findsOneWidget);
+        expect(
+          tester.widget<AdaptiveGlass>(glass).quality,
+          GlassQuality.premium,
+        );
         if (rendererFallback) {
-          expect(glass, findsNothing);
-        } else {
-          expect(glass, findsOneWidget);
           expect(
-            tester.widget<AdaptiveGlass>(glass).quality,
-            GlassQuality.premium,
+            find.descendant(
+              of: glass,
+              matching: find.byType(LightweightLiquidGlass),
+            ),
+            findsOneWidget,
+            reason:
+                'Skia fallback must use the package lightweight shader path, '
+                'not a solid compatibility fill',
           );
         }
         final position = tester.state<ScrollableState>(viewport).position;
@@ -805,6 +813,7 @@ void main() {
         debugPrint(
           'HIGH_QUALITY_CODEC_SCROLL_PASS count=${codecs.length} '
           'quality=${plan.quality.name} fallback=${plan.useCompatibilityFallback} '
+          'renderer=${rendererFallback ? "skia-lightweight" : "impeller"} '
           'end=$bottom returned=${position.pixels} singleViewport=true',
         );
       } finally {
