@@ -115,6 +115,8 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     implementation("androidx.webkit:webkit:1.17.1")
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.2.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
     // MediaPlayer cannot reliably decode HLS playlists emitted by modern
     // WebView pages. Media3 supplies a maintained HLS renderer and buffering
     // stack for the native texture player.

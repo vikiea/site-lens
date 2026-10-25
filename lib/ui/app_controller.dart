@@ -5,6 +5,9 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
 import '../backup/backup_service.dart';
+import '../background/background_asset_store.dart';
+import '../background/background_snapshot.dart';
+import '../cache/transient_cache_service.dart';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/widgets.dart';
@@ -27,6 +30,7 @@ import '../discovery/health_checker.dart';
 import '../discovery/probe_coordinator.dart';
 import '../domain/models.dart';
 import '../network/transport.dart';
+import '../network/secure_dns_resolver.dart';
 import '../scripts/metadata.dart';
 import '../scripts/script_service.dart';
 import '../web_host/native_hosts.dart';
@@ -83,14 +87,20 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     deviceDiagnostics.addListener(_diagnosticsChanged);
     unawaited(deviceDiagnostics.refreshHcpp());
     settingsRepository = SettingsRepository(db);
+    backgroundAssets = BackgroundAssetStore();
+    secureDnsResolver = SecureDnsResolver();
+    transientCache = TransientCacheService(runtime: AppRuntimeApi());
     errorLogger = AppErrorLogger(db);
     glassQualityCacheRepository = SiteLensGlassQualityCacheRepository(db);
     this.sessionStore = sessionStore ?? BrowserSessionStore(db);
-    scripts = ScriptService(db, ControlledHttp());
+    scripts = ScriptService(
+      db,
+      ControlledHttp(resolve: secureDnsResolver.resolve),
+    );
     hosts = NativeHosts(
       db,
       scripts,
-      ControlledHttp(),
+      ControlledHttp(resolve: secureDnsResolver.resolve),
       api: api,
       probeRoute: Platform.isAndroid ? MediaNetwork().probeRoute : null,
       beforeCreate: _ensureBrowserPrepared,
@@ -121,6 +131,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       tasks: mediaTasks,
       native: nativeDownloads,
       http: ControlledHttp(
+        resolve: secureDnsResolver.resolve,
         mediaRouteForAttempt: (uri, attempt) =>
             MediaNetwork().route(uri, attempt: attempt),
       ),
@@ -177,6 +188,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       httpProbe:
           httpProbe ??
           HttpProbe(
+            resolve: secureDnsResolver.resolve,
             routeForAttempt: Platform.isAndroid
                 ? (uri, attempt) =>
                       MediaNetwork().probeRoute(uri, attempt: attempt)
@@ -188,6 +200,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
   final AppDatabase db;
   final StartupTrace startupTrace;
+  late final BackgroundAssetStore backgroundAssets;
+  late final SecureDnsResolver secureDnsResolver;
+  late final TransientCacheService transientCache;
   late final DeviceDiagnosticsService deviceDiagnostics;
   StreamSubscription<NativePlaybackSession>? _diagnosticPlaybackEvents;
 
@@ -377,6 +392,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _sessionSaveTimer;
   Future<void> _sessionWrites = Future.value();
   AppSettings settings = const AppSettings();
+  BackgroundSnapshot background = const BackgroundSnapshot();
   SiteLensGlassQualityCache? glassQualityCache;
   GlassQuality effectiveGlassQuality = GlassQuality.standard;
   late final ScriptService scripts;
@@ -742,6 +758,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> updateSettings(Map<String, Object?> patch) async {
     if (patch.containsKey('restoreBrowserSessions')) _restorePolicyEpoch++;
     settings = await settingsRepository.update(patch);
+    await _refreshBackgroundSnapshot();
     if (patch.containsKey('glassQualityMode')) {
       await _clearGlassQualityCache();
       effectiveGlassQuality =
@@ -929,6 +946,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   void _applySettings() {
     themeModePreference = settings.themeMode;
     themePreset = settings.themePreset;
+    secureDnsResolver.setProvider(settings.secureDnsProvider);
     restoreBrowserSessions = settings.restoreBrowserSessions;
     allowBackgroundPlayback = settings.allowBackgroundPlayback;
     allowStreamingWhileDownloading = settings.allowStreamingWhileDownloading;
@@ -940,6 +958,62 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     pullToRefresh = settings.pullToRefresh;
     backgroundHealthCheck = settings.backgroundHealthCheck;
     browserControlsFraction = Offset(settings.controlsX, settings.controlsY);
+  }
+
+  Future<void> _refreshBackgroundSnapshot() async {
+    final file = await backgroundAssets.fileFor(settings.backgroundAssetId);
+    background = BackgroundSnapshot(
+      mode: settings.backgroundMode,
+      imagePath: file?.path,
+      assetMissing: settings.backgroundAssetId != null && file == null,
+    );
+  }
+
+  Future<void> setBackgroundMode(BackgroundMode value) async {
+    if (value == BackgroundMode.customImage &&
+        settings.backgroundAssetId == null) {
+      throw StateError('请先上传背景图片');
+    }
+    await updateSettings({'backgroundMode': value.wireId});
+  }
+
+  Future<void> setBackgroundAsset(String assetId) async {
+    final previous = settings.backgroundAssetId;
+    try {
+      await updateSettings({
+        'backgroundMode': BackgroundMode.customImage.wireId,
+        'backgroundAssetId': assetId,
+      });
+    } catch (_) {
+      if (assetId != previous) await backgroundAssets.delete(assetId);
+      rethrow;
+    }
+    if (previous != null && previous != assetId) {
+      await backgroundAssets.delete(previous);
+    }
+    await backgroundAssets.cleanupUnused([assetId]);
+  }
+
+  Future<void> setSecureDnsProvider(SecureDnsProvider value) =>
+      updateSettings({'secureDnsProvider': value.wireId});
+
+  Future<void> clearBackgroundAsset() async {
+    final old = settings.backgroundAssetId;
+    await updateSettings({
+      'backgroundMode': BackgroundMode.defaultGradient.wireId,
+      'backgroundAssetId': null,
+    });
+    await backgroundAssets.delete(old);
+    await backgroundAssets.cleanupUnused(const []);
+  }
+
+  Future<CacheInventory> transientCacheInventory() => transientCache.inspect();
+
+  Future<CacheClearReport> clearTransientCache() async {
+    final report = await transientCache.clear();
+    await _clearGlassQualityCache();
+    notifyListeners();
+    return report;
   }
 
   Future<void> setThemeModePreference(ThemeModePreference value) =>
@@ -1491,6 +1565,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     });
     await trace.measure(StartupPhase.preferencesRead, () async {
       settings = await read(settingsRepository.read, settings);
+      await read(_refreshBackgroundSnapshot, null);
       glassQualityCache = await read(
         glassQualityCacheRepository.read,
         glassQualityCache,
@@ -2603,11 +2678,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   bool restoringData = false;
   Future<Uint8List> exportBackup() async {
     await _persistSessions();
-    return BackupService(db).export();
+    return BackupService(db, backgroundAssets: backgroundAssets).export();
   }
 
   Future<BackupSnapshot> inspectBackup(Uint8List bytes) =>
-      BackupService(db).validate(bytes);
+      BackupService(db, backgroundAssets: backgroundAssets).validate(bytes);
   Future<String> restoreBackup(BackupSnapshot snapshot) async {
     if (restoringData ||
         probes.running ||
@@ -2639,7 +2714,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         }
         await hosts.destroy(session);
       }
-      await BackupService(db).restore(snapshot);
+      await BackupService(
+        db,
+        backgroundAssets: backgroundAssets,
+      ).restore(snapshot);
       browserTabs.clear();
       activeBrowser = null;
       _restoredSessions = false;

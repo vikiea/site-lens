@@ -651,6 +651,7 @@ class NativeHosts extends WebHostEvents {
         uri,
         route: route,
         cancel: session.cancellation,
+        resolve: http.resolve,
       );
       if (session.disposed || session.generation != generation) {
         throw const Cancelled();

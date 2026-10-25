@@ -6,9 +6,11 @@ import 'dart:math' as math;
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../network/transport.dart';
 import '../settings/app_settings.dart';
 
 const siteLensRepository = 'vikiea/site-lens';
@@ -343,12 +345,36 @@ class GitHubApiException implements Exception {
   String toString() => message;
 }
 
+http.Client _createUpdateClient(
+  Future<List<InternetAddress>> Function(String)? resolve,
+) {
+  if (resolve == null) return http.Client();
+  final client = HttpClient()
+    ..connectionTimeout = const Duration(seconds: 15)
+    ..connectionFactory = (target, proxyHost, proxyPort) {
+      if (proxyHost != null) {
+        return Socket.startConnect(proxyHost, proxyPort!);
+      }
+      return NetworkPolicy.connect(
+        target,
+        proxyHost,
+        proxyPort,
+        resolve: resolve,
+      );
+    };
+  return IOClient(client);
+}
+
 class GitHubReleaseClient {
-  GitHubReleaseClient({http.Client? client, Uri? latestUri, this.tokenLoader})
-    : _client = client ?? http.Client(),
-      _latestUri =
-          latestUri ??
-          Uri.https('github.com', '/$siteLensRepository/releases/latest');
+  GitHubReleaseClient({
+    http.Client? client,
+    Uri? latestUri,
+    this.tokenLoader,
+    Future<List<InternetAddress>> Function(String)? resolve,
+  }) : _client = client ?? _createUpdateClient(resolve),
+       _latestUri =
+           latestUri ??
+           Uri.https('github.com', '/$siteLensRepository/releases/latest');
 
   final http.Client _client;
   final Future<String?> Function()? tokenLoader;
@@ -724,9 +750,12 @@ class UpdateService {
     List<Duration>? retryDelays,
     this.channel = UpdateChannel.stable,
     this.tokenLoader,
+    Future<List<InternetAddress>> Function(String)? resolve,
     this.progressMinBytes = 256 * 1024,
     this.progressMinInterval = const Duration(milliseconds: 200),
-  }) : _client = client ?? GitHubReleaseClient(tokenLoader: tokenLoader),
+  }) : _client =
+           client ??
+           GitHubReleaseClient(tokenLoader: tokenLoader, resolve: resolve),
        platform = platform ?? MethodChannelUpdatePlatform(),
        retryDelays =
            retryDelays ??

@@ -96,6 +96,15 @@ class DeviceDiagnosticsSnapshot {
   List<CapabilityRecord> capabilities;
 }
 
+class RuntimeCacheReport {
+  RuntimeCacheReport({
+    required this.webViewsCleared,
+    required this.websiteDataPreserved,
+  });
+  int webViewsCleared;
+  bool websiteDataPreserved;
+}
+
 /// Reads OS declarations and existing observations only. Implementations must
 /// not create views/codecs, request access, probe the network or schedule work.
 @HostApi()
@@ -365,6 +374,21 @@ abstract class WebHostApi {
     int expectedGeneration,
     String expectedRevision,
   );
+}
+
+/// Runtime services that are shared by the Flutter settings layer and the
+/// native WebView/network hosts. Android may provide secure DNS; other
+/// platforms return an unsupported error and keep their system resolver.
+@HostApi()
+abstract class AppRuntimeApi {
+  @asyncCallback
+  List<String> resolveSecureDns(String provider, String hostname);
+
+  @asyncCallback
+  void clearSecureDnsCache();
+
+  @asyncCallback
+  RuntimeCacheReport clearWebViewHttpCache();
 }
 
 @FlutterApi()

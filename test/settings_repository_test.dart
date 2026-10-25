@@ -60,6 +60,8 @@ void main() {
       expect(decoded['autoSaveWebPlayback'], isTrue);
       expect(decoded['allowStreamingWhileDownloading'], isFalse);
       expect(decoded['themePreset'], 'aurora_cyan');
+      expect(decoded['backgroundMode'], 'default_gradient');
+      expect(decoded['secureDnsProvider'], 'off');
       expect(await db.setting('glassOpacity'), isNull);
       expect(await db.setting('replaceSameSiteTabs'), isNull);
     },
@@ -166,10 +168,48 @@ void main() {
     final decoded = jsonDecode(
       (await db.setting(AppPolicy.settingsKey))!,
     ) as Map<String, dynamic>;
-    expect(decoded['version'], 2);
+    expect(decoded['version'], 3);
     expect(decoded['glassQualityMode'], 'automatic');
     expect(decoded.containsKey('glassMode'), isFalse);
     expect(decoded['themePreset'], 'mist_pine');
+  });
+
+  test(
+    'v2 settings migrate new background and DNS fields to safe defaults',
+    () async {
+      await db.setSetting(
+        AppPolicy.settingsKey,
+        '{"version":2,"themePreset":"mist_pine"}',
+      );
+      final restored = await settings.read();
+      expect(restored.backgroundMode, BackgroundMode.defaultGradient);
+      expect(restored.backgroundAssetId, isNull);
+      expect(restored.secureDnsProvider, SecureDnsProvider.off);
+      final updated = await settings.update({
+        'backgroundMode': 'transparent',
+        'secureDnsProvider': 'tencent',
+      });
+      expect(updated.backgroundMode, BackgroundMode.transparent);
+      expect(updated.secureDnsProvider, SecureDnsProvider.tencent);
+    },
+  );
+
+  test('background asset ids are constrained to generated image names', () async {
+    const valid =
+        '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.png';
+    final updated = await settings.update({
+      'backgroundMode': 'custom_image',
+      'backgroundAssetId': valid,
+    });
+    expect(updated.backgroundAssetId, valid);
+    await expectLater(
+      settings.update({'backgroundAssetId': '/tmp/background.png'}),
+      throwsA(isA<FormatException>()),
+    );
+    await expectLater(
+      settings.update({'secureDnsProvider': 'custom'}),
+      throwsA(isA<FormatException>()),
+    );
   });
 
   test('glass quality mode accepts the three supported values only', () async {

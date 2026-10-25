@@ -438,7 +438,12 @@ class ProfileDetailScreen extends StatelessWidget {
             label: live.name,
             child: const SizedBox.shrink(),
           ),
-          actions: [
+          flexibleSpace: const SiteLensGlassSurface(
+            role: SiteLensSurfaceRole.chrome,
+            radius: 0,
+            child: SizedBox.shrink(),
+          ),
+          actions: siteLensTopBarActions([
             PopupMenuButton<String>(
               tooltip: '档案操作',
               onSelected: (choice) => safely(context, () async {
@@ -493,7 +498,7 @@ class ProfileDetailScreen extends StatelessWidget {
                 ),
               ],
             ),
-          ],
+          ]),
         ),
         body: ListView(
           padding: const EdgeInsets.fromLTRB(

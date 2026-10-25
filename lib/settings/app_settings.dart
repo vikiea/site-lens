@@ -34,6 +34,66 @@ extension ThemePresetWireId on ThemePresetId {
 
 enum ThemeModePreference { system, light, dark }
 
+enum BackgroundMode { defaultGradient, transparent, themeBuiltIn, customImage }
+
+extension BackgroundModeWireId on BackgroundMode {
+  String get wireId => switch (this) {
+    BackgroundMode.defaultGradient => 'default_gradient',
+    BackgroundMode.transparent => 'transparent',
+    BackgroundMode.themeBuiltIn => 'theme_builtin',
+    BackgroundMode.customImage => 'custom_image',
+  };
+}
+
+extension BackgroundModeLabel on BackgroundMode {
+  String get label => switch (this) {
+    BackgroundMode.defaultGradient => '当前默认渐变',
+    BackgroundMode.transparent => '全透明',
+    BackgroundMode.themeBuiltIn => '主题色内置背景',
+    BackgroundMode.customImage => '自定义图片',
+  };
+}
+
+enum SecureDnsProvider {
+  off,
+  tencent,
+  alibaba,
+  q360,
+  cloudflare,
+  cloudflareSecurity,
+  google,
+  quad9,
+  adguard,
+}
+
+extension SecureDnsProviderWireId on SecureDnsProvider {
+  String get wireId => switch (this) {
+    SecureDnsProvider.off => 'off',
+    SecureDnsProvider.tencent => 'tencent',
+    SecureDnsProvider.alibaba => 'alibaba',
+    SecureDnsProvider.q360 => 'q360',
+    SecureDnsProvider.cloudflare => 'cloudflare',
+    SecureDnsProvider.cloudflareSecurity => 'cloudflare_security',
+    SecureDnsProvider.google => 'google',
+    SecureDnsProvider.quad9 => 'quad9',
+    SecureDnsProvider.adguard => 'adguard',
+  };
+}
+
+extension SecureDnsProviderLabel on SecureDnsProvider {
+  String get label => switch (this) {
+    SecureDnsProvider.off => '关闭',
+    SecureDnsProvider.tencent => '腾讯',
+    SecureDnsProvider.alibaba => '阿里',
+    SecureDnsProvider.q360 => '360',
+    SecureDnsProvider.cloudflare => 'Cloudflare 1.1.1.1',
+    SecureDnsProvider.cloudflareSecurity => 'Cloudflare 安全',
+    SecureDnsProvider.google => 'Google Public DNS',
+    SecureDnsProvider.quad9 => 'Quad9',
+    SecureDnsProvider.adguard => 'AdGuard DNS',
+  };
+}
+
 /// Release channel used by the in-app update checker. Stable is the safe
 /// default; beta opt-in only changes which GitHub release is offered.
 enum UpdateChannel { stable, beta }
@@ -84,6 +144,9 @@ class AppSettings {
   const AppSettings({
     this.themeMode = ThemeModePreference.system,
     this.themePreset = ThemePresetId.sunsetCoral,
+    this.backgroundMode = BackgroundMode.defaultGradient,
+    this.backgroundAssetId,
+    this.secureDnsProvider = SecureDnsProvider.off,
     this.updateChannel = UpdateChannel.stable,
     this.glassOpacity = AppPolicy.defaultGlassOpacity,
     this.glassQualityMode = SiteLensGlassQualityMode.automatic,
@@ -111,6 +174,9 @@ class AppSettings {
   });
   final ThemeModePreference themeMode;
   final ThemePresetId themePreset;
+  final BackgroundMode backgroundMode;
+  final String? backgroundAssetId;
+  final SecureDnsProvider secureDnsProvider;
   final UpdateChannel updateChannel;
 
   /// Absolute panel background fill opacity; no effect on content or optics.
@@ -139,9 +205,12 @@ class AppSettings {
   final double controlsY;
 
   Map<String, Object?> toJson() => {
-    'version': 2,
+    'version': 3,
     'themeMode': themeMode.name,
     'themePreset': themePreset.wireId,
+    'backgroundMode': backgroundMode.wireId,
+    'backgroundAssetId': backgroundAssetId,
+    'secureDnsProvider': secureDnsProvider.wireId,
     'updateChannel': updateChannel.name,
     'glassOpacity': glassOpacity,
     'glassQualityMode': glassQualityMode.name,
@@ -171,7 +240,8 @@ class AppSettings {
 
   factory AppSettings.decode(String raw) {
     final decoded = jsonDecode(raw);
-    if (decoded is! Map<String, dynamic> || decoded['version'] != 2) {
+    if (decoded is! Map<String, dynamic> ||
+        !{2, 3}.contains(decoded['version'])) {
       throw const FormatException('不支持的设置版本');
     }
     return AppSettings.fromJson(decoded);
@@ -203,6 +273,23 @@ class AppSettings {
       return trimmed.isEmpty ? null : trimmed;
     }
 
+    String? assetId(String key) {
+      final value = json[key];
+      if (value == null) return null;
+      if (value is! String ||
+          !RegExp(r'^[a-f0-9]{64}\.(?:png|jpe?g|webp)$').hasMatch(value)) {
+        return null;
+      }
+      return value;
+    }
+
+    T wireChoice<T extends Enum>(
+      String key,
+      List<T> values,
+      String Function(T) wire,
+      T fallback,
+    ) => values.where((v) => wire(v) == json[key]).firstOrNull ?? fallback;
+
     return AppSettings(
       themeMode: choice(
         'themeMode',
@@ -214,6 +301,19 @@ class AppSettings {
               .where((v) => v.wireId == json['themePreset'])
               .firstOrNull ??
           ThemePresetId.sunsetCoral,
+      backgroundMode: wireChoice(
+        'backgroundMode',
+        BackgroundMode.values,
+        (value) => value.wireId,
+        BackgroundMode.defaultGradient,
+      ),
+      backgroundAssetId: assetId('backgroundAssetId'),
+      secureDnsProvider: wireChoice(
+        'secureDnsProvider',
+        SecureDnsProvider.values,
+        (value) => value.wireId,
+        SecureDnsProvider.off,
+      ),
       updateChannel: choice(
         'updateChannel',
         UpdateChannel.values,
@@ -275,6 +375,9 @@ class AppSettings {
     const fields = {
       'themeMode',
       'themePreset',
+      'backgroundMode',
+      'backgroundAssetId',
+      'secureDnsProvider',
       'updateChannel',
       'glassOpacity',
       'glassQualityMode',
@@ -321,6 +424,23 @@ class AppSettings {
         'amber_glow',
         'midnight_indigo',
       },
+      'backgroundMode': {
+        'default_gradient',
+        'transparent',
+        'theme_builtin',
+        'custom_image',
+      },
+      'secureDnsProvider': {
+        'off',
+        'tencent',
+        'alibaba',
+        'q360',
+        'cloudflare',
+        'cloudflare_security',
+        'google',
+        'quad9',
+        'adguard',
+      },
       'playerVerticalGesture': {'brightnessVolume', 'episodeSwitch'},
     };
     for (final entry in changes.entries) {
@@ -352,6 +472,13 @@ class AppSettings {
       } else if (entry.key == 'mp4ExportDirectory') {
         if (entry.value != null && entry.value is! String) {
           throw const FormatException('MP4 保存目录必须是文本路径');
+        }
+      } else if (entry.key == 'backgroundAssetId') {
+        if (entry.value != null &&
+            (entry.value is! String ||
+                !RegExp(r'^[a-f0-9]{64}\.(?:png|jpe?g|webp)$')
+                    .hasMatch(entry.value as String))) {
+          throw const FormatException('背景图片标识无效');
         }
       } else if (choices == null && entry.value is! bool) {
         throw const FormatException('开关设置必须是布尔值');

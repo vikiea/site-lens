@@ -95,6 +95,10 @@ class MainActivity : FlutterActivity() {
             }
         }
         hosts = NativeWebHostRegistry(this, flutterEngine)
+        AppRuntimeApi.setUp(
+            flutterEngine.dartExecutor.binaryMessenger,
+            NativeAppRuntime(requireNotNull(hosts)),
+        )
         deviceDiagnostics = NativeDeviceDiagnostics(this) { dlnaMulticastLock?.isHeld ?: false }
         DeviceDiagnosticsApi.setUp(flutterEngine.dartExecutor.binaryMessenger, deviceDiagnostics)
         registerDiagnosticsChannel(flutterEngine)

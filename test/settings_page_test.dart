@@ -17,6 +17,7 @@ import 'package:site_lens/ui/glass_surface.dart';
 import 'package:site_lens/ui/player_gestures_screen.dart';
 import 'package:site_lens/ui/screens.dart';
 import 'package:site_lens/ui/software_update_screen.dart';
+import 'package:site_lens/ui/ui_primitives.dart';
 import 'package:site_lens/update/update_controller.dart';
 import 'package:site_lens/update/update_service.dart';
 
@@ -35,35 +36,43 @@ UpdateController quietUpdateController() {
   return controller;
 }
 
-Widget settingsApp(AppController app, UpdateController update) => ProviderScope(
+Widget settingsApp(
+  AppController app,
+  UpdateController update, {
+  TargetPlatform? platform,
+}) => ProviderScope(
   overrides: [updateControllerProvider.overrideWithValue(update)],
   child: ListenableBuilder(
     listenable: app,
-    builder: (context, _) => MaterialApp(
-      theme: buildSiteLensTheme(
+    builder: (context, _) {
+      final light = buildSiteLensTheme(
         app.themePreset,
         Brightness.light,
         glassOpacity: app.settings.glassOpacity,
-      ),
-      darkTheme: buildSiteLensTheme(
+      ).copyWith(platform: platform);
+      final dark = buildSiteLensTheme(
         app.themePreset,
         Brightness.dark,
         glassOpacity: app.settings.glassOpacity,
-      ),
-      themeMode: toThemeMode(app.themeModePreference),
-      builder: (context, child) => SiteLensGlassPolicyScope(
-        strategy: SiteLensGlassQualityStrategy(
-          mode: app.settings.glassQualityMode,
-          allSurfacesHighQuality: app.settings.highQualityAllSurfaces,
-          adaptiveQualityOverride: app.effectiveGlassQuality,
-          lightweightShaderSupported: true,
+      ).copyWith(platform: platform);
+      return MaterialApp(
+        theme: light,
+        darkTheme: dark,
+        themeMode: toThemeMode(app.themeModePreference),
+        builder: (context, child) => SiteLensGlassPolicyScope(
+          strategy: SiteLensGlassQualityStrategy(
+            mode: app.settings.glassQualityMode,
+            allSurfacesHighQuality: app.settings.highQualityAllSurfaces,
+            adaptiveQualityOverride: app.effectiveGlassQuality,
+            lightweightShaderSupported: true,
+          ),
+          child: SiteLensBackdrop(child: child!),
         ),
-        child: SiteLensBackdrop(child: child!),
-      ),
-      home: Scaffold(
-        body: SiteLensGlassGroup(child: SettingsPage(app: app)),
-      ),
-    ),
+        home: Scaffold(
+          body: SiteLensGlassGroup(child: SettingsPage(app: app)),
+        ),
+      );
+    },
   ),
 );
 
@@ -188,6 +197,83 @@ void main() {
     expect(find.text('关于'), findsOneWidget);
     expect(find.text('软件更新'), findsOneWidget);
     expect(find.byType(Scrollable), findsOneWidget);
+  });
+
+  testWidgets('secure DNS is Android-only and exposes all built-ins', (
+    tester,
+  ) async {
+    final update = quietUpdateController();
+    await pumpSettings(tester, app, update: update);
+    await tester.pumpWidget(
+      settingsApp(app, update, platform: TargetPlatform.android),
+    );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('安全 DNS'),
+      300,
+      scrollable: find.byType(Scrollable),
+    );
+    expect(find.text('安全 DNS'), findsOneWidget);
+    await tester.tap(find.text('关闭'));
+    await tester.pumpAndSettle();
+    for (final provider in SecureDnsProvider.values) {
+      expect(find.text(provider.label), findsOneWidget);
+    }
+    await tester.tap(find.text(SecureDnsProvider.cloudflare.label));
+    await tester.pumpAndSettle();
+    expect(app.settings.secureDnsProvider, SecureDnsProvider.cloudflare);
+
+    await tester.pumpWidget(
+      settingsApp(app, update, platform: TargetPlatform.iOS),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('安全 DNS'), findsNothing);
+  });
+
+  testWidgets('background selector exposes the four global modes', (
+    tester,
+  ) async {
+    await pumpSettings(tester, app);
+    await tester.tap(
+      find
+          .descendant(
+            of: find.byType(SiteLensMenuSelector<BackgroundMode>),
+            matching: find.text(BackgroundMode.defaultGradient.label),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+    for (final mode in BackgroundMode.values) {
+      expect(find.text(mode.label), findsWidgets);
+    }
+    await tester.tap(find.text(BackgroundMode.transparent.label));
+    await tester.pumpAndSettle();
+    expect(app.settings.backgroundMode, BackgroundMode.transparent);
+  });
+
+  testWidgets('cache action asks before clearing transient data', (
+    tester,
+  ) async {
+    await pumpSettings(tester, app);
+    await tester.scrollUntilVisible(
+      find.text('临时缓存'),
+      300,
+      scrollable: find.byType(Scrollable),
+    );
+    final clear = find.text('清除');
+    await tester.scrollUntilVisible(
+      clear,
+      180,
+      scrollable: find.byType(Scrollable),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(clear);
+    await tester.pumpAndSettle();
+    expect(find.text('清除临时缓存？'), findsOneWidget);
+    expect(find.textContaining('登录状态、标签页、媒体下载和导出文件会保留。'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(find.text('清除临时缓存？'), findsNothing);
   });
 
   testWidgets(

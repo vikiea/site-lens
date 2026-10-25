@@ -7,6 +7,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../settings/app_settings.dart';
+import '../ui/app_controller.dart';
 import 'github_token_store.dart';
 import 'update_service.dart';
 
@@ -17,8 +18,12 @@ import 'update_service.dart';
 /// and owns the in-app completion notice state.
 final updateControllerProvider = Provider<UpdateController>((ref) {
   final tokenStore = GitHubTokenStore();
+  final app = ref.watch(appControllerProvider);
   final controller = UpdateController(
-    service: UpdateService(tokenLoader: tokenStore.read),
+    service: UpdateService(
+      tokenLoader: tokenStore.read,
+      resolve: app.secureDnsResolver.resolve,
+    ),
   );
   ref.onDispose(controller.dispose);
   return controller;

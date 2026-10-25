@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart'
@@ -5,6 +6,7 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
+import '../background/background_snapshot.dart';
 import '../settings/app_settings.dart';
 import 'app_theme.dart';
 import 'glass_quality_strategy.dart';
@@ -24,36 +26,79 @@ export 'glass_quality_strategy.dart'
 /// material has something real to sample. Nothing animates, so there is no
 /// continuous repaint behind the glass.
 class SiteLensBackdrop extends StatelessWidget {
-  const SiteLensBackdrop({super.key, required this.child});
+  const SiteLensBackdrop({
+    super.key,
+    required this.child,
+    this.background = const BackgroundSnapshot(),
+  });
   final Widget child;
+  final BackgroundSnapshot background;
 
   @override
   Widget build(BuildContext context) {
     final colors = SiteLensColors.of(context);
+    final imagePath = background.imagePath;
+    final transparent = background.mode == BackgroundMode.transparent;
+    final image = imagePath == null
+        ? null
+        : Image.file(
+            File(imagePath),
+            fit: BoxFit.cover,
+            filterQuality: FilterQuality.low,
+            errorBuilder: (_, _, _) => const SizedBox.shrink(),
+          );
     return Stack(
       fit: StackFit.expand,
       children: [
-        DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [colors.backdropTop, colors.backdropBottom],
+        if (image != null) Positioned.fill(child: image),
+        if (image == null || background.mode == BackgroundMode.themeBuiltIn)
+          DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  background.mode == BackgroundMode.themeBuiltIn
+                      ? Color.lerp(
+                          colors.backdropTop,
+                          colors.backdropTint,
+                          0.34,
+                        )!
+                      : colors.backdropTop,
+                  background.mode == BackgroundMode.themeBuiltIn
+                      ? Color.lerp(
+                          colors.backdropBottom,
+                          colors.backdropTint,
+                          0.20,
+                        )!
+                      : colors.backdropBottom,
+                ],
+              ),
             ),
           ),
-        ),
-        DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: RadialGradient(
-              center: const Alignment(-0.75, -0.95),
-              radius: 1.5,
-              colors: [
-                colors.backdropTint,
-                colors.backdropTint.withValues(alpha: 0),
-              ],
+        if (!transparent && image != null)
+          Positioned.fill(
+            child: ColoredBox(
+              color: colors.backdropTint.withValues(
+                alpha: Theme.of(context).brightness == Brightness.dark
+                    ? 0.18
+                    : 0.10,
+              ),
             ),
           ),
-        ),
+        if (!transparent)
+          DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: RadialGradient(
+                center: const Alignment(-0.75, -0.95),
+                radius: 1.5,
+                colors: [
+                  colors.backdropTint,
+                  colors.backdropTint.withValues(alpha: 0),
+                ],
+              ),
+            ),
+          ),
         child,
       ],
     );

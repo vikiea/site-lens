@@ -24,7 +24,14 @@ import 'about_screen.dart';
 import 'software_update_screen.dart';
 import 'app_theme.dart';
 import '../settings/app_settings.dart'
-    show AppPolicy, PlayerVerticalGestureModeLabel, SiteLensGlassQualityMode;
+    show
+        AppPolicy,
+        BackgroundMode,
+        BackgroundModeLabel,
+        PlayerVerticalGestureModeLabel,
+        SecureDnsProvider,
+        SecureDnsProviderLabel,
+        SiteLensGlassQualityMode;
 import 'glass_surface.dart';
 import 'help_notice.dart';
 import 'browser_entry.dart';
@@ -34,6 +41,7 @@ import 'player_gestures_screen.dart';
 import 'data_management_screen.dart';
 import 'error_logs_screen.dart';
 import 'device_diagnostics_screen.dart';
+import 'double_back_exit.dart';
 import 'filter_diagnostics_panel.dart';
 import 'ui_util.dart';
 import 'ui_primitives.dart';
@@ -164,6 +172,7 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
   int page = 0;
+  final _doubleBackExit = DoubleBackExitController();
   @override
   void initState() {
     super.initState();
@@ -207,149 +216,164 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         ];
         final destination =
             destinations[page.clamp(0, destinations.length - 1)];
-        return SiteLensGlassGroup(
-          // One backdrop read for the whole screen: the top bar, the panels and
-          // the bottom bar share it instead of taking a full-screen capture each.
-          child: Scaffold(
-            appBar:
-                destination == AppDestination.media ||
-                    destination == AppDestination.settings
-                ? null
-                : AppBar(
-                    title: destination == AppDestination.sites
-                        ? const Text('Site Lens')
-                        : null,
-                    // The top bar is the same glass layer as the bottom one: both sit
-                    // above the content on the app backdrop.
-                    flexibleSpace: const SiteLensGlassSurface(
-                      role: SiteLensSurfaceRole.chrome,
-                      radius: 0,
-                      child: SizedBox.shrink(),
-                    ),
-                    actions: switch (destination) {
-                      AppDestination.sites => [
-                        IconButton(
-                          tooltip: '添加站点',
-                          icon: const Icon(Icons.add_link),
-                          onPressed: () => showAddProfileDialog(context, app),
-                        ),
-                        IconButton(
-                          tooltip: '导入档案包',
-                          icon: const Icon(Icons.file_download_outlined),
-                          onPressed: () => safely(
-                            context,
-                            () => importProfilePack(context, app),
+        return PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (didPop, _) {
+            if (didPop || !Platform.isAndroid) return;
+            if (_doubleBackExit.handleBack(DateTime.now())) {
+              SystemNavigator.pop();
+            } else {
+              showShortToast(context, '再按一次退出应用');
+            }
+          },
+          child: SiteLensGlassGroup(
+            // One backdrop read for the whole screen: the top bar, the panels and
+            // the bottom bar share it instead of taking a full-screen capture each.
+            child: Scaffold(
+              appBar:
+                  destination == AppDestination.media ||
+                      destination == AppDestination.settings
+                  ? null
+                  : AppBar(
+                      title: destination == AppDestination.sites
+                          ? const Text('Site Lens')
+                          : null,
+                      // The top bar is the same glass layer as the bottom one: both sit
+                      // above the content on the app backdrop.
+                      flexibleSpace: const SiteLensGlassSurface(
+                        role: SiteLensSurfaceRole.chrome,
+                        radius: 0,
+                        child: SizedBox.shrink(),
+                      ),
+                      actions: siteLensTopBarActions(switch (destination) {
+                        AppDestination.sites => [
+                          IconButton(
+                            tooltip: '添加站点',
+                            icon: const Icon(Icons.add_link),
+                            onPressed: () => showAddProfileDialog(context, app),
                           ),
-                        ),
-                        IconButton(
-                          tooltip: app.probes.running || app.refreshing
-                              ? '取消检测'
-                              : '全部检测',
-                          icon: Icon(
-                            app.probes.running || app.refreshing
-                                ? Icons.stop_circle_outlined
-                                : Icons.radar,
-                          ),
-                          onPressed: app.probes.running || app.refreshing
-                              ? app.cancel
-                              : app.profiles.any((profile) => profile.enabled)
-                              ? () => safely(context, () async {
-                                  await app.detect();
-                                })
-                              : null,
-                        ),
-                      ],
-                      AppDestination.browser => [
-                        IconButton(
-                          tooltip: '新建标签页',
-                          icon: const Icon(Icons.add),
-                          onPressed: () =>
-                              safely(context, () => promptNewTab(context, app)),
-                        ),
-                        PopupMenuButton<String>(
-                          tooltip: '标签页操作',
-                          onSelected: (choice) => safely(context, () async {
-                            if (choice == 'closeAll') await app.closeAllTabs();
-                          }),
-                          itemBuilder: (_) => [
-                            PopupMenuItem(
-                              value: 'closeAll',
-                              enabled: app.browserTabs.isNotEmpty,
-                              child: const ListTile(
-                                leading: Icon(Icons.close),
-                                title: Text('全部关闭'),
-                                contentPadding: EdgeInsets.zero,
-                              ),
+                          IconButton(
+                            tooltip: '导入档案包',
+                            icon: const Icon(Icons.file_download_outlined),
+                            onPressed: () => safely(
+                              context,
+                              () => importProfilePack(context, app),
                             ),
-                          ],
+                          ),
+                          IconButton(
+                            tooltip: app.probes.running || app.refreshing
+                                ? '取消检测'
+                                : '全部检测',
+                            icon: Icon(
+                              app.probes.running || app.refreshing
+                                  ? Icons.stop_circle_outlined
+                                  : Icons.radar,
+                            ),
+                            onPressed: app.probes.running || app.refreshing
+                                ? app.cancel
+                                : app.profiles.any((profile) => profile.enabled)
+                                ? () => safely(context, () async {
+                                    await app.detect();
+                                  })
+                                : null,
+                          ),
+                        ],
+                        AppDestination.browser => [
+                          IconButton(
+                            tooltip: '新建标签页',
+                            icon: const Icon(Icons.add),
+                            onPressed: () => safely(
+                              context,
+                              () => promptNewTab(context, app),
+                            ),
+                          ),
+                          PopupMenuButton<String>(
+                            tooltip: '标签页操作',
+                            onSelected: (choice) => safely(context, () async {
+                              if (choice == 'closeAll') {
+                                await app.closeAllTabs();
+                              }
+                            }),
+                            itemBuilder: (_) => [
+                              PopupMenuItem(
+                                value: 'closeAll',
+                                enabled: app.browserTabs.isNotEmpty,
+                                child: const ListTile(
+                                  leading: Icon(Icons.close),
+                                  title: Text('全部关闭'),
+                                  contentPadding: EdgeInsets.zero,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                        AppDestination.media => const <Widget>[],
+                        AppDestination.settings => const <Widget>[],
+                      }),
+                    ),
+              body: SafeArea(
+                child: switch (destination) {
+                  AppDestination.sites => ProfilesPanel(
+                    app: app,
+                    onOpen: (profile) => _openProfile(app, profile),
+                    onEnterProfile: (profile) => _enterProfile(app, profile),
+                    onResume: () => _resume(app),
+                  ),
+                  AppDestination.browser => BrowserTabsPage(
+                    app: app,
+                    onResume: (tab) => _resumeTab(app, tab),
+                    onNewTab: () =>
+                        safely(context, () => promptNewTab(context, app)),
+                  ),
+                  AppDestination.media => MediaLibraryScreen(app: app),
+                  AppDestination.settings => SettingsPage(app: app),
+                },
+              ),
+              // A fixed, single-row labelled glass capsule: destinations never
+              // wrap, move or shrink, and the surface refracts the app backdrop.
+              bottomNavigationBar: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    SiteLensMetrics.navHorizontalInset,
+                    SiteLensMetrics.navCapsuleInset,
+                    SiteLensMetrics.navHorizontalInset,
+                    SiteLensMetrics.navCapsuleInset,
+                  ),
+                  child: SiteLensNavigationSurface(
+                    radius: SiteLensMetrics.navRadius,
+                    child: SiteLensBottomNavigation(
+                      selectedIndex: page.clamp(0, destinations.length - 1),
+                      onDestinationSelected: (value) =>
+                          setState(() => page = value),
+                      items: [
+                        const SiteLensBottomNavigationItem(
+                          icon: Icons.travel_explore_outlined,
+                          selectedIcon: Icons.travel_explore,
+                          label: '站点',
+                        ),
+                        SiteLensBottomNavigationItem(
+                          icon: app.browserTabs.isEmpty
+                              ? Icons.tab_unselected
+                              : Icons.tab_outlined,
+                          selectedIcon: Icons.tab,
+                          label: '浏览',
+                          semanticLabel: app.browserTabs.isEmpty
+                              ? '浏览'
+                              : '浏览，${app.browserTabs.length} 个标签',
+                        ),
+                        const SiteLensBottomNavigationItem(
+                          icon: Icons.video_library_outlined,
+                          selectedIcon: Icons.video_library,
+                          label: '媒体',
+                        ),
+                        const SiteLensBottomNavigationItem(
+                          icon: Icons.tune_outlined,
+                          selectedIcon: Icons.tune,
+                          label: '设置',
                         ),
                       ],
-                      AppDestination.media => const <Widget>[],
-                      AppDestination.settings => const <Widget>[],
-                    },
-                  ),
-            body: SafeArea(
-              child: switch (destination) {
-                AppDestination.sites => ProfilesPanel(
-                  app: app,
-                  onOpen: (profile) => _openProfile(app, profile),
-                  onEnterProfile: (profile) => _enterProfile(app, profile),
-                  onResume: () => _resume(app),
-                ),
-                AppDestination.browser => BrowserTabsPage(
-                  app: app,
-                  onResume: (tab) => _resumeTab(app, tab),
-                  onNewTab: () =>
-                      safely(context, () => promptNewTab(context, app)),
-                ),
-                AppDestination.media => MediaLibraryScreen(app: app),
-                AppDestination.settings => SettingsPage(app: app),
-              },
-            ),
-            // A fixed, single-row labelled glass capsule: destinations never
-            // wrap, move or shrink, and the surface refracts the app backdrop.
-            bottomNavigationBar: SafeArea(
-              top: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(
-                  SiteLensMetrics.navHorizontalInset,
-                  SiteLensMetrics.navCapsuleInset,
-                  SiteLensMetrics.navHorizontalInset,
-                  SiteLensMetrics.navCapsuleInset,
-                ),
-                child: SiteLensNavigationSurface(
-                  radius: SiteLensMetrics.navRadius,
-                  child: SiteLensBottomNavigation(
-                    selectedIndex: page.clamp(0, destinations.length - 1),
-                    onDestinationSelected: (value) =>
-                        setState(() => page = value),
-                    items: [
-                      const SiteLensBottomNavigationItem(
-                        icon: Icons.travel_explore_outlined,
-                        selectedIcon: Icons.travel_explore,
-                        label: '站点',
-                      ),
-                      SiteLensBottomNavigationItem(
-                        icon: app.browserTabs.isEmpty
-                            ? Icons.tab_unselected
-                            : Icons.tab_outlined,
-                        selectedIcon: Icons.tab,
-                        label: '浏览',
-                        semanticLabel: app.browserTabs.isEmpty
-                            ? '浏览'
-                            : '浏览，${app.browserTabs.length} 个标签',
-                      ),
-                      const SiteLensBottomNavigationItem(
-                        icon: Icons.video_library_outlined,
-                        selectedIcon: Icons.video_library,
-                        label: '媒体',
-                      ),
-                      const SiteLensBottomNavigationItem(
-                        icon: Icons.tune_outlined,
-                        selectedIcon: Icons.tune,
-                        label: '设置',
-                      ),
-                    ],
+                    ),
                   ),
                 ),
               ),
@@ -474,7 +498,12 @@ class ScriptManagementScreen extends StatelessWidget {
     builder: (context, _) => Scaffold(
       appBar: AppBar(
         title: const Text('脚本管理'),
-        actions: [
+        flexibleSpace: const SiteLensGlassSurface(
+          role: SiteLensSurfaceRole.chrome,
+          radius: 0,
+          child: SizedBox.shrink(),
+        ),
+        actions: siteLensTopBarActions([
           IconButton(
             tooltip: '导入 .user.js',
             icon: const Icon(Icons.file_upload_outlined),
@@ -485,7 +514,7 @@ class ScriptManagementScreen extends StatelessWidget {
             icon: const Icon(Icons.add),
             onPressed: () => editScript(context, app),
           ),
-        ],
+        ]),
       ),
       body: SafeArea(
         child: ScriptsPage(app: app, profileId: profileId),
@@ -1212,7 +1241,12 @@ class _ScriptEditorState extends State<ScriptEditor> {
           label: widget.script == null ? '新建脚本' : '脚本编辑',
           child: const SizedBox.shrink(),
         ),
-        actions: [
+        flexibleSpace: const SiteLensGlassSurface(
+          role: SiteLensSurfaceRole.chrome,
+          radius: 0,
+          child: SizedBox.shrink(),
+        ),
+        actions: siteLensTopBarActions([
           IconButton(
             tooltip: saving ? '保存中' : '保存并关闭',
             icon: saving
@@ -1224,7 +1258,7 @@ class _ScriptEditorState extends State<ScriptEditor> {
                 : const Icon(Icons.save_outlined),
             onPressed: saving ? null : _save,
           ),
-        ],
+        ]),
       ),
       body: SafeArea(
         child: ListView(

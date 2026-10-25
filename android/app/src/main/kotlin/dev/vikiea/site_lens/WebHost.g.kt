@@ -482,6 +482,47 @@ data class DeviceDiagnosticsSnapshot (
 }
 
 /** Generated class from Pigeon that represents data sent in messages. */
+data class RuntimeCacheReport (
+  val webViewsCleared: Long,
+  val websiteDataPreserved: Boolean
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): RuntimeCacheReport {
+      val webViewsCleared = pigeonVar_list[0] as Long
+      val websiteDataPreserved = pigeonVar_list[1] as Boolean
+      return RuntimeCacheReport(webViewsCleared, websiteDataPreserved)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      webViewsCleared,
+      websiteDataPreserved,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as RuntimeCacheReport
+    return WebHostPigeonUtils.deepEquals(this.webViewsCleared, other.webViewsCleared) && WebHostPigeonUtils.deepEquals(this.websiteDataPreserved, other.websiteDataPreserved)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.webViewsCleared)
+    result = 31 * result + WebHostPigeonUtils.deepHash(this.websiteDataPreserved)
+    return result
+  }
+  override fun toString(): String {
+    return "RuntimeCacheReport(webViewsCleared=$webViewsCleared, websiteDataPreserved=$websiteDataPreserved)"
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
 data class ScriptRegistration (
   val id: String,
   val revision: String,
@@ -1228,60 +1269,65 @@ private open class WebHostPigeonCodec : StandardMessageCodec() {
       }
       135.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          ScriptRegistration.fromList(it)
+          RuntimeCacheReport.fromList(it)
         }
       }
       136.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          PageSnapshot.fromList(it)
+          ScriptRegistration.fromList(it)
         }
       }
       137.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          HostEvent.fromList(it)
+          PageSnapshot.fromList(it)
         }
       }
       138.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          GmRequest.fromList(it)
+          HostEvent.fromList(it)
         }
       }
       139.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          HostPreferences.fromList(it)
+          GmRequest.fromList(it)
         }
       }
       140.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          FilterSnapshotDto.fromList(it)
+          HostPreferences.fromList(it)
         }
       }
       141.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          FilterPolicyDto.fromList(it)
+          FilterSnapshotDto.fromList(it)
         }
       }
       142.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          HostFilterContextDto.fromList(it)
+          FilterPolicyDto.fromList(it)
         }
       }
       143.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          MediaCandidateDto.fromList(it)
+          HostFilterContextDto.fromList(it)
         }
       }
       144.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          MediaTaskDto.fromList(it)
+          MediaCandidateDto.fromList(it)
         }
       }
       145.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          CastDeviceDto.fromList(it)
+          MediaTaskDto.fromList(it)
         }
       }
       146.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          CastDeviceDto.fromList(it)
+        }
+      }
+      147.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           CastSessionDto.fromList(it)
         }
@@ -1315,52 +1361,56 @@ private open class WebHostPigeonCodec : StandardMessageCodec() {
         stream.write(134)
         writeValue(stream, value.toList())
       }
-      is ScriptRegistration -> {
+      is RuntimeCacheReport -> {
         stream.write(135)
         writeValue(stream, value.toList())
       }
-      is PageSnapshot -> {
+      is ScriptRegistration -> {
         stream.write(136)
         writeValue(stream, value.toList())
       }
-      is HostEvent -> {
+      is PageSnapshot -> {
         stream.write(137)
         writeValue(stream, value.toList())
       }
-      is GmRequest -> {
+      is HostEvent -> {
         stream.write(138)
         writeValue(stream, value.toList())
       }
-      is HostPreferences -> {
+      is GmRequest -> {
         stream.write(139)
         writeValue(stream, value.toList())
       }
-      is FilterSnapshotDto -> {
+      is HostPreferences -> {
         stream.write(140)
         writeValue(stream, value.toList())
       }
-      is FilterPolicyDto -> {
+      is FilterSnapshotDto -> {
         stream.write(141)
         writeValue(stream, value.toList())
       }
-      is HostFilterContextDto -> {
+      is FilterPolicyDto -> {
         stream.write(142)
         writeValue(stream, value.toList())
       }
-      is MediaCandidateDto -> {
+      is HostFilterContextDto -> {
         stream.write(143)
         writeValue(stream, value.toList())
       }
-      is MediaTaskDto -> {
+      is MediaCandidateDto -> {
         stream.write(144)
         writeValue(stream, value.toList())
       }
-      is CastDeviceDto -> {
+      is MediaTaskDto -> {
         stream.write(145)
         writeValue(stream, value.toList())
       }
-      is CastSessionDto -> {
+      is CastDeviceDto -> {
         stream.write(146)
+        writeValue(stream, value.toList())
+      }
+      is CastSessionDto -> {
+        stream.write(147)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
@@ -1742,6 +1792,86 @@ interface WebHostApi {
                 reply.reply(WebHostPigeonUtils.wrapError(error))
               } else {
                 reply.reply(WebHostPigeonUtils.wrapResult(null))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+    }
+  }
+}
+/**
+ * Runtime services that are shared by the Flutter settings layer and the
+ * native WebView/network hosts. Android may provide secure DNS; other
+ * platforms return an unsupported error and keep their system resolver.
+ *
+ * Generated interface from Pigeon that represents a handler of messages from Flutter.
+ */
+interface AppRuntimeApi {
+  fun resolveSecureDns(provider: String, hostname: String, callback: (Result<List<String>>) -> Unit)
+  fun clearSecureDnsCache(callback: (Result<Unit>) -> Unit)
+  fun clearWebViewHttpCache(callback: (Result<RuntimeCacheReport>) -> Unit)
+
+  companion object {
+    /** The codec used by AppRuntimeApi. */
+    val codec: MessageCodec<Any?> by lazy {
+      WebHostPigeonCodec()
+    }
+    /** Sets up an instance of `AppRuntimeApi` to handle messages through the `binaryMessenger`. */
+    @JvmOverloads
+    fun setUp(binaryMessenger: BinaryMessenger, api: AppRuntimeApi?, messageChannelSuffix: String = "") {
+      val separatedMessageChannelSuffix = if (messageChannelSuffix.isNotEmpty()) ".$messageChannelSuffix" else ""
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.site_lens.AppRuntimeApi.resolveSecureDns$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val providerArg = args[0] as String
+            val hostnameArg = args[1] as String
+            api.resolveSecureDns(providerArg, hostnameArg) { result: Result<List<String>> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(WebHostPigeonUtils.wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(WebHostPigeonUtils.wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.site_lens.AppRuntimeApi.clearSecureDnsCache$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            api.clearSecureDnsCache{ result: Result<Unit> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(WebHostPigeonUtils.wrapError(error))
+              } else {
+                reply.reply(WebHostPigeonUtils.wrapResult(null))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.site_lens.AppRuntimeApi.clearWebViewHttpCache$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            api.clearWebViewHttpCache{ result: Result<RuntimeCacheReport> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(WebHostPigeonUtils.wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(WebHostPigeonUtils.wrapResult(data))
               }
             }
           }

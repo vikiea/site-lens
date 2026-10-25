@@ -480,6 +480,46 @@ struct DeviceDiagnosticsSnapshot: Hashable, CustomStringConvertible {
 }
 
 /// Generated class from Pigeon that represents data sent in messages.
+struct RuntimeCacheReport: Hashable, CustomStringConvertible {
+  var webViewsCleared: Int64
+  var websiteDataPreserved: Bool
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> RuntimeCacheReport? {
+    let webViewsCleared = pigeonVar_list[0] as! Int64
+    let websiteDataPreserved = pigeonVar_list[1] as! Bool
+
+    return RuntimeCacheReport(
+      webViewsCleared: webViewsCleared,
+      websiteDataPreserved: websiteDataPreserved
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      webViewsCleared,
+      websiteDataPreserved,
+    ]
+  }
+  static func == (lhs: RuntimeCacheReport, rhs: RuntimeCacheReport) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return WebHostPigeonInternal.deepEquals(lhs.webViewsCleared, rhs.webViewsCleared) && WebHostPigeonInternal.deepEquals(lhs.websiteDataPreserved, rhs.websiteDataPreserved)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("RuntimeCacheReport")
+    WebHostPigeonInternal.deepHash(value: webViewsCleared, hasher: &hasher)
+    WebHostPigeonInternal.deepHash(value: websiteDataPreserved, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "RuntimeCacheReport(webViewsCleared: \(String(describing: webViewsCleared)), websiteDataPreserved: \(String(describing: websiteDataPreserved)))"
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
 struct ScriptRegistration: Hashable, CustomStringConvertible {
   var id: String
   var revision: String
@@ -1243,28 +1283,30 @@ private class WebHostPigeonCodecReader: FlutterStandardReader {
     case 134:
       return DeviceDiagnosticsSnapshot.fromList(self.readValue() as! [Any?])
     case 135:
-      return ScriptRegistration.fromList(self.readValue() as! [Any?])
+      return RuntimeCacheReport.fromList(self.readValue() as! [Any?])
     case 136:
-      return PageSnapshot.fromList(self.readValue() as! [Any?])
+      return ScriptRegistration.fromList(self.readValue() as! [Any?])
     case 137:
-      return HostEvent.fromList(self.readValue() as! [Any?])
+      return PageSnapshot.fromList(self.readValue() as! [Any?])
     case 138:
-      return GmRequest.fromList(self.readValue() as! [Any?])
+      return HostEvent.fromList(self.readValue() as! [Any?])
     case 139:
-      return HostPreferences.fromList(self.readValue() as! [Any?])
+      return GmRequest.fromList(self.readValue() as! [Any?])
     case 140:
-      return FilterSnapshotDto.fromList(self.readValue() as! [Any?])
+      return HostPreferences.fromList(self.readValue() as! [Any?])
     case 141:
-      return FilterPolicyDto.fromList(self.readValue() as! [Any?])
+      return FilterSnapshotDto.fromList(self.readValue() as! [Any?])
     case 142:
-      return HostFilterContextDto.fromList(self.readValue() as! [Any?])
+      return FilterPolicyDto.fromList(self.readValue() as! [Any?])
     case 143:
-      return MediaCandidateDto.fromList(self.readValue() as! [Any?])
+      return HostFilterContextDto.fromList(self.readValue() as! [Any?])
     case 144:
-      return MediaTaskDto.fromList(self.readValue() as! [Any?])
+      return MediaCandidateDto.fromList(self.readValue() as! [Any?])
     case 145:
-      return CastDeviceDto.fromList(self.readValue() as! [Any?])
+      return MediaTaskDto.fromList(self.readValue() as! [Any?])
     case 146:
+      return CastDeviceDto.fromList(self.readValue() as! [Any?])
+    case 147:
       return CastSessionDto.fromList(self.readValue() as! [Any?])
     default:
       return super.readValue(ofType: type)
@@ -1292,41 +1334,44 @@ private class WebHostPigeonCodecWriter: FlutterStandardWriter {
     } else if let value = value as? DeviceDiagnosticsSnapshot {
       super.writeByte(134)
       super.writeValue(value.toList())
-    } else if let value = value as? ScriptRegistration {
+    } else if let value = value as? RuntimeCacheReport {
       super.writeByte(135)
       super.writeValue(value.toList())
-    } else if let value = value as? PageSnapshot {
+    } else if let value = value as? ScriptRegistration {
       super.writeByte(136)
       super.writeValue(value.toList())
-    } else if let value = value as? HostEvent {
+    } else if let value = value as? PageSnapshot {
       super.writeByte(137)
       super.writeValue(value.toList())
-    } else if let value = value as? GmRequest {
+    } else if let value = value as? HostEvent {
       super.writeByte(138)
       super.writeValue(value.toList())
-    } else if let value = value as? HostPreferences {
+    } else if let value = value as? GmRequest {
       super.writeByte(139)
       super.writeValue(value.toList())
-    } else if let value = value as? FilterSnapshotDto {
+    } else if let value = value as? HostPreferences {
       super.writeByte(140)
       super.writeValue(value.toList())
-    } else if let value = value as? FilterPolicyDto {
+    } else if let value = value as? FilterSnapshotDto {
       super.writeByte(141)
       super.writeValue(value.toList())
-    } else if let value = value as? HostFilterContextDto {
+    } else if let value = value as? FilterPolicyDto {
       super.writeByte(142)
       super.writeValue(value.toList())
-    } else if let value = value as? MediaCandidateDto {
+    } else if let value = value as? HostFilterContextDto {
       super.writeByte(143)
       super.writeValue(value.toList())
-    } else if let value = value as? MediaTaskDto {
+    } else if let value = value as? MediaCandidateDto {
       super.writeByte(144)
       super.writeValue(value.toList())
-    } else if let value = value as? CastDeviceDto {
+    } else if let value = value as? MediaTaskDto {
       super.writeByte(145)
       super.writeValue(value.toList())
-    } else if let value = value as? CastSessionDto {
+    } else if let value = value as? CastDeviceDto {
       super.writeByte(146)
+      super.writeValue(value.toList())
+    } else if let value = value as? CastSessionDto {
+      super.writeByte(147)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)
@@ -1677,6 +1722,73 @@ class WebHostApiSetup {
       }
     } else {
       invokeMenuChannel.setMessageHandler(nil)
+    }
+  }
+}
+/// Runtime services that are shared by the Flutter settings layer and the
+/// native WebView/network hosts. Android may provide secure DNS; other
+/// platforms return an unsupported error and keep their system resolver.
+///
+/// Generated protocol from Pigeon that represents a handler of messages from Flutter.
+protocol AppRuntimeApi {
+  func resolveSecureDns(provider: String, hostname: String, completion: @escaping (Result<[String], Error>) -> Void)
+  func clearSecureDnsCache(completion: @escaping (Result<Void, Error>) -> Void)
+  func clearWebViewHttpCache(completion: @escaping (Result<RuntimeCacheReport, Error>) -> Void)
+}
+
+/// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
+class AppRuntimeApiSetup {
+  static var codec: FlutterStandardMessageCodec { WebHostPigeonCodec.shared }
+  /// Sets up an instance of `AppRuntimeApi` to handle messages through the `binaryMessenger`.
+  static func setUp(binaryMessenger: FlutterBinaryMessenger, api: AppRuntimeApi?, messageChannelSuffix: String = "") {
+    let channelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
+    let resolveSecureDnsChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.site_lens.AppRuntimeApi.resolveSecureDns\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      resolveSecureDnsChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let providerArg = args[0] as! String
+        let hostnameArg = args[1] as! String
+        api.resolveSecureDns(provider: providerArg, hostname: hostnameArg) { result in
+          switch result {
+          case .success(let res):
+            reply(wrapResult(res))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      resolveSecureDnsChannel.setMessageHandler(nil)
+    }
+    let clearSecureDnsCacheChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.site_lens.AppRuntimeApi.clearSecureDnsCache\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      clearSecureDnsCacheChannel.setMessageHandler { _, reply in
+        api.clearSecureDnsCache { result in
+          switch result {
+          case .success:
+            reply(wrapResult(nil))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      clearSecureDnsCacheChannel.setMessageHandler(nil)
+    }
+    let clearWebViewHttpCacheChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.site_lens.AppRuntimeApi.clearWebViewHttpCache\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      clearWebViewHttpCacheChannel.setMessageHandler { _, reply in
+        api.clearWebViewHttpCache { result in
+          switch result {
+          case .success(let res):
+            reply(wrapResult(res))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      clearWebViewHttpCacheChannel.setMessageHandler(nil)
     }
   }
 }

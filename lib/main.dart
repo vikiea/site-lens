@@ -143,6 +143,7 @@ class SiteLensApp extends ConsumerWidget {
                   // The update notice sits above the navigator so a completed
                   // download can surface on any page, WebView included.
                   child: SiteLensBackdrop(
+                    background: app.background,
                     child: SiteLensUpdateNoticeLayer(
                       child: BrowserDock(
                         app: app,

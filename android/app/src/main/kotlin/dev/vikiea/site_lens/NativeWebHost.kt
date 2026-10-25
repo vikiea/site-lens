@@ -238,6 +238,13 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
         })
     }
     private fun host(id: Long): NativeWebHost = hosts[id]?.takeIf { !disposed && it.available } ?: throw FlutterError("host_destroyed", "Web host no longer exists", null)
+
+    fun clearHttpCache(): Int {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "WebView cache must clear on the main thread" }
+        val live = hosts.values.toList()
+        live.forEach { it.clearHttpCache() }
+        return live.size
+    }
     private var isForeground = true
     override fun create(hostId: Long, purpose: HostPurpose, preferences: HostPreferences): HostCapabilities {
         check(!disposed && !activity.isFinishing && !activity.isDestroyed) { "Web host activity is unavailable" }
@@ -463,6 +470,11 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     )
     private val popupProbes = mutableMapOf<WebView, () -> Unit>()
     val available get() = !viewLifetime.closing && !destroyed && !rendererGone && !activity.isFinishing && !activity.isDestroyed
+
+    fun clearHttpCache() {
+        if (destroyed || rendererGone) return
+        webView.clearCache(true)
+    }
 
     fun acquirePlatformView(viewId: Int) {
         viewLifetime.acquire(viewId)

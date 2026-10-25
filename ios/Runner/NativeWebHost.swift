@@ -9,6 +9,7 @@ final class NativeWebHostPlugin: NSObject, FlutterPlugin {
     let inspector = path.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) } ?? ""
     let registry = NativeWebHostRegistry(messenger: registrar.messenger(), inspector: inspector)
     WebHostApiSetup.setUp(binaryMessenger: registrar.messenger(), api: registry)
+    AppRuntimeApiSetup.setUp(binaryMessenger: registrar.messenger(), api: registry)
     registrar.register(NativeWebHostFactory(registry: registry), withId: "site_lens/web_host")
   }
 }
@@ -52,7 +53,7 @@ private func allowed(_ script: ScriptRegistration, _ url: URL) -> Bool {
   return (rules["matches"] ?? []).contains(where: match) && !(rules["excludes"] ?? []).contains(where: match)
 }
 
-final class NativeWebHostRegistry: NSObject, WebHostApi {
+final class NativeWebHostRegistry: NSObject, WebHostApi, AppRuntimeApi {
   let events: WebHostEvents
   let inspector: String
   var hosts: [Int64: NativeWebHost] = [:]
@@ -97,6 +98,36 @@ final class NativeWebHostRegistry: NSObject, WebHostApi {
   func goForward(hostId: Int64) throws -> Bool { let host = try host(hostId); if !host.webView.canGoForward { return false }; host.revoke(); host.restoringHistory = true; host.expectedNavigationURL = host.webView.backForwardList.forwardItem?.url; host.track(host.webView.goForward()); return true }
   func stop(hostId: Int64) throws { let host = try host(hostId); host.revoke(); host.webView.stopLoading() }
   func destroy(hostId: Int64) throws { hosts.removeValue(forKey: hostId)?.dispose() }
+
+  func resolveSecureDns(provider: String, hostname: String, completion: @escaping (Result<[String], Error>) -> Void) {
+    completion(.failure(PigeonError(code: "unsupported", message: "Secure DNS is Android-only", details: nil)))
+  }
+
+  func clearSecureDnsCache(completion: @escaping (Result<Void, Error>) -> Void) {
+    completion(.success(()))
+  }
+
+  func clearWebViewHttpCache(completion: @escaping (Result<RuntimeCacheReport, Error>) -> Void) {
+    DispatchQueue.main.async {
+      let types: Set<String> = [
+        WKWebsiteDataTypeMemoryCache,
+        WKWebsiteDataTypeDiskCache,
+      ]
+      WKWebsiteDataStore.default().removeData(
+        ofTypes: types,
+        modifiedSince: Date.distantPast,
+      ) {
+        completion(
+          .success(
+            RuntimeCacheReport(
+              webViewsCleared: Int64(self.hosts.count),
+              websiteDataPreserved: true,
+            ),
+          ),
+        )
+      }
+    }
+  }
   func notify(hostId: Int64, title: String, body: String) throws { throw PigeonError(code: "unsupported", message: "Android-only build does not provide iOS notifications", details: nil) }
   func openExternal(hostId: Int64, url: String) throws {
     _ = try host(hostId)

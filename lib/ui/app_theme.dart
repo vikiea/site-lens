@@ -565,6 +565,17 @@ ThemeData buildSiteLensTheme(
       style: ButtonStyle(
         elevation: flat,
         shadowColor: flatColor,
+        backgroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.disabled)
+              ? colors.disabledContent.withValues(alpha: 0.12)
+              : scheme.primary.withValues(alpha: 0.20),
+        ),
+        foregroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.disabled)
+              ? colors.disabledContent
+              : scheme.onSurface,
+        ),
+        side: WidgetStatePropertyAll(BorderSide(color: colors.panelBorder)),
         textStyle: WidgetStatePropertyAll(text.labelLarge),
         padding: const WidgetStatePropertyAll(
           EdgeInsets.symmetric(horizontal: 18, vertical: 12),
@@ -582,11 +593,13 @@ ThemeData buildSiteLensTheme(
       style: ButtonStyle(
         elevation: flat,
         shadowColor: flatColor,
+        backgroundColor: WidgetStatePropertyAll(colors.panelTint),
+        foregroundColor: WidgetStatePropertyAll(scheme.onSurface),
         textStyle: WidgetStatePropertyAll(text.labelLarge),
         padding: const WidgetStatePropertyAll(
           EdgeInsets.symmetric(horizontal: 18, vertical: 12),
         ),
-        side: WidgetStatePropertyAll(BorderSide(color: scheme.outlineVariant)),
+        side: WidgetStatePropertyAll(BorderSide(color: colors.panelBorder)),
         shape: WidgetStatePropertyAll(
           RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(
@@ -600,6 +613,11 @@ ThemeData buildSiteLensTheme(
       style: ButtonStyle(
         elevation: flat,
         shadowColor: flatColor,
+        overlayColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.pressed)
+              ? scheme.primary.withValues(alpha: 0.12)
+              : Colors.transparent,
+        ),
         textStyle: WidgetStatePropertyAll(text.labelLarge),
         padding: const WidgetStatePropertyAll(
           EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -618,6 +636,11 @@ ThemeData buildSiteLensTheme(
         elevation: flat,
         shadowColor: flatColor,
         foregroundColor: WidgetStatePropertyAll(scheme.onSurfaceVariant),
+        overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+        backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        ),
       ),
     ),
     // Kept even though the app has no FAB today: the rule is that no control

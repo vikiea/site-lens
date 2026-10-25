@@ -942,7 +942,20 @@ class SiteLensPageScaffold extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text(title), actions: actions),
+    appBar: AppBar(
+      title: Text(title),
+      flexibleSpace: const SiteLensGlassSurface(
+        role: SiteLensSurfaceRole.chrome,
+        radius: 0,
+        child: SizedBox.shrink(),
+      ),
+      actions: actions == null
+          ? null
+          : [
+              for (final action in actions!)
+                SiteLensTopBarAction(child: action),
+            ],
+    ),
     body: Semantics(
       namesRoute: true,
       label: title,
@@ -950,6 +963,67 @@ class SiteLensPageScaffold extends StatelessWidget {
     ),
   );
 }
+
+/// A compact action surface used inside ordinary app bars. The app bar owns
+/// the liquid-glass backdrop; this control adds only the local tint and rim so
+/// it does not create a second glass sampling boundary.
+class SiteLensTopBarAction extends StatelessWidget {
+  const SiteLensTopBarAction({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = SiteLensColors.of(context);
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 6),
+      child: DecoratedBox(
+        decoration: ShapeDecoration(
+          color: colors.panelTint.withValues(
+            alpha: theme.brightness == Brightness.dark ? 0.78 : 0.92,
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: BorderSide(color: colors.panelBorder),
+          ),
+        ),
+        child: Material(
+          type: MaterialType.transparency,
+          child: Theme(
+            data: theme.copyWith(
+              iconButtonTheme: IconButtonThemeData(
+                style: ButtonStyle(
+                  foregroundColor: WidgetStatePropertyAll(
+                    theme.colorScheme.onSurfaceVariant,
+                  ),
+                  overlayColor: const WidgetStatePropertyAll(
+                    Colors.transparent,
+                  ),
+                  shape: WidgetStatePropertyAll(
+                    RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                  ),
+                ),
+              ),
+              popupMenuTheme: theme.popupMenuTheme.copyWith(
+                elevation: 0,
+                shadowColor: Colors.transparent,
+                surfaceTintColor: Colors.transparent,
+              ),
+            ),
+            child: child,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+List<Widget> siteLensTopBarActions(Iterable<Widget> actions) => [
+  for (final action in actions) SiteLensTopBarAction(child: action),
+];
 
 /// Refresh action with continuous activity feedback and reduced-motion support.
 class SiteLensRefreshButton extends StatefulWidget {

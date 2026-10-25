@@ -70,6 +70,8 @@ class SettingsPage extends StatelessWidget {
           ),
         const SiteLensSettingsDivider(),
         _ThemePresetRow(app: app),
+        const SiteLensSettingsDivider(),
+        _BackgroundSetting(app: app),
       ], dividers: false),
       _settingsSection('浏览', [
         _settingsSwitch(
@@ -127,6 +129,24 @@ class SettingsPage extends StatelessWidget {
           page: () => ScriptManagementScreen(app: app),
         ),
       ]),
+      if (Theme.of(context).platform == TargetPlatform.android)
+        _settingsSection('网络', [
+          SiteLensCompactRow(
+            leading: const Icon(Icons.shield_outlined, size: 18),
+            title: const Text('安全 DNS'),
+            subtitle: const Text('优先使用 DoH，失败时回退系统 DNS'),
+            trailing: SiteLensMenuSelector<SecureDnsProvider>(
+              label: '安全 DNS',
+              value: app.settings.secureDnsProvider,
+              options: [
+                for (final provider in SecureDnsProvider.values)
+                  SiteLensMenuOption(value: provider, label: provider.label),
+              ],
+              onSelected: (value) =>
+                  safely(context, () => app.setSecureDnsProvider(value)),
+            ),
+          ),
+        ]),
       _settingsSection('媒体', [
         _settingsSwitch(
           context,
@@ -159,6 +179,7 @@ class SettingsPage extends StatelessWidget {
           value: app.backgroundHealthCheck,
           onChanged: app.setBackgroundHealthCheck,
         ),
+        _CacheSetting(app: app),
         _settingsLink(
           context,
           title: '备份与恢复',
@@ -375,6 +396,189 @@ class _ThemePresetSwatch extends StatelessWidget {
       ),
     );
   }
+}
+
+class _BackgroundSetting extends StatelessWidget {
+  const _BackgroundSetting({required this.app});
+
+  final AppController app;
+
+  Future<void> _pick(BuildContext context) async {
+    await safely(context, () async {
+      final result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['png', 'jpg', 'jpeg', 'webp'],
+      );
+      if (result.isEmpty) return;
+      final file = result.single;
+      final bytes = await file.readAsBytes();
+      final extension = file.extension ?? file.name.split('.').last;
+      final assetId = await app.backgroundAssets.importBytes(bytes, extension);
+      await app.setBackgroundAsset(assetId);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final background = app.background;
+    final mode = app.settings.backgroundMode;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SiteLensCompactRow(
+          leading: const Icon(Icons.wallpaper_outlined, size: 18),
+          title: const Text('背景'),
+          subtitle: Text(
+            background.assetMissing ? '图片不存在，当前使用默认背景' : mode.label,
+          ),
+          trailing: SiteLensMenuSelector<BackgroundMode>(
+            label: '背景模式',
+            value: mode,
+            options: [
+              for (final option in BackgroundMode.values)
+                SiteLensMenuOption(value: option, label: option.label),
+            ],
+            onSelected: (value) =>
+                safely(context, () => app.setBackgroundMode(value)),
+          ),
+        ),
+        if (mode == BackgroundMode.customImage || background.assetMissing)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+            child: Row(
+              children: [
+                if (background.hasImage)
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.file(
+                      File(background.imagePath!),
+                      width: 64,
+                      height: 42,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                    ),
+                  ),
+                if (background.hasImage) const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    background.assetMissing
+                        ? '请重新上传背景图片'
+                        : '图片会复制到应用私有目录并纳入完整备份',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: () => _pick(context),
+                  icon: const Icon(Icons.upload_outlined, size: 17),
+                  label: Text(background.hasImage ? '更换' : '上传'),
+                ),
+                if (background.hasImage)
+                  IconButton(
+                    tooltip: '移除背景图片',
+                    onPressed: () => safely(context, app.clearBackgroundAsset),
+                    icon: const Icon(Icons.delete_outline, size: 19),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _CacheSetting extends StatefulWidget {
+  const _CacheSetting({required this.app});
+
+  final AppController app;
+
+  @override
+  State<_CacheSetting> createState() => _CacheSettingState();
+}
+
+class _CacheSettingState extends State<_CacheSetting> {
+  late Future<dynamic> _inventory;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  void _refresh() {
+    _inventory = widget.app.transientCacheInventory();
+  }
+
+  Future<void> _clear() async {
+    if (_busy) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => SiteLensAlertDialog(
+        title: const Text('清除临时缓存？'),
+        content: const Text(
+          '将清理网页 HTTP 缓存、临时文件、缩略图和玻璃质量缓存；登录状态、标签页、媒体下载和导出文件会保留。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('清除缓存'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _busy = true);
+    await safely(context, () async {
+      final report = await widget.app.clearTransientCache();
+      if (!mounted) return;
+      showShortToast(
+        context,
+        report.webViewCleared
+            ? '已清理 ${report.deletedFiles} 个临时文件和网页缓存'
+            : '已清理 ${report.deletedFiles} 个临时文件；网页缓存稍后可重试',
+      );
+    });
+    if (mounted) {
+      setState(() {
+        _busy = false;
+        _refresh();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<dynamic>(
+    future: _inventory,
+    builder: (context, snapshot) {
+      final knownBytes = snapshot.data?.knownBytes as int?;
+      return SiteLensCompactRow(
+        leading: const Icon(Icons.cleaning_services_outlined, size: 18),
+        title: const Text('临时缓存'),
+        subtitle: Text(
+          knownBytes == null
+              ? '正在计算…'
+              : '${_formatCacheBytes(knownBytes)} · 保留登录状态和媒体文件',
+        ),
+        trailing: TextButton(
+          onPressed: _busy ? null : _clear,
+          child: Text(_busy ? '清理中…' : '清除'),
+        ),
+      );
+    },
+  );
+}
+
+String _formatCacheBytes(int bytes) {
+  if (bytes < 1024) return '${bytes}B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).ceil()}KB';
+  if (bytes < 1024 * 1024 * 1024) {
+    return '${(bytes / 1024 / 1024).toStringAsFixed(1)}MB';
+  }
+  return '${(bytes / 1024 / 1024 / 1024).toStringAsFixed(2)}GB';
 }
 
 Widget _settingsSwitch(

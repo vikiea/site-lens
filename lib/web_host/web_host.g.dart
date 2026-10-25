@@ -438,6 +438,56 @@ class DeviceDiagnosticsSnapshot {
   }
 }
 
+class RuntimeCacheReport {
+  RuntimeCacheReport({
+    required this.webViewsCleared,
+    required this.websiteDataPreserved,
+  });
+
+  int webViewsCleared;
+
+  bool websiteDataPreserved;
+
+  List<Object?> _toList() {
+    return <Object?>[
+      webViewsCleared,
+      websiteDataPreserved,
+    ];
+  }
+
+  Object encode() {
+    return _toList();  }
+
+  static RuntimeCacheReport decode(Object result) {
+    result as List<Object?>;
+    return RuntimeCacheReport(
+      webViewsCleared: result[0]! as int,
+      websiteDataPreserved: result[1]! as bool,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! RuntimeCacheReport || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(webViewsCleared, other.webViewsCleared) && _deepEquals(websiteDataPreserved, other.websiteDataPreserved);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'RuntimeCacheReport(webViewsCleared: $webViewsCleared, websiteDataPreserved: $websiteDataPreserved)';
+  }
+}
+
 class ScriptRegistration {
   ScriptRegistration({
     required this.id,
@@ -1321,41 +1371,44 @@ class _PigeonCodec extends StandardMessageCodec {
     }    else if (value is DeviceDiagnosticsSnapshot) {
       buffer.putUint8(134);
       writeValue(buffer, value.encode());
-    }    else if (value is ScriptRegistration) {
+    }    else if (value is RuntimeCacheReport) {
       buffer.putUint8(135);
       writeValue(buffer, value.encode());
-    }    else if (value is PageSnapshot) {
+    }    else if (value is ScriptRegistration) {
       buffer.putUint8(136);
       writeValue(buffer, value.encode());
-    }    else if (value is HostEvent) {
+    }    else if (value is PageSnapshot) {
       buffer.putUint8(137);
       writeValue(buffer, value.encode());
-    }    else if (value is GmRequest) {
+    }    else if (value is HostEvent) {
       buffer.putUint8(138);
       writeValue(buffer, value.encode());
-    }    else if (value is HostPreferences) {
+    }    else if (value is GmRequest) {
       buffer.putUint8(139);
       writeValue(buffer, value.encode());
-    }    else if (value is FilterSnapshotDto) {
+    }    else if (value is HostPreferences) {
       buffer.putUint8(140);
       writeValue(buffer, value.encode());
-    }    else if (value is FilterPolicyDto) {
+    }    else if (value is FilterSnapshotDto) {
       buffer.putUint8(141);
       writeValue(buffer, value.encode());
-    }    else if (value is HostFilterContextDto) {
+    }    else if (value is FilterPolicyDto) {
       buffer.putUint8(142);
       writeValue(buffer, value.encode());
-    }    else if (value is MediaCandidateDto) {
+    }    else if (value is HostFilterContextDto) {
       buffer.putUint8(143);
       writeValue(buffer, value.encode());
-    }    else if (value is MediaTaskDto) {
+    }    else if (value is MediaCandidateDto) {
       buffer.putUint8(144);
       writeValue(buffer, value.encode());
-    }    else if (value is CastDeviceDto) {
+    }    else if (value is MediaTaskDto) {
       buffer.putUint8(145);
       writeValue(buffer, value.encode());
-    }    else if (value is CastSessionDto) {
+    }    else if (value is CastDeviceDto) {
       buffer.putUint8(146);
+      writeValue(buffer, value.encode());
+    }    else if (value is CastSessionDto) {
+      buffer.putUint8(147);
       writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
@@ -1380,28 +1433,30 @@ class _PigeonCodec extends StandardMessageCodec {
       case 134:
         return DeviceDiagnosticsSnapshot.decode(readValue(buffer)!);
       case 135:
-        return ScriptRegistration.decode(readValue(buffer)!);
+        return RuntimeCacheReport.decode(readValue(buffer)!);
       case 136:
-        return PageSnapshot.decode(readValue(buffer)!);
+        return ScriptRegistration.decode(readValue(buffer)!);
       case 137:
-        return HostEvent.decode(readValue(buffer)!);
+        return PageSnapshot.decode(readValue(buffer)!);
       case 138:
-        return GmRequest.decode(readValue(buffer)!);
+        return HostEvent.decode(readValue(buffer)!);
       case 139:
-        return HostPreferences.decode(readValue(buffer)!);
+        return GmRequest.decode(readValue(buffer)!);
       case 140:
-        return FilterSnapshotDto.decode(readValue(buffer)!);
+        return HostPreferences.decode(readValue(buffer)!);
       case 141:
-        return FilterPolicyDto.decode(readValue(buffer)!);
+        return FilterSnapshotDto.decode(readValue(buffer)!);
       case 142:
-        return HostFilterContextDto.decode(readValue(buffer)!);
+        return FilterPolicyDto.decode(readValue(buffer)!);
       case 143:
-        return MediaCandidateDto.decode(readValue(buffer)!);
+        return HostFilterContextDto.decode(readValue(buffer)!);
       case 144:
-        return MediaTaskDto.decode(readValue(buffer)!);
+        return MediaCandidateDto.decode(readValue(buffer)!);
       case 145:
-        return CastDeviceDto.decode(readValue(buffer)!);
+        return MediaTaskDto.decode(readValue(buffer)!);
       case 146:
+        return CastDeviceDto.decode(readValue(buffer)!);
+      case 147:
         return CastSessionDto.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
@@ -1760,6 +1815,83 @@ class WebHostApi {
         isNullValid: true,
     )
     ;
+  }
+}
+
+/// Runtime services that are shared by the Flutter settings layer and the
+/// native WebView/network hosts. Android may provide secure DNS; other
+/// platforms return an unsupported error and keep their system resolver.
+class AppRuntimeApi {
+  /// Constructor for [AppRuntimeApi]. The [binaryMessenger] named argument is
+  /// available for dependency injection. If it is left null, the default
+  /// BinaryMessenger will be used which routes to the host platform.
+  AppRuntimeApi({
+      BinaryMessenger? binaryMessenger, 
+      String messageChannelSuffix = '', 
+      })
+      : pigeonVar_binaryMessenger = binaryMessenger,
+        pigeonVar_messageChannelSuffix = messageChannelSuffix.isNotEmpty ? '.$messageChannelSuffix' : '';
+
+  final BinaryMessenger? pigeonVar_binaryMessenger;
+  static const MessageCodec<Object?> pigeonChannelCodec = _PigeonCodec();
+
+  final String pigeonVar_messageChannelSuffix;
+
+
+  Future<List<String>> resolveSecureDns(String provider, String hostname) async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.site_lens.AppRuntimeApi.resolveSecureDns$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[provider, hostname]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: false,
+    )
+    ;
+    return (pigeonVar_replyValue! as List<Object?>).cast<String>();
+  }
+
+  Future<void> clearSecureDnsCache() async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.site_lens.AppRuntimeApi.clearSecureDnsCache$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: true,
+    )
+    ;
+  }
+
+  Future<RuntimeCacheReport> clearWebViewHttpCache() async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.site_lens.AppRuntimeApi.clearWebViewHttpCache$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: false,
+    )
+    ;
+    return pigeonVar_replyValue! as RuntimeCacheReport;
   }
 }
 
