@@ -48,14 +48,53 @@ class NativeMediaRuntime(
     private var state: String = "stopped"
     private var lastError: String? = null
     private var fileLease: Closeable? = null
+    private var serviceSessionId: String? = null
+    private var serviceObserver: ((Map<String, Any?>) -> Unit)? = null
 
     fun attach(channel: MethodChannel) {
         this.channel = channel
         channel.setMethodCallHandler(this)
+        val observer: (Map<String, Any?>) -> Unit = { raw ->
+            val active = raw["sessionId"] as? String
+            if (active != null) {
+                serviceSessionId = active
+                ensureTexture()
+                NativeMediaSessionService.attachSurface(context, surface)
+                val snapshot = raw.toMutableMap().apply { this["textureId"] = textureEntry?.id() }
+                channel.invokeMethod("state", snapshot)
+            } else if (raw["restorable"] == true) {
+                channel.invokeMethod("state", raw.toMutableMap().apply { this["textureId"] = null })
+            } else if (serviceSessionId != null) {
+                serviceSessionId = null
+                releaseSurface()
+                channel.invokeMethod("state", raw + ("textureId" to null))
+            }
+        }
+        serviceObserver = observer
+        NativeMediaSessionService.registerObserver(observer)
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         try {
+            if (isServiceCall(call)) {
+                serviceCommand(call, result)
+                return
+            }
+            if (call.method == "state" && player == null &&
+                (NativeMediaSessionService.hasActiveSession() ||
+                    NativeMediaSessionService.hasRestorableState(context))) {
+                NativeMediaSessionService.state(context) { outcome ->
+                    outcome.fold(
+                        onSuccess = { raw ->
+                            serviceSessionId = raw["sessionId"] as? String
+                            if (serviceSessionId != null) ensureTexture()
+                            result.success(raw.toMutableMap().apply { this["textureId"] = textureEntry?.id() })
+                        },
+                        onFailure = { error -> result.error("native_media", error.message, null) },
+                    )
+                }
+                return
+            }
             when (call.method) {
                 "open" -> open(call, result)
                 "openLocal" -> openLocal(call, result)
@@ -132,6 +171,35 @@ class NativeMediaRuntime(
         require(player != null && owns(call)) { "播放会话已结束或已切换" }
     }
 
+    private fun isServiceCall(call: MethodCall): Boolean {
+        if (call.method !in setOf("play", "pause", "seek", "speed", "stop", "close")) return false
+        val requested = call.argument<String>("sessionId")
+        return NativeMediaSessionService.owns(requested) ||
+            (requested.isNullOrBlank() && player == null && NativeMediaSessionService.hasActiveSession())
+    }
+
+    private fun serviceCommand(call: MethodCall, result: MethodChannel.Result) {
+        val args = mutableMapOf<String, Any?>()
+        (call.arguments as? Map<*, *>)?.forEach { (key, value) ->
+            if (key is String) args[key] = value
+        }
+        if ((args["sessionId"] as? String).isNullOrBlank()) {
+            serviceSessionId?.let { args["sessionId"] = it }
+        }
+        NativeMediaSessionService.command(context, call.method, args) { outcome ->
+            outcome.fold(
+                onSuccess = { raw ->
+                    if (call.method == "stop" || call.method == "close") {
+                        serviceSessionId = null
+                        releaseSurface()
+                    }
+                    result.success(raw.toMutableMap().apply { this["textureId"] = textureEntry?.id() })
+                },
+                onFailure = { error -> result.error("native_media", error.message, null) },
+            )
+        }
+    }
+
     private fun levels(): Map<String, Any> {
         val activity = context as? Activity
         val brightness = activity?.window?.attributes?.screenBrightness
@@ -180,22 +248,14 @@ class NativeMediaRuntime(
     private fun openLocal(call: MethodCall, result: MethodChannel.Result) {
         val taskId = call.argument<String>("taskId")?.takeIf { it.isNotBlank() }
             ?: error("缺少本地媒体身份")
-        val taskScope = MediaFileLeaseRegistry.Scope.task(taskId)
         val document = call.argument<String>("uri")
         if (document != null) {
             val uri = Uri.parse(document)
             require(uri.scheme == "content" && !uri.authority.isNullOrBlank()) { "本地媒体地址无效" }
-            val lease = NativeMediaFileLeases.registry.acquireRead(taskScope + MediaFileLeaseRegistry.Scope.source(document))
-            try {
-                context.contentResolver.openFileDescriptor(uri, "r")?.use {
-                    require(it.statSize != 0L) { "本地媒体不存在或为空" }
-                } ?: error("无法读取本地媒体文件")
-                start(call, result, uri, "video/mp4", null, null, lease)
-            } catch (error: Exception) {
-                // Once adopted, release the player before its input lease.
-                if (fileLease === lease) stop() else lease.close()
-                throw error
-            }
+            context.contentResolver.openFileDescriptor(uri, "r")?.use {
+                require(it.statSize != 0L) { "本地媒体不存在或为空" }
+            } ?: error("无法读取本地媒体文件")
+            openInService(call, result, taskId, document, "video/mp4", false)
             return
         }
         val raw = call.argument<String>("path")?.trim() ?: error("缺少本地媒体路径")
@@ -212,15 +272,47 @@ class NativeMediaRuntime(
         // complete directory, including against deleting a parent directory.
         val hls = mime.contains("mpegurl", ignoreCase = true) ||
             file.extension.lowercase() in setOf("m3u8", "m3u")
-        val scope = taskScope + MediaFileLeaseRegistry.Scope.file(if (hls) file.parentFile!! else file)
-        val lease = NativeMediaFileLeases.registry.acquireRead(scope)
-        try {
-            require(file.isFile && file.length() > 0) { "本地媒体不存在或为空" }
-            start(call, result, Uri.fromFile(file), mime, null, null, lease)
-        } catch (error: Exception) {
-            if (fileLease === lease) stop() else lease.close()
-            throw error
-        }
+        require(file.isFile && file.length() > 0) { "本地媒体不存在或为空" }
+        openInService(call, result, taskId, Uri.fromFile(file).toString(), mime, hls)
+    }
+
+    private fun openInService(
+        call: MethodCall,
+        result: MethodChannel.Result,
+        taskId: String,
+        uri: String,
+        mime: String,
+        hls: Boolean,
+    ) {
+        stop()
+        ensureTexture()
+        val requestedSession = call.argument<String>("sessionId")?.takeIf { it.isNotBlank() }
+            ?: "play_${taskId}_${UUID.randomUUID()}"
+        NativeMediaSessionService.open(
+            context,
+            NativeMediaSessionService.OpenRequest(
+                sessionId = requestedSession,
+                taskId = taskId,
+                candidateId = call.argument<String>("candidateId"),
+                uri = uri,
+                mime = mime,
+                title = call.argument<String>("title").orEmpty(),
+                hls = hls,
+                autoPlay = call.argument<Boolean>("autoPlay") ?: true,
+                surface = surface,
+            ) { outcome ->
+                outcome.fold(
+                    onSuccess = { raw ->
+                        serviceSessionId = raw["sessionId"] as? String
+                        result.success(raw.toMutableMap().apply { this["textureId"] = textureEntry?.id() })
+                    },
+                    onFailure = { error ->
+                        releaseSurface()
+                        result.error("native_media", error.message, null)
+                    },
+                )
+            },
+        )
     }
 
     private fun start(
@@ -430,6 +522,24 @@ class NativeMediaRuntime(
         candidateId = null
         speed = 1f
         state = "stopped"
+        if (serviceSessionId != null || NativeMediaSessionService.hasActiveSession()) {
+            NativeMediaSessionService.stop(context)
+            serviceSessionId = null
+        }
+    }
+
+    private fun ensureTexture() {
+        if (textureEntry != null && surface != null) return
+        val entry = textures.createSurfaceTexture()
+        textureEntry = entry
+        surface = Surface(entry.surfaceTexture())
+    }
+
+    private fun releaseSurface() {
+        surface?.release()
+        surface = null
+        textureEntry?.release()
+        textureEntry = null
     }
 
     private fun attachSurface(next: ExoPlayer) {
@@ -440,7 +550,18 @@ class NativeMediaRuntime(
     }
 
     fun dispose() {
-        stop()
+        // The MediaSessionService intentionally survives Flutter engine
+        // teardown. Only detach the temporary video surface and unregister
+        // callbacks; an explicit Dart stop/close command still stops it.
+        if (serviceSessionId != null || NativeMediaSessionService.hasActiveSession()) {
+            NativeMediaSessionService.detachSurface(context)
+            releaseSurface()
+            serviceSessionId = null
+        } else {
+            stop()
+        }
+        serviceObserver?.let(NativeMediaSessionService::unregisterObserver)
+        serviceObserver = null
         channel?.setMethodCallHandler(null)
         channel = null
     }

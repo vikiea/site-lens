@@ -190,7 +190,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 13);
+      expect(raw.userVersion, 17);
       expect(
         raw.select(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='watch_saves'",
@@ -207,6 +207,9 @@ void main() {
           'episode_number',
           'state',
           'updated_at',
+          'position_ms',
+          'duration_ms',
+          'evidence_revision',
         ]),
       );
       expect(
@@ -451,7 +454,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 13);
+      expect(raw.userVersion, 17);
       expect(
         raw.select(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='filter_snapshots'",
@@ -512,10 +515,14 @@ void main() {
 
     final raw = sqlite3.open(file.path);
     addTearDown(raw.close);
-    expect(raw.userVersion, 13);
+    expect(raw.userVersion, 17);
     expect(
       raw.select('PRAGMA table_info(media_tasks)').map((row) => row['name']),
       contains('batch_directory'),
+    );
+    expect(
+      raw.select('PRAGMA table_info(media_tasks)').map((row) => row['name']),
+      contains('resource_key'),
     );
 
     final store = MediaTaskStore(db: db);
@@ -544,7 +551,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 13);
+      expect(raw.userVersion, 17);
       expect(
         raw
             .select('PRAGMA table_info(media_tasks)')

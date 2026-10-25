@@ -97,13 +97,54 @@ MediaCandidate candidate({
 );
 
 void main() {
+  test('native restorable playback state remains a distinct state', () {
+    expect(
+      NativePlaybackState.values,
+      contains(NativePlaybackState.restorable),
+    );
+  });
   test('media task freezes the title and episode at creation', () {
     final store = MediaTaskStore();
     final task = store.create(candidate(title: '母衣半暖默许春朝 - 第3集'));
     expect(task.displayTitle, '母衣半暖默许春朝 - 第3集');
     expect(task.episodeLabel, '第3集');
     expect(task.displayName, '母衣半暖默许春朝 - 第3集');
+    expect(task.resourceKey, hasLength(64));
   });
+
+  test('resource identity survives host and generation changes', () {
+    final first = MediaTaskStore().create(candidate(hostId: 7, generation: 3));
+    final later = MediaTaskStore().create(candidate(hostId: 8, generation: 4));
+    expect(later.cacheKey, isNot(first.cacheKey));
+    expect(later.resourceKey, first.resourceKey);
+  });
+
+  test(
+    'durable resource catalog converges task rows by resource identity',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final firstCandidate = candidate(hostId: 7, generation: 3);
+      final secondCandidate = candidate(hostId: 8, generation: 4);
+      await db.saveMediaCandidate(firstCandidate);
+      await db.saveMediaCandidate(secondCandidate);
+      final first = MediaTaskStore(db: db).create(firstCandidate);
+      final second = MediaTaskStore(db: db).create(secondCandidate);
+      await db.saveMediaTask(first);
+      await db.saveMediaTask(second);
+      expect(first.cacheKey, isNot(second.cacheKey));
+      expect(first.resourceKey, second.resourceKey);
+      expect(await db.mediaResourceKeys(), [first.resourceKey]);
+      expect(
+        await db.mediaResourceOwners(first.resourceKey),
+        containsAll(<String>['task:${first.id}', 'task:${second.id}']),
+      );
+      await db.deleteMediaTask(first.id);
+      expect(await db.mediaResourceOwners(first.resourceKey), [
+        'task:${second.id}',
+      ]);
+    },
+  );
 
   test(
     'media task prefers an explicit title over a stale media URL marker',
@@ -154,6 +195,7 @@ void main() {
       await restored.restore();
 
       expect(restored.task(task.id)!.episodeLabel, '第7集');
+      expect(restored.task(task.id)!.resourceKey, hasLength(64));
     },
   );
 
@@ -1110,6 +1152,38 @@ void main() {
     await expectLater(validateHlsCacheInput(input), throwsFormatException);
     expect(await store.cachedFile(task.id), isNull);
   });
+
+  test(
+    'partial HLS playback accepts committed segments before ENDLIST',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-hls-partial-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final task = store.create(
+        candidate(
+          url: 'https://cdn.example/partial/index.m3u8',
+          mime: 'application/vnd.apple.mpegurl',
+        ),
+      );
+      store.transition(task.id, MediaTaskState.downloading);
+      final directory = await store.cacheDirectory(
+        storageDirectory: task.storageDirectoryName,
+      );
+      final cache = await Directory('${directory.path}/${task.cacheKey}.hls')
+          .create(recursive: true);
+      await File('${cache.path}/resource_segment.bin').writeAsBytes([1, 2, 3]);
+      await File('${cache.path}/index.m3u8').writeAsString(
+        '#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\nresource_segment.bin\n',
+      );
+
+      final partial = await store.partialPlaybackFile(task.id);
+
+      expect(partial?.path, '${cache.path}/index.m3u8');
+      expect(await store.cachedFile(task.id), isNull);
+    },
+  );
 
   test(
     'direct media download resumes from bytes flushed before a reset',

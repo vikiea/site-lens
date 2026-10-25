@@ -9,6 +9,10 @@ PlaybackEvidence _evidence({
   bool confirmed = true,
   String? seriesKey = 'series-1',
   int? episodeNumber = 3,
+  int snapshot = 7,
+  int eventSequence = 11,
+  int positionMs = 1234,
+  int? durationMs = 120000,
 }) => PlaybackEvidence(
   hostId: 7,
   generation: 4,
@@ -25,6 +29,11 @@ PlaybackEvidence _evidence({
   confirmed: confirmed,
   reason: confirmed ? null : 'candidate_mismatch',
   observedAt: DateTime.utc(2026, 10, 24, 1, 2, 3),
+  snapshot: snapshot,
+  eventSequence: eventSequence,
+  positionMs: positionMs,
+  durationMs: durationMs,
+  sourceRevision: '7:https://cdn.example/series-1/ep3.m3u8',
 );
 
 void main() {
@@ -56,6 +65,9 @@ void main() {
         expect(await db.watchSaves(), hasLength(1));
         expect(await db.mediaTasks(), isEmpty);
         expect((await db.watchSaves()).single.profileId, profileId);
+        expect((await db.watchSaves()).single.positionMs, 1234);
+        expect((await db.watchSaves()).single.durationMs, 120000);
+        expect((await db.watchSaves()).single.evidenceRevision, isNotEmpty);
       },
     );
 
@@ -120,5 +132,42 @@ void main() {
       expect(await db.saveWatchSave(stale), isFalse);
       expect((await db.watchSaves()).single.state, WatchSaveState.playing);
     });
+
+    test(
+      'same-timestamp older evidence cannot overwrite newer progress',
+      () async {
+        final initialEvidence = _evidence(
+          state: PlaybackEvidenceState.playing,
+          snapshot: 8,
+          eventSequence: 18,
+          positionMs: 3000,
+        );
+        final newerEvidence = _evidence(
+          state: PlaybackEvidenceState.paused,
+          snapshot: 8,
+          eventSequence: 20,
+          positionMs: 9000,
+        );
+        final olderEvidence = _evidence(
+          state: PlaybackEvidenceState.playing,
+          snapshot: 8,
+          eventSequence: 19,
+          positionMs: 5000,
+        );
+        expect(
+          await store.observe(initialEvidence, profileId: null),
+          isNotNull,
+        );
+        final newer = WatchSave.fromEvidence(newerEvidence);
+        final older = WatchSave.fromEvidence(olderEvidence);
+
+        expect(await db.saveWatchSave(newer), isTrue);
+        expect(await db.saveWatchSave(older), isFalse);
+        final saved = (await db.watchSaves()).single;
+        expect(saved.state, WatchSaveState.paused);
+        expect(saved.positionMs, 9000);
+        expect(saved.evidenceRevision, newer.evidenceRevision);
+      },
+    );
   });
 }

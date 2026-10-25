@@ -2,6 +2,7 @@ import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
+import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/app_theme.dart';
 import 'package:site_lens/ui/glass_surface.dart';
@@ -65,7 +66,7 @@ void main() {
         final restoreRow = row('恢复应用媒体库');
         final directoryHeight = tester.getSize(directoryRow).height;
         final restoreHeight = tester.getSize(restoreRow).height;
-        expect(find.byType(SiteLensPanel), findsOneWidget);
+        expect(find.byType(SiteLensPanel), findsNWidgets(2));
         expect(find.byType(Scrollable), findsOneWidget);
         expect(find.text(readable), findsNothing);
 
@@ -92,4 +93,45 @@ void main() {
       },
     );
   }
+
+  testWidgets('media management exposes durable watch saves', (tester) async {
+    final now = DateTime(2026, 10, 24, 20, 30);
+    await db.saveWatchSave(
+      WatchSave(
+        ownerId: 'watch:test',
+        sourceKey: 'series\u0000episode\u00001\u0000source',
+        sourceUrl: Uri.parse('https://media.example.test/episode-1.m3u8'),
+        seriesKey: 'series',
+        episodeNumber: 1,
+        title: '示例剧集',
+        pageUrl: Uri.parse('https://example.test/watch/1'),
+        hostId: 1,
+        generation: 2,
+        state: WatchSaveState.paused,
+        createdAt: now,
+        updatedAt: now,
+        positionMs: 30_000,
+        durationMs: 120_000,
+      ),
+    );
+    await app.watchSaves.reload();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.mistPine, Brightness.light),
+        home: MediaManagementScreen(app: app),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byTooltip('第 1 集 · 00:30 / 02:00 · 已暂停 · 10-24 20:30'),
+      findsOneWidget,
+    );
+
+    expect(find.text('观看保存'), findsOneWidget);
+    expect(find.text('示例剧集'), findsOneWidget);
+    expect(find.textContaining('第 1 集'), findsOneWidget);
+    expect(find.byType(PopupMenuButton<String>), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

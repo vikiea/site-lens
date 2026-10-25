@@ -127,6 +127,18 @@ const _v10TaskBatchDirectoryColumn =
     'ALTER TABLE media_tasks ADD COLUMN batch_directory TEXT';
 const _v12FilterSourceEnabledColumn =
     'ALTER TABLE filter_sources ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1';
+const _v15MediaResourceKeyColumn =
+    'ALTER TABLE media_tasks ADD COLUMN resource_key TEXT NOT NULL DEFAULT \'\'';
+const _v16MediaResourcesTable =
+    'CREATE TABLE IF NOT EXISTS media_resources('
+    'resource_key TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT \'observed\', '
+    'bytes_downloaded INTEGER NOT NULL DEFAULT 0, total_bytes INTEGER, '
+    'updated_at TEXT NOT NULL)';
+const _v17MediaResourceOwnersTable =
+    'CREATE TABLE IF NOT EXISTS media_resource_owners('
+    'resource_key TEXT NOT NULL REFERENCES media_resources(resource_key) ON DELETE CASCADE, '
+    'owner_id TEXT NOT NULL, owner_kind TEXT NOT NULL, created_at TEXT NOT NULL, '
+    'PRIMARY KEY(resource_key, owner_id))';
 
 const _v13WatchSavesTable =
     'CREATE TABLE IF NOT EXISTS watch_saves('
@@ -135,6 +147,22 @@ const _v13WatchSavesTable =
     'page_url TEXT NOT NULL, host_id INTEGER NOT NULL, generation INTEGER NOT NULL, '
     'state TEXT NOT NULL, profile_id INTEGER REFERENCES profiles(id) ON DELETE SET NULL, '
     'created_at TEXT NOT NULL, updated_at TEXT NOT NULL)';
+
+const _v14WatchSavesTable =
+    'CREATE TABLE IF NOT EXISTS watch_saves('
+    'owner_id TEXT PRIMARY KEY, source_key TEXT NOT NULL, source_url TEXT NOT NULL, '
+    'series_key TEXT NOT NULL, episode_number INTEGER NOT NULL, title TEXT NOT NULL, '
+    'page_url TEXT NOT NULL, host_id INTEGER NOT NULL, generation INTEGER NOT NULL, '
+    'state TEXT NOT NULL, profile_id INTEGER REFERENCES profiles(id) ON DELETE SET NULL, '
+    'created_at TEXT NOT NULL, updated_at TEXT NOT NULL, '
+    'position_ms INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER, '
+    'evidence_revision TEXT NOT NULL DEFAULT \'\')';
+
+const _v14WatchSaveProgressColumns = <String>[
+  'ALTER TABLE watch_saves ADD COLUMN position_ms INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE watch_saves ADD COLUMN duration_ms INTEGER',
+  'ALTER TABLE watch_saves ADD COLUMN evidence_revision TEXT NOT NULL DEFAULT \'\'',
+];
 
 // Drift's SQL API keeps the small schema explicit and permits in-memory tests.
 // No browser cookie or password is copied into this database.
@@ -155,7 +183,7 @@ class AppDatabase extends GeneratedDatabase {
   static void Function(String step)? migrationDebugHook;
 
   @override
-  int get schemaVersion => 13;
+  int get schemaVersion => 17;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -178,7 +206,10 @@ class AppDatabase extends GeneratedDatabase {
         ..._v5Tables,
         _v8ErrorLogsTable,
         _v9MediaArtifactsTable,
-        _v13WatchSavesTable,
+        _v14WatchSavesTable,
+        _v15MediaResourceKeyColumn,
+        _v16MediaResourcesTable,
+        _v17MediaResourceOwnersTable,
       ]) {
         await customStatement(sql);
       }
@@ -238,6 +269,19 @@ class AppDatabase extends GeneratedDatabase {
         await customStatement(_v12FilterSourceEnabledColumn);
       }
       if (from < 13) await customStatement(_v13WatchSavesTable);
+      if (from < 14) {
+        const columns = ['position_ms', 'duration_ms', 'evidence_revision'];
+        for (var index = 0; index < columns.length; index++) {
+          if (!await _columnExists('watch_saves', columns[index])) {
+            await customStatement(_v14WatchSaveProgressColumns[index]);
+          }
+        }
+      }
+      if (from < 15 && !await _columnExists('media_tasks', 'resource_key')) {
+        await customStatement(_v15MediaResourceKeyColumn);
+      }
+      if (from < 16) await customStatement(_v16MediaResourcesTable);
+      if (from < 17) await customStatement(_v17MediaResourceOwnersTable);
     },
     beforeOpen: (_) async {
       await customStatement('PRAGMA foreign_keys = ON');
@@ -1426,8 +1470,8 @@ class AppDatabase extends GeneratedDatabase {
         'candidate_id=excluded.candidate_id,state=excluded.state,updated_at=excluded.updated_at,display_title=excluded.display_title,batch_directory=excluded.batch_directory,episode_label=excluded.episode_label,bytes_downloaded=excluded.bytes_downloaded,total_bytes=excluded.total_bytes,error_code=excluded.error_code,error_reason=excluded.error_reason,local_ref=excluded.local_ref';
     try {
       await customStatement(
-        'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,state,updated_at,display_title,batch_directory,episode_label,bytes_downloaded,total_bytes,error_code,error_reason,local_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
-        'ON CONFLICT(id) DO UPDATE SET $update '
+        'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,resource_key,state,updated_at,display_title,batch_directory,episode_label,bytes_downloaded,total_bytes,error_code,error_reason,local_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
+        'ON CONFLICT(id) DO UPDATE SET resource_key=excluded.resource_key,$update '
         'WHERE NOT ('
         // Dart emits three or six fractional digits. Pad UTC timestamps
         // before lexical comparison so .123001Z sorts after .123Z.
@@ -1450,6 +1494,7 @@ class AppDatabase extends GeneratedDatabase {
           task.generation,
           task.sourceUrl.toString(),
           task.cacheKey,
+          task.resourceKey,
           task.state.name,
           task.updatedAt.toUtc().toIso8601String(),
           task.displayTitle,
@@ -1473,7 +1518,29 @@ class AppDatabase extends GeneratedDatabase {
       'SELECT id FROM media_tasks WHERE cache_key=?',
       variables: [Variable.withString(task.cacheKey)],
     ).getSingle();
-    return row.read<String>('id');
+    final canonicalId = row.read<String>('id');
+    if (task.resourceKey.isNotEmpty) {
+      await customStatement(
+        'INSERT OR IGNORE INTO media_resources(resource_key,state,bytes_downloaded,total_bytes,updated_at) VALUES(?,?,?,?,?)',
+        [
+          task.resourceKey,
+          'observed',
+          0,
+          null,
+          task.updatedAt.toUtc().toIso8601String(),
+        ],
+      );
+      await customStatement(
+        'INSERT OR IGNORE INTO media_resource_owners(resource_key,owner_id,owner_kind,created_at) VALUES(?,?,?,?)',
+        [
+          task.resourceKey,
+          'task:$canonicalId',
+          'task',
+          task.updatedAt.toUtc().toIso8601String(),
+        ],
+      );
+    }
+    return canonicalId;
   });
 
   Future<MediaTask?> mediaTaskByCacheKey(String key) async =>
@@ -1490,6 +1557,7 @@ class AppDatabase extends GeneratedDatabase {
               generation: row.read<int>('generation'),
               sourceUrl: webUri(row.read<String>('source_url')),
               cacheKey: row.read<String>('cache_key'),
+              resourceKey: row.read<String>('resource_key'),
               state: MediaTaskState.values.byName(row.read<String>('state')),
               updatedAt: DateTime.parse(row.read<String>('updated_at')),
               displayTitle: row.read<String>('display_title'),
@@ -1506,10 +1574,11 @@ class AppDatabase extends GeneratedDatabase {
 
   Future<bool> saveWatchSave(WatchSave save) => transaction(() async {
     await customStatement(
-      'INSERT INTO watch_saves(owner_id,source_key,source_url,series_key,episode_number,title,page_url,host_id,generation,state,profile_id,created_at,updated_at) '
-      'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) '
-      'ON CONFLICT(owner_id) DO UPDATE SET source_key=excluded.source_key,source_url=excluded.source_url,series_key=excluded.series_key,episode_number=excluded.episode_number,title=excluded.title,page_url=excluded.page_url,host_id=excluded.host_id,generation=excluded.generation,state=excluded.state,profile_id=excluded.profile_id,updated_at=excluded.updated_at '
-      'WHERE substr(replace(excluded.updated_at,\'Z\',\'000\'),1,26) >= substr(replace(watch_saves.updated_at,\'Z\',\'000\'),1,26)',
+      'INSERT INTO watch_saves(owner_id,source_key,source_url,series_key,episode_number,title,page_url,host_id,generation,state,profile_id,created_at,updated_at,position_ms,duration_ms,evidence_revision) '
+      'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
+      'ON CONFLICT(owner_id) DO UPDATE SET source_key=excluded.source_key,source_url=excluded.source_url,series_key=excluded.series_key,episode_number=excluded.episode_number,title=excluded.title,page_url=excluded.page_url,host_id=excluded.host_id,generation=excluded.generation,state=excluded.state,profile_id=excluded.profile_id,position_ms=excluded.position_ms,duration_ms=excluded.duration_ms,evidence_revision=excluded.evidence_revision,updated_at=excluded.updated_at '
+      'WHERE substr(replace(excluded.updated_at,\'Z\',\'000\'),1,26) > substr(replace(watch_saves.updated_at,\'Z\',\'000\'),1,26) OR '
+      '(substr(replace(excluded.updated_at,\'Z\',\'000\'),1,26) = substr(replace(watch_saves.updated_at,\'Z\',\'000\'),1,26) AND excluded.evidence_revision >= watch_saves.evidence_revision)',
       [
         save.ownerId,
         save.sourceKey,
@@ -1524,11 +1593,56 @@ class AppDatabase extends GeneratedDatabase {
         save.profileId,
         save.createdAt.toUtc().toIso8601String(),
         save.updatedAt.toUtc().toIso8601String(),
+        save.positionMs,
+        save.durationMs,
+        save.evidenceRevision,
       ],
     );
     final changed = await customSelect('SELECT changes() AS c').getSingle();
     return changed.read<int>('c') > 0;
   });
+
+  Future<List<String>> mediaResourceKeys() async => (await customSelect(
+    'SELECT resource_key FROM media_resources ORDER BY resource_key',
+  ).get()).map((row) => row.read<String>('resource_key')).toList();
+
+  Future<List<String>> mediaResourceOwners(String resourceKey) async =>
+      (await customSelect(
+        'SELECT owner_id FROM media_resource_owners WHERE resource_key=? ORDER BY owner_id',
+        variables: [Variable.withString(resourceKey)],
+      ).get()).map((row) => row.read<String>('owner_id')).toList();
+
+  Future<void> addMediaResourceOwner(
+    String resourceKey,
+    String ownerId,
+    String ownerKind,
+  ) => transaction(() async {
+    await customStatement(
+      'INSERT OR IGNORE INTO media_resources(resource_key,state,bytes_downloaded,total_bytes,updated_at) VALUES(?,?,?,?,?)',
+      [
+        resourceKey,
+        'observed',
+        0,
+        null,
+        DateTime.now().toUtc().toIso8601String(),
+      ],
+    );
+    await customStatement(
+      'INSERT OR IGNORE INTO media_resource_owners(resource_key,owner_id,owner_kind,created_at) VALUES(?,?,?,?)',
+      [
+        resourceKey,
+        ownerId,
+        ownerKind,
+        DateTime.now().toUtc().toIso8601String(),
+      ],
+    );
+  });
+
+  Future<void> removeMediaResourceOwner(String resourceKey, String ownerId) =>
+      customStatement(
+        'DELETE FROM media_resource_owners WHERE resource_key=? AND owner_id=?',
+        [resourceKey, ownerId],
+      );
 
   Future<WatchSave?> watchSave(String ownerId) async {
     final row = await customSelect(
@@ -1559,6 +1673,9 @@ class AppDatabase extends GeneratedDatabase {
     profileId: row.readNullable<int>('profile_id'),
     createdAt: DateTime.parse(row.read<String>('created_at')),
     updatedAt: DateTime.parse(row.read<String>('updated_at')),
+    positionMs: row.read<int>('position_ms'),
+    durationMs: row.readNullable<int>('duration_ms'),
+    evidenceRevision: row.read<String>('evidence_revision'),
   );
 
   /// Rewrites media paths and advances the migration journal in one SQLite
@@ -1627,8 +1744,13 @@ class AppDatabase extends GeneratedDatabase {
     await setSetting(journalKey, journalValue);
   });
 
-  Future<void> deleteMediaTask(String id) =>
-      customStatement('DELETE FROM media_tasks WHERE id=?', [id]);
+  Future<void> deleteMediaTask(String id) => transaction(() async {
+    await customStatement(
+      'DELETE FROM media_resource_owners WHERE owner_id=?',
+      ['task:$id'],
+    );
+    await customStatement('DELETE FROM media_tasks WHERE id=?', [id]);
+  });
 
   Future<List<Map<String, dynamic>>> mediaArtifacts() async =>
       (await customSelect('SELECT metadata FROM media_artifacts').get())

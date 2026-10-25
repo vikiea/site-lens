@@ -103,14 +103,28 @@
     ? performance.now()
     : 0;
   let snapshotSequence = 0;
+  let evidenceSequence = 0;
+  let nextMediaElementId = 0;
+  const mediaElementIds = new WeakMap();
   let reportScheduled = false;
   let reportAgain = false;
   let lastReportAt = 0;
   const originalPlay = HTMLMediaElement.prototype.play;
 
+  function mediaElementId(node) {
+    if (!node || typeof node !== 'object') return '';
+    let id = mediaElementIds.get(node);
+    if (!id) {
+      id = `media-${++nextMediaElementId}`;
+      mediaElementIds.set(node, id);
+    }
+    return id;
+  }
+
   function track(node) {
     if (connectedBefore.has(node) && !node.isConnected) return;
     nodes.add(node);
+    mediaElementId(node);
     if (node.isConnected) connectedBefore.add(node);
     if (!watched.has(node) && typeof node.addEventListener === 'function') {
       watched.add(node);
@@ -821,10 +835,25 @@
     const evidenceState = playing
       ? 'playing'
       : (activeNode?.ended ? 'ended' : (activeNode ? 'paused' : 'idle'));
+    const sourceRevision = sourceKey
+      ? `${snapshotSequence}:${sourceKey}`
+      : '';
+    const positionMs = activeNode && Number.isFinite(activeNode.currentTime)
+      ? Math.max(0, Math.round(activeNode.currentTime * 1000))
+      : 0;
+    const durationMs = activeNode && Number.isFinite(activeNode.duration)
+      ? Math.max(0, Math.round(activeNode.duration * 1000))
+      : null;
     const evidence = {
       frame: frameId,
       document: documentId,
       epoch,
+      mediaElementId: mediaElementId(activeNode),
+      snapshot: snapshotSequence,
+      eventSequence: ++evidenceSequence,
+      positionMs,
+      durationMs,
+      sourceRevision,
       pageUrl: pageUrl(),
       sourceUrl,
       sourceKey,

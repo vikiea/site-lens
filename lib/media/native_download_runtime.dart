@@ -33,6 +33,7 @@ class NativeDownloadRuntime {
       'generation': candidate.generation,
       'url': candidate.mediaUrl.toString(),
       'sourceUrl': candidate.sourceUrl.toString(),
+      'resourceKey': task.resourceKey,
       'title':
           title ??
           (task.displayName.isEmpty ? candidate.title : task.displayName),

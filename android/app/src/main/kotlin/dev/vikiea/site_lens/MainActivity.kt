@@ -40,6 +40,7 @@ class MainActivity : FlutterActivity() {
     private var dlnaMulticastLock: WifiManager.MulticastLock? = null
     private var diagnosticsExecutor: ExecutorService? = null
     private var diagnosticsGeneration = 0
+    private var authRefreshGeneration = 0
 
     override fun getFlutterShellArgs(): FlutterShellArgs =
         FlutterRendererPolicy.shellArgs(
@@ -100,6 +101,7 @@ class MainActivity : FlutterActivity() {
         registerDeviceChannel(flutterEngine)
         registerUpdateChannel(flutterEngine)
         registerNativeMediaChannel(flutterEngine)
+        registerMediaAuthChannel(flutterEngine)
         registerNativeDownloadChannel(flutterEngine)
         registerNativeExportChannel(flutterEngine)
         registerDlnaChannel(flutterEngine)
@@ -232,6 +234,32 @@ class MainActivity : FlutterActivity() {
     private fun registerNativeMediaChannel(flutterEngine: FlutterEngine) {
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/native_media")
         nativeMedia = NativeMediaRuntime(this, flutterEngine.renderer).also { it.attach(channel) }
+    }
+
+    private fun registerMediaAuthChannel(flutterEngine: FlutterEngine) {
+        val generation = ++authRefreshGeneration
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/media_auth")
+            .setMethodCallHandler { call, result ->
+                if (generation != authRefreshGeneration) return@setMethodCallHandler
+                if (call.method != "refresh") {
+                    result.notImplemented()
+                    return@setMethodCallHandler
+                }
+                val taskId = call.argument<String>("taskId")?.trim().orEmpty()
+                val pageUrl = call.argument<String>("pageUrl")?.trim().orEmpty()
+                val mediaUrl = call.argument<String>("mediaUrl")?.trim().orEmpty()
+                val resourceKey = call.argument<String>("resourceKey")?.trim().orEmpty()
+                if (taskId.isEmpty() || pageUrl.isEmpty() || mediaUrl.isEmpty()) {
+                    result.error("invalid_auth_refresh", "授权刷新参数不完整", null)
+                    return@setMethodCallHandler
+                }
+                NativeMediaAuthRefreshService.refresh(
+                    applicationContext,
+                    NativeMediaAuthRefreshService.Request(taskId, pageUrl, mediaUrl, resourceKey) { value ->
+                        if (generation == authRefreshGeneration) result.success(value)
+                    },
+                )
+            }
     }
 
     private fun registerNativeDownloadChannel(flutterEngine: FlutterEngine) {
@@ -369,6 +397,7 @@ class MainActivity : FlutterActivity() {
     override fun onResume() { super.onResume(); hosts?.foreground(true) }
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
         diagnosticsGeneration++
+        authRefreshGeneration++
         diagnosticsExecutor?.shutdownNow()
         diagnosticsExecutor = null
         DeviceDiagnosticsApi.setUp(flutterEngine.dartExecutor.binaryMessenger, null)

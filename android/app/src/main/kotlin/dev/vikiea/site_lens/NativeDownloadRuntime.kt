@@ -102,6 +102,9 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
             sourceUrl = call.argument<String>("sourceUrl") ?: "",
             title = (call.argument<String>("title") ?: "Site Lens media").take(120),
             seriesDirectory = safeDirectory(call.argument<String>("storageDirectory")),
+            resourceKey = call.argument<String>("resourceKey")?.takeIf {
+                it.matches(Regex("[0-9a-f]{64}"))
+            } ?: "",
         )
         return enqueue(record)
     }

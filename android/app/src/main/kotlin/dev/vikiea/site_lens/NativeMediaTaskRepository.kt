@@ -23,6 +23,7 @@ class NativeMediaTaskRepository(context: Context) {
         val paused: Boolean = false,
         val cancelled: Boolean = false,
         val workId: String? = null,
+        val resourceKey: String = "",
     )
 
     fun save(record: Record) {
@@ -37,6 +38,7 @@ class NativeMediaTaskRepository(context: Context) {
             .putBoolean("${record.taskId}.paused", record.paused)
             .putBoolean("${record.taskId}.cancelled", record.cancelled)
             .putString("${record.taskId}.workId", record.workId)
+            .putString("${record.taskId}.resourceKey", record.resourceKey)
             .putBoolean("${record.taskId}.known", true)
             .commit()) { "无法保存下载状态" }
     }
@@ -54,6 +56,7 @@ class NativeMediaTaskRepository(context: Context) {
             prefs.getBoolean("$taskId.paused", false),
             prefs.getBoolean("$taskId.cancelled", false),
             prefs.getString("$taskId.workId", null),
+            prefs.getString("$taskId.resourceKey", "") ?: "",
         )
     }
 
@@ -109,7 +112,7 @@ class NativeMediaTaskRepository(context: Context) {
     fun remove(taskId: String) {
         val edit = prefs.edit()
         for (suffix in listOf("downloadId", "candidateId", "generation", "url", "sourceUrl",
-            "title", "seriesDirectory", "paused", "cancelled", "workId", "known")) {
+            "title", "seriesDirectory", "paused", "cancelled", "workId", "resourceKey", "known")) {
             edit.remove("$taskId.$suffix")
         }
         check(edit.commit()) { "无法删除下载状态" }

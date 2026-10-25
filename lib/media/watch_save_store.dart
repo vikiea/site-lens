@@ -25,6 +25,17 @@ class WatchSaveStore extends ChangeNotifier {
     return _restoreRun ??= _restore();
   }
 
+  /// Re-reads durable saves after an external database import or test fixture
+  /// write. Normal startup should continue to use [restore] so it does not
+  /// reopen the database on every rebuild.
+  Future<void> reload() async {
+    await flush();
+    if (_disposed) return;
+    _restored = false;
+    _items.clear();
+    await restore();
+  }
+
   Future<void> _restore() async {
     try {
       final rows = await db.watchSaves();
@@ -44,11 +55,12 @@ class WatchSaveStore extends ChangeNotifier {
     required int? profileId,
     bool Function()? isCurrent,
   }) async {
-    if (!evidence.autoSaveEligible || evidence.sourceUrl == null) return null;
+    if (!evidence.watchSaveEligible || evidence.sourceUrl == null) return null;
     await restore();
     if (_disposed || isCurrent?.call() == false) return null;
     final next = WatchSave.fromEvidence(evidence, profileId: profileId);
     final previous = _items[next.ownerId];
+    if (previous == null && !evidence.autoSaveEligible) return null;
     final save = previous == null
         ? next
         : previous.copyWith(
@@ -59,6 +71,9 @@ class WatchSaveStore extends ChangeNotifier {
             state: next.state,
             updatedAt: next.updatedAt,
             profileId: next.profileId,
+            positionMs: next.positionMs,
+            durationMs: next.durationMs,
+            evidenceRevision: next.evidenceRevision,
           );
     if (isCurrent?.call() == false || _disposed) return null;
     var committed = false;

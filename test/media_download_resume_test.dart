@@ -1,10 +1,13 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:drift/native.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:site_lens/data/database.dart';
 import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/media/media_service.dart';
+import 'package:site_lens/media/media_resource_coordinator.dart';
 import 'package:site_lens/network/transport.dart';
 
 void main() {
@@ -365,6 +368,102 @@ void main() {
     );
     expect(await resource.readAsBytes(), [5, 6, 7]);
   });
+
+  test('HLS coordinator publishes one shared linked resource', () async {
+    final root = await Directory.systemTemp.createTemp('site-lens-hls-shared-');
+    final sharedRoot = Directory('${root.path}/media_cache/shared_resources')
+      ..createSync(recursive: true);
+    addTearDown(() => root.delete(recursive: true));
+    final playlistUrl = Uri.parse('https://cdn.example/shared/index.m3u8');
+    final segmentUrl = Uri.parse('https://cdn.example/shared/segment.ts');
+    final http = _HlsResumeHttp(playlistUrl, segmentUrl);
+    final store = MediaTaskStore(directoryProvider: () async => root);
+    final candidate = _candidate(playlistUrl);
+    final task = store.create(candidate);
+    final result = await MediaDownloadService(
+      tasks: store,
+      http: http,
+      resourceCoordinator: MediaResourceCoordinator(
+        rootProvider: () async => sharedRoot,
+      ),
+    ).start(task, candidate);
+
+    expect(result.state, MediaTaskState.playable);
+    final local = (await store.cachedFile(task.id))!;
+    final localResource = local.parent.listSync().whereType<File>().firstWhere(
+      (file) => file.path.contains('/resource_'),
+    );
+    final sharedResources = sharedRoot.listSync().whereType<File>().toList();
+    expect(sharedResources, hasLength(1));
+    expect(await sharedResources.single.readAsBytes(), [5, 6, 7]);
+    expect(await localResource.readAsBytes(), [5, 6, 7]);
+
+    // The task entry points at the shared file; changing the shared entry is
+    // visible through the task path and proves the HLS cache did not copy the
+    // bytes.
+    await sharedResources.single.writeAsBytes([8, 9], flush: true);
+    expect(await localResource.readAsBytes(), [8, 9]);
+  });
+
+  test(
+    'shared HLS resource remains until its last task owner is deleted',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-hls-owner-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final sharedRoot = Directory('${root.path}/media_cache/shared_resources')
+        ..createSync(recursive: true);
+      final playlistUrl = Uri.parse('https://cdn.example/owners/index.m3u8');
+      final segmentUrl = Uri.parse('https://cdn.example/owners/segment.ts');
+      final http = _HlsResumeHttp(playlistUrl, segmentUrl);
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final store = MediaTaskStore(directoryProvider: () async => root, db: db);
+      final coordinator = MediaResourceCoordinator(
+        rootProvider: () async => sharedRoot,
+      );
+      final firstCandidate = _candidate(playlistUrl);
+      final secondCandidate = MediaCandidate(
+        id: 'hls-owner-2',
+        hostId: 8,
+        generation: 4,
+        sourceUrl: firstCandidate.sourceUrl,
+        mediaUrl: playlistUrl,
+        title: firstCandidate.title,
+        mime: firstCandidate.mime,
+        source: firstCandidate.source,
+      );
+      await db.saveMediaCandidate(firstCandidate);
+      await db.saveMediaCandidate(secondCandidate);
+      final service = MediaDownloadService(
+        tasks: store,
+        http: http,
+        resourceCoordinator: coordinator,
+      );
+      final first = store.create(firstCandidate);
+      final second = store.create(secondCandidate);
+      await service.start(first, firstCandidate);
+      await service.start(second, secondCandidate);
+      final resourceKey = (await store.db!.mediaResourceKeys()).firstWhere(
+        (key) => key != first.resourceKey,
+      );
+      expect(
+        await store.db!.mediaResourceOwners(resourceKey),
+        containsAll(<String>['task:${first.id}', 'task:${second.id}']),
+      );
+      await service.delete(first.id);
+      expect(
+        await File('${sharedRoot.path}/$resourceKey.resource').exists(),
+        isTrue,
+      );
+      await service.delete(second.id);
+      expect(
+        await File('${sharedRoot.path}/$resourceKey.resource').exists(),
+        isFalse,
+      );
+    },
+  );
 
   test('HLS continues a bounded 206 response from the new offset', () async {
     final root = await Directory.systemTemp.createTemp('site-lens-hls-range-');

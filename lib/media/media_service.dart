@@ -15,6 +15,8 @@ import '../diagnostics/error_log.dart';
 import '../domain/models.dart';
 import '../network/transport.dart';
 import 'media_directory_migration.dart';
+import 'media_resource_coordinator.dart';
+import 'media_transfer_scheduler.dart';
 import 'native_download_runtime.dart';
 import 'native_export_runtime.dart';
 
@@ -23,6 +25,7 @@ class MediaErrorCode {
   static const invalidUrl = 'invalid_url';
   static const unsupported = 'unsupported_format';
   static const authorizationRequired = 'reauthorize';
+  static const waitingExecution = 'waiting_execution';
   static const diskFull = 'disk_full';
   static const network = 'network';
   static const cancelled = 'cancelled';
@@ -188,6 +191,7 @@ enum NativePlaybackState {
   paused,
   buffering,
   completed,
+  restorable,
   stopped,
   failed,
 }
@@ -197,6 +201,8 @@ class NativePlaybackSession {
     required this.id,
     required this.candidateId,
     required this.state,
+    this.taskId = '',
+    this.userPaused = false,
     this.textureId,
     this.positionMs = 0,
     this.durationMs = 0,
@@ -208,6 +214,8 @@ class NativePlaybackSession {
 
   final String id;
   final String candidateId;
+  final String taskId;
+  final bool userPaused;
   final NativePlaybackState state;
   final int? textureId;
   final int positionMs;
@@ -281,6 +289,7 @@ class NativePlaybackController {
         NativePlaybackState.failed,
       },
       NativePlaybackState.completed ||
+      NativePlaybackState.restorable ||
       NativePlaybackState.stopped ||
       NativePlaybackState.failed => <NativePlaybackState>{},
     };
@@ -692,6 +701,7 @@ class MediaTaskStore extends ChangeNotifier {
       generation: candidate.generation,
       sourceUrl: candidate.sourceUrl,
       cacheKey: key,
+      resourceKey: mediaResourceKeyForCandidate(candidate),
       state: MediaTaskState.queued,
       updatedAt: DateTime.now().toUtc(),
       displayTitle: candidate.title.trim(),
@@ -808,13 +818,23 @@ class MediaTaskStore extends ChangeNotifier {
       final migratedRef = task.localRef == null
           ? null
           : rewriteManagedPath(task.localRef!);
+      final resourceKey = task.resourceKey.isNotEmpty
+          ? task.resourceKey
+          : candidate == null
+          ? ''
+          : mediaResourceKeyForCandidate(candidate);
       final normalized = canNormalize && task.batchDirectory != null
           ? task.copyWith(
               updatedAt: task.updatedAt,
               batchDirectory: mediaFolderDisplayName(task.batchDirectory!),
               localRef: migratedRef,
+              resourceKey: resourceKey,
             )
-          : task.copyWith(updatedAt: task.updatedAt, localRef: migratedRef);
+          : task.copyWith(
+              updatedAt: task.updatedAt,
+              localRef: migratedRef,
+              resourceKey: resourceKey,
+            );
       final next = !sameIdentity
           ? normalized
           : task.copyWith(
@@ -834,7 +854,8 @@ class MediaTaskStore extends ChangeNotifier {
       if (next.displayTitle != task.displayTitle ||
           next.batchDirectory != task.batchDirectory ||
           next.localRef != task.localRef ||
-          next.episodeLabel != task.episodeLabel) {
+          next.episodeLabel != task.episodeLabel ||
+          next.resourceKey != task.resourceKey) {
         await db!.saveMediaTask(next);
       }
     }
@@ -1327,6 +1348,7 @@ class MediaTaskStore extends ChangeNotifier {
         generation: original.generation,
         sourceUrl: original.sourceUrl,
         cacheKey: key,
+        resourceKey: original.resourceKey,
         state: MediaTaskState.playable,
         updatedAt: DateTime.now().toUtc(),
         displayTitle: '${original.displayTitle} 副本',
@@ -1443,6 +1465,73 @@ class MediaTaskStore extends ChangeNotifier {
       }
     }
     return file;
+  }
+
+  /// Returns a validated HLS manifest that has at least one committed segment
+  /// while the task is still downloading. This is deliberately separate from
+  /// [cachedFile]: an incomplete manifest may be used for foreground preview,
+  /// but it must never be reported as a completed cache or export input.
+  Future<File?> partialPlaybackFile(String taskId) async {
+    await ready;
+    final current = task(taskId);
+    if (current == null ||
+        (current.state != MediaTaskState.downloading &&
+            current.state != MediaTaskState.paused)) {
+      return null;
+    }
+    final directory = await cacheDirectory(
+      storageDirectory: current.storageDirectoryName,
+    );
+    final playlist = File(
+      '${directory.path}/${current.cacheKey}.hls/index.m3u8',
+    );
+    if (!await playlist.exists() || await playlist.length() <= 0) return null;
+    try {
+      final input = await const HlsPlaylistParser().parseFile(playlist.uri);
+      if (input.segments.isEmpty) return null;
+      await validateHlsCacheInput(input);
+      return playlist;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Waits for the growing HLS playlist to cover [targetMs]. This keeps a
+  /// seek into an uncached range bounded and observable without treating the
+  /// current partial duration as the final media duration.
+  Future<bool> waitForHlsPosition(
+    String taskId,
+    int targetMs, {
+    Duration timeout = const Duration(seconds: 12),
+  }) async {
+    if (targetMs <= 0) return true;
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      final current = task(taskId);
+      if (current == null) return false;
+      final file =
+          current.state == MediaTaskState.downloading ||
+              current.state == MediaTaskState.paused
+          ? await partialPlaybackFile(taskId)
+          : await cachedFile(taskId);
+      if (file != null) {
+        final availableMs = _hlsDurationMs(await file.readAsString());
+        if (availableMs >= targetMs) return true;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    return false;
+  }
+
+  int _hlsDurationMs(String text) {
+    var total = 0.0;
+    for (final raw in text.split(RegExp(r'\r?\n'))) {
+      final line = raw.trim();
+      if (!line.startsWith('#EXTINF:')) continue;
+      final value = double.tryParse(line.substring(8).split(',').first);
+      if (value != null && value > 0) total += value * 1000;
+    }
+    return total.round();
   }
 }
 
@@ -1604,12 +1693,14 @@ class MediaDownloadService {
     this.native,
     this.authorize,
     this.tlsTransfer,
+    this.resourceCoordinator,
     this.progressElapsed,
   }) : http = http ?? ControlledHttp();
 
   final MediaTaskStore tasks;
   final ControlledHttp http;
   final NativeTlsTransfer? tlsTransfer;
+  final MediaResourceCoordinator? resourceCoordinator;
   final Duration Function()? progressElapsed;
 
   /// Optional Android OS-managed backend. The deterministic Dart backend stays
@@ -1625,6 +1716,25 @@ class MediaDownloadService {
   final _dartTasks = <String>{};
   final _progressAtMs = <String, int>{};
   final _progressClock = Stopwatch()..start();
+  final _transferScheduler = MediaTransferScheduler();
+  final _taskPriorities = <String, int>{};
+  final _hlsSeekTargets = <String, int>{};
+
+  void setTaskPriority(String taskId, int priority) {
+    _taskPriorities[tasks.resolveTaskId(taskId)] = priority.clamp(0, 1000);
+  }
+
+  void clearTaskPriority(String taskId) {
+    _taskPriorities.remove(tasks.resolveTaskId(taskId));
+  }
+
+  void prioritizeHlsSeek(String taskId, int targetMs) {
+    _hlsSeekTargets[tasks.resolveTaskId(taskId)] = targetMs.clamp(0, 1 << 62);
+    setTaskPriority(taskId, 100);
+  }
+
+  int _taskPriority(String taskId) =>
+      _taskPriorities[tasks.resolveTaskId(taskId)] ?? 10;
 
   void _reportTaskProgress(
     String taskId,
@@ -1740,6 +1850,8 @@ class MediaDownloadService {
     final rawErrorCode = status['errorCode']?.toString();
     final effectiveState = rawErrorCode == MediaErrorCode.authorizationRequired
         ? 'reauthorize'
+        : rawErrorCode == MediaErrorCode.waitingExecution
+        ? 'waiting_execution'
         : state;
     final bytes = (status['bytesDownloaded'] as num?)?.toInt();
     final total = (status['totalBytes'] as num?)?.toInt();
@@ -1785,6 +1897,15 @@ class MediaDownloadService {
         errorReason:
             status['errorReason'] as String? ??
             _nativeErrorReason(rawErrorCode),
+      );
+    } else if (effectiveState == 'waiting_execution' &&
+        (current.state == MediaTaskState.downloading ||
+            current.state == MediaTaskState.paused)) {
+      current = tasks.transition(
+        task.id,
+        MediaTaskState.paused,
+        errorCode: MediaErrorCode.waitingExecution,
+        errorReason: status['errorReason'] as String? ?? '等待系统允许后台授权刷新',
       );
     }
     return current;
@@ -1916,6 +2037,10 @@ class MediaDownloadService {
         }
         final current = tasks.task(id);
         if (current == null) return;
+        final sharedResourceKeys = await _sharedResourceKeysForTask(
+          current,
+          frozenPlan,
+        );
         if (nativeCancel == null &&
             nativeReservation == null &&
             !_dartTasks.contains(id)) {
@@ -1937,6 +2062,7 @@ class MediaDownloadService {
           exclusiveAlreadyHeld: true,
           frozenPlan: frozenPlan,
         );
+        await _releaseSharedResources(id, sharedResourceKeys);
         if (deleteTask) {
           await tasks.delete(id, exclusiveAlreadyHeld: true);
         } else if (tasks.task(id)?.state == MediaTaskState.downloading ||
@@ -1963,6 +2089,72 @@ class MediaDownloadService {
         }
       } finally {
         if (!exclusiveAlreadyHeld) tasks.releaseExclusive(id);
+      }
+    }
+  }
+
+  Future<Set<String>> _sharedResourceKeysForTask(
+    MediaTask task,
+    MediaCacheDeletionPlan? plan,
+  ) async {
+    final paths = <String>{};
+    if (task.localRef != null) {
+      paths.add(File(task.localRef!).parent.path);
+    }
+    for (final directory in plan?.directories ?? const <String>[]) {
+      paths.add(directory);
+    }
+    final keys = <String>{};
+    final resourceName = RegExp(r'^resource_([0-9a-f]{64})\.bin$');
+    for (final directoryPath in paths) {
+      final directory = Directory(directoryPath);
+      if (!await directory.exists()) continue;
+      await for (final entity in directory.list(followLinks: false)) {
+        if (entity is File || entity is Link) {
+          final match = resourceName.firstMatch(p.basename(entity.path));
+          if (match != null) keys.add(match.group(1)!);
+          if (p.basename(entity.path) == 'resources.json') {
+            try {
+              final raw = jsonDecode(await File(entity.path).readAsString());
+              final entries = raw is Map && raw['resources'] is Map
+                  ? raw['resources'] as Map
+                  : raw is Map
+                  ? raw
+                  : const <Object?, Object?>{};
+              for (final key in entries.keys) {
+                if (key is String && RegExp(r'^[0-9a-f]{64}$').hasMatch(key)) {
+                  keys.add(key);
+                }
+              }
+            } catch (_) {
+              // A corrupt sidecar cannot authorize deletion of a shared file.
+            }
+          }
+        }
+      }
+    }
+    return keys;
+  }
+
+  Future<void> _releaseSharedResources(
+    String taskId,
+    Iterable<String> resourceKeys,
+  ) async {
+    final db = tasks.db;
+    if (db == null) return;
+    for (final key in resourceKeys) {
+      await db.removeMediaResourceOwner(key, 'task:$taskId');
+      if ((await db.mediaResourceOwners(key)).isEmpty) {
+        try {
+          await resourceCoordinator?.delete(key);
+        } catch (error, stack) {
+          AppErrorLogger.capture(
+            error,
+            module: 'media.resource-gc',
+            context: key,
+            stack: stack,
+          );
+        }
       }
     }
   }
@@ -2178,14 +2370,20 @@ class MediaDownloadService {
       final directory = await tasks.cacheDirectory(
         storageDirectory: task.storageDirectoryName,
       );
-      staging = Directory('${directory.path}/${task.cacheKey}.hls.part');
-      await staging.create(recursive: true);
+      final legacyPart = Directory(
+        '${directory.path}/${task.cacheKey}.hls.part',
+      );
       final finalDirectory = Directory(
         '${directory.path}/${task.cacheKey}.hls',
       );
-      if (await finalDirectory.exists()) {
-        await finalDirectory.delete(recursive: true);
+      // Keep one stable directory identity for a live HLS reader. Renaming a
+      // directory after the first preview would invalidate Media3's playlist
+      // reload URI and turn a successful download into a playback failure.
+      if (!await finalDirectory.exists() && await legacyPart.exists()) {
+        await legacyPart.rename(finalDirectory.path);
       }
+      staging = finalDirectory;
+      await staging.create(recursive: true);
       var playlistUri = candidate.mediaUrl;
       var fetched = await _fetchHlsText(
         playlistUri,
@@ -2225,6 +2423,10 @@ class MediaDownloadService {
       var hasSegment = false;
       final output = <String>[];
       final lines = playlistText.split(RegExp(r'\r?\n'));
+      final livePlaylist = File('${staging.path}/index.m3u8');
+      final segmentPlan = _hlsSegmentPlan(lines);
+      final prefetched = <int>{};
+      var segmentIndex = 0;
       for (var index = 0; index < lines.length; index++) {
         cancel.check();
         final line = lines[index];
@@ -2245,6 +2447,7 @@ class MediaDownloadService {
               maxBytes,
               document: candidate.sourceUrl,
               resourceKind: line.startsWith('#EXT-X-KEY:') ? 'key' : 'map',
+              ownerId: task.id,
               onProgress: (bytes) =>
                   _reportTaskProgress(task.id, totalBytes + bytes),
             );
@@ -2256,12 +2459,37 @@ class MediaDownloadService {
           continue;
         }
         final trimmed = line.trim();
+        if (trimmed == '#EXT-X-ENDLIST') {
+          continue;
+        }
         if (trimmed.isEmpty || trimmed.startsWith('#')) {
           output.add(line);
           continue;
         }
         if (++segmentCount > 2048) {
           throw const FormatException('HLS 分片数量过多');
+        }
+        final targetMs = _hlsSeekTargets[task.id];
+        if (targetMs != null && segmentPlan.isNotEmpty) {
+          final targetIndex = _hlsTargetSegmentIndex(segmentPlan, targetMs);
+          if (targetIndex > segmentIndex && prefetched.add(targetIndex)) {
+            final target = segmentPlan[targetIndex];
+            final prefetchedResource = await _downloadHlsResource(
+              target.uri.toString(),
+              playlistUri,
+              staging,
+              resources,
+              cancel,
+              totalBytes,
+              maxBytes,
+              document: candidate.sourceUrl,
+              resourceKind: 'seek-segment',
+              ownerId: task.id,
+              onProgress: (bytes) =>
+                  _reportTaskProgress(task.id, totalBytes + bytes),
+            );
+            totalBytes += prefetchedResource.bytes;
+          }
         }
         final local = await _downloadHlsResource(
           trimmed,
@@ -2273,22 +2501,24 @@ class MediaDownloadService {
           maxBytes,
           document: candidate.sourceUrl,
           resourceKind: 'segment',
+          ownerId: task.id,
           onProgress: (bytes) =>
               _reportTaskProgress(task.id, totalBytes + bytes),
         );
         totalBytes += local.bytes;
         hasSegment = true;
         output.add(local.name);
+        segmentIndex++;
+        await _writeHlsPlaylist(livePlaylist, output);
         _reportTaskProgress(task.id, totalBytes);
         current = tasks.task(task.id) ?? current;
       }
       if (!hasSegment) throw const FormatException('HLS 清单没有媒体分片');
-      final temporaryPlaylist = File('${staging.path}/index.m3u8');
-      await temporaryPlaylist.writeAsString(output.join('\n'), flush: true);
+      output.add('#EXT-X-ENDLIST');
+      await _writeHlsPlaylist(livePlaylist, output);
       final resourceState = File('${staging.path}/resources.json');
       if (await resourceState.exists()) await resourceState.delete();
       if (_stopping.contains(task.id)) throw const Cancelled();
-      await staging.rename(finalDirectory.path);
       final finalFile = File('${finalDirectory.path}/index.m3u8');
       tasks.setLocalRef(task.id, finalFile.path);
       final cachedBytes = await tasks.cachedBytes(task.id);
@@ -2330,7 +2560,43 @@ class MediaDownloadService {
       // Keep the partial HLS directory after pause/failure. The resource map
       // lets a later start skip segments already written to disk.
       _active.remove(task.id);
+      _hlsSeekTargets.remove(task.id);
     }
+  }
+
+  List<({Uri uri, int durationMs})> _hlsSegmentPlan(List<String> lines) {
+    final result = <({Uri uri, int durationMs})>[];
+    double? duration;
+    for (final raw in lines) {
+      final line = raw.trim();
+      if (line.startsWith('#EXTINF:')) {
+        duration = double.tryParse(line.substring(8).split(',').first);
+        continue;
+      }
+      if (line.isEmpty || line.startsWith('#') || duration == null) continue;
+      result.add((uri: Uri.parse(line), durationMs: (duration * 1000).round()));
+      duration = null;
+    }
+    return result;
+  }
+
+  int _hlsTargetSegmentIndex(
+    List<({Uri uri, int durationMs})> plan,
+    int targetMs,
+  ) {
+    var total = 0;
+    for (var index = 0; index < plan.length; index++) {
+      total += plan[index].durationMs;
+      if (targetMs <= total) return index;
+    }
+    return plan.length - 1;
+  }
+
+  Future<void> _writeHlsPlaylist(File destination, List<String> lines) async {
+    final temporary = File('${destination.path}.tmp');
+    await temporary.writeAsString('${lines.join('\n')}\n', flush: true);
+    if (await destination.exists()) await destination.delete();
+    await temporary.rename(destination.path);
   }
 
   Future<({Uri url, String text})> _fetchHlsText(
@@ -2414,6 +2680,7 @@ class MediaDownloadService {
     int maxBytes, {
     required Uri document,
     required String resourceKind,
+    required String ownerId,
     void Function(int bytesWritten)? onProgress,
   }) async {
     final remote = playlist.resolve(raw);
@@ -2429,6 +2696,7 @@ class MediaDownloadService {
     final key = sha256
         .convert(utf8.encode(remote.removeFragment().toString()))
         .toString();
+    await tasks.db?.addMediaResourceOwner(key, 'task:$ownerId', 'hls-resource');
     final existing = resources[key];
     if (existing != null) {
       final cached = File('${staging.path}/$existing');
@@ -2438,19 +2706,44 @@ class MediaDownloadService {
       resources.remove(key);
     }
     final name = 'resource_$key.bin';
+    final local = File('${staging.path}/$name');
+    if (await local.exists() && await local.length() > 0) {
+      resources[key] = name;
+      return (name: name, bytes: 0);
+    }
     final resumeKey = sha256
         .convert(utf8.encode(_resumeContentIdentity(remote)))
         .toString();
     final partial = File('${staging.path}/resume_$resumeKey.part');
     try {
-      await _downloadFile(
-        remote,
-        partial,
-        cancel,
-        document: document,
-        maxBytes: min(64 * 1024 * 1024, maxBytes),
-        onProgress: onProgress,
+      final coordinator = resourceCoordinator;
+      Future<void> write(File destination) => _transferScheduler.schedule<void>(
+        priority: _taskPriority(ownerId),
+        action: () => _downloadFile(
+          remote,
+          destination,
+          cancel,
+          document: document,
+          maxBytes: min(64 * 1024 * 1024, maxBytes),
+          onProgress: onProgress,
+        ),
       );
+      if (coordinator == null) {
+        await write(partial);
+      } else {
+        final shared = await coordinator.ensure(key, (sharedPartial) async {
+          await write(sharedPartial);
+        });
+        final size = await shared.length();
+        if (downloaded + size > maxBytes) {
+          throw StateError('媒体响应超过 $maxBytes 字节');
+        }
+        if (await local.exists()) await local.delete();
+        await Link(local.path).create(shared.path);
+        resources[key] = name;
+        await _writeHlsResources(staging, resources);
+        return (name: name, bytes: size);
+      }
     } on PlatformException catch (error) {
       throw PlatformException(
         code: error.code,
@@ -2467,7 +2760,7 @@ class MediaDownloadService {
     if (downloaded + size > maxBytes) {
       throw StateError('媒体响应超过 $maxBytes 字节');
     }
-    await partial.rename('${staging.path}/$name');
+    await partial.rename(local.path);
     await _deleteResumeState(partial);
     resources[key] = name;
     await _writeHlsResources(staging, resources);
@@ -2892,6 +3185,13 @@ class HlsInputValidator {
     final rootPath = root.existsSync()
         ? root.resolveSymbolicLinksSync()
         : root.path;
+    final sharedRoot = Directory(
+      p.join(root.parent.parent.path, 'shared_resources'),
+    );
+    final allowedRoots = <String>{rootPath};
+    if (sharedRoot.existsSync()) {
+      allowedRoots.add(sharedRoot.resolveSymbolicLinksSync());
+    }
     final all = <Uri>[
       playlist,
       ...segments,
@@ -2910,8 +3210,12 @@ class HlsInputValidator {
       final canonical = file.existsSync()
           ? file.resolveSymbolicLinksSync()
           : file.path;
-      if (!canonical.startsWith('$rootPath${Platform.pathSeparator}') &&
-          canonical != rootPath) {
+      final insideAllowedRoot = allowedRoots.any(
+        (allowed) =>
+            canonical.startsWith('$allowed${Platform.pathSeparator}') ||
+            canonical == allowed,
+      );
+      if (!insideAllowedRoot) {
         throw const FormatException('HLS 输入包含远程地址或越界路径');
       }
       if (!file.existsSync() || file.lengthSync() <= 0) {

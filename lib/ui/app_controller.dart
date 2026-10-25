@@ -40,7 +40,9 @@ import '../media/dlna_service.dart';
 import '../media/native_download_runtime.dart';
 import '../media/native_export_runtime.dart';
 import '../media/media_network.dart';
+import '../media/media_resource_coordinator.dart';
 import '../media/native_media_runtime.dart';
+import '../media/native_media_auth_refresh.dart';
 import '../media/watch_save_store.dart';
 import 'glass_quality_cache.dart';
 import 'ui_util.dart';
@@ -103,6 +105,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     nativeDownloads = Platform.isAndroid ? NativeDownloadRuntime() : null;
     nativeExports = Platform.isAndroid ? NativeExportRuntime() : null;
     nativeMedia = NativeMediaRuntime();
+    nativeMediaAuthRefresh = Platform.isAndroid
+        ? NativeMediaAuthRefresh()
+        : null;
     _diagnosticPlaybackEvents = nativeMedia.states.listen((session) {
       deviceDiagnostics.recordObservation(
         id: 'media.playback.session',
@@ -121,6 +126,14 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       ),
       authorize: _authorizeMediaDownload,
       tlsTransfer: Platform.isAndroid ? MediaNetwork().transferFile : null,
+      resourceCoordinator: MediaResourceCoordinator(
+        rootProvider: () async {
+          final root = await mediaTasks.cacheRootDirectory();
+          final shared = Directory('${root.path}/shared_resources');
+          await shared.create(recursive: true);
+          return shared;
+        },
+      ),
     );
     mediaExports = Mp4ExportService(tasks: mediaTasks, native: nativeExports);
     mediaLibrary = MediaLibrary(
@@ -381,6 +394,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   late final DlnaCastController mediaCast;
   late final NativePlaybackController mediaPlayback;
   late final NativeMediaRuntime nativeMedia;
+  late final NativeMediaAuthRefresh? nativeMediaAuthRefresh;
   late final NativeDownloadRuntime? nativeDownloads;
   late final NativeExportRuntime? nativeExports;
   late final ProbeCoordinator probes;
@@ -1247,6 +1261,23 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     return cached;
   }
 
+  Future<File?> mediaPartialPlaybackFile(MediaTask task) =>
+      mediaTasks.partialPlaybackFile(task.id);
+
+  Future<MediaAuthorizationRefreshResult> refreshMediaAuthorization(
+    MediaTask task,
+    MediaCandidate candidate,
+  ) async {
+    final bridge = nativeMediaAuthRefresh;
+    if (bridge == null) {
+      return const MediaAuthorizationRefreshResult(
+        state: 'waiting_execution',
+        reason: '当前平台不支持后台授权刷新',
+      );
+    }
+    return bridge.refresh(task, candidate);
+  }
+
   Future<void> restoreSavedSessions({bool force = false}) async {
     if (_restoredSessions && !force) return;
     _restoredSessions = true;
@@ -1346,7 +1377,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         host == null ||
         host.disposed ||
         evidence == null ||
-        !evidence.autoSaveEligible ||
+        !evidence.watchSaveEligible ||
         !browserTabs.contains(tab)) {
       return;
     }

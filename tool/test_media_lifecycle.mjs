@@ -159,11 +159,26 @@ assert.equal(firstEvidence.document, 'frame-main');
 assert.equal(firstEvidence.epoch, 0);
 assert.equal(firstEvidence.sourceUrl, nodes[0].currentSrc);
 assert.equal(firstEvidence.confirmed, true);
+assert.match(firstEvidence.mediaElementId, /^media-\d+$/);
+assert.equal(firstEvidence.snapshot, 0);
+assert.ok(firstEvidence.eventSequence > 0);
+assert.equal(firstEvidence.positionMs, 0);
+assert.equal(firstEvidence.durationMs, 120000);
+assert.equal(firstEvidence.sourceRevision, `${firstEvidence.snapshot}:${firstEvidence.sourceKey}`);
+const firstEvidenceSequence = firstEvidence.eventSequence;
 assert.ok(outbound.every(value => JSON.stringify(value).length <= 4096));
 const mimeValues = outbound.filter(value => value.kind === 'candidates')
   .flatMap(value => value.candidates).map(value => value.mime);
 assert.ok(mimeValues.includes('application/vnd.apple.mpegurl'));
 assert.ok(mimeValues.includes('video/mp4'));
+await native('pause');
+await waitForReport();
+const pausedEvidence = outbound.filter(value => value.kind === 'state').at(-1).evidence;
+assert.equal(pausedEvidence.state, 'paused');
+assert.ok(pausedEvidence.eventSequence > firstEvidenceSequence);
+assert.equal(pausedEvidence.mediaElementId, firstEvidence.mediaElementId);
+await native('resume');
+await waitForReport();
 console.log('Direct frame handshake and split state/candidate telemetry PASS.');
 
 dataElements.length = 0;

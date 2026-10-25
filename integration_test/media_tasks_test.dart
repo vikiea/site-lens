@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
 
@@ -25,6 +26,37 @@ import 'video_fixture.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets('background media authorization refresh stays same-origin', (
+    tester,
+  ) async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    try {
+      server.listen((request) async {
+        request.response.headers.contentType = ContentType.html;
+        request.response.write(
+          '<!doctype html><title>media page</title>'
+          '<script>document.cookie="site_lens_auth=ok; path=/";</script>',
+        );
+        await request.response.close();
+      });
+      final page = Uri.parse('http://127.0.0.1:${server.port}/watch');
+      final media = Uri.parse('http://127.0.0.1:${server.port}/media.m3u8');
+      final raw = await const MethodChannel('site_lens/media_auth')
+          .invokeMapMethod<String, Object?>('refresh', {
+            'taskId': 'auth-refresh-fixture',
+            'pageUrl': page.toString(),
+            'mediaUrl': media.toString(),
+          });
+      expect(raw?['state'], 'refreshed');
+      expect((raw?['cookieDigest'] as String?)?.length, 64);
+      debugPrint(
+        'MEDIA_AUTH_REFRESH_PASS sameOrigin=true cookieBytes=notReturned digest=true',
+      );
+    } finally {
+      await server.close(force: true);
+    }
+  });
 
   testWidgets('DLNA relay resolves a bindable local address through Android', (
     tester,
@@ -327,6 +359,219 @@ void main() {
         final thumbnail = File(thumbnailPath);
         if (await thumbnail.exists()) await thumbnail.delete();
       }
+    }
+  });
+
+  testWidgets('native MediaSession survives a Dart playback bridge rebind', (
+    tester,
+  ) async {
+    final support = await getApplicationSupportDirectory();
+    final root = await Directory(
+      '${support.path}/media-session-rebind-${DateTime.now().microsecondsSinceEpoch}',
+    ).create();
+    final tasks = MediaTaskStore(directoryProvider: () async => root);
+    final first = NativeMediaRuntime();
+    final candidate = MediaCandidate(
+      id: 'media-session-rebind',
+      hostId: 1,
+      generation: 1,
+      sourceUrl: Uri.parse('https://example.org/watch/rebind'),
+      mediaUrl: Uri.parse('https://example.org/rebind.mp4'),
+      title: 'MediaSession rebind',
+      mime: 'video/mp4',
+      source: MediaCandidateSource.dom,
+    );
+    final task = tasks.create(candidate);
+    try {
+      final file = await File('${root.path}/rebind.mp4')
+          .writeAsBytes(base64Decode(videoFixtureBase64));
+      final opened = await first.openLocal(task, file);
+      await first.pause(sessionId: opened.id);
+      final pausedPosition = (await first.state(sessionId: opened.id))
+          .positionMs;
+      await first.dispose();
+
+      final rebound = NativeMediaRuntime();
+      final restored = await rebound.state();
+      expect(restored.id, opened.id);
+      expect(restored.state, NativePlaybackState.paused);
+      expect(restored.positionMs, greaterThanOrEqualTo(pausedPosition));
+      await rebound.close(sessionId: restored.id);
+      await rebound.dispose();
+      expect(await file.exists(), isTrue);
+      expect(await file.length(), greaterThan(0));
+      debugPrint(
+        'MEDIA_SESSION_REBIND_PASS sameSession=true paused=true leaseReleased=true',
+      );
+    } finally {
+      await first.dispose();
+      if (await root.exists()) await root.delete(recursive: true);
+    }
+  });
+
+  testWidgets('HLS starts native playback before the download completes', (
+    tester,
+  ) async {
+    final support = await getApplicationSupportDirectory();
+    final root = await Directory(
+      '${support.path}/partial-hls-${DateTime.now().microsecondsSinceEpoch}',
+    ).create();
+    final fixtures = await Directory('${root.path}/fixtures').create();
+    await unpackMedia3Fixtures(fixtures);
+    final firstSegment = Completer<void>();
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      final file = File('${fixtures.path}${request.uri.path}');
+      if (!await file.exists()) {
+        request.response.statusCode = HttpStatus.notFound;
+        await request.response.close();
+        return;
+      }
+      if (request.uri.path.endsWith('/seg00.ts')) {
+        firstSegment.complete();
+      }
+      if (request.uri.path.endsWith('/seg01.ts')) {
+        await Future<void>.delayed(const Duration(seconds: 2));
+      }
+      request.response.headers.contentType = request.uri.path.endsWith('.m3u8')
+          ? ContentType('application', 'vnd.apple.mpegurl')
+          : ContentType('video', 'mp2t');
+      request.response.add(await file.readAsBytes());
+      await request.response.close();
+    });
+    final url = Uri.parse('http://127.0.0.1:${server.port}/h264_ts/index.m3u8');
+    final candidate = MediaCandidate(
+      id: 'partial-hls-playback',
+      hostId: 1,
+      generation: 1,
+      sourceUrl: url,
+      mediaUrl: url,
+      title: 'Partial HLS playback',
+      mime: 'application/vnd.apple.mpegurl',
+      source: MediaCandidateSource.dom,
+    );
+    final tasks = MediaTaskStore(directoryProvider: () async => root);
+    final task = tasks.create(candidate);
+    final service = MediaDownloadService(
+      tasks: tasks,
+      http: ControlledHttp(allowLocal: true),
+    );
+    final download = service.start(task, candidate);
+    final player = NativeMediaRuntime();
+    try {
+      await firstSegment.future.timeout(const Duration(seconds: 5));
+      File? partial;
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (partial == null && DateTime.now().isBefore(deadline)) {
+        partial = await tasks.partialPlaybackFile(task.id);
+        if (partial == null) {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+      }
+      expect(partial, isNotNull);
+      final session = await player.openLocal(task, partial!);
+      final targetReady = await tasks.waitForHlsPosition(
+        task.id,
+        2500,
+        timeout: const Duration(seconds: 6),
+      );
+      expect(targetReady, isTrue);
+      await player.seek(
+        const Duration(milliseconds: 2500),
+        sessionId: session.id,
+      );
+      var progressed = false;
+      final playbackDeadline = DateTime.now().add(const Duration(seconds: 8));
+      while (DateTime.now().isBefore(playbackDeadline)) {
+        final state = await player.state(sessionId: session.id);
+        progressed =
+            progressed ||
+            state.state == NativePlaybackState.playing ||
+            state.positionMs > 0;
+        if (progressed) break;
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      expect(progressed, isTrue);
+      await download;
+      expect(tasks.task(task.id)?.state, MediaTaskState.playable);
+      await player.close(sessionId: session.id);
+      debugPrint(
+        'MEDIA_PARTIAL_PLAYBACK_PASS firstSegmentBeforeComplete=true '
+        'nativeStarted=true uncachedSeekWaited=true',
+      );
+    } finally {
+      await player.dispose();
+      await server.close(force: true);
+      if (await root.exists()) await root.delete(recursive: true);
+    }
+  });
+
+  testWidgets('HLS seek priority requests the target segment before backlog', (
+    tester,
+  ) async {
+    final support = await getApplicationSupportDirectory();
+    final root = await Directory(
+      '${support.path}/hls-seek-priority-${DateTime.now().microsecondsSinceEpoch}',
+    ).create();
+    final fixtures = await Directory('${root.path}/fixtures').create();
+    await unpackMedia3Fixtures(fixtures);
+    final requests = <String>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      final path = request.uri.path;
+      requests.add(path);
+      if (path.endsWith('/index.m3u8')) {
+        request.response.headers.contentType = ContentType(
+          'application',
+          'vnd.apple.mpegurl',
+        );
+        request.response.write(
+          '#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:2\n'
+          '#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:2,\nseg00.ts\n'
+          '#EXTINF:2,\nseg01.ts\n#EXTINF:2,\nseg02.ts\n#EXT-X-ENDLIST\n',
+        );
+        await request.response.close();
+        return;
+      }
+      final fileName = path.endsWith('/seg02.ts')
+          ? 'seg01.ts'
+          : path.split('/').last;
+      final file = File('${fixtures.path}/h264_ts/$fileName');
+      request.response.headers.contentType = ContentType('video', 'mp2t');
+      request.response.add(await file.readAsBytes());
+      await request.response.close();
+    });
+    final url = Uri.parse('http://127.0.0.1:${server.port}/h264_ts/index.m3u8');
+    final candidate = MediaCandidate(
+      id: 'hls-seek-priority',
+      hostId: 1,
+      generation: 1,
+      sourceUrl: url,
+      mediaUrl: url,
+      title: 'HLS seek priority',
+      mime: 'application/vnd.apple.mpegurl',
+      source: MediaCandidateSource.dom,
+    );
+    final tasks = MediaTaskStore(directoryProvider: () async => root);
+    final task = tasks.create(candidate);
+    final service = MediaDownloadService(
+      tasks: tasks,
+      http: ControlledHttp(allowLocal: true),
+    );
+    service.prioritizeHlsSeek(task.id, 4500);
+    try {
+      await service.start(task, candidate);
+      final target = requests.indexWhere((path) => path.endsWith('/seg02.ts'));
+      final backlog = requests.indexWhere((path) => path.endsWith('/seg01.ts'));
+      expect(target, greaterThanOrEqualTo(0));
+      expect(backlog, greaterThanOrEqualTo(0));
+      expect(target, lessThan(backlog));
+      debugPrint(
+        'MEDIA_HLS_SEEK_PRIORITY_PASS targetBeforeBacklog=true requests=${requests.join(',')}',
+      );
+    } finally {
+      await server.close(force: true);
+      if (await root.exists()) await root.delete(recursive: true);
     }
   });
 
@@ -709,4 +954,95 @@ void main() {
       await db.close();
     }
   });
+
+  testWidgets(
+    'watch save persists playback progress and pause state without a media task',
+    (tester) async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final app = AppController(db);
+      try {
+        await app.load();
+        final profileId = await db.createProfile('alpha1-watch-save');
+        final playing = PlaybackEvidence(
+          hostId: 7,
+          generation: 4,
+          frame: 'frame-watch',
+          document: 'document-watch',
+          epoch: 2,
+          pageUrl: Uri.parse('https://example.test/watch/3'),
+          sourceUrl: Uri.parse('https://cdn.example/series/ep3.m3u8?token=1'),
+          sourceKey: 'https://cdn.example/series/ep3.m3u8',
+          seriesKey: 'series-watch',
+          episodeNumber: 3,
+          title: 'Alpha1 示例剧 - 第3集',
+          state: PlaybackEvidenceState.playing,
+          confirmed: true,
+          reason: null,
+          observedAt: DateTime(2026, 10, 25, 1, 2, 3),
+          mediaElementId: 'media-1',
+          snapshot: 4,
+          eventSequence: 10,
+          positionMs: 30000,
+          durationMs: 120000,
+          sourceRevision: '4:https://cdn.example/series/ep3.m3u8',
+        );
+        final created = await app.watchSaves.observe(
+          playing,
+          profileId: profileId,
+        );
+        expect(created, isNotNull);
+        expect(await db.mediaTasks(), isEmpty);
+
+        final paused = PlaybackEvidence(
+          hostId: playing.hostId,
+          generation: playing.generation,
+          frame: playing.frame,
+          document: playing.document,
+          epoch: playing.epoch,
+          pageUrl: playing.pageUrl,
+          sourceUrl: playing.sourceUrl,
+          sourceKey: playing.sourceKey,
+          seriesKey: playing.seriesKey,
+          episodeNumber: playing.episodeNumber,
+          title: playing.title,
+          state: PlaybackEvidenceState.paused,
+          confirmed: true,
+          reason: null,
+          observedAt: DateTime(2026, 10, 25, 1, 2, 4),
+          mediaElementId: playing.mediaElementId,
+          snapshot: playing.snapshot,
+          eventSequence: 11,
+          positionMs: 45000,
+          durationMs: playing.durationMs,
+          sourceRevision: playing.sourceRevision,
+        );
+        await app.watchSaves.observe(paused, profileId: profileId);
+        final saved = (await db.watchSaves()).single;
+        expect(saved.state, WatchSaveState.paused);
+        expect(saved.positionMs, 45000);
+        expect(saved.durationMs, 120000);
+        expect(saved.profileId, profileId);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSiteLensTheme(ThemePresetId.mistPine, Brightness.light),
+            home: MediaManagementScreen(app: app),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          find.byTooltip('第 3 集 · 00:45 / 02:00 · 已暂停 · 10-25 01:02'),
+          findsOneWidget,
+        );
+        debugPrint(
+          'WATCH_SAVE_ALPHA1_PASS state=paused position=45000 duration=120000 '
+          'mediaTasks=0',
+        );
+      } finally {
+        await tester.pumpWidget(const SizedBox());
+        await app.shutdown();
+        await db.close();
+      }
+    },
+  );
 }

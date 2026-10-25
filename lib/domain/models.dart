@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart';
+
 enum ProbeStage { http, homepage }
 
 enum DetectionOutcome { completed, cancelled, failed }
@@ -630,6 +632,12 @@ class PlaybackEvidence {
     required this.confirmed,
     required this.reason,
     required this.observedAt,
+    this.mediaElementId = '',
+    this.snapshot = 0,
+    this.eventSequence = 0,
+    this.positionMs = 0,
+    this.durationMs,
+    this.sourceRevision = '',
   });
 
   final int hostId;
@@ -647,6 +655,12 @@ class PlaybackEvidence {
   final bool confirmed;
   final String? reason;
   final DateTime observedAt;
+  final String mediaElementId;
+  final int snapshot;
+  final int eventSequence;
+  final int positionMs;
+  final int? durationMs;
+  final String sourceRevision;
 
   bool get isPlaying => state == PlaybackEvidenceState.playing;
   bool get hasStableIdentity => confirmed && sourceKey.isNotEmpty;
@@ -657,6 +671,14 @@ class PlaybackEvidence {
   bool get autoSaveEligible =>
       hasStableIdentity &&
       isPlaying &&
+      seriesKey != null &&
+      episodeNumber != null;
+
+  /// A non-idle observation may update an existing watch owner. Creation is
+  /// intentionally stricter and remains limited to [autoSaveEligible].
+  bool get watchSaveEligible =>
+      hasStableIdentity &&
+      state != PlaybackEvidenceState.idle &&
       seriesKey != null &&
       episodeNumber != null;
 
@@ -695,6 +717,9 @@ class PlaybackEvidence {
     }
     final rawSeries = (raw['seriesKey'] as String? ?? '').trim();
     final rawTitle = (raw['title'] as String? ?? '').trim();
+    final rawElement = (raw['mediaElementId'] as String? ?? '').trim();
+    final position = (raw['positionMs'] as num?)?.toInt() ?? 0;
+    final duration = (raw['durationMs'] as num?)?.toInt();
     final episode = (raw['episodeNumber'] as num?)?.toInt();
     final parsedEpisode = episode != null && episode > 0 && episode < 100000
         ? episode
@@ -723,6 +748,12 @@ class PlaybackEvidence {
       confirmed: false,
       reason: null,
       observedAt: observedAt ?? DateTime.now().toUtc(),
+      mediaElementId: rawElement,
+      snapshot: (raw['snapshot'] as num?)?.toInt() ?? 0,
+      eventSequence: (raw['eventSequence'] as num?)?.toInt() ?? 0,
+      positionMs: position < 0 ? 0 : position,
+      durationMs: duration != null && duration >= 0 ? duration : null,
+      sourceRevision: (raw['sourceRevision'] as String? ?? '').trim(),
     );
   }
 
@@ -745,6 +776,12 @@ class PlaybackEvidence {
     confirmed: confirmed,
     reason: reason,
     observedAt: observedAt,
+    mediaElementId: mediaElementId,
+    snapshot: snapshot,
+    eventSequence: eventSequence,
+    positionMs: positionMs,
+    durationMs: durationMs,
+    sourceRevision: sourceRevision,
   );
 }
 
@@ -768,6 +805,9 @@ class WatchSave {
     required this.createdAt,
     required this.updatedAt,
     this.profileId,
+    this.positionMs = 0,
+    this.durationMs,
+    this.evidenceRevision = '',
   });
 
   final String ownerId;
@@ -783,6 +823,9 @@ class WatchSave {
   final DateTime createdAt;
   final DateTime updatedAt;
   final int? profileId;
+  final int positionMs;
+  final int? durationMs;
+  final String evidenceRevision;
 
   static String ownerIdFor(PlaybackEvidence evidence) =>
       'watch:${base64Url.encode(utf8.encode(evidence.identityKey))}';
@@ -792,7 +835,7 @@ class WatchSave {
     int? profileId,
     DateTime? now,
   }) {
-    if (!evidence.autoSaveEligible || evidence.sourceUrl == null) {
+    if (!evidence.watchSaveEligible || evidence.sourceUrl == null) {
       throw StateError('播放证据不满足自动保存条件');
     }
     final timestamp = now ?? evidence.observedAt;
@@ -815,6 +858,9 @@ class WatchSave {
       createdAt: timestamp,
       updatedAt: timestamp,
       profileId: profileId,
+      positionMs: evidence.positionMs,
+      durationMs: evidence.durationMs,
+      evidenceRevision: _evidenceRevision(evidence),
     );
   }
 
@@ -826,6 +872,9 @@ class WatchSave {
     WatchSaveState? state,
     DateTime? updatedAt,
     Object? profileId = _unset,
+    int? positionMs,
+    Object? durationMs = _unset,
+    String? evidenceRevision,
   }) => WatchSave(
     ownerId: ownerId,
     sourceKey: sourceKey,
@@ -842,10 +891,26 @@ class WatchSave {
     profileId: identical(profileId, _unset)
         ? this.profileId
         : profileId as int?,
+    positionMs: positionMs ?? this.positionMs,
+    durationMs: identical(durationMs, _unset)
+        ? this.durationMs
+        : durationMs as int?,
+    evidenceRevision: evidenceRevision ?? this.evidenceRevision,
   );
 
   static const _unset = Object();
 }
+
+String _evidenceRevision(PlaybackEvidence evidence) => [
+  _revisionPart(evidence.generation),
+  _revisionPart(evidence.epoch),
+  _revisionPart(evidence.snapshot),
+  _revisionPart(evidence.eventSequence),
+  evidence.sourceRevision,
+].join(':');
+
+String _revisionPart(int value) =>
+    value.clamp(0, 9999999999).toString().padLeft(10, '0');
 
 /// Infers a transport MIME from a media URL when a page did not expose a
 /// `type` attribute.  A URL is only metadata here; the native player still
@@ -1060,6 +1125,18 @@ class MediaCandidate {
   }
 }
 
+/// Stable content/representation identity shared across observations of one
+/// stream. Host and document generations remain authorization context and are
+/// deliberately excluded so a later page observation can join the same
+/// resource without reusing the signed URL itself.
+String mediaResourceKeyForCandidate(MediaCandidate candidate) {
+  final input = [
+    candidate.effectiveMime,
+    mediaCandidateGroupKey(candidate.mediaUrl),
+  ].join('|');
+  return sha256.convert(utf8.encode(input)).toString();
+}
+
 /// Picks one human-readable directory for a user-triggered batch. Generic
 /// active-player labels must not win over explicit episode titles; when every
 /// candidate is generic, the caller can use a neutral batch fallback.
@@ -1144,6 +1221,7 @@ class MediaTask {
     required this.generation,
     required this.sourceUrl,
     required this.cacheKey,
+    this.resourceKey = '',
     required this.state,
     required this.updatedAt,
     this.displayTitle = '',
@@ -1162,6 +1240,7 @@ class MediaTask {
   final int generation;
   final Uri sourceUrl;
   final String cacheKey;
+  final String resourceKey;
   final MediaTaskState state;
   final DateTime updatedAt;
   final String displayTitle;
@@ -1218,6 +1297,7 @@ class MediaTask {
     String? candidateId,
     MediaTaskState? state,
     DateTime? updatedAt,
+    String? resourceKey,
     String? displayTitle,
     Object? batchDirectory = _unset,
     Object? episodeLabel = _unset,
@@ -1233,6 +1313,7 @@ class MediaTask {
     generation: generation,
     sourceUrl: sourceUrl,
     cacheKey: cacheKey,
+    resourceKey: resourceKey ?? this.resourceKey,
     state: state ?? this.state,
     updatedAt: updatedAt ?? DateTime.now().toUtc(),
     displayTitle: displayTitle ?? this.displayTitle,
@@ -1264,6 +1345,7 @@ class MediaTask {
     'generation': generation,
     'sourceUrl': sourceUrl.toString(),
     'cacheKey': cacheKey,
+    'resourceKey': resourceKey,
     'state': state.name,
     'updatedAt': updatedAt.toIso8601String(),
     'displayTitle': displayTitle,
@@ -1283,6 +1365,7 @@ class MediaTask {
     generation: (json['generation'] as num).toInt(),
     sourceUrl: webUri(json['sourceUrl'] as String),
     cacheKey: json['cacheKey'] as String,
+    resourceKey: json['resourceKey'] as String? ?? '',
     state: MediaTaskState.values.byName(json['state'] as String),
     updatedAt: DateTime.parse(json['updatedAt'] as String),
     displayTitle: json['displayTitle'] as String? ?? '',

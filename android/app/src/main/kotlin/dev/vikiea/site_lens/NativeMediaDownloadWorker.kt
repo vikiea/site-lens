@@ -88,6 +88,24 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
                     File(partial.path + ".resume.tmp").delete()
                     success(finalFile)
                 } catch (error: MediaAuthorizationException) {
+                    if (runAttemptCount == 0) {
+                        val refreshed = runCatching {
+                            NativeMediaAuthRefreshService.refreshBlocking(
+                                applicationContext,
+                                record.taskId,
+                                record.sourceUrl.ifBlank { record.url },
+                                record.url,
+                                record.resourceKey,
+                            )
+                        }.getOrDefault(mapOf("state" to "waiting_execution"))
+                        when (refreshed["state"] as? String) {
+                            "refreshed" -> return@withFileLock Result.retry()
+                            "waiting_execution" -> return@withFileLock failure(
+                                "waiting_execution",
+                                refreshed["reason"]?.toString() ?: "等待系统允许后台授权刷新",
+                            )
+                        }
+                    }
                     failure("reauthorize", "下载地址需要重新授权")
                 } catch (error: InterruptedIOException) {
                     if (isObsolete()) Result.failure() else Result.retry()

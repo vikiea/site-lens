@@ -93,7 +93,11 @@ class NativeMediaRuntime {
     return _decode(raw ?? const <String, Object?>{});
   }
 
-  Future<NativePlaybackSession> openLocal(MediaTask task, File file) async {
+  Future<NativePlaybackSession> openLocal(
+    MediaTask task,
+    File file, {
+    bool autoPlay = true,
+  }) async {
     if (!await file.exists() || await file.length() == 0) {
       throw StateError('本地缓存不存在');
     }
@@ -104,8 +108,35 @@ class NativeMediaRuntime {
       'path': file.path,
       'mime': inferMediaMime(file.uri),
       'title': task.displayName,
+      'autoPlay': autoPlay,
     });
     return _decode(raw ?? const <String, Object?>{});
+  }
+
+  /// Reopens a persisted native session from an application-local media file.
+  /// The call never starts playback by itself; [play] must be explicit.
+  Future<NativePlaybackSession> restoreLocal(
+    MediaTask task,
+    File file, {
+    bool play = false,
+  }) async {
+    final saved = _active;
+    if (saved == null ||
+        saved.state != NativePlaybackState.restorable ||
+        saved.taskId != task.id) {
+      throw StateError('没有可恢复的原生媒体会话');
+    }
+    var next = await openLocal(task, file, autoPlay: false);
+    if (saved.positionMs > 0) {
+      next = await seek(
+        Duration(milliseconds: saved.positionMs),
+        sessionId: next.id,
+      );
+    }
+    if (saved.speed != 1) {
+      next = await setSpeed(saved.speed, sessionId: next.id);
+    }
+    return play ? this.play(sessionId: next.id) : next;
   }
 
   /// SAF files are read through their granted URI, without a second MP4 copy.
@@ -187,6 +218,8 @@ class NativeMediaRuntime {
     final value = NativePlaybackSession(
       id: raw['sessionId'] as String? ?? '',
       candidateId: raw['candidateId'] as String? ?? '',
+      taskId: raw['taskId'] as String? ?? '',
+      userPaused: raw['userPaused'] as bool? ?? false,
       textureId: (raw['textureId'] as num?)?.toInt(),
       state: NativePlaybackState.values.firstWhere(
         (state) => state.name == raw['state'],

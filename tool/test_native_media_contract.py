@@ -13,6 +13,8 @@ LIFECYCLE = (ROOT / "web_assets/media_lifecycle.js").read_text()
 TRANSFER = (ANDROID / "ResumableMediaTransfer.kt").read_text()
 DOWNLOAD_RUNTIME = (ANDROID / "NativeDownloadRuntime.kt").read_text()
 NATIVE_MEDIA = (ANDROID / "NativeMediaRuntime.kt").read_text()
+NATIVE_SESSION = (ANDROID / "NativeMediaSessionService.kt").read_text()
+AUTH_REFRESH = (ANDROID / "NativeMediaAuthRefreshService.kt").read_text()
 NATIVE_EXPORT = (ANDROID / "NativeExportRuntime.kt").read_text()
 NATIVE_LEASES = (ANDROID / "NativeMediaFileLeases.kt").read_text()
 
@@ -23,12 +25,83 @@ class NativeMediaContractTests(unittest.TestCase):
         for token in ('acquireRead', 'acquireMutation', 'overlaps', 'taskIds', 'documents'):
             self.assertIn(token, NATIVE_LEASES)
         local = NATIVE_MEDIA.split('private fun openLocal(', 1)[1].split('private fun start(', 1)[0]
-        self.assertIn('NativeMediaFileLeases.registry.acquireRead', local)
-        self.assertLess(local.index('registry.acquireRead'), local.index('openFileDescriptor'))
-        self.assertIn('Scope.file(if (hls) file.parentFile!! else file)', local)
-        self.assertIn('if (fileLease === lease) stop() else lease.close()', local)
+        self.assertIn('openInService(call, result, taskId', local)
+        self.assertLess(local.index('openFileDescriptor'), local.index('openInService'))
+        self.assertIn('Uri.fromFile(file).toString()', local)
+        self.assertIn('MediaFileLeaseRegistry.Scope.file(File(uri.path!!).parentFile!!)', NATIVE_SESSION)
+        self.assertIn('NativeMediaFileLeases.registry.acquireRead(leaseScope)', NATIVE_SESSION)
+        self.assertLess(NATIVE_SESSION.index('acquireRead(leaseScope)'), NATIVE_SESSION.index('player.setMediaItem'))
         stop = NATIVE_MEDIA.split('private fun stop()', 1)[1].split('private fun attachSurface(', 1)[0]
         self.assertLess(stop.index('media.release()'), stop.index('fileLease?.close()'))
+
+    def test_native_media_session_service_owns_background_player_and_promotes_foreground(self):
+        self.assertIn('class NativeMediaSessionService : MediaSessionService()', NATIVE_SESSION)
+        for token in (
+            'MediaSession.Builder(this, player)',
+            'override fun onGetSession',
+            'startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)',
+            'setHandleAudioBecomingNoisy(true)',
+            'private var userPaused = false',
+            'userPaused -> "paused"',
+            'fileLease?.close()',
+            '"backend" to "media_session"',
+        ):
+            self.assertIn(token, NATIVE_SESSION)
+        self.assertIn('NativeMediaSessionService.detachSurface(context)', NATIVE_MEDIA)
+        self.assertIn('serviceSessionId = null', NATIVE_MEDIA)
+
+    def test_native_media_session_persists_recoverable_state_without_autoplay(self):
+        for token in (
+            'native_media_session_state',
+            'persistCurrentState()',
+            'readRestorable()',
+            '"restorable" to (sessionId == null && restorable != null)',
+            'if (restorable != null) state = "restorable"',
+            'clearRestorable()',
+            'POSITION_PERSISTENCE_MS = 2_000L',
+            'startPositionPersistence()',
+            'stopPositionPersistence()',
+            'positionHandler.postDelayed(this, POSITION_PERSISTENCE_MS)',
+            '"userPaused" to if (sessionId != null) userPaused else restorable?.userPaused ?: true',
+            'val autoPlay: Boolean = true',
+        ):
+            self.assertIn(token, NATIVE_SESSION)
+        self.assertIn('fun hasRestorableState(context: Context)', NATIVE_SESSION)
+        self.assertIn('raw["restorable"] == true', NATIVE_MEDIA)
+        on_create = NATIVE_SESSION.split('override fun onCreate()', 1)[1].split('override fun onGetSession', 1)[0]
+        self.assertNotIn('player.setMediaItem', on_create)
+        self.assertNotIn('player.prepare()', on_create)
+
+    def test_partial_hls_uses_bounded_growing_file_reads(self):
+        source = (ANDROID / "GrowingFileDataSource.kt").read_text()
+        for token in (
+            'class GrowingFileDataSource',
+            'awaitCommitted(file, dataSpec.position)',
+            'DEFAULT_WAIT_TIMEOUT_MS = 15_000L',
+            'Thread.sleep(POLL_INTERVAL_MS)',
+            'file.length() > position',
+            'GrowingFileDataSource.Factory()',
+        ):
+            self.assertTrue(token in source or token in NATIVE_SESSION, token)
+
+    def test_background_authorization_refresh_is_same_origin_and_fail_closed(self):
+        self.assertIn('class NativeMediaAuthRefreshService : Service()', AUTH_REFRESH)
+        for token in (
+            'view.settings.javaScriptEnabled = true',
+            'override fun shouldOverrideUrlLoading',
+            'origin(next) != pageOrigin',
+            'onCreateWindow',
+            'setSupportMultipleWindows(false)',
+            '"waiting_execution"',
+            '"reauthorize"',
+            'CookieManager.getInstance().getCookie',
+            '"cookieDigest" to digest',
+            'startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)',
+        ):
+            self.assertIn(token, AUTH_REFRESH)
+        self.assertNotIn('evaluateJavascript', AUTH_REFRESH)
+        self.assertNotIn('addJavascriptInterface', AUTH_REFRESH)
+        self.assertIn('NativeMediaAuthRefreshService.refreshBlocking', (ANDROID / 'NativeMediaDownloadWorker.kt').read_text())
 
     def test_native_mutations_take_file_leases_before_cancellation_or_delete(self):
         download = (ANDROID / "NativeDownloadRuntime.kt").read_text()

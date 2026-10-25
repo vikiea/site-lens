@@ -410,9 +410,13 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   Future<void> _seekBy(int seconds) async {
     final duration = _session.durationMs;
     final target = _session.positionMs + seconds * 1000;
-    final clamped = duration > 0
+    final partial = _isPartialTask;
+    final clamped = partial
+        ? target.clamp(0, 1 << 62)
+        : duration > 0
         ? target.clamp(0, duration)
         : target.clamp(0, 1 << 62);
+    if (!await _waitForPartialSeek(clamped)) return;
     await _command(
       () => widget.app.nativeMedia.seek(
         Duration(milliseconds: clamped),
@@ -422,13 +426,36 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   }
 
   Future<void> _seekTo(double value) async {
-    final target = value.round().clamp(0, _session.durationMs);
+    final target = _isPartialTask
+        ? value.round().clamp(0, 1 << 62)
+        : value.round().clamp(0, _session.durationMs);
+    if (!await _waitForPartialSeek(target)) return;
     await _command(
       () => widget.app.nativeMedia.seek(
         Duration(milliseconds: target),
         sessionId: _session.id,
       ),
     );
+  }
+
+  bool get _isPartialTask {
+    final task = widget.task;
+    return task != null &&
+        (task.state == MediaTaskState.downloading ||
+            task.state == MediaTaskState.paused);
+  }
+
+  Future<bool> _waitForPartialSeek(int targetMs) async {
+    if (!_isPartialTask || widget.task == null) return true;
+    widget.app.mediaDownloads.prioritizeHlsSeek(widget.task!.id, targetMs);
+    final available = await widget.app.mediaTasks.waitForHlsPosition(
+      widget.task!.id,
+      targetMs,
+    );
+    if (!available) {
+      _showGestureHint('目标分片尚未缓存，已等待超时');
+    }
+    return available;
   }
 
   Future<void> _toggleOrientation() async {
@@ -958,6 +985,10 @@ Future<void> openMediaTaskPlayer(
   bool preferExported = false,
 }) async {
   app.mediaTasks.retain(task.id);
+  final prioritize =
+      task.state == MediaTaskState.downloading ||
+      task.state == MediaTaskState.paused;
+  if (prioritize) app.mediaDownloads.setTaskPriority(task.id, 100);
   try {
     final playlist = mediaPlaylistForTasks(app.mediaTasks.tasks, task);
     final playlistIndex = playlist.indexWhere((item) => item.id == task.id);
@@ -965,7 +996,10 @@ Future<void> openMediaTaskPlayer(
     final document = Uri.tryParse(artifact?.location ?? '');
     final cached = document?.scheme == 'content'
         ? null
-        : await app.mediaPlaybackFile(task, preferExported: preferExported);
+        : await app.mediaPlaybackFile(task, preferExported: preferExported) ??
+              (preferExported
+                  ? null
+                  : await app.mediaPartialPlaybackFile(task));
     if (cached != null || document?.scheme == 'content') {
       final session = document?.scheme == 'content'
           ? await app.nativeMedia.openDocument(task, document!)
@@ -991,6 +1025,7 @@ Future<void> openMediaTaskPlayer(
     }
     throw StateError('文件缺失，请在媒体任务中重新下载');
   } finally {
+    if (prioritize) app.mediaDownloads.clearTaskPriority(task.id);
     app.mediaTasks.release(task.id);
   }
 }
@@ -1811,6 +1846,81 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
     return readableMediaLocation(value);
   }
 
+  Future<void> _resumeWatchSave(WatchSave save) async {
+    await app.openUrl(
+      save.pageUrl,
+      label: save.title,
+      profileId: save.profileId,
+    );
+    if (mounted) {
+      showShortToast(context, '已打开观看页面，可继续播放第 ${save.episodeNumber} 集');
+    }
+  }
+
+  Future<void> _deleteWatchSave(WatchSave save) async {
+    await app.watchSaves.delete(save.ownerId);
+    if (mounted) showShortToast(context, '已删除观看保存');
+  }
+
+  Widget _watchSaveSection() => ListenableBuilder(
+    listenable: app.watchSaves,
+    builder: (context, _) {
+      final saves = [...app.watchSaves.saves]
+        ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      return SiteLensPanel(
+        padding: EdgeInsets.zero,
+        child: Column(
+          children: [
+            SiteLensActionRow(
+              icon: Icons.bookmark_outline,
+              title: '观看保存',
+              subtitle: saves.isEmpty
+                  ? '播放中的内容会在确认后出现在这里'
+                  : '${saves.length} 条观看记录',
+            ),
+            if (saves.isEmpty)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(18, 0, 18, 14),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('开启“自动保存网页观看记录”后，稳定识别的剧集会自动保存。'),
+                ),
+              )
+            else
+              for (final save in saves) ...[
+                const SiteLensPanelDivider(),
+                SiteLensCompactRow(
+                  leading: const Icon(Icons.play_circle_outline),
+                  title: Text(
+                    save.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    '第 ${save.episodeNumber} 集 · ${_watchSaveProgressLabel(save)} · ${_watchSaveStateLabel(save.state)} · ${_watchSaveTime(save.updatedAt)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  onTap: () => safely(context, () => _resumeWatchSave(save)),
+                  trailing: PopupMenuButton<String>(
+                    tooltip: '观看记录操作',
+                    onSelected: (value) {
+                      if (value == 'delete') {
+                        safely(context, () => _deleteWatchSave(save));
+                      }
+                    },
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(value: 'delete', child: Text('删除观看记录')),
+                    ],
+                  ),
+                ),
+              ],
+          ],
+        ),
+      );
+    },
+  );
+
   Widget _detailText(String text) => Padding(
     padding: const EdgeInsets.fromLTRB(
       SiteLensMetrics.accordionContentIndent,
@@ -1836,6 +1946,8 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
         32,
       ),
       children: [
+        _watchSaveSection(),
+        const SizedBox(height: SiteLensMetrics.sectionGap),
         SiteLensPanel(
           padding: EdgeInsets.zero,
           child: Column(
@@ -1948,6 +2060,30 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
       ],
     ),
   );
+}
+
+String _watchSaveStateLabel(WatchSaveState state) => switch (state) {
+  WatchSaveState.playing => '播放中',
+  WatchSaveState.paused => '已暂停',
+  WatchSaveState.ended => '已结束',
+  WatchSaveState.unknown => '状态未知',
+};
+
+String _watchSaveProgressLabel(WatchSave save) {
+  final duration = save.durationMs;
+  if (duration == null || duration <= 0) {
+    return formatMediaDuration(save.positionMs);
+  }
+  return '${formatMediaDuration(save.positionMs)} / ${formatMediaDuration(duration)}';
+}
+
+String _watchSaveTime(DateTime value) {
+  final local = value.toLocal();
+  final month = local.month.toString().padLeft(2, '0');
+  final day = local.day.toString().padLeft(2, '0');
+  final hour = local.hour.toString().padLeft(2, '0');
+  final minute = local.minute.toString().padLeft(2, '0');
+  return '$month-$day $hour:$minute';
 }
 
 /// Durable media task surface. The screen is deliberately independent from a
@@ -2296,6 +2432,19 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     final currentTask = widget.app.mediaTasks.task(task.id) ?? task;
     if (task.state == MediaTaskState.paused) {
       await _togglePause(task);
+    } else if (task.state == MediaTaskState.reauthorize) {
+      final refresh = await widget.app.refreshMediaAuthorization(
+        task,
+        resolved,
+      );
+      if (!refresh.refreshed) {
+        throw StateError(
+          refresh.reason ??
+              (refresh.waitingExecution ? '等待系统允许后台授权刷新' : '需要人工重新授权'),
+        );
+      }
+      final rebound = await widget.app.mediaCandidateForRetry(task);
+      await widget.app.mediaDownloads.resumeNative(task.id, rebound);
     } else if (task.errorCode == MediaErrorCode.cacheMissing) {
       await widget.app.mediaDownloads.delete(task.id, deleteTask: false);
       await widget.app.mediaDownloads.startNative(
@@ -2685,6 +2834,10 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
               const PopupMenuItem(value: 'details', child: Text('查看详情')),
               if (task.state == MediaTaskState.playable)
                 const PopupMenuItem(value: 'play', child: Text('原生播放')),
+              if (snapshot.data?.isHls == true &&
+                  (task.state == MediaTaskState.downloading ||
+                      task.state == MediaTaskState.paused))
+                const PopupMenuItem(value: 'play', child: Text('边下边播')),
               if (task.state == MediaTaskState.playable)
                 const PopupMenuItem(value: 'cast', child: Text('DLNA 投屏')),
               if (_isBatchExportable(task))
@@ -2739,7 +2892,10 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                 ? (_isBatchSelectable(task)
                       ? () => _browser.toggleItem(task.id)
                       : null)
-                : task.state == MediaTaskState.playable
+                : task.state == MediaTaskState.playable ||
+                      (snapshot.data?.isHls == true &&
+                          (task.state == MediaTaskState.downloading ||
+                              task.state == MediaTaskState.paused))
                 ? () => unawaited(_run(() => _play(task), taskId: task.id))
                 : null,
             trailing: _browser.selectionMode
@@ -2854,6 +3010,7 @@ MediaTaskState _nativeStateAsTaskState(NativePlaybackState state) =>
       NativePlaybackState.paused => MediaTaskState.paused,
       NativePlaybackState.buffering => MediaTaskState.downloading,
       NativePlaybackState.completed => MediaTaskState.completed,
+      NativePlaybackState.restorable => MediaTaskState.paused,
       NativePlaybackState.stopped => MediaTaskState.cancelled,
       NativePlaybackState.failed => MediaTaskState.failed,
     };

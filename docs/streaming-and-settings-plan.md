@@ -278,6 +278,37 @@ P0 的 `PlaybackEvidence` 已完成本地桥接和候选同 frame/document 绑�
 owner、切集后台补齐、Media3 部分缓存播放和设备生命周期证据仍未完成，不能把这组本地测试当作
 P2/P3 完成。
 
+2026-10-25 当前工作树继续完成了共享资源身份和 HLS 单写入的第一段：`MediaTask`
+新增独立 `resourceKey`，不再把 `hostId/generation` 误当作跨页面资源身份；schema 16
+增加 `media_resources` 目录表，旧任务迁移时可由候选重新补齐资源身份，同一资源的不同
+任务行只登记一条资源目录记录。HLS 分片下载已接入单进程协调器：同一资源并发请求只写
+一次共享资源，任务清单通过受控链接引用，`.part` 完成后原子发布。资源回收、授权旋转
+后的严格内容版本校验、跨进程协调和 Media3 缺片 DataSource 仍未完成，不能提前宣称
+完整共享缓存或边下边播。
+
+随后新增 schema 17 的 `media_resource_owners`：任务创建/迁移登记 owner，任务删除解绑
+owner；HLS 共享分片只有最后一个 owner 删除后才回收。当前仍是单进程协调，播放/导出/
+投屏 lease 和跨进程 GC 接入前，无法把这套回收逻辑宣称为最终资源所有权实现。
+
+2026-10-25 `0.5.0-alpha6` 执行切片完成以下可验证能力：
+
+- HLS 下载在稳定的 `${cacheKey}.hls` 目录中增量写入，已提交分片后原子更新本地清单；前台原生播放器可以在任务仍为 `downloading` 时读取已校验分片，完成时追加 `#EXT-X-ENDLIST`。完整缓存、导出和 DLNA 仍只接受完成状态。
+- 本地媒体播放迁移到独立 `MediaSessionService`：播放器、MediaSession 和文件读 lease 由服务持有，Activity/Flutter Engine 只拥有临时视频 surface；服务立即提升 `mediaPlayback` 前台类型，系统媒体控制可继续作用于同一会话。
+- Android WorkManager 下载在首次 401/403 时最多发起一次同源、无脚本注入、无跨站跳转的隐藏 WebView 授权刷新；刷新结果只返回状态和 Cookie 摘要，失败区分 `waiting_execution`、`reauthorize`，保留断点和媒体身份。
+- `emulator-5554` 已通过媒体任务集 `9/9`、HLS/MP4 Media3 实际播放/seek、导出和 owner 回收，以及隐藏授权刷新 fixture。HEVC parity fixture 在当前模拟器 codec 上仍不作为实现失败证据，需在支持 HEVC 的真机单独验收。
+
+仍未完成的边界：未缓存远端 seek 的按需缺片调度、跨进程资源协调、真实锁屏/Activity 销毁后重绑证据、不同 WebView profile 的授权绑定、真实 DLNA 接收端和 DRM/付费墙/验证码/登录绕过。它们继续由 P3–P8 单独验收。
+
+2026-10-25 alpha7 增补设备证据：模拟器通过 `MEDIA_SESSION_REBIND_PASS`，证明 Dart 播放桥重建后可查询同一原生 MediaSession、恢复暂停意图并在关闭后释放文件 lease；通过 `MEDIA_PARTIAL_PLAYBACK_PASS`，证明首个 HLS 分片已提交但全量下载未完成时，Media3 已开始播放，并能等待增量清单覆盖未缓存目标后执行 native seek。原生暂停意图已与底层 `BUFFERING` 状态分离，后续回调不会把用户暂停误报为继续缓冲。当前实现是有界等待，分片请求重排和跨任务公平调度仍是后续 P3 单元。
+
+alpha8 将上述有界 seek 等待和对应模拟器回归收录进测试包；当前不把“等待目标分片”误写成“已完成按需优先调度”。
+
+alpha9 增加共享资源持久写入租约：独立协调器通过原子 lock 目录和心跳复用同一 writer，活动租约不会被抢占；进程异常退出后，过期租约可接管并继续使用 `.part` 断点。共享资源删除遇到活动租约会拒绝，避免跨进程误删。
+
+alpha10 增加共享传输调度器：同时活动的资源写入最多 4 个；播放任务使用高优先级，普通任务按等待时间老化，避免手动任务或旧集永久饥饿。该调度器约束应用侧资源 writer，不宣称可以改变 WebView 内部请求优先级。
+
+alpha11 增加目标分片请求重排：seek 目标会在 HLS 顺序发布前以高优先级预取，三分片模拟器 fixture 已观察到 `seg02 → seg00 → seg01` 的请求顺序；本地清单仍按原始时间顺序提交，避免改变媒体时间线。
+
 #### P3 原生部分缓存播放与按需 seek
 
 - [ ] Media3 DataSource 通过不透明资源引用访问固定 VOD manifest 和已提交分片，缺片交给同一协调器。
