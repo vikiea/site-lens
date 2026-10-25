@@ -426,6 +426,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   ThemePresetId themePreset = ThemePresetId.sunsetCoral;
   bool restoreBrowserSessions = true;
   bool allowBackgroundPlayback = false;
+  bool allowStreamingWhileDownloading = true;
   bool autoSaveWebPlayback = false;
   bool autoConvertToMp4 = false;
   String? mp4ExportDirectory;
@@ -930,6 +931,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     themePreset = settings.themePreset;
     restoreBrowserSessions = settings.restoreBrowserSessions;
     allowBackgroundPlayback = settings.allowBackgroundPlayback;
+    allowStreamingWhileDownloading = settings.allowStreamingWhileDownloading;
     autoSaveWebPlayback = settings.autoSaveWebPlayback;
     autoConvertToMp4 = settings.autoConvertToMp4;
     mp4ExportDirectory = settings.mp4ExportDirectory;
@@ -955,6 +957,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> setAllowBackgroundPlayback(bool value) =>
       updateSettings({'allowBackgroundPlayback': value});
+
+  Future<void> setAllowStreamingWhileDownloading(bool value) =>
+      updateSettings({'allowStreamingWhileDownloading': value});
 
   Future<void> setAutoSaveWebPlayback(bool value) =>
       updateSettings({'autoSaveWebPlayback': value});

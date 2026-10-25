@@ -6,6 +6,15 @@ import 'app_theme.dart';
 import 'glass_surface.dart';
 import 'navigation_observer.dart';
 
+ThemeData siteLensQuietInteractionTheme(BuildContext context) {
+  final overlay = SiteLensColors.of(context).rowInteractionOverlay;
+  return Theme.of(context).copyWith(
+    highlightColor: overlay,
+    splashColor: overlay,
+    splashFactory: NoSplash.splashFactory,
+  );
+}
+
 enum SiteLensNoticeTone { info, warning, error }
 
 /// A single visual line, with modest fitting for narrow phones. Full content
@@ -139,6 +148,7 @@ class SiteLensCompactRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final interactionOverlay = SiteLensColors.of(context).rowInteractionOverlay;
     Widget rowText(Widget child, TextStyle? style) =>
         child is Text && child.data != null
         ? SiteLensRowText(
@@ -165,10 +175,16 @@ class SiteLensCompactRow extends StatelessWidget {
           : rowText(subtitle!, Theme.of(context).textTheme.bodySmall),
       trailing: trailing,
       onTap: onTap,
+      enableFeedback: false,
+      focusColor: interactionOverlay,
+      hoverColor: interactionOverlay,
+      splashColor: interactionOverlay,
     );
-    return quiet || trailing is SiteLensCompactSwitch || trailing is Switch
-        ? SiteLensFoldable(child: row)
-        : row;
+    final quietTheme = siteLensQuietInteractionTheme(context);
+    final themedRow = Theme(data: quietTheme, child: row);
+    // Keep a traditional keyboard focus outline for every row while the
+    // touch/hover overlay remains transparent.
+    return SiteLensFoldable(child: themedRow);
   }
 }
 

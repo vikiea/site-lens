@@ -567,21 +567,28 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
             itemBuilder: (_, index) {
               final task = widget.playlist[index];
               final selected = index == _playlistIndex;
-              return ListTile(
-                selected: selected,
-                leading: Icon(
-                  selected ? Icons.play_circle_filled : Icons.video_file,
+              final colors = SiteLensColors.of(sheetContext);
+              return Theme(
+                data: siteLensQuietInteractionTheme(sheetContext),
+                child: ListTile(
+                  selected: selected,
+                  focusColor: colors.rowInteractionOverlay,
+                  hoverColor: colors.rowInteractionOverlay,
+                  splashColor: colors.rowInteractionOverlay,
+                  leading: Icon(
+                    selected ? Icons.play_circle_filled : Icons.video_file,
+                  ),
+                  title: SiteLensLeadingEllipsisText(
+                    mediaPlaylistEntryName(widget.playlist, task),
+                  ),
+                  trailing: selected ? const Icon(Icons.check) : null,
+                  onTap: selected
+                      ? () => Navigator.of(sheetContext).pop()
+                      : () {
+                          Navigator.of(sheetContext).pop();
+                          unawaited(_switchPlaylist(index - _playlistIndex));
+                        },
                 ),
-                title: SiteLensLeadingEllipsisText(
-                  mediaPlaylistEntryName(widget.playlist, task),
-                ),
-                trailing: selected ? const Icon(Icons.check) : null,
-                onTap: selected
-                    ? () => Navigator.of(sheetContext).pop()
-                    : () {
-                        Navigator.of(sheetContext).pop();
-                        unawaited(_switchPlaylist(index - _playlistIndex));
-                      },
               );
             },
           ),
@@ -1636,15 +1643,26 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
       final preview = SizedBox(
         width: 68,
         height: 48,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(SiteLensMetrics.inputRadius),
-          child: thumbnail != null
-              ? MediaThumbnail(image: FileImage(File(thumbnail)))
-              : FutureBuilder<MediaCandidate?>(
-                  future: _candidate,
-                  builder: (_, data) =>
-                      _TaskThumbnail(task: widget.task, candidate: data.data),
-                ),
+        child: FutureBuilder<MediaCandidate?>(
+          future: _candidate,
+          builder: (_, data) {
+            final candidateThumbnail = data.data?.thumbnailUrl == null
+                ? null
+                : NetworkImage(data.data!.thumbnailUrl.toString());
+            final localThumbnail =
+                thumbnail == null || thumbnail.startsWith('content:')
+                ? null
+                : FileImage(File(thumbnail));
+            return ClipRRect(
+              borderRadius: BorderRadius.circular(SiteLensMetrics.inputRadius),
+              child: MediaThumbnail(
+                image: localThumbnail ?? candidateThumbnail,
+                fallbackImage: localThumbnail == null
+                    ? null
+                    : candidateThumbnail,
+              ),
+            );
+          },
         ),
       );
       return SiteLensCompactRow(
@@ -1936,128 +1954,153 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
   );
 
   @override
-  Widget build(BuildContext context) => SiteLensPageScaffold(
-    title: '媒体管理',
-    body: ListView(
-      padding: const EdgeInsets.fromLTRB(
-        SiteLensMetrics.pagePadding,
-        12,
-        SiteLensMetrics.pagePadding,
-        32,
-      ),
-      children: [
-        _watchSaveSection(),
-        const SizedBox(height: SiteLensMetrics.sectionGap),
-        SiteLensPanel(
-          padding: EdgeInsets.zero,
-          child: Column(
-            children: [
-              SiteLensActionRow(
-                icon: Icons.download_for_offline_outlined,
-                title: '媒体任务',
-                subtitle: '查看后台下载、播放和导出状态',
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => MediaTasksScreen(app: app),
-                  ),
-                ),
-              ),
-              const SiteLensPanelDivider(),
-              SiteLensActionRow(
-                icon: Icons.swipe_vertical_outlined,
-                title: '播放器手势',
-                subtitle: app.playerVerticalGesture.label,
-                onTap: () => Navigator.of(context).push<void>(
-                  MaterialPageRoute(
-                    builder: (_) => PlayerGesturesScreen(app: app),
-                  ),
-                ),
-              ),
-              const SiteLensPanelDivider(),
-              SiteLensCompactRow(
-                title: const Text('下载完成自动导出 MP4'),
-                subtitle: const Text('保留原生HLS，MP4另存一份到媒体库'),
-                onTap: () => safely(
-                  context,
-                  () => app.setAutoConvertToMp4(!app.autoConvertToMp4),
-                ),
-                trailing: SiteLensCompactSwitch(
-                  value: app.autoConvertToMp4,
-                  semanticLabel: '下载完成自动导出 MP4',
-                  onChanged: (value) =>
-                      safely(context, () => app.setAutoConvertToMp4(value)),
-                ),
-              ),
-              const SiteLensPanelDivider(),
-              SiteLensDisclosure(
-                leading: const Icon(Icons.folder_outlined),
-                title: const Text('MP4 保存目录'),
-                subtitle: Text(
-                  app.mp4ExportDirectory == null ? '使用应用媒体库' : '点击查看完整保存路径',
-                ),
-                expanded: _expandedDetail == 'mp4Directory',
-                onToggle: () => setState(() {
-                  _expandedDetail = _expandedDetail == 'mp4Directory'
-                      ? null
-                      : 'mp4Directory';
-                }),
-                details: (context) => Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _detailText(_directoryLabel()),
-                    Padding(
-                      padding: const EdgeInsets.only(
-                        left: SiteLensMetrics.accordionContentIndent,
-                        bottom: SiteLensMetrics.compactRowVerticalPadding + 8,
-                      ),
-                      child: TextButton.icon(
-                        onPressed: () => safely(context, _pickMp4Directory),
-                        icon: const Icon(Icons.folder_open_outlined),
-                        label: Text(
-                          app.mp4ExportDirectory == null ? '选择保存目录' : '更换保存目录',
-                        ),
-                      ),
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: app,
+    builder: (context, _) => SiteLensPageScaffold(
+      title: '媒体管理',
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(
+          SiteLensMetrics.pagePadding,
+          12,
+          SiteLensMetrics.pagePadding,
+          32,
+        ),
+        children: [
+          _watchSaveSection(),
+          const SizedBox(height: SiteLensMetrics.sectionGap),
+          SiteLensPanel(
+            padding: EdgeInsets.zero,
+            child: Column(
+              children: [
+                SiteLensActionRow(
+                  icon: Icons.download_for_offline_outlined,
+                  title: '媒体任务',
+                  subtitle: '查看后台下载、播放和导出状态',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => MediaTasksScreen(app: app),
                     ),
-                  ],
+                  ),
                 ),
-              ),
-              if (app.mp4ExportDirectory != null) ...[
+                const SiteLensPanelDivider(),
+                SiteLensActionRow(
+                  icon: Icons.swipe_vertical_outlined,
+                  title: '播放器手势',
+                  subtitle: app.playerVerticalGesture.label,
+                  onTap: () => Navigator.of(context).push<void>(
+                    MaterialPageRoute(
+                      builder: (_) => PlayerGesturesScreen(app: app),
+                    ),
+                  ),
+                ),
+                const SiteLensPanelDivider(),
+                SiteLensCompactRow(
+                  title: const Text('下载完成自动导出 MP4'),
+                  subtitle: const Text('保留原生HLS，MP4另存一份到媒体库'),
+                  onTap: () => safely(
+                    context,
+                    () => app.setAutoConvertToMp4(!app.autoConvertToMp4),
+                  ),
+                  trailing: SiteLensCompactSwitch(
+                    value: app.autoConvertToMp4,
+                    semanticLabel: '下载完成自动导出 MP4',
+                    onChanged: (value) =>
+                        safely(context, () => app.setAutoConvertToMp4(value)),
+                  ),
+                ),
+                const SiteLensPanelDivider(),
+                SiteLensCompactRow(
+                  title: const Text('允许边下边播'),
+                  subtitle: const Text('仅对已有可用 HLS 分片的下载任务生效'),
+                  onTap: () => safely(
+                    context,
+                    () => app.setAllowStreamingWhileDownloading(
+                      !app.allowStreamingWhileDownloading,
+                    ),
+                  ),
+                  trailing: SiteLensCompactSwitch(
+                    value: app.allowStreamingWhileDownloading,
+                    semanticLabel: '允许边下边播',
+                    onChanged: (value) => safely(
+                      context,
+                      () => app.setAllowStreamingWhileDownloading(value),
+                    ),
+                  ),
+                ),
                 const SiteLensPanelDivider(),
                 SiteLensDisclosure(
-                  leading: const Icon(Icons.library_music_outlined),
-                  title: const Text('恢复应用媒体库'),
-                  subtitle: const Text('点击查看并清除当前目录配置'),
-                  expanded: _expandedDetail == 'mediaLibrary',
+                  leading: const Icon(Icons.folder_outlined),
+                  title: const Text('MP4 保存目录'),
+                  subtitle: Text(
+                    app.mp4ExportDirectory == null ? '使用应用媒体库' : '点击查看完整保存路径',
+                  ),
+                  expanded: _expandedDetail == 'mp4Directory',
                   onToggle: () => setState(() {
-                    _expandedDetail = _expandedDetail == 'mediaLibrary'
+                    _expandedDetail = _expandedDetail == 'mp4Directory'
                         ? null
-                        : 'mediaLibrary';
+                        : 'mp4Directory';
                   }),
                   details: (context) => Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _detailText('清除目录配置后，后续 MP4 只保存在应用媒体库。已导出的文件不会被删除。'),
+                      _detailText(_directoryLabel()),
                       Padding(
                         padding: const EdgeInsets.only(
                           left: SiteLensMetrics.accordionContentIndent,
                           bottom: SiteLensMetrics.compactRowVerticalPadding + 8,
                         ),
-                        child: TextButton(
-                          onPressed: () => safely(
-                            context,
-                            () => app.setMp4ExportDirectory(null),
+                        child: TextButton.icon(
+                          onPressed: () => safely(context, _pickMp4Directory),
+                          icon: const Icon(Icons.folder_open_outlined),
+                          label: Text(
+                            app.mp4ExportDirectory == null
+                                ? '选择保存目录'
+                                : '更换保存目录',
                           ),
-                          child: const Text('清除目录配置'),
                         ),
                       ),
                     ],
                   ),
                 ),
+                if (app.mp4ExportDirectory != null) ...[
+                  const SiteLensPanelDivider(),
+                  SiteLensDisclosure(
+                    leading: const Icon(Icons.library_music_outlined),
+                    title: const Text('恢复应用媒体库'),
+                    subtitle: const Text('点击查看并清除当前目录配置'),
+                    expanded: _expandedDetail == 'mediaLibrary',
+                    onToggle: () => setState(() {
+                      _expandedDetail = _expandedDetail == 'mediaLibrary'
+                          ? null
+                          : 'mediaLibrary';
+                    }),
+                    details: (context) => Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _detailText('清除目录配置后，后续 MP4 只保存在应用媒体库。已导出的文件不会被删除。'),
+                        Padding(
+                          padding: const EdgeInsets.only(
+                            left: SiteLensMetrics.accordionContentIndent,
+                            bottom:
+                                SiteLensMetrics.compactRowVerticalPadding + 8,
+                          ),
+                          child: TextButton(
+                            onPressed: () => safely(
+                              context,
+                              () => app.setMp4ExportDirectory(null),
+                            ),
+                            child: const Text('清除目录配置'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     ),
   );
 }
@@ -2786,8 +2829,12 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   ) => FutureBuilder<MediaCandidate?>(
     future: widget.app.db.mediaCandidate(task.candidateId),
     builder: (context, snapshot) {
+      final busy = _taskBusy(task.id);
       final menu = PopupMenuButton<String>(
-        enabled: !_taskBusy(task.id),
+        // Keep the overflow affordance usable while another action is in
+        // flight. Individual actions remain guarded by _run; details stay
+        // available so a stuck operation can still be diagnosed.
+        enabled: true,
         tooltip: '媒体任务操作',
         padding: EdgeInsets.zero,
         constraints: const BoxConstraints(
@@ -2829,28 +2876,59 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         },
         itemBuilder: (_) => [
           ...mediaBrowserFileMenu(
+            enabled: !busy,
             extra: [
-              const PopupMenuItem(value: 'refresh', child: Text('刷新后台状态')),
+              PopupMenuItem(
+                value: 'refresh',
+                enabled: !busy,
+                child: const Text('刷新后台状态'),
+              ),
               const PopupMenuItem(value: 'details', child: Text('查看详情')),
               if (task.state == MediaTaskState.playable)
-                const PopupMenuItem(value: 'play', child: Text('原生播放')),
-              if (snapshot.data?.isHls == true &&
+                PopupMenuItem(
+                  value: 'play',
+                  enabled: !busy,
+                  child: const Text('原生播放'),
+                ),
+              if (widget.app.allowStreamingWhileDownloading &&
+                  snapshot.data?.isHls == true &&
                   (task.state == MediaTaskState.downloading ||
                       task.state == MediaTaskState.paused))
-                const PopupMenuItem(value: 'play', child: Text('边下边播')),
+                PopupMenuItem(
+                  value: 'play',
+                  enabled: !busy,
+                  child: const Text('边下边播'),
+                ),
               if (task.state == MediaTaskState.playable)
-                const PopupMenuItem(value: 'cast', child: Text('DLNA 投屏')),
+                PopupMenuItem(
+                  value: 'cast',
+                  enabled: !busy,
+                  child: const Text('DLNA 投屏'),
+                ),
               if (_isBatchExportable(task))
-                const PopupMenuItem(value: 'export', child: Text('导出 MP4')),
+                PopupMenuItem(
+                  value: 'export',
+                  enabled: !busy,
+                  child: const Text('导出 MP4'),
+                ),
               if (task.state == MediaTaskState.downloading)
-                const PopupMenuItem(value: 'pause', child: Text('暂停下载')),
+                PopupMenuItem(
+                  value: 'pause',
+                  enabled: !busy,
+                  child: const Text('暂停下载'),
+                ),
               if (task.state == MediaTaskState.paused)
-                const PopupMenuItem(value: 'pause', child: Text('继续下载')),
+                PopupMenuItem(
+                  value: 'pause',
+                  enabled: !busy,
+                  child: const Text('继续下载'),
+                ),
               if (task.state == MediaTaskState.failed ||
                   task.state == MediaTaskState.cancelled ||
                   task.state == MediaTaskState.reauthorize)
                 PopupMenuItem(
                   value: 'retry',
+                  enabled: !busy,
                   child: Text(
                     task.state == MediaTaskState.reauthorize
                         ? '刷新授权后重试'
@@ -2859,7 +2937,11 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                 ),
               if (task.state == MediaTaskState.downloading ||
                   task.state == MediaTaskState.paused)
-                const PopupMenuItem(value: 'cancel', child: Text('取消下载')),
+                PopupMenuItem(
+                  value: 'cancel',
+                  enabled: !busy,
+                  child: const Text('取消下载'),
+                ),
             ],
           ),
         ],
@@ -2872,7 +2954,13 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                   : null,
               materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
             )
-          : _TaskThumbnail(task: task, candidate: snapshot.data);
+          : _TaskThumbnail(
+              task: task,
+              candidate: snapshot.data,
+              localThumbnailPath: widget.app.mediaLibrary
+                  .item(task.id)
+                  ?.thumbnailPath,
+            );
       return Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -2893,7 +2981,8 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                       ? () => _browser.toggleItem(task.id)
                       : null)
                 : task.state == MediaTaskState.playable ||
-                      (snapshot.data?.isHls == true &&
+                      (widget.app.allowStreamingWhileDownloading &&
+                          snapshot.data?.isHls == true &&
                           (task.state == MediaTaskState.downloading ||
                               task.state == MediaTaskState.paused))
                 ? () => unawaited(_run(() => _play(task), taskId: task.id))
@@ -3038,15 +3127,28 @@ class _MediaDetailRow extends StatelessWidget {
 }
 
 class _TaskThumbnail extends StatelessWidget {
-  const _TaskThumbnail({required this.task, this.candidate});
+  const _TaskThumbnail({
+    required this.task,
+    this.candidate,
+    this.localThumbnailPath,
+  });
   final MediaTask task;
   final MediaCandidate? candidate;
+  final String? localThumbnailPath;
 
   @override
   Widget build(BuildContext context) {
     final thumbnail = candidate?.thumbnailUrl;
+    final local = localThumbnailPath;
+    final localImage = local == null || local.startsWith('content:')
+        ? null
+        : FileImage(File(local));
+    final networkImage = thumbnail == null
+        ? null
+        : NetworkImage(thumbnail.toString());
     return MediaThumbnail(
-      image: thumbnail == null ? null : NetworkImage(thumbnail.toString()),
+      image: localImage ?? networkImage,
+      fallbackImage: localImage == null ? null : networkImage,
       placeholder: task.state == MediaTaskState.playable
           ? Icons.play_circle
           : Icons.downloading,

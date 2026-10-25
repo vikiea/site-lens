@@ -264,12 +264,16 @@ List<PopupMenuEntry<String>> mediaBrowserFileMenu({
   bool canRename = true,
   bool canCopy = true,
   bool canDelete = true,
+  bool enabled = true,
   List<PopupMenuEntry<String>> extra = const [],
 }) => [
-  if (canRename) const PopupMenuItem(value: 'rename', child: Text('重命名')),
-  const PopupMenuItem(value: 'move', child: Text('移动到文件夹')),
-  if (canCopy) const PopupMenuItem(value: 'copy', child: Text('复制')),
-  if (canDelete) const PopupMenuItem(value: 'delete', child: Text('删除')),
+  if (canRename)
+    PopupMenuItem(value: 'rename', enabled: enabled, child: const Text('重命名')),
+  PopupMenuItem(value: 'move', enabled: enabled, child: const Text('移动到文件夹')),
+  if (canCopy)
+    PopupMenuItem(value: 'copy', enabled: enabled, child: const Text('复制')),
+  if (canDelete)
+    PopupMenuItem(value: 'delete', enabled: enabled, child: const Text('删除')),
   ...extra,
 ];
 
@@ -340,25 +344,38 @@ Future<MediaBrowserFolderChoice> showMediaBrowserFolderPicker(
               child: ListView.builder(
                 itemCount: folders.length + 1,
                 itemBuilder: (_, index) {
+                  final colors = SiteLensColors.of(sheetContext);
                   if (index == 0) {
-                    return ListTile(
-                      leading: const Icon(Icons.home_outlined),
-                      title: const Text('媒体根目录'),
-                      onTap: () => Navigator.pop(
-                        sheetContext,
-                        const MediaBrowserFolderChoice(confirmed: true),
+                    return Theme(
+                      data: siteLensQuietInteractionTheme(sheetContext),
+                      child: ListTile(
+                        focusColor: colors.rowInteractionOverlay,
+                        hoverColor: colors.rowInteractionOverlay,
+                        splashColor: colors.rowInteractionOverlay,
+                        leading: const Icon(Icons.home_outlined),
+                        title: const Text('媒体根目录'),
+                        onTap: () => Navigator.pop(
+                          sheetContext,
+                          const MediaBrowserFolderChoice(confirmed: true),
+                        ),
                       ),
                     );
                   }
                   final folder = folders[index - 1];
-                  return ListTile(
-                    leading: const Icon(Icons.folder_outlined),
-                    title: Text(_folderPath(organization, folder)),
-                    onTap: () => Navigator.pop(
-                      sheetContext,
-                      MediaBrowserFolderChoice(
-                        confirmed: true,
-                        folderId: folder.id,
+                  return Theme(
+                    data: siteLensQuietInteractionTheme(sheetContext),
+                    child: ListTile(
+                      focusColor: colors.rowInteractionOverlay,
+                      hoverColor: colors.rowInteractionOverlay,
+                      splashColor: colors.rowInteractionOverlay,
+                      leading: const Icon(Icons.folder_outlined),
+                      title: Text(_folderPath(organization, folder)),
+                      onTap: () => Navigator.pop(
+                        sheetContext,
+                        MediaBrowserFolderChoice(
+                          confirmed: true,
+                          folderId: folder.id,
+                        ),
                       ),
                     ),
                   );

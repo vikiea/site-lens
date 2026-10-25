@@ -39,6 +39,7 @@ Use `SiteLensMetrics`, `SiteLensColors`, `Theme.of(context).colorScheme`, and `T
 | --- | --- |
 | Page and panel | `pagePadding=16`, `itemGap=10`, `listGap=14`, `formGap=12`, `sectionGap=24`, `panelRadius=22`, `panelPadding=18`, `inputRadius=14` |
 | Compact rows | `compactRowHorizontalPadding=12`, `compactRowVerticalPadding=0`, `compactRowMinHeight=64`, `compactIconSize=18`, `compactIconButtonSize=36`, `compactSwitchScale=0.84` |
+| Row interaction | `rowInteractionOverlay=transparent`; ordinary row press/hover/focus feedback stays visually quiet, while selected state uses `selectedTileColor` |
 | Row fitting | `rowTextMaxCharacters=20`, `rowTextMinScale=0.88`; use `SiteLensRowText` and preserve the full semantic label |
 | Details and diagnostics | `compactDividerIndent=12`, `accordionContentIndent=42`, `settingsDividerIndent=18`, `diagnosticLabelWidth=64`, `detailLabelWidth=64`, `detailColumnGap=10`, `detailContentIndent=26`, `diagnosticRowGap=4`, `diagnosticDetailMaxHeightFraction=0.42` |
 | Settings and media | `settingsSectionLabelHorizontalPadding=6`, `settingsSectionLabelBottom=8`, `mediaThumbnailSize=68x48` (the image keeps its source aspect ratio inside the slot) |

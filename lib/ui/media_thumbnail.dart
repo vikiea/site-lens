@@ -7,10 +7,12 @@ class MediaThumbnail extends StatelessWidget {
   const MediaThumbnail({
     super.key,
     this.image,
+    this.fallbackImage,
     this.placeholder = Icons.video_file_outlined,
   });
 
   final ImageProvider? image;
+  final ImageProvider? fallbackImage;
   final IconData placeholder;
 
   @override
@@ -29,8 +31,15 @@ class MediaThumbnail extends StatelessWidget {
                 excludeFromSemantics: true,
                 frameBuilder: (_, child, frame, _) =>
                     frame == null ? Icon(placeholder) : child,
-                errorBuilder: (_, _, _) =>
-                    const Icon(Icons.broken_image_outlined),
+                errorBuilder: (_, _, _) => fallbackImage == null
+                    ? const Icon(Icons.broken_image_outlined)
+                    : Image(
+                        image: fallbackImage!,
+                        fit: BoxFit.contain,
+                        excludeFromSemantics: true,
+                        errorBuilder: (_, _, _) =>
+                            const Icon(Icons.broken_image_outlined),
+                      ),
               ),
             ),
     ),

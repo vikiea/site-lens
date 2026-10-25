@@ -189,12 +189,40 @@ void main() {
     await tester.pumpAndSettle();
     expect(value, isTrue);
     final quietTheme = tester.widget<Theme>(
-      find.descendant(
-        of: find.byType(SiteLensFoldable),
-        matching: find.byType(Theme),
-      ),
+      find
+          .descendant(
+            of: find.byType(SiteLensFoldable),
+            matching: find.byType(Theme),
+          )
+          .last,
     );
     expect(quietTheme.data.highlightColor, Colors.transparent);
+  });
+
+  testWidgets('compact rows use the quiet global interaction token', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: Scaffold(
+          body: SiteLensCompactRow(title: const Text('媒体任务'), onTap: () {}),
+        ),
+      ),
+    );
+
+    final row = tester.widget<ListTile>(find.byType(ListTile));
+    final colors = SiteLensColors.of(tester.element(find.byType(ListTile)));
+    expect(row.enableFeedback, isFalse);
+    expect(row.focusColor, colors.rowInteractionOverlay);
+    expect(row.hoverColor, colors.rowInteractionOverlay);
+    expect(row.splashColor, colors.rowInteractionOverlay);
+    final rowTheme = tester.widget<Theme>(
+      find
+          .ancestor(of: find.byType(ListTile), matching: find.byType(Theme))
+          .first,
+    );
+    expect(rowTheme.data.splashFactory, NoSplash.splashFactory);
   });
 
   testWidgets('glass alert dialog keeps Material dialog semantics', (

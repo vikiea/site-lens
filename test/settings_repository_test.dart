@@ -47,6 +47,7 @@ void main() {
         'highQualityAllSurfaces': true,
         'replaceSameSiteTabs': true,
         'autoSaveWebPlayback': true,
+        'allowStreamingWhileDownloading': false,
         'themePreset': 'aurora_cyan',
       });
       final decoded = jsonDecode(
@@ -57,6 +58,7 @@ void main() {
       expect(decoded['highQualityAllSurfaces'], isTrue);
       expect(decoded['replaceSameSiteTabs'], isTrue);
       expect(decoded['autoSaveWebPlayback'], isTrue);
+      expect(decoded['allowStreamingWhileDownloading'], isFalse);
       expect(decoded['themePreset'], 'aurora_cyan');
       expect(await db.setting('glassOpacity'), isNull);
       expect(await db.setting('replaceSameSiteTabs'), isNull);

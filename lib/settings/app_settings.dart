@@ -91,6 +91,7 @@ class AppSettings {
     this.autoHideBrowserControls = true,
     this.expandAllBrowserControls = false,
     this.allowBackgroundPlayback = false,
+    this.allowStreamingWhileDownloading = true,
     this.autoSaveWebPlayback = false,
     this.autoConvertToMp4 = false,
     this.mp4ExportDirectory,
@@ -119,6 +120,7 @@ class AppSettings {
   final bool autoHideBrowserControls;
   final bool expandAllBrowserControls;
   final bool allowBackgroundPlayback;
+  final bool allowStreamingWhileDownloading;
   final bool autoSaveWebPlayback;
   final bool autoConvertToMp4;
   final String? mp4ExportDirectory;
@@ -147,6 +149,7 @@ class AppSettings {
     'autoHideBrowserControls': autoHideBrowserControls,
     'expandAllBrowserControls': expandAllBrowserControls,
     'allowBackgroundPlayback': allowBackgroundPlayback,
+    'allowStreamingWhileDownloading': allowStreamingWhileDownloading,
     'autoSaveWebPlayback': autoSaveWebPlayback,
     'autoConvertToMp4': autoConvertToMp4,
     'mp4ExportDirectory': mp4ExportDirectory,
@@ -231,6 +234,10 @@ class AppSettings {
       autoHideBrowserControls: flag('autoHideBrowserControls', true),
       expandAllBrowserControls: flag('expandAllBrowserControls', false),
       allowBackgroundPlayback: flag('allowBackgroundPlayback', false),
+      allowStreamingWhileDownloading: flag(
+        'allowStreamingWhileDownloading',
+        true,
+      ),
       autoSaveWebPlayback: flag('autoSaveWebPlayback', false),
       autoConvertToMp4: flag('autoConvertToMp4', false),
       mp4ExportDirectory: directory('mp4ExportDirectory'),
@@ -275,6 +282,7 @@ class AppSettings {
       'autoHideBrowserControls',
       'expandAllBrowserControls',
       'allowBackgroundPlayback',
+      'allowStreamingWhileDownloading',
       'autoSaveWebPlayback',
       'autoConvertToMp4',
       'mp4ExportDirectory',

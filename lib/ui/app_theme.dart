@@ -220,6 +220,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
     required this.wellTint,
     required this.panelBorder,
     required this.divider,
+    required this.rowInteractionOverlay,
     required this.sectionLabel,
     required this.disabledContent,
     required this.ok,
@@ -249,6 +250,10 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
 
   final Color panelBorder;
   final Color divider;
+
+  /// Touch/hover/focus overlay for ordinary rows. Row state stays visually
+  /// quiet; selected state is represented separately by selectedTileColor.
+  final Color rowInteractionOverlay;
   final Color sectionLabel;
   final Color disabledContent;
   final Color ok;
@@ -269,6 +274,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
         wellTint: const Color(0x24FFFFFF),
         panelBorder: const Color(0x3218202c),
         divider: const Color(0x1FFFFFFF),
+        rowInteractionOverlay: Colors.transparent,
         sectionLabel: const Color(0xffb9c6d8),
         disabledContent: const Color(0xff778293),
         ok: const Color(0xff57d68f),
@@ -286,6 +292,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
       wellTint: const Color(0x12000000),
       panelBorder: const Color(0x45f0f4fa),
       divider: const Color(0x1F000000),
+      rowInteractionOverlay: Colors.transparent,
       sectionLabel: const Color(0xff4a5568),
       disabledContent: const Color(0xff8b93a1),
       ok: const Color(0xff1c8a56),
@@ -309,6 +316,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
     Color? wellTint,
     Color? panelBorder,
     Color? divider,
+    Color? rowInteractionOverlay,
     Color? sectionLabel,
     Color? disabledContent,
     Color? ok,
@@ -324,6 +332,7 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
     wellTint: wellTint ?? this.wellTint,
     panelBorder: panelBorder ?? this.panelBorder,
     divider: divider ?? this.divider,
+    rowInteractionOverlay: rowInteractionOverlay ?? this.rowInteractionOverlay,
     sectionLabel: sectionLabel ?? this.sectionLabel,
     disabledContent: disabledContent ?? this.disabledContent,
     ok: ok ?? this.ok,
@@ -344,6 +353,11 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
       wellTint: Color.lerp(wellTint, other.wellTint, t)!,
       panelBorder: Color.lerp(panelBorder, other.panelBorder, t)!,
       divider: Color.lerp(divider, other.divider, t)!,
+      rowInteractionOverlay: Color.lerp(
+        rowInteractionOverlay,
+        other.rowInteractionOverlay,
+        t,
+      )!,
       sectionLabel: Color.lerp(sectionLabel, other.sectionLabel, t)!,
       disabledContent: Color.lerp(disabledContent, other.disabledContent, t)!,
       ok: Color.lerp(ok, other.ok, t)!,
@@ -672,6 +686,7 @@ ThemeData buildSiteLensTheme(
       shape: RoundedRectangleBorder(borderRadius: radius),
       selectedColor: scheme.primary,
       selectedTileColor: scheme.primary.withValues(alpha: 0.12),
+      enableFeedback: false,
     ),
     expansionTileTheme: ExpansionTileThemeData(
       backgroundColor: Colors.transparent,
