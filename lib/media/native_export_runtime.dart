@@ -8,8 +8,16 @@ class NativeExportRuntime {
 
   final MethodChannel _channel;
 
-  Future<bool> validateLocalInput(String path) async =>
-      await _channel.invokeMethod<bool>('validateLocalInput', {'path': path}) ??
+  Future<bool> validateLocalInput(
+    String path, {
+    List<String> resourcePaths = const [],
+    List<String> allowedRoots = const [],
+  }) async =>
+      await _channel.invokeMethod<bool>('validateLocalInput', {
+        'path': path,
+        'resourcePaths': resourcePaths,
+        'allowedRoots': allowedRoots,
+      }) ??
       false;
 
   Future<String?> pickDirectory() =>
@@ -18,11 +26,15 @@ class NativeExportRuntime {
   Future<String> muxHls({
     required String playlist,
     required String output,
+    List<String> resourcePaths = const [],
+    List<String> allowedRoots = const [],
     String? jobId,
   }) async {
     final result = await _channel.invokeMapMethod<String, Object?>('muxHls', {
       'playlist': playlist,
       'output': output,
+      'resourcePaths': resourcePaths,
+      'allowedRoots': allowedRoots,
       'jobId': jobId ?? 'export-${DateTime.now().microsecondsSinceEpoch}',
     });
     return result?['output'] as String? ?? output;

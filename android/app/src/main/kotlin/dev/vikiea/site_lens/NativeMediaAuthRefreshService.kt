@@ -33,12 +33,16 @@ import java.util.concurrent.TimeUnit
 class NativeMediaAuthRefreshService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private var webView: WebView? = null
-    private var finished = false
+    private val queuedRequests = ArrayDeque<Request>()
+    private var activeRequest: Request? = null
+    private var activeToken = 0L
+    private var nextToken = 0L
+    private var timeoutRunnable: Runnable? = null
 
     override fun onCreate() {
         super.onCreate()
         ensureForeground()
-        instance = this
+        synchronized(Companion) { instance = this }
         drainPending()
     }
 
@@ -48,8 +52,19 @@ class NativeMediaAuthRefreshService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        val stopped = result("waiting_execution", "授权刷新服务已停止")
+        activeRequest?.let { request -> runCatching { request.callback(stopped) } }
+        while (queuedRequests.isNotEmpty()) {
+            val request = queuedRequests.removeFirst()
+            runCatching { request.callback(stopped) }
+        }
+        activeRequest = null
+        timeoutRunnable = null
+        main.removeCallbacksAndMessages(null)
         cleanup()
-        if (instance === this) instance = null
+        synchronized(Companion) {
+            if (instance === this) instance = null
+        }
         super.onDestroy()
     }
 
@@ -78,8 +93,31 @@ class NativeMediaAuthRefreshService : Service() {
         }
     }
 
-    private fun refresh(request: Request) {
-        finished = false
+    private fun enqueue(request: Request) {
+        if (queuedRequests.size >= MAX_QUEUED_REQUESTS) {
+            request.callback(result("waiting_execution", "授权刷新队列繁忙"))
+            return
+        }
+        queuedRequests.addLast(request)
+        startNext()
+    }
+
+    private fun startNext() {
+        if (activeRequest != null) return
+        if (queuedRequests.isEmpty()) {
+            stopSelf()
+            return
+        }
+        val request = queuedRequests.removeFirst()
+        val token = ++nextToken
+        activeRequest = request
+        activeToken = token
+        runCatching { startRefresh(token, request) }.onFailure {
+            finish(token, result("failed", it.message ?: "授权刷新失败"))
+        }
+    }
+
+    private fun startRefresh(token: Long, request: Request) {
         val page = parseHttp(request.pageUrl)
         val media = parseHttp(request.mediaUrl)
         require(page != null && media != null) { "媒体授权刷新地址无效" }
@@ -109,7 +147,7 @@ class NativeMediaAuthRefreshService : Service() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val next = request.url
                 if (origin(next) != pageOrigin) {
-                    finish(refreshRequest.callback, result("reauthorize", "页面尝试跨站跳转"))
+                    finish(token, result("reauthorize", "页面尝试跨站跳转"))
                     return true
                 }
                 return false
@@ -118,7 +156,7 @@ class NativeMediaAuthRefreshService : Service() {
             override fun onPageFinished(view: WebView, url: String) {
                 val current = parseHttp(url)
                 if (current == null || origin(current) != pageOrigin) {
-                    finish(refreshRequest.callback, result("reauthorize", "授权页面来源已变化"))
+                    finish(token, result("reauthorize", "授权页面来源已变化"))
                     return
                 }
                 val title = (view.title ?: "").lowercase()
@@ -126,7 +164,7 @@ class NativeMediaAuthRefreshService : Service() {
                     title.contains("登录") || title.contains("login") ||
                     title.contains("sign in")
                 if (challenge) {
-                    finish(refreshRequest.callback, result("reauthorize", "页面需要人工验证或登录"))
+                    finish(token, result("reauthorize", "页面需要人工验证或登录"))
                     return
                 }
                 val cookie = CookieManager.getInstance().getCookie(refreshRequest.pageUrl).orEmpty()
@@ -134,7 +172,7 @@ class NativeMediaAuthRefreshService : Service() {
                     .digest(cookie.toByteArray(Charsets.UTF_8))
                     .joinToString("") { byte -> "%02x".format(byte) }
                 finish(
-                    refreshRequest.callback,
+                    token,
                     result(
                         "refreshed",
                         null,
@@ -155,23 +193,27 @@ class NativeMediaAuthRefreshService : Service() {
                 error: WebResourceError,
             ) {
                 if (request.isForMainFrame) {
-                    finish(refreshRequest.callback, result("failed", error.description?.toString()))
+                    finish(token, result("failed", error.description?.toString()))
                 }
             }
         }
         view.loadUrl(request.pageUrl)
-        main.postDelayed({
-            if (!finished) finish(request.callback, result("waiting_execution", "授权刷新超时"))
-        }, TIMEOUT_MS)
+        val timeout = Runnable {
+            finish(token, result("waiting_execution", "授权刷新超时"))
+        }
+        timeoutRunnable = timeout
+        main.postDelayed(timeout, TIMEOUT_MS)
     }
 
-    private fun finish(callback: (Map<String, Any?>) -> Unit, value: Map<String, Any?>) {
-        if (finished) return
-        finished = true
-        main.removeCallbacksAndMessages(null)
-        runCatching { callback(value) }
+    private fun finish(token: Long, value: Map<String, Any?>) {
+        if (activeRequest == null || token != activeToken) return
+        val request = activeRequest ?: return
+        activeRequest = null
+        timeoutRunnable?.let(main::removeCallbacks)
+        timeoutRunnable = null
         cleanup()
-        stopSelf()
+        runCatching { request.callback(value) }
+        if (queuedRequests.isEmpty()) stopSelf() else startNext()
     }
 
     private fun cleanup() {
@@ -206,28 +248,33 @@ class NativeMediaAuthRefreshService : Service() {
         private const val CHANNEL = "site-lens-media-auth"
         private const val ID = 24003
         private const val TIMEOUT_MS = 15_000L
+        private const val MAX_QUEUED_REQUESTS = 3
+        private const val MAX_PENDING_REQUESTS = 3
         private var instance: NativeMediaAuthRefreshService? = null
         private val pending = ArrayDeque<() -> Unit>()
 
+        @Synchronized
         fun refresh(context: Context, request: Request) {
             val service = instance
             if (service != null) {
-                service.main.post { runCatching { service.refresh(request) }.onFailure {
-                    request.callback(mapOf("state" to "failed", "reason" to (it.message ?: "授权刷新失败")))
-                } }
+                service.main.post { service.enqueue(request) }
                 return
             }
-            pending.addLast { instance?.main?.post {
-                runCatching { instance?.refresh(request) }.onFailure {
-                    request.callback(mapOf("state" to "failed", "reason" to (it.message ?: "授权刷新失败")))
-                }
-            } }
+            val action: () -> Unit = {
+                instance?.main?.post { instance?.enqueue(request) }
+            }
+            if (pending.size >= MAX_PENDING_REQUESTS) {
+                request.callback(mapOf("state" to "waiting_execution", "reason" to "授权刷新队列繁忙"))
+                return
+            }
+            pending.addLast(action)
             try {
                 ContextCompat.startForegroundService(
                     context.applicationContext,
                     Intent(context.applicationContext, NativeMediaAuthRefreshService::class.java),
                 )
             } catch (error: Exception) {
+                pending.remove(action)
                 request.callback(mapOf("state" to "waiting_execution", "reason" to (error.message ?: "系统暂不允许后台执行")))
             }
         }
@@ -245,12 +292,20 @@ class NativeMediaAuthRefreshService : Service() {
                 value = it
                 latch.countDown()
             })
-            latch.await(TIMEOUT_MS + 2_000L, TimeUnit.MILLISECONDS)
+            latch.await(
+                TIMEOUT_MS * (MAX_PENDING_REQUESTS + 1L) + 2_000L,
+                TimeUnit.MILLISECONDS,
+            )
             return value
         }
 
         private fun drainPending() {
-            while (pending.isNotEmpty()) pending.removeFirst().invoke()
+            val actions = synchronized(Companion) {
+                val copy = pending.toList()
+                pending.clear()
+                copy
+            }
+            actions.forEach { it.invoke() }
         }
 
         private fun parseHttp(raw: String): Uri? = runCatching {

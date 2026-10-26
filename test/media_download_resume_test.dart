@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -87,6 +88,30 @@ void main() {
       },
     );
   }
+
+  test('failed HLS resources do not leave database owners behind', () async {
+    final root = await Directory.systemTemp.createTemp('site-lens-owner-fail-');
+    addTearDown(() => root.delete(recursive: true));
+    final playlist = Uri.parse('https://cdn.example/owner-fail/index.m3u8');
+    final segment = playlist.resolve('segment.ts');
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final store = MediaTaskStore(directoryProvider: () async => root, db: db);
+    final candidate = _candidate(playlist);
+    await db.saveMediaCandidate(candidate);
+    final task = store.create(candidate);
+
+    await expectLater(
+      MediaDownloadService(
+        tasks: store,
+        http: _FailingTlsHttp(const SocketException('Connection reset')),
+      ).start(task, candidate),
+      throwsA(isA<SocketException>()),
+    );
+
+    final key = sha256.convert(utf8.encode(segment.toString())).toString();
+    expect(await db.mediaResourceOwners(key), isEmpty);
+  });
 
   test('HLS key versions keep separate cached bytes', () async {
     final root = await Directory.systemTemp.createTemp(
@@ -393,7 +418,11 @@ void main() {
     final localResource = local.parent.listSync().whereType<File>().firstWhere(
       (file) => file.path.contains('/resource_'),
     );
-    final sharedResources = sharedRoot.listSync().whereType<File>().toList();
+    final sharedResources = sharedRoot
+        .listSync()
+        .whereType<File>()
+        .where((file) => file.path.endsWith('.resource'))
+        .toList();
     expect(sharedResources, hasLength(1));
     expect(await sharedResources.single.readAsBytes(), [5, 6, 7]);
     expect(await localResource.readAsBytes(), [5, 6, 7]);

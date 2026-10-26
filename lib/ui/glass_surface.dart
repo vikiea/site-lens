@@ -36,10 +36,15 @@ class SiteLensBackdrop extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (background.mode == BackgroundMode.transparent) {
+      return Stack(fit: StackFit.expand, children: [child]);
+    }
     final colors = SiteLensColors.of(context);
     final imagePath = background.imagePath;
-    final transparent = background.mode == BackgroundMode.transparent;
-    final image = imagePath == null
+    final useImage =
+        imagePath != null && background.mode == BackgroundMode.customImage;
+    final useThemeSource = background.mode == BackgroundMode.themeBuiltIn;
+    final image = !useImage
         ? null
         : Image.file(
             File(imagePath),
@@ -51,32 +56,36 @@ class SiteLensBackdrop extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         if (image != null) Positioned.fill(child: image),
-        if (image == null || background.mode == BackgroundMode.themeBuiltIn)
+        if (image == null)
           DecoratedBox(
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: [
-                  background.mode == BackgroundMode.themeBuiltIn
+                  useThemeSource
                       ? Color.lerp(
                           colors.backdropTop,
                           colors.backdropTint,
-                          0.34,
+                          Theme.of(context).brightness == Brightness.dark
+                              ? 0.52
+                              : 0.30,
                         )!
                       : colors.backdropTop,
-                  background.mode == BackgroundMode.themeBuiltIn
+                  useThemeSource
                       ? Color.lerp(
                           colors.backdropBottom,
                           colors.backdropTint,
-                          0.20,
+                          Theme.of(context).brightness == Brightness.dark
+                              ? 0.36
+                              : 0.22,
                         )!
                       : colors.backdropBottom,
                 ],
               ),
             ),
           ),
-        if (!transparent && image != null)
+        if (image != null)
           Positioned.fill(
             child: ColoredBox(
               color: colors.backdropTint.withValues(
@@ -86,19 +95,18 @@ class SiteLensBackdrop extends StatelessWidget {
               ),
             ),
           ),
-        if (!transparent)
-          DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: RadialGradient(
-                center: const Alignment(-0.75, -0.95),
-                radius: 1.5,
-                colors: [
-                  colors.backdropTint,
-                  colors.backdropTint.withValues(alpha: 0),
-                ],
-              ),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: RadialGradient(
+              center: const Alignment(-0.75, -0.95),
+              radius: 1.5,
+              colors: [
+                colors.backdropTint,
+                colors.backdropTint.withValues(alpha: 0),
+              ],
             ),
           ),
+        ),
         child,
       ],
     );

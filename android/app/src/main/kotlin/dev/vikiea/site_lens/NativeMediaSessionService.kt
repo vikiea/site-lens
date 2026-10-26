@@ -21,6 +21,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.datasource.FileDataSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
@@ -159,7 +160,9 @@ class NativeMediaSessionService : MediaSessionService() {
         stopPositionPersistence()
         persistCurrentState()
         observers.clear()
-        pending.clear()
+        while (pending.isNotEmpty()) {
+            runCatching { pending.removeFirst().cancel() }
+        }
         fileLease?.close()
         fileLease = null
         if (::mediaSession.isInitialized) mediaSession.release()
@@ -250,50 +253,75 @@ class NativeMediaSessionService : MediaSessionService() {
 
     private fun open(request: OpenRequest): Map<String, Any?> {
         stopPlayerOnly()
+        fileLease?.close()
+        fileLease = null
         val uri = Uri.parse(request.uri)
         require(uri.scheme == "file" || uri.scheme == "content") { "本地媒体地址无效" }
         val leaseScope = MediaFileLeaseRegistry.Scope.task(request.taskId) +
             if (uri.scheme == "file" && request.hls) {
-                MediaFileLeaseRegistry.Scope.file(File(uri.path!!).parentFile!!)
+                request.resourcePaths.fold(
+                    MediaFileLeaseRegistry.Scope.file(File(uri.path!!).parentFile!!),
+                ) { scope, path -> scope + MediaFileLeaseRegistry.Scope.source(path) }
             } else {
                 MediaFileLeaseRegistry.Scope.source(request.uri)
             }
         val nextLease = NativeMediaFileLeases.registry.acquireRead(leaseScope)
-        fileLease?.close()
         fileLease = nextLease
-        sessionId = request.sessionId.ifBlank { "native_${UUID.randomUUID()}" }
-        candidateId = request.candidateId
-        taskId = request.taskId
-        mediaUri = request.uri
-        mediaMime = request.mime
-        mediaIsHls = request.hls
-        title = request.title.ifBlank { "Site Lens" }.take(512)
-        speed = 1f
-        lastError = null
-        userPaused = false
-        clearRestorable()
-        val item = MediaItem.Builder()
-            .setUri(uri)
-            .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build())
-            .apply { if (request.mime.isNotBlank()) setMimeType(request.mime) }
-            .build()
-        val hls = request.mime.contains("mpegurl", ignoreCase = true) ||
-            uri.path?.lowercase()?.let { it.endsWith(".m3u8") || it.endsWith(".m3u") } == true
-        if (hls) {
-            val dataSource = GrowingFileDataSource.Factory()
-            player.setMediaSource(
-                HlsMediaSource.Factory(dataSource).createMediaSource(item),
-            )
-        } else {
-            player.setMediaItem(item)
+        try {
+            sessionId = request.sessionId.ifBlank { "native_${UUID.randomUUID()}" }
+            candidateId = request.candidateId
+            taskId = request.taskId
+            mediaUri = request.uri
+            mediaMime = request.mime
+            mediaIsHls = request.hls
+            title = request.title.ifBlank { "Site Lens" }.take(512)
+            speed = 1f
+            lastError = null
+            userPaused = false
+            val item = MediaItem.Builder()
+                .setUri(uri)
+                .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build())
+                .apply { if (request.mime.isNotBlank()) setMimeType(request.mime) }
+                .build()
+            val hls = request.mime.contains("mpegurl", ignoreCase = true) ||
+                uri.path?.lowercase()?.let { it.endsWith(".m3u8") || it.endsWith(".m3u") } == true
+            if (hls) {
+                val dataSource = if (request.partial) {
+                    GrowingFileDataSource.Factory()
+                } else {
+                    FileDataSource.Factory()
+                }
+                player.setMediaSource(
+                    HlsMediaSource.Factory(dataSource).createMediaSource(item),
+                )
+            } else {
+                player.setMediaItem(item)
+            }
+            state = if (request.autoPlay) "preparing" else "paused"
+            userPaused = !request.autoPlay
+            player.playWhenReady = request.autoPlay
+            player.prepare()
+            startPositionPersistence()
+            clearRestorable()
+            publish()
+            return snapshot()
+        } catch (error: Throwable) {
+            stopPositionPersistence()
+            runCatching { stopPlayerOnly() }
+            if (fileLease === nextLease) fileLease = null
+            runCatching { nextLease.close() }
+            sessionId = null
+            candidateId = null
+            taskId = null
+            mediaUri = null
+            mediaMime = ""
+            mediaIsHls = false
+            speed = 1f
+            userPaused = false
+            state = "stopped"
+            lastError = null
+            throw error
         }
-        state = if (request.autoPlay) "preparing" else "paused"
-        userPaused = !request.autoPlay
-        player.playWhenReady = request.autoPlay
-        player.prepare()
-        startPositionPersistence()
-        publish()
-        return snapshot()
     }
 
     private fun command(method: String, args: Map<String, Any?>): Map<String, Any?> {
@@ -376,6 +404,8 @@ class NativeMediaSessionService : MediaSessionService() {
         val mime: String,
         val title: String,
         val hls: Boolean,
+        val partial: Boolean = false,
+        val resourcePaths: List<String> = emptyList(),
         val autoPlay: Boolean = true,
         val surface: Surface?,
         val callback: (Result<Map<String, Any?>>) -> Unit,
@@ -401,7 +431,12 @@ class NativeMediaSessionService : MediaSessionService() {
         private const val POSITION_PERSISTENCE_MS = 2_000L
         private var instance: NativeMediaSessionService? = null
         private val observers = CopyOnWriteArraySet<(Map<String, Any?>) -> Unit>()
-        private val pending = ArrayDeque<() -> Unit>()
+        private data class PendingAction(
+            val action: (NativeMediaSessionService) -> Unit,
+            val cancel: () -> Unit,
+        )
+
+        private val pending = ArrayDeque<PendingAction>()
 
         fun registerObserver(observer: (Map<String, Any?>) -> Unit) {
             observers.add(observer)
@@ -421,17 +456,29 @@ class NativeMediaSessionService : MediaSessionService() {
                 .getBoolean("known", false)
 
         fun state(context: Context, callback: (Result<Map<String, Any?>>) -> Unit) {
-            dispatch(context) { service -> callback(runCatching { service.snapshot() }) }
+            if (instance == null && pending.isEmpty()) {
+                callback(runCatching { snapshotFromStoredState(context) })
+                return
+            }
+            dispatch(
+                context,
+                action = { service -> callback(runCatching { service.snapshot() }) },
+                onCancelled = { callback(Result.failure(serviceUnavailable())) },
+            )
         }
 
         fun open(context: Context, request: OpenRequest) {
-            dispatch(context) { service ->
-                callbackResult(request.callback) {
-                    val snapshot = service.open(request)
-                    request.surface?.let(service::attachSurface)
-                    snapshot
-                }
-            }
+            dispatch(
+                context,
+                action = { service ->
+                    callbackResult(request.callback) {
+                        val snapshot = service.open(request)
+                        request.surface?.let(service::attachSurface)
+                        snapshot
+                    }
+                },
+                onCancelled = { request.callback(Result.failure(serviceUnavailable())) },
+            )
         }
 
         fun command(
@@ -440,13 +487,20 @@ class NativeMediaSessionService : MediaSessionService() {
             args: Map<String, Any?>,
             callback: (Result<Map<String, Any?>>) -> Unit,
         ) {
-            dispatch(context) { service ->
-                callbackResult(callback) { service.command(method, args) }
-            }
+            dispatch(
+                context,
+                action = { service ->
+                    callbackResult(callback) { service.command(method, args) }
+                },
+                onCancelled = { callback(Result.failure(serviceUnavailable())) },
+            )
         }
 
         fun attachSurface(context: Context, surface: Surface?) {
-            dispatch(context) { service -> service.attachSurface(surface) }
+            dispatch(
+                context,
+                action = { service -> service.attachSurface(surface) },
+            )
         }
 
         fun detachSurface(context: Context) {
@@ -465,21 +519,71 @@ class NativeMediaSessionService : MediaSessionService() {
             callback(runCatching(block))
         }
 
-        private fun dispatch(context: Context, action: (NativeMediaSessionService) -> Unit) {
+        private fun dispatch(
+            context: Context,
+            action: (NativeMediaSessionService) -> Unit,
+            onCancelled: () -> Unit = {},
+        ) {
             val service = instance
             if (service != null) {
                 action(service)
                 return
             }
-            pending.addLast { instance?.let(action) }
+            pending.addLast(PendingAction(action, onCancelled))
             ContextCompat.startForegroundService(
                 context.applicationContext,
                 Intent(context.applicationContext, NativeMediaSessionService::class.java),
             )
         }
 
+        private fun serviceUnavailable(): IllegalStateException =
+            IllegalStateException("媒体服务已结束")
+
+        private fun snapshotFromStoredState(context: Context): Map<String, Any?> {
+            val prefs = context.getSharedPreferences(
+                "native_media_session_state",
+                Context.MODE_PRIVATE,
+            )
+            if (!prefs.getBoolean("known", false)) {
+                return mapOf(
+                    "sessionId" to null,
+                    "candidateId" to null,
+                    "taskId" to null,
+                    "state" to "stopped",
+                    "positionMs" to 0L,
+                    "durationMs" to 0L,
+                    "videoWidth" to 0,
+                    "videoHeight" to 0,
+                    "speed" to 1f,
+                    "userPaused" to true,
+                    "errorCode" to null,
+                    "backend" to "media_session",
+                    "restorable" to false,
+                )
+            }
+            return mapOf(
+                "sessionId" to null,
+                "candidateId" to prefs.getString("candidateId", null),
+                "taskId" to prefs.getString("taskId", null),
+                "state" to "restorable",
+                "positionMs" to prefs.getLong("positionMs", 0L).coerceAtLeast(0L),
+                "durationMs" to prefs.getLong("durationMs", 0L).coerceAtLeast(0L),
+                "videoWidth" to 0,
+                "videoHeight" to 0,
+                "speed" to prefs.getFloat("speed", 1f).coerceIn(0.25f, 8f),
+                "userPaused" to prefs.getBoolean("userPaused", true),
+                "errorCode" to null,
+                "backend" to "media_session",
+                "restorable" to true,
+            )
+        }
+
         private fun drainPending() {
-            while (pending.isNotEmpty()) pending.removeFirst().invoke()
+            while (pending.isNotEmpty()) {
+                val next = pending.removeFirst()
+                val service = instance
+                if (service == null) next.cancel() else next.action(service)
+            }
         }
     }
 }

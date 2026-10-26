@@ -134,4 +134,36 @@ void main() {
     expect(find.byType(PopupMenuButton<String>), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('empty watch saves explain and toggle from media management', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.mistPine, Brightness.light),
+        home: MediaManagementScreen(app: app),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('暂无记录，自动保存已关闭'), findsOneWidget);
+    expect(find.text('已关闭，点击开启；不会创建下载任务'), findsOneWidget);
+
+    await tester.tap(find.text('自动保存网页观看记录'));
+    await tester.runAsync(() async {
+      for (
+        var attempt = 0;
+        attempt < 100 && !app.autoSaveWebPlayback;
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    });
+    await tester.pump();
+
+    expect(app.autoSaveWebPlayback, isTrue);
+    expect(find.text('已开启，等待有效播放记录'), findsOneWidget);
+    expect(find.text('已开启，稳定识别后保存播放进度'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

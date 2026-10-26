@@ -17,12 +17,18 @@ class _ExportRuntime extends NativeExportRuntime {
   bool pauseValidation = false;
 
   @override
-  Future<bool> validateLocalInput(String path) async => true;
+  Future<bool> validateLocalInput(
+    String path, {
+    List<String> resourcePaths = const [],
+    List<String> allowedRoots = const [],
+  }) async => true;
 
   @override
   Future<String> muxHls({
     required String playlist,
     required String output,
+    List<String> resourcePaths = const [],
+    List<String> allowedRoots = const [],
     String? jobId,
   }) async {
     await File(output).writeAsBytes([1, 2, 3]);

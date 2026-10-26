@@ -951,10 +951,7 @@ class SiteLensPageScaffold extends StatelessWidget {
       ),
       actions: actions == null
           ? null
-          : [
-              for (final action in actions!)
-                SiteLensTopBarAction(child: action),
-            ],
+          : [SiteLensTopBarActionGroup(actions: actions!)],
     ),
     body: Semantics(
       namesRoute: true,
@@ -964,9 +961,42 @@ class SiteLensPageScaffold extends StatelessWidget {
   );
 }
 
-/// A compact action surface used inside ordinary app bars. The app bar owns
+/// One grouped action surface used inside ordinary app bars. The app bar owns
 /// the liquid-glass backdrop; this control adds only the local tint and rim so
 /// it does not create a second glass sampling boundary.
+class SiteLensTopBarActionGroup extends StatelessWidget {
+  const SiteLensTopBarActionGroup({super.key, required this.actions});
+
+  final List<Widget> actions;
+
+  @override
+  Widget build(BuildContext context) {
+    if (actions.isEmpty) return const SizedBox.shrink();
+    final colors = SiteLensColors.of(context);
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(right: 8, top: 5, bottom: 5),
+      child: DecoratedBox(
+        decoration: ShapeDecoration(
+          color: colors.panelTint.withValues(
+            alpha: theme.brightness == Brightness.dark ? 0.72 : 0.86,
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(28),
+            side: BorderSide(color: colors.panelBorder),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final action in actions) SiteLensTopBarAction(child: action),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class SiteLensTopBarAction extends StatelessWidget {
   const SiteLensTopBarAction({super.key, required this.child});
 
@@ -974,47 +1004,37 @@ class SiteLensTopBarAction extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = SiteLensColors.of(context);
     final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 6),
-      child: DecoratedBox(
-        decoration: ShapeDecoration(
-          color: colors.panelTint.withValues(
-            alpha: theme.brightness == Brightness.dark ? 0.78 : 0.92,
-          ),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-            side: BorderSide(color: colors.panelBorder),
-          ),
-        ),
-        child: Material(
-          type: MaterialType.transparency,
-          child: Theme(
-            data: theme.copyWith(
-              iconButtonTheme: IconButtonThemeData(
-                style: ButtonStyle(
-                  foregroundColor: WidgetStatePropertyAll(
-                    theme.colorScheme.onSurfaceVariant,
-                  ),
-                  overlayColor: const WidgetStatePropertyAll(
-                    Colors.transparent,
-                  ),
-                  shape: WidgetStatePropertyAll(
-                    RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                  ),
+      padding: const EdgeInsets.symmetric(horizontal: 1, vertical: 1),
+      child: Material(
+        type: MaterialType.transparency,
+        child: Theme(
+          data: theme.copyWith(
+            iconButtonTheme: IconButtonThemeData(
+              style: ButtonStyle(
+                minimumSize: const WidgetStatePropertyAll(Size(44, 44)),
+                padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+                foregroundColor: WidgetStateProperty.resolveWith(
+                  (states) => states.contains(WidgetState.disabled)
+                      ? SiteLensColors.of(context).disabledContent
+                      : theme.colorScheme.onSurfaceVariant,
                 ),
-              ),
-              popupMenuTheme: theme.popupMenuTheme.copyWith(
-                elevation: 0,
-                shadowColor: Colors.transparent,
-                surfaceTintColor: Colors.transparent,
+                overlayColor: WidgetStateProperty.resolveWith(
+                  (states) => states.contains(WidgetState.pressed)
+                      ? theme.colorScheme.primary.withValues(alpha: 0.14)
+                      : Colors.transparent,
+                ),
+                shape: const WidgetStatePropertyAll(CircleBorder()),
               ),
             ),
-            child: child,
+            popupMenuTheme: theme.popupMenuTheme.copyWith(
+              elevation: 0,
+              shadowColor: Colors.transparent,
+              surfaceTintColor: Colors.transparent,
+            ),
           ),
+          child: child,
         ),
       ),
     );
@@ -1022,7 +1042,7 @@ class SiteLensTopBarAction extends StatelessWidget {
 }
 
 List<Widget> siteLensTopBarActions(Iterable<Widget> actions) => [
-  for (final action in actions) SiteLensTopBarAction(child: action),
+  SiteLensTopBarActionGroup(actions: actions.toList(growable: false)),
 ];
 
 /// Refresh action with continuous activity feedback and reduced-motion support.

@@ -156,4 +156,49 @@ segments/0.ts
       throwsA(anyOf(isA<FormatException>(), isA<FileSystemException>())),
     );
   });
+
+  test(
+    'copyLocalHls materializes controlled shared resource symlinks',
+    () async {
+      final taskRoot = Directory(
+        p.join(root.path, 'media_cache', 'series', 'task.hls'),
+      );
+      final sharedRoot = Directory(
+        p.join(root.path, 'media_cache', 'shared_resources'),
+      );
+      final destination = Directory(p.join(root.path, 'copied-shared-hls'));
+      await taskRoot.create(recursive: true);
+      await sharedRoot.create(recursive: true);
+      final sharedKey = File(p.join(sharedRoot.path, 'key.bin'))
+        ..writeAsBytesSync(List.filled(16, 3));
+      await Link(p.join(taskRoot.path, 'key.bin')).create(sharedKey.path);
+      File(p.join(taskRoot.path, 'segment.ts')).writeAsBytesSync([1, 2, 3]);
+      final manifest = File(p.join(taskRoot.path, 'index.m3u8'))
+        ..writeAsStringSync(
+          '#EXTM3U\n'
+          '#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\n'
+          '#EXTINF:1,\n'
+          'segment.ts\n'
+          '#EXT-X-ENDLIST\n',
+        );
+
+      await copyLocalHls(manifest, destination);
+
+      expect(
+        await File(p.join(destination.path, 'key.bin')).readAsBytes(),
+        List.filled(16, 3),
+      );
+      expect(await File(p.join(destination.path, 'segment.ts')).readAsBytes(), [
+        1,
+        2,
+        3,
+      ]);
+      await taskRoot.delete(recursive: true);
+      await sharedRoot.delete(recursive: true);
+      expect(
+        await File(p.join(destination.path, 'key.bin')).readAsBytes(),
+        List.filled(16, 3),
+      );
+    },
+  );
 }

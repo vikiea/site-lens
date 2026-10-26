@@ -197,9 +197,7 @@ class ScriptService {
 
   Future<List<ScriptRegistration>> registrations({int? profileId}) async {
     if ((await SettingsRepository(db).read()).scriptsDisabled) return [];
-    final runtime = await rootBundle.loadString(
-      'web_assets/userscript_runtime.js',
-    );
+    String? runtime;
     final result = <ScriptRegistration>[];
     final scripts = await db.scripts();
     final links = await db.profileScripts();
@@ -269,6 +267,9 @@ class ScriptService {
         await db.logScriptError(script.id, '确认或依赖完整性已失效，自动关闭');
         continue;
       }
+      runtime ??= await rootBundle.loadString(
+        'web_assets/userscript_runtime.js',
+      );
       if (legacyApproval) {
         // Upgrade the local approval in place. This does not enable an
         // imported/backup script because imported scripts have no digest.

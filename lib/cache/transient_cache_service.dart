@@ -109,7 +109,13 @@ class TransientCacheService {
       recursive: true,
       followLinks: false,
     )) {
-      if (entity is File) total += await entity.length();
+      if (entity is File) {
+        try {
+          total += await entity.length();
+        } on FileSystemException catch (error) {
+          if (!_isMissing(error)) rethrow;
+        }
+      }
     }
     return total;
   }
@@ -124,35 +130,61 @@ class TransientCacheService {
     final children = await directory.list(followLinks: false).toList();
     for (final child in children) {
       if (skipNames.contains(p.basename(child.path))) continue;
-      if (child is File) {
-        bytes += await child.length();
-        await child.delete();
-        files++;
-      } else if (child is Directory) {
-        final result = await _deleteTree(child);
-        files += result.$1;
-        bytes += result.$2;
-      }
+      final result = await _deleteEntity(child);
+      files += result.$1;
+      bytes += result.$2;
     }
     return (files, bytes);
   }
 
   static Future<(int, int)> _deleteTree(Directory directory) async {
+    if (await FileSystemEntity.type(directory.path, followLinks: false) !=
+        FileSystemEntityType.directory) {
+      await _safeDelete(directory);
+      return (0, 0);
+    }
     var files = 0;
     var bytes = 0;
     await for (final entity in directory.list(followLinks: false)) {
-      if (entity is File) {
-        bytes += await entity.length();
-        await entity.delete();
-        files++;
-      } else if (entity is Directory) {
-        final result = await _deleteTree(entity);
-        files += result.$1;
-        bytes += result.$2;
-        await entity.delete();
-      }
+      final result = await _deleteEntity(entity);
+      files += result.$1;
+      bytes += result.$2;
     }
-    await directory.delete();
+    await _safeDelete(directory);
     return (files, bytes);
   }
+
+  static Future<(int, int)> _deleteEntity(FileSystemEntity entity) async {
+    final type = await FileSystemEntity.type(entity.path, followLinks: false);
+    if (type == FileSystemEntityType.file) {
+      var size = 0;
+      try {
+        size = await File(entity.path).length();
+      } on FileSystemException catch (error) {
+        if (!_isMissing(error)) rethrow;
+      }
+      await _safeDelete(entity);
+      return (1, size);
+    }
+    if (type == FileSystemEntityType.directory) {
+      return _deleteTree(Directory(entity.path));
+    }
+    if (type == FileSystemEntityType.link) {
+      // Never traverse links while clearing a cache directory. Removing the
+      // link itself is safe and leaves the target outside the cache intact.
+      await _safeDelete(entity);
+    }
+    return (0, 0);
+  }
+
+  static Future<void> _safeDelete(FileSystemEntity entity) async {
+    try {
+      await entity.delete();
+    } on FileSystemException catch (error) {
+      if (!_isMissing(error)) rethrow;
+    }
+  }
+
+  static bool _isMissing(FileSystemException error) =>
+      error.osError?.errorCode == 2;
 }

@@ -1,7 +1,7 @@
 name: site_lens
 description: A local-first, manually selected multi-site browser with capability-gated user scripts.
 publish_to: none
-version: 0.5.0-alpha3+112
+version: 0.5.0-alpha7+116
 environment:
   sdk: ^3.13.0
 dependencies:

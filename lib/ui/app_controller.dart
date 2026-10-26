@@ -315,6 +315,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _foreground = state == AppLifecycleState.resumed;
     if (_foreground) unawaited(deviceDiagnostics.refreshHcpp());
+    if (state != AppLifecycleState.resumed) {
+      unawaited(_observeActivePlayback());
+      unawaited(watchSaves.flush());
+    }
     unawaited(syncMediaPolicy());
   }
 
@@ -1035,8 +1039,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> setAllowStreamingWhileDownloading(bool value) =>
       updateSettings({'allowStreamingWhileDownloading': value});
 
-  Future<void> setAutoSaveWebPlayback(bool value) =>
-      updateSettings({'autoSaveWebPlayback': value});
+  Future<void> setAutoSaveWebPlayback(bool value) async {
+    await updateSettings({'autoSaveWebPlayback': value});
+    if (value) unawaited(_observeActivePlayback());
+  }
 
   Future<void> setAutoConvertToMp4(bool value) =>
       updateSettings({'autoConvertToMp4': value});
@@ -1448,28 +1454,36 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _observeActivePlayback() async {
-    if (_disposed || !autoSaveWebPlayback) return;
     final tab = activeBrowser;
-    final host = tab?.loadedHost;
+    await _observePlaybackForTab(tab);
+  }
+
+  Future<void> _observePlaybackForTab(
+    ActiveBrowserSession? tab, {
+    bool requireCurrent = true,
+  }) async {
+    if (_disposed || !autoSaveWebPlayback || tab == null) return;
+    final host = tab.loadedHost;
     final evidence = host?.playbackEvidence;
-    if (tab == null ||
-        host == null ||
+    if (host == null ||
         host.disposed ||
         evidence == null ||
         !evidence.watchSaveEligible ||
-        !browserTabs.contains(tab)) {
+        !browserTabs.contains(tab) && requireCurrent) {
       return;
     }
     try {
       await watchSaves.observe(
         evidence,
         profileId: tab.site.profileId,
-        isCurrent: () =>
-            !_disposed &&
-            identical(activeBrowser, tab) &&
-            browserTabs.contains(tab) &&
-            identical(tab.loadedHost, host) &&
-            identical(host.playbackEvidence, evidence),
+        isCurrent: requireCurrent
+            ? () =>
+                  !_disposed &&
+                  identical(activeBrowser, tab) &&
+                  browserTabs.contains(tab) &&
+                  identical(tab.loadedHost, host) &&
+                  identical(host.playbackEvidence, evidence)
+            : null,
       );
     } catch (error, stack) {
       if (!_disposed) {
@@ -2625,6 +2639,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<bool> closeTab(ActiveBrowserSession tab) async {
     final index = browserTabs.indexOf(tab);
     if (index < 0) return browserTabs.isNotEmpty;
+    await _observePlaybackForTab(tab, requireCurrent: false);
     browserTabs.removeAt(index);
     _selectionEpoch++;
     if (identical(activeBrowser, tab)) {
@@ -2670,6 +2685,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     // The native host waits for that release before destroying its WebView.
     notifyListeners();
     for (final tab in open) {
+      await _observePlaybackForTab(tab, requireCurrent: false);
       if (tab.loadedHost != null) await hosts.destroy(tab.loadedHost!);
     }
     if (persist) await _persistSessions();

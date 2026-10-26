@@ -214,10 +214,17 @@ void main() {
       scrollable: find.byType(Scrollable),
     );
     expect(find.text('安全 DNS'), findsOneWidget);
-    await tester.tap(find.text('关闭'));
+    await tester.tap(
+      find
+          .descendant(
+            of: find.byType(SiteLensMenuSelector<SecureDnsProvider>),
+            matching: find.text(SecureDnsProvider.off.label),
+          )
+          .first,
+    );
     await tester.pumpAndSettle();
     for (final provider in SecureDnsProvider.values) {
-      expect(find.text(provider.label), findsOneWidget);
+      expect(find.text(provider.label), findsWidgets);
     }
     await tester.tap(find.text(SecureDnsProvider.cloudflare.label));
     await tester.pumpAndSettle();

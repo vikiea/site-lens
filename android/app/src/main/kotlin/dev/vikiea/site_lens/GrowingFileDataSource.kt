@@ -30,8 +30,25 @@ internal class GrowingFileDataSource(
             "边下边播仅允许应用本地文件"
         }
         val file = File(uri.path ?: error("本地媒体地址无效")).canonicalFile
-        awaitCommitted(file, dataSpec.position)
-        return delegate.open(dataSpec.withUri(Uri.fromFile(file)))
+        var lastError: IOException? = null
+        repeat(OPEN_RETRY_COUNT) { attempt ->
+            awaitCommitted(file, dataSpec.position)
+            try {
+                return delegate.open(dataSpec.withUri(Uri.fromFile(file)))
+            } catch (error: IOException) {
+                lastError = error
+                runCatching { delegate.close() }
+                if (attempt + 1 < OPEN_RETRY_COUNT) {
+                    try {
+                        Thread.sleep(OPEN_RETRY_DELAY_MS)
+                    } catch (interrupted: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        throw InterruptedIOException("媒体读取已取消")
+                    }
+                }
+            }
+        }
+        throw lastError ?: IOException("媒体文件打开失败")
     }
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
@@ -70,5 +87,7 @@ internal class GrowingFileDataSource(
     private companion object {
         const val DEFAULT_WAIT_TIMEOUT_MS = 15_000L
         const val POLL_INTERVAL_MS = 100L
+        const val OPEN_RETRY_COUNT = 8
+        const val OPEN_RETRY_DELAY_MS = 100L
     }
 }

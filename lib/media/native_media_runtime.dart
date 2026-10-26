@@ -101,6 +101,24 @@ class NativeMediaRuntime {
     if (!await file.exists() || await file.length() == 0) {
       throw StateError('本地缓存不存在');
     }
+    final isHls =
+        file.path.toLowerCase().endsWith('.m3u8') ||
+        file.path.toLowerCase().endsWith('.m3u');
+    final partial =
+        isHls &&
+        (task.state == MediaTaskState.downloading ||
+            task.state == MediaTaskState.paused);
+    var resourcePaths = <String>[file.path];
+    if (isHls) {
+      try {
+        final input = await const HlsPlaylistParser().parseFile(file.uri);
+        resourcePaths = input.resourceGraph.resourcePaths;
+      } catch (_) {
+        // The native reader revalidates the graph. A partial manifest can be
+        // changing while it is opened, so keep the playlist lease at minimum
+        // and let the native side report the specific missing resource.
+      }
+    }
     final raw = await _invokeMap('openLocal', {
       'sessionId': 'play_${task.id}_${DateTime.now().microsecondsSinceEpoch}',
       'taskId': task.id,
@@ -109,6 +127,8 @@ class NativeMediaRuntime {
       'mime': inferMediaMime(file.uri),
       'title': task.displayName,
       'autoPlay': autoPlay,
+      'partial': partial,
+      'resourcePaths': resourcePaths,
     });
     return _decode(raw ?? const <String, Object?>{});
   }
