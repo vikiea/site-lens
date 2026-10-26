@@ -23,13 +23,7 @@ class SiteLensFadePageTransitionsBuilder extends PageTransitionsBuilder {
       parent: animation,
       curve: Curves.easeOutCubic,
     );
-    return FadeTransition(
-      opacity: curved,
-      child: ColoredBox(
-        color: SiteLensColors.of(context).backdropTop,
-        child: child,
-      ),
-    );
+    return FadeTransition(opacity: curved, child: child);
   }
 }
 
