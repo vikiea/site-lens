@@ -54,4 +54,28 @@ void main() {
       hasLength(1),
     );
   });
+
+  testWidgets('custom image mode keeps the image above the default mask', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _backdropApp(
+        const BackgroundSnapshot(
+          mode: BackgroundMode.customImage,
+          imagePath: '/site-lens/background.png',
+        ),
+      ),
+    );
+
+    expect(
+      tester
+          .widgetList<DecoratedBox>(find.byType(DecoratedBox))
+          .where(
+            (box) =>
+                box.decoration is BoxDecoration &&
+                (box.decoration as BoxDecoration).gradient is RadialGradient,
+          ),
+      isEmpty,
+    );
+  });
 }

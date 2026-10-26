@@ -25,6 +25,7 @@ Widget _siteLensBackdropGradient(
 }) {
   final colors = SiteLensColors.of(context);
   final dark = Theme.of(context).brightness == Brightness.dark;
+  final themeAccent = colors.backdropTint.withValues(alpha: 1);
   return DecoratedBox(
     decoration: BoxDecoration(
       gradient: LinearGradient(
@@ -32,17 +33,13 @@ Widget _siteLensBackdropGradient(
         end: Alignment.bottomCenter,
         colors: [
           useThemeSource
-              ? Color.lerp(
-                  colors.backdropTop,
-                  colors.backdropTint,
-                  dark ? 0.52 : 0.30,
-                )!
+              ? Color.lerp(colors.backdropTop, themeAccent, dark ? 0.34 : 0.24)!
               : colors.backdropTop,
           useThemeSource
               ? Color.lerp(
                   colors.backdropBottom,
-                  colors.backdropTint,
-                  dark ? 0.36 : 0.22,
+                  themeAccent,
+                  dark ? 0.24 : 0.16,
                 )!
               : colors.backdropBottom,
         ],
@@ -106,7 +103,7 @@ class SiteLensBackdrop extends StatelessWidget {
               ),
             ),
           ),
-        if (!transparent)
+        if (!transparent && image == null)
           DecoratedBox(
             decoration: BoxDecoration(
               gradient: RadialGradient(
