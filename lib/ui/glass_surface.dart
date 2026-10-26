@@ -19,6 +19,38 @@ export 'glass_quality_strategy.dart'
         SiteLensGlassQualityLabel,
         SiteLensSurfaceRole;
 
+Widget _siteLensBackdropGradient(
+  BuildContext context, {
+  required bool useThemeSource,
+}) {
+  final colors = SiteLensColors.of(context);
+  final dark = Theme.of(context).brightness == Brightness.dark;
+  return DecoratedBox(
+    decoration: BoxDecoration(
+      gradient: LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          useThemeSource
+              ? Color.lerp(
+                  colors.backdropTop,
+                  colors.backdropTint,
+                  dark ? 0.52 : 0.30,
+                )!
+              : colors.backdropTop,
+          useThemeSource
+              ? Color.lerp(
+                  colors.backdropBottom,
+                  colors.backdropTint,
+                  dark ? 0.36 : 0.22,
+                )!
+              : colors.backdropBottom,
+        ],
+      ),
+    ),
+  );
+}
+
 /// The app-wide backdrop: one static, low-saturation gradient (tinted by the
 /// selected theme) that every glass surface refracts.
 ///
@@ -39,43 +71,31 @@ class SiteLensBackdrop extends StatelessWidget {
     final colors = SiteLensColors.of(context);
     final imagePath = background.imagePath;
     final transparent = background.mode == BackgroundMode.transparent;
-    final image = imagePath == null
+    final useImage =
+        imagePath != null &&
+        (background.mode == BackgroundMode.customImage || transparent);
+    final useThemeSource =
+        background.mode == BackgroundMode.themeBuiltIn ||
+        (transparent && !useImage);
+    final image = !useImage
         ? null
         : Image.file(
             File(imagePath),
             fit: BoxFit.cover,
             filterQuality: FilterQuality.low,
-            errorBuilder: (_, _, _) => const SizedBox.shrink(),
+            errorBuilder: (_, _, _) => _siteLensBackdropGradient(
+              context,
+              // A broken custom image in transparent mode follows the same
+              // fallback order as a missing asset: theme background first.
+              useThemeSource: transparent,
+            ),
           );
     return Stack(
       fit: StackFit.expand,
       children: [
         if (image != null) Positioned.fill(child: image),
-        if (image == null || background.mode == BackgroundMode.themeBuiltIn)
-          DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  background.mode == BackgroundMode.themeBuiltIn
-                      ? Color.lerp(
-                          colors.backdropTop,
-                          colors.backdropTint,
-                          0.34,
-                        )!
-                      : colors.backdropTop,
-                  background.mode == BackgroundMode.themeBuiltIn
-                      ? Color.lerp(
-                          colors.backdropBottom,
-                          colors.backdropTint,
-                          0.20,
-                        )!
-                      : colors.backdropBottom,
-                ],
-              ),
-            ),
-          ),
+        if (image == null)
+          _siteLensBackdropGradient(context, useThemeSource: useThemeSource),
         if (!transparent && image != null)
           Positioned.fill(
             child: ColoredBox(

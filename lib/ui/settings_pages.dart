@@ -130,23 +130,7 @@ class SettingsPage extends StatelessWidget {
         ),
       ]),
       if (Theme.of(context).platform == TargetPlatform.android)
-        _settingsSection('网络', [
-          SiteLensCompactRow(
-            leading: const Icon(Icons.shield_outlined, size: 18),
-            title: const Text('安全 DNS'),
-            subtitle: const Text('优先使用 DoH，失败时回退系统 DNS'),
-            trailing: SiteLensMenuSelector<SecureDnsProvider>(
-              label: '安全 DNS',
-              value: app.settings.secureDnsProvider,
-              options: [
-                for (final provider in SecureDnsProvider.values)
-                  SiteLensMenuOption(value: provider, label: provider.label),
-              ],
-              onSelected: (value) =>
-                  safely(context, () => app.setSecureDnsProvider(value)),
-            ),
-          ),
-        ]),
+        _settingsSection('网络', [_SecureDnsSetting(app: app)]),
       _settingsSection('媒体', [
         _settingsSwitch(
           context,
@@ -403,6 +387,16 @@ class _BackgroundSetting extends StatelessWidget {
 
   final AppController app;
 
+  Future<void> _selectMode(BuildContext context, BackgroundMode mode) async {
+    if (mode == BackgroundMode.customImage &&
+        (app.settings.backgroundAssetId == null ||
+            app.background.assetMissing)) {
+      await _pick(context);
+      return;
+    }
+    await safely(context, () => app.setBackgroundMode(mode));
+  }
+
   Future<void> _pick(BuildContext context) async {
     await safely(context, () async {
       final result = await FilePicker.pickFiles(
@@ -438,8 +432,7 @@ class _BackgroundSetting extends StatelessWidget {
               for (final option in BackgroundMode.values)
                 SiteLensMenuOption(value: option, label: option.label),
             ],
-            onSelected: (value) =>
-                safely(context, () => app.setBackgroundMode(value)),
+            onSelected: (value) => _selectMode(context, value),
           ),
         ),
         if (mode == BackgroundMode.customImage || background.assetMissing)
@@ -484,6 +477,52 @@ class _BackgroundSetting extends StatelessWidget {
       ],
     );
   }
+}
+
+class _SecureDnsSetting extends StatefulWidget {
+  const _SecureDnsSetting({required this.app});
+
+  final AppController app;
+
+  @override
+  State<_SecureDnsSetting> createState() => _SecureDnsSettingState();
+}
+
+class _SecureDnsSettingState extends State<_SecureDnsSetting> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) => SiteLensDisclosure(
+    title: const Text('安全 DNS'),
+    subtitle: Text(widget.app.settings.secureDnsProvider.label),
+    leading: const Icon(Icons.shield_outlined, size: 18),
+    expanded: _expanded,
+    onToggle: () => setState(() => _expanded = !_expanded),
+    trailingBuilder: (context, expanded) => Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SiteLensMenuSelector<SecureDnsProvider>(
+          label: '安全 DNS',
+          value: widget.app.settings.secureDnsProvider,
+          options: [
+            for (final provider in SecureDnsProvider.values)
+              SiteLensMenuOption(value: provider, label: provider.label),
+          ],
+          onSelected: (value) =>
+              safely(context, () => widget.app.setSecureDnsProvider(value)),
+        ),
+        const SizedBox(width: 4),
+        Icon(
+          expanded ? Icons.expand_less : Icons.expand_more,
+          size: SiteLensMetrics.compactIconSize,
+        ),
+      ],
+    ),
+    details: (context) => Text(
+      '优先使用 DoH 解析公网域名；DoH 失败时自动回退系统 DNS。WebView、DLNA/局域网和系统托管下载继续使用系统解析。',
+      style: Theme.of(context).textTheme.bodySmall,
+    ),
+  );
 }
 
 class _CacheSetting extends StatefulWidget {
