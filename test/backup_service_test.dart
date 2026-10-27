@@ -35,6 +35,37 @@ Uint8List rewrite(Uint8List input, void Function(Map<String, dynamic>) change) {
   );
 }
 
+Uint8List rewriteSchema(
+  Uint8List input,
+  int schema,
+  void Function(Map<String, dynamic>) change,
+) {
+  final archive = ZipDecoder().decodeBytes(input);
+  final manifest = jsonDecode(
+    utf8.decode(archive.findFile('manifest.json')!.readBytes()!),
+  ) as Map<String, dynamic>;
+  final body = jsonDecode(
+    utf8.decode(archive.findFile('business.json')!.readBytes()!),
+  ) as Map<String, dynamic>;
+  manifest['schema'] = schema;
+  change(body);
+  final contents = utf8.encode(jsonEncode(body));
+  manifest['bytes'] = contents.length;
+  manifest['sha256'] = sha256.convert(contents).toString();
+  final header = utf8.encode(jsonEncode(manifest));
+  return ZipEncoder().encodeBytes(
+    Archive()
+      ..add(
+        ArchiveFile('manifest.json', header.length, header)
+          ..compression = CompressionType.none,
+      )
+      ..add(
+        ArchiveFile('business.json', contents.length, contents)
+          ..compression = CompressionType.none,
+      ),
+  );
+}
+
 void main() {
   late AppDatabase db;
   late BackupService backup;
@@ -65,8 +96,48 @@ void main() {
   });
   tearDown(() => db.close());
 
+  test(
+    'schema 13 watch saves gain the later progress defaults on import',
+    () async {
+      await db.customStatement(
+        'INSERT INTO watch_saves(owner_id,source_key,source_url,series_key,episode_number,title,page_url,host_id,generation,state,profile_id,created_at,updated_at,position_ms,duration_ms,evidence_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [
+          'watch-legacy',
+          'source',
+          'https://example.com/source',
+          'series',
+          1,
+          'Episode 1',
+          'https://example.com/watch',
+          1,
+          1,
+          'paused',
+          null,
+          '2026-10-11',
+          '2026-10-11',
+          1234,
+          5000,
+          'revision',
+        ],
+      );
+      final archive = await backup.export();
+      final bytes = rewriteSchema(archive, 13, (data) {
+        final row = (data['tables']['watch_saves'] as List).single as Map;
+        row.remove('position_ms');
+        row.remove('duration_ms');
+        row.remove('evidence_revision');
+      });
+      final snapshot = await backup.validate(bytes);
+      await backup.restore(snapshot);
+      final restored = (await db.watchSaves()).single;
+      expect(restored.positionMs, 0);
+      expect(restored.durationMs, isNull);
+      expect(restored.evidenceRevision, '');
+    },
+  );
+
   test('schema 8 through 11 business backups stay compatible with current media indexing', () async {
-    for (final schema in [8, 9, 10, 11]) {
+    for (final schema in [8, 9, 10, 11, 12, 13, 14, 15, 16]) {
       final source = ZipDecoder().decodeBytes(await backup.export());
       final manifest = jsonDecode(
         utf8.decode(source.findFile('manifest.json')!.readBytes()!),

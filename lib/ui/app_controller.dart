@@ -107,9 +107,18 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     );
     filterSnapshots = FilterSnapshotStore();
     filterSources = FilterSourceManager(store: filterSnapshots, db: db);
+    final mediaResourceCoordinator = MediaResourceCoordinator(
+      rootProvider: () async {
+        final root = await mediaTasks.cacheRootDirectory();
+        final shared = Directory('${root.path}/shared_resources');
+        await shared.create(recursive: true);
+        return shared;
+      },
+    );
     mediaTasks = MediaTaskStore(
       db: db,
       directoryProvider: mediaDirectoryProvider,
+      resourceCoordinator: mediaResourceCoordinator,
     );
     watchSaves = WatchSaveStore(db);
     nativeDownloads = Platform.isAndroid ? NativeDownloadRuntime() : null;
@@ -137,14 +146,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       ),
       authorize: _authorizeMediaDownload,
       tlsTransfer: Platform.isAndroid ? MediaNetwork().transferFile : null,
-      resourceCoordinator: MediaResourceCoordinator(
-        rootProvider: () async {
-          final root = await mediaTasks.cacheRootDirectory();
-          final shared = Directory('${root.path}/shared_resources');
-          await shared.create(recursive: true);
-          return shared;
-        },
-      ),
+      resourceCoordinator: mediaResourceCoordinator,
     );
     mediaExports = Mp4ExportService(tasks: mediaTasks, native: nativeExports);
     mediaLibrary = MediaLibrary(
@@ -494,6 +496,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void>? _initialization;
   Future<void>? _browserPreparation;
   Future<void>? _deferredStartup;
+  Future<void>? _nativePlaybackRestore;
   bool _profilesKnown = false;
   bool _browserPreparationFailed = false;
   bool mediaReady = false;
@@ -599,6 +602,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
             mediaLibrary.restore,
           );
           if (_disposed) return;
+          await _restoreNativePlaybackIfAvailable();
+          if (_disposed) return;
           startupTrace.markOnce(
             StartupPhase.mediaLibraryReady,
             itemCount: mediaLibrary.items.length,
@@ -675,6 +680,41 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     await mediaTasks.ready;
     await mediaLibrary.restore();
     await watchSaves.restore();
+    await _restoreNativePlaybackIfAvailable();
+  }
+
+  Future<void> _restoreNativePlaybackIfAvailable() =>
+      _nativePlaybackRestore ??= _restoreNativePlayback();
+
+  Future<void> _restoreNativePlayback() async {
+    if (!Platform.isAndroid || _disposed) return;
+    try {
+      final saved = await nativeMedia.state();
+      if (saved.state != NativePlaybackState.restorable ||
+          saved.taskId.isEmpty) {
+        if (saved.state == NativePlaybackState.restorable) {
+          await nativeMedia.discardRestorable();
+        }
+        return;
+      }
+      final task = mediaTasks.task(saved.taskId);
+      if (task == null) {
+        await nativeMedia.discardRestorable();
+        return;
+      }
+      final file = await mediaPlaybackFile(task, preferExported: false);
+      if (file == null || _disposed) {
+        if (!_disposed) await nativeMedia.discardRestorable();
+        return;
+      }
+      await nativeMedia.restoreLocal(task, file, play: false);
+    } catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.playback.restore',
+        stack: stack,
+      );
+    }
   }
 
   String get glassQualityFingerprint =>
@@ -2756,6 +2796,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final defaults = AppSettings(scriptsDisabled: scriptsDisabled).toJson()
       ..remove('version');
     await updateSettings(defaults);
+    await backgroundAssets.cleanupUnused(const []);
     await const HealthScheduler().apply(backgroundHealthCheck);
     await _persistSessions();
   }

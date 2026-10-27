@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:site_lens/background/background_snapshot.dart';
+import 'package:site_lens/settings/app_settings.dart';
 import 'package:site_lens/ui/app_theme.dart';
+import 'package:site_lens/ui/glass_surface.dart';
 import 'package:site_lens/ui/ui_primitives.dart';
 
 const _options = [
@@ -308,7 +311,11 @@ void main() {
         await tester.pumpWidget(_harness(theme: theme, onSelected: (_) {}));
         final trigger = tester.widget<TextButton>(_trigger);
         final colors = SiteLensColors.of(tester.element(_trigger));
-        expect(trigger.style!.side!.resolve({})!.color, Colors.transparent);
+        final control = colors.controlSurface(
+          BackgroundMode.defaultGradient,
+          accent: theme.colorScheme.primary,
+        );
+        expect(trigger.style!.side!.resolve({})!.color, control.border);
         for (final state in [
           WidgetState.pressed,
           WidgetState.focused,
@@ -316,11 +323,13 @@ void main() {
         ]) {
           expect(
             trigger.style!.overlayColor!.resolve({state}),
-            Colors.transparent,
+            state == WidgetState.pressed || state == WidgetState.hovered
+                ? control.interaction
+                : Colors.transparent,
           );
           expect(
             trigger.style!.backgroundColor!.resolve({state}),
-            colors.glassSurface,
+            control.fill,
           );
         }
         expect(trigger.style!.splashFactory, NoSplash.splashFactory);
@@ -332,17 +341,17 @@ void main() {
         );
         expect(
           ink.overlayColor!.resolve({WidgetState.pressed}),
-          Colors.transparent,
+          control.interaction,
         );
         await press.up();
         await tester.pump();
         final anchor = tester.widget<MenuAnchor>(find.byType(MenuAnchor));
-        expect(anchor.style!.shape!.resolve({})!.side, BorderSide.none);
+        expect(anchor.style!.shape!.resolve({})!.side.color, control.border);
         expect(
           (_buttonMaterial(tester, _trigger).shape! as OutlinedBorder)
               .side
               .color,
-          Colors.transparent,
+          control.border,
         );
         expect(
           anchor.style!.backgroundColor!.resolve({}),
@@ -366,6 +375,43 @@ void main() {
         expect(tester.takeException(), isNull);
       });
     }
+  }
+
+  for (final mode in BackgroundMode.values) {
+    testWidgets('selector uses the shared glass token for $mode', (
+      tester,
+    ) async {
+      final theme = buildSiteLensTheme(
+        ThemePresetId.oceanBlue,
+        Brightness.light,
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: theme,
+          home: SiteLensBackdrop(
+            background: BackgroundSnapshot(mode: mode),
+            child: Scaffold(
+              body: SiteLensMenuSelector<int>(
+                label: '选择上下滑动操作',
+                value: 0,
+                options: _options,
+                onSelected: (_) {},
+              ),
+            ),
+          ),
+        ),
+      );
+      final trigger = tester.widget<TextButton>(_trigger);
+      final context = tester.element(_trigger);
+      final colors = SiteLensColors.of(context);
+      final control = colors.controlSurface(
+        mode,
+        accent: Theme.of(context).colorScheme.primary,
+      );
+      expect(trigger.style!.backgroundColor!.resolve({}), control.fill);
+      expect(trigger.style!.side!.resolve({})!.color, control.border);
+      expect(tester.takeException(), isNull);
+    });
   }
 
   for (final direction in TextDirection.values) {

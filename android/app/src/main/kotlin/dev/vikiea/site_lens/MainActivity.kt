@@ -34,6 +34,7 @@ class MainActivity : FlutterActivity() {
     private var pendingNotification: Pair<String, String>? = null
     private var notificationPermissionAsked = false
     private var nativeMedia: NativeMediaRuntime? = null
+    private var appRuntime: NativeAppRuntime? = null
     private var nativeDownloads: NativeDownloadRuntime? = null
     private var nativeExport: NativeExportRuntime? = null
     private var deviceDiagnostics: NativeDeviceDiagnostics? = null
@@ -95,10 +96,8 @@ class MainActivity : FlutterActivity() {
             }
         }
         hosts = NativeWebHostRegistry(this, flutterEngine)
-        AppRuntimeApi.setUp(
-            flutterEngine.dartExecutor.binaryMessenger,
-            NativeAppRuntime(requireNotNull(hosts)),
-        )
+        appRuntime = NativeAppRuntime(requireNotNull(hosts))
+        AppRuntimeApi.setUp(flutterEngine.dartExecutor.binaryMessenger, appRuntime)
         deviceDiagnostics = NativeDeviceDiagnostics(this) { dlnaMulticastLock?.isHeld ?: false }
         DeviceDiagnosticsApi.setUp(flutterEngine.dartExecutor.binaryMessenger, deviceDiagnostics)
         registerDiagnosticsChannel(flutterEngine)
@@ -260,7 +259,15 @@ class MainActivity : FlutterActivity() {
                 NativeMediaAuthRefreshService.refresh(
                     applicationContext,
                     NativeMediaAuthRefreshService.Request(taskId, pageUrl, mediaUrl, resourceKey) { value ->
-                        if (generation == authRefreshGeneration) result.success(value)
+                        if (generation == authRefreshGeneration) {
+                            result.success(value)
+                        } else {
+                            result.error(
+                                "engine_replaced",
+                                "Flutter 引擎已替换，授权刷新已取消",
+                                null,
+                            )
+                        }
                     },
                 )
             }
@@ -404,6 +411,9 @@ class MainActivity : FlutterActivity() {
         authRefreshGeneration++
         diagnosticsExecutor?.shutdownNow()
         diagnosticsExecutor = null
+        AppRuntimeApi.setUp(flutterEngine.dartExecutor.binaryMessenger, null)
+        appRuntime?.dispose()
+        appRuntime = null
         DeviceDiagnosticsApi.setUp(flutterEngine.dartExecutor.binaryMessenger, null)
         deviceDiagnostics?.dispose()
         deviceDiagnostics = null

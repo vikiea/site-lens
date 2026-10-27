@@ -105,17 +105,21 @@ class TransientCacheService {
   static Future<int> _directoryBytes(Directory directory) async {
     if (!await directory.exists()) return 0;
     var total = 0;
-    await for (final entity in directory.list(
-      recursive: true,
-      followLinks: false,
-    )) {
-      if (entity is File) {
-        try {
-          total += await entity.length();
-        } on FileSystemException catch (error) {
-          if (!_isMissing(error)) rethrow;
+    try {
+      await for (final entity in directory.list(
+        recursive: true,
+        followLinks: false,
+      )) {
+        if (entity is File) {
+          try {
+            total += await entity.length();
+          } on FileSystemException catch (error) {
+            if (!_isMissing(error)) rethrow;
+          }
         }
       }
+    } on FileSystemException catch (error) {
+      if (!_isMissing(error)) rethrow;
     }
     return total;
   }
@@ -127,7 +131,13 @@ class TransientCacheService {
     if (!await directory.exists()) return (0, 0);
     var files = 0;
     var bytes = 0;
-    final children = await directory.list(followLinks: false).toList();
+    late final List<FileSystemEntity> children;
+    try {
+      children = await directory.list(followLinks: false).toList();
+    } on FileSystemException catch (error) {
+      if (_isMissing(error)) return (0, 0);
+      rethrow;
+    }
     for (final child in children) {
       if (skipNames.contains(p.basename(child.path))) continue;
       final result = await _deleteEntity(child);
@@ -145,10 +155,14 @@ class TransientCacheService {
     }
     var files = 0;
     var bytes = 0;
-    await for (final entity in directory.list(followLinks: false)) {
-      final result = await _deleteEntity(entity);
-      files += result.$1;
-      bytes += result.$2;
+    try {
+      await for (final entity in directory.list(followLinks: false)) {
+        final result = await _deleteEntity(entity);
+        files += result.$1;
+        bytes += result.$2;
+      }
+    } on FileSystemException catch (error) {
+      if (!_isMissing(error)) rethrow;
     }
     await _safeDelete(directory);
     return (files, bytes);

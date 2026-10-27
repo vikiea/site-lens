@@ -281,7 +281,19 @@ class AppDatabase extends GeneratedDatabase {
         await customStatement(_v15MediaResourceKeyColumn);
       }
       if (from < 16) await customStatement(_v16MediaResourcesTable);
-      if (from < 17) await customStatement(_v17MediaResourceOwnersTable);
+      if (from < 17) {
+        await customStatement(_v17MediaResourceOwnersTable);
+        await customStatement(
+          'INSERT OR IGNORE INTO media_resources(resource_key,state,bytes_downloaded,total_bytes,updated_at) '
+          'SELECT resource_key,\'observed\',0,NULL,updated_at FROM media_tasks '
+          'WHERE resource_key IS NOT NULL AND resource_key <> \'\'',
+        );
+        await customStatement(
+          'INSERT OR IGNORE INTO media_resource_owners(resource_key,owner_id,owner_kind,created_at) '
+          'SELECT resource_key,\'task:\' || id,\'task\',updated_at FROM media_tasks '
+          'WHERE resource_key IS NOT NULL AND resource_key <> \'\'',
+        );
+      }
     },
     beforeOpen: (_) async {
       await customStatement('PRAGMA foreign_keys = ON');
@@ -1643,6 +1655,19 @@ class AppDatabase extends GeneratedDatabase {
         'DELETE FROM media_resource_owners WHERE resource_key=? AND owner_id=?',
         [resourceKey, ownerId],
       );
+
+  Future<void> deleteMediaResourceIfUnowned(String resourceKey) =>
+      transaction(() async {
+        final owner = await customSelect(
+          'SELECT 1 FROM media_resource_owners WHERE resource_key=? LIMIT 1',
+          variables: [Variable.withString(resourceKey)],
+        ).getSingleOrNull();
+        if (owner != null) return;
+        await customStatement(
+          'DELETE FROM media_resources WHERE resource_key=?',
+          [resourceKey],
+        );
+      });
 
   Future<WatchSave?> watchSave(String ownerId) async {
     final row = await customSelect(

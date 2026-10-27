@@ -6,10 +6,7 @@ import 'package:path/path.dart' as p;
 
 import '../network/transport.dart';
 
-typedef MediaResourceWriter = Future<void> Function(
-  File staging,
-  Cancellation cancellation,
-);
+typedef MediaResourceWriter = Function;
 
 /// Persistent single-writer gate for a committed shared media resource.
 ///
@@ -24,6 +21,7 @@ class MediaResourceCoordinator {
   final _inflight = <String, _InFlightEnsure>{};
   final _serial = <String, Future<void>>{};
   static const _waitTimeout = Duration(minutes: 2);
+  static const _leaseTimeout = Duration(seconds: 30);
 
   Future<File> ensure(
     String resourceKey,
@@ -118,18 +116,96 @@ class MediaResourceCoordinator {
     }
   }
 
-  Future<void> _deleteUnderLease(String resourceKey) async {
+  /// Rechecks ownership while holding the same persistent lease used by
+  /// writers. This closes the check-then-delete race between a database owner
+  /// read and a replacement resource publication.
+  Future<bool> deleteIf(
+    String resourceKey,
+    Future<bool> Function() shouldDelete,
+  ) async {
+    _validateKey(resourceKey);
+    var deleted = false;
+    final gate = _serial[resourceKey] ?? Future<void>.value();
+    final operation = gate.then<void>((_) async {
+      deleted = await _deleteUnderLease(resourceKey, shouldDelete);
+    });
+    final tail = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    _serial[resourceKey] = tail;
+    try {
+      await operation;
+    } finally {
+      if (identical(_serial[resourceKey], tail)) _serial.remove(resourceKey);
+    }
+    return deleted;
+  }
+
+  /// Runs a database owner mutation while no writer or deletion can hold the
+  /// resource lease.
+  Future<T> withLease<T>(
+    String resourceKey,
+    Future<T> Function() action,
+  ) async {
+    _validateKey(resourceKey);
+    final gate = _serial[resourceKey] ?? Future<void>.value();
+    late T value;
+    final operation = gate.then<void>((_) async {
+      final root = await rootProvider();
+      await root.create(recursive: true);
+      final target = File(p.join(root.path, '$resourceKey.resource'));
+      final lease = await _acquireLease(
+        resourceKey,
+        root,
+        target,
+        allowExisting: true,
+      );
+      if (lease == null) {
+        value = await action();
+        return;
+      }
+      try {
+        value = await action();
+      } finally {
+        await lease.release();
+      }
+    });
+    final tail = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    _serial[resourceKey] = tail;
+    try {
+      await operation;
+    } finally {
+      if (identical(_serial[resourceKey], tail)) _serial.remove(resourceKey);
+    }
+    return value;
+  }
+
+  Future<bool> _deleteUnderLease(
+    String resourceKey, [
+    Future<bool> Function()? shouldDelete,
+  ]) async {
     final root = await rootProvider();
     await root.create(recursive: true);
     final target = File(p.join(root.path, '$resourceKey.resource'));
+    final lock = Directory(p.join(root.path, '$resourceKey.resource.lock'));
+    if (!await target.exists() && !await lock.exists()) {
+      // Give an already scheduled ensure() a chance to publish its lease
+      // before an independent coordinator claims deletion.
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+    }
     final lease = await _acquireLease(
       resourceKey,
       root,
       target,
       allowExisting: true,
     );
-    if (lease == null) return;
+    if (lease == null) return false;
     try {
+      if (shouldDelete != null && !await shouldDelete()) return false;
       for (final suffix in [
         '.resource',
         '.resource.part',
@@ -141,6 +217,7 @@ class MediaResourceCoordinator {
         final file = File(p.join(root.path, '$resourceKey$suffix'));
         if (await file.exists()) await file.delete();
       }
+      return true;
     } finally {
       await lease.release();
     }
@@ -175,7 +252,13 @@ class MediaResourceCoordinator {
     try {
       cancellation.check();
       if (await target.exists() && await target.length() > 0) return target;
-      await writer(staging, cancellation);
+      if (writer is Future<void> Function(File, Cancellation)) {
+        await writer(staging, cancellation);
+      } else if (writer is Future<void> Function(File)) {
+        await writer(staging);
+      } else {
+        throw ArgumentError('共享媒体资源写入器签名无效');
+      }
       cancellation.check();
       if (!await staging.exists() || await staging.length() <= 0) {
         throw StateError('共享媒体资源写入为空');
@@ -226,7 +309,30 @@ class MediaResourceCoordinator {
           await guard.close();
           return null;
         }
-        if (await lock.exists()) await lock.delete(recursive: true);
+        if (await lock.exists()) {
+          var stale = false;
+          try {
+            final metadata = File(p.join(lock.path, 'owner.json'));
+            final parsed = jsonDecode(await metadata.readAsString()) as Map;
+            final updatedAt = DateTime.tryParse(
+              parsed['updatedAt'] as String? ?? '',
+            );
+            stale =
+                updatedAt == null ||
+                DateTime.now().toUtc().difference(updatedAt).abs() >
+                    _leaseTimeout;
+          } catch (_) {
+            stale = false;
+          }
+          if (!stale) {
+            await guard.unlock();
+            await guard.close();
+            guard = null;
+            await Future<void>.delayed(const Duration(milliseconds: 100));
+            continue;
+          }
+          await lock.delete(recursive: true);
+        }
         final temporaryLock = Directory('${lock.path}.$owner.tmp');
         await temporaryLock.create();
         final metadata = File(p.join(temporaryLock.path, 'owner.json'));

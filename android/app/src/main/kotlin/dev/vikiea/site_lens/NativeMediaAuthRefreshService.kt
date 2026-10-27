@@ -13,16 +13,20 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.core.content.ContextCompat
+import java.io.ByteArrayInputStream
 import java.security.MessageDigest
 import java.util.ArrayDeque
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.TimeUnit
 
 /**
@@ -32,17 +36,21 @@ import java.util.concurrent.TimeUnit
  */
 class NativeMediaAuthRefreshService : Service() {
     private val main = Handler(Looper.getMainLooper())
-    private var webView: WebView? = null
-    private val queuedRequests = ArrayDeque<Request>()
+    private val requests = ArrayDeque<Request>()
     private var activeRequest: Request? = null
-    private var activeToken = 0L
-    private var nextToken = 0L
+    private var webView: WebView? = null
+    private var finished = false
     private var timeoutRunnable: Runnable? = null
+    private var cookieSettleRunnable: Runnable? = null
+    private var initialCookie = ""
+    private var nextToken = 0L
+    private var activeToken = 0L
+    private val postedRequests = AtomicInteger(0)
 
     override fun onCreate() {
         super.onCreate()
         ensureForeground()
-        synchronized(Companion) { instance = this }
+        synchronized(pendingLock) { instance = this }
         drainPending()
     }
 
@@ -52,17 +60,30 @@ class NativeMediaAuthRefreshService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        val stopped = result("waiting_execution", "授权刷新服务已停止")
-        activeRequest?.let { request -> runCatching { request.callback(stopped) } }
-        while (queuedRequests.isNotEmpty()) {
-            val request = queuedRequests.removeFirst()
-            runCatching { request.callback(stopped) }
+        activeToken = ++nextToken
+        finished = true
+        timeoutRunnable?.let(main::removeCallbacks)
+        timeoutRunnable = null
+        cookieSettleRunnable?.let(main::removeCallbacks)
+        cookieSettleRunnable = null
+        activeRequest?.let { request ->
+            runCatching {
+                request.callback(
+                    result("waiting_execution", "授权刷新服务已停止"),
+                )
+            }
         }
         activeRequest = null
-        timeoutRunnable = null
-        main.removeCallbacksAndMessages(null)
+        requests.forEach { request ->
+            runCatching {
+                request.callback(
+                    result("waiting_execution", "授权刷新服务已停止"),
+                )
+            }
+        }
+        requests.clear()
         cleanup()
-        synchronized(Companion) {
+        synchronized(pendingLock) {
             if (instance === this) instance = null
         }
         super.onDestroy()
@@ -94,30 +115,43 @@ class NativeMediaAuthRefreshService : Service() {
     }
 
     private fun enqueue(request: Request) {
-        if (queuedRequests.size >= MAX_QUEUED_REQUESTS) {
-            request.callback(result("waiting_execution", "授权刷新队列繁忙"))
-            return
-        }
-        queuedRequests.addLast(request)
+        requests.addLast(request)
         startNext()
     }
 
     private fun startNext() {
-        if (activeRequest != null) return
-        if (queuedRequests.isEmpty()) {
-            stopSelf()
-            return
-        }
-        val request = queuedRequests.removeFirst()
-        val token = ++nextToken
+        if (activeRequest != null || requests.isEmpty()) return
+        val request = requests.removeFirst()
         activeRequest = request
-        activeToken = token
-        runCatching { startRefresh(token, request) }.onFailure {
-            finish(token, result("failed", it.message ?: "授权刷新失败"))
+        try {
+            refresh(request)
+        } catch (error: Exception) {
+            finish(
+                activeToken,
+                request.callback,
+                result("failed", error.message ?: "授权刷新失败"),
+            )
         }
     }
 
-    private fun startRefresh(token: Long, request: Request) {
+    private fun postRequest(request: Request) {
+        postedRequests.incrementAndGet()
+        main.post {
+            postedRequests.decrementAndGet()
+            if (instance === this) {
+                enqueue(request)
+            } else {
+                runCatching {
+                    request.callback(result("waiting_execution", "授权刷新服务已停止"))
+                }
+            }
+        }
+    }
+
+    private fun refresh(request: Request) {
+        val token = ++nextToken
+        activeToken = token
+        finished = false
         val page = parseHttp(request.pageUrl)
         val media = parseHttp(request.mediaUrl)
         require(page != null && media != null) { "媒体授权刷新地址无效" }
@@ -127,6 +161,25 @@ class NativeMediaAuthRefreshService : Service() {
         require(refreshRequest.resourceKey.isEmpty() ||
             refreshRequest.resourceKey.matches(Regex("[0-9a-f]{64}"))) {
             "媒体资源身份无效"
+        }
+        val currentCookie = CookieManager.getInstance().getCookie(request.pageUrl).orEmpty()
+        val cachedRefresh = recentRefresh(pageOrigin, currentCookie)
+        if (cachedRefresh) {
+            finish(token,
+                refreshRequest.callback,
+                refreshedResult(refreshRequest, pageOrigin, allowedMediaOrigin, currentCookie),
+            )
+            return
+        }
+        // This service only refreshes same-origin cookies. It cannot discover
+        // or replace a signed media URL, so retrying a URL with query
+        // credentials would repeat the expired authorization unchanged.
+        if (requiresUrlReauthorization(media)) {
+            finish(token,
+                refreshRequest.callback,
+                result("reauthorize", "媒体地址需要播放页重新授权"),
+            )
+            return
         }
         val view = WebView(applicationContext)
         webView = view
@@ -144,10 +197,42 @@ class NativeMediaAuthRefreshService : Service() {
             ): Boolean = false
         }
         view.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(
+                view: WebView,
+                url: String,
+                favicon: android.graphics.Bitmap?,
+            ) {
+                val current = parseHttp(url)
+                if (current == null || origin(current) != pageOrigin) {
+                    finish(token, refreshRequest.callback, result("reauthorize", "授权页面来源已变化"))
+                    view.stopLoading()
+                }
+            }
+
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest,
+            ): WebResourceResponse? {
+                if (request.isForMainFrame) {
+                    val next = parseHttp(request.url.toString())
+                    if (next == null || origin(next) != pageOrigin) {
+                        main.post {
+                            finish(token, refreshRequest.callback, result("reauthorize", "页面尝试跨站跳转"))
+                        }
+                        return WebResourceResponse(
+                            "text/plain",
+                            "UTF-8",
+                            ByteArrayInputStream(ByteArray(0)),
+                        )
+                    }
+                }
+                return super.shouldInterceptRequest(view, request)
+            }
+
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                val next = request.url
-                if (origin(next) != pageOrigin) {
-                    finish(token, result("reauthorize", "页面尝试跨站跳转"))
+                val next = parseHttp(request.url.toString())
+                if (next == null || origin(next) != pageOrigin) {
+                    finish(token, refreshRequest.callback, result("reauthorize", "页面尝试跨站跳转"))
                     return true
                 }
                 return false
@@ -156,7 +241,7 @@ class NativeMediaAuthRefreshService : Service() {
             override fun onPageFinished(view: WebView, url: String) {
                 val current = parseHttp(url)
                 if (current == null || origin(current) != pageOrigin) {
-                    finish(token, result("reauthorize", "授权页面来源已变化"))
+                    finish(token, refreshRequest.callback, result("reauthorize", "授权页面来源已变化"))
                     return
                 }
                 val title = (view.title ?: "").lowercase()
@@ -164,26 +249,14 @@ class NativeMediaAuthRefreshService : Service() {
                     title.contains("登录") || title.contains("login") ||
                     title.contains("sign in")
                 if (challenge) {
-                    finish(token, result("reauthorize", "页面需要人工验证或登录"))
+                    finish(token, refreshRequest.callback, result("reauthorize", "页面需要人工验证或登录"))
                     return
                 }
-                val cookie = CookieManager.getInstance().getCookie(refreshRequest.pageUrl).orEmpty()
-                val digest = MessageDigest.getInstance("SHA-256")
-                    .digest(cookie.toByteArray(Charsets.UTF_8))
-                    .joinToString("") { byte -> "%02x".format(byte) }
-                finish(
+                scheduleCookieSettlement(
                     token,
-                    result(
-                        "refreshed",
-                        null,
-                        mapOf(
-                            "taskId" to refreshRequest.taskId,
-                            "pageOrigin" to pageOrigin,
-                            "mediaOrigin" to allowedMediaOrigin,
-                            "resourceKey" to refreshRequest.resourceKey,
-                            "cookieDigest" to digest,
-                        ),
-                    ),
+                    refreshRequest,
+                    pageOrigin,
+                    allowedMediaOrigin,
                 )
             }
 
@@ -193,27 +266,75 @@ class NativeMediaAuthRefreshService : Service() {
                 error: WebResourceError,
             ) {
                 if (request.isForMainFrame) {
-                    finish(token, result("failed", error.description?.toString()))
+                    finish(token, refreshRequest.callback, result("failed", error.description?.toString()))
                 }
             }
         }
+        initialCookie = CookieManager.getInstance().getCookie(request.pageUrl).orEmpty()
         view.loadUrl(request.pageUrl)
-        val timeout = Runnable {
-            finish(token, result("waiting_execution", "授权刷新超时"))
+        timeoutRunnable = Runnable {
+            if (token == activeToken && !finished) {
+                finish(token, request.callback, result("waiting_execution", "授权刷新超时"))
+            }
         }
-        timeoutRunnable = timeout
-        main.postDelayed(timeout, TIMEOUT_MS)
+        main.postDelayed(timeoutRunnable!!, TIMEOUT_MS)
     }
 
-    private fun finish(token: Long, value: Map<String, Any?>) {
-        if (activeRequest == null || token != activeToken) return
-        val request = activeRequest ?: return
-        activeRequest = null
+    private fun scheduleCookieSettlement(
+        token: Long,
+        request: Request,
+        pageOrigin: String,
+        mediaOrigin: String,
+    ) {
+        cookieSettleRunnable?.let(main::removeCallbacks)
+        val deadline = SystemClock.uptimeMillis() + COOKIE_SETTLE_TIMEOUT_MS
+
+        fun poll() {
+            if (token != activeToken || finished) return
+            runCatching { CookieManager.getInstance().flush() }
+            val cookie = CookieManager.getInstance().getCookie(request.pageUrl).orEmpty()
+            if (cookie != initialCookie) {
+                rememberRefresh(pageOrigin, cookie)
+                val digest = MessageDigest.getInstance("SHA-256")
+                    .digest(cookie.toByteArray(Charsets.UTF_8))
+                    .joinToString("") { byte -> "%02x".format(byte) }
+                finish(token, request.callback, refreshedResult(request, pageOrigin, mediaOrigin, cookie, digest))
+                return
+            }
+            if (SystemClock.uptimeMillis() >= deadline) {
+                finish(token,
+                    request.callback,
+                    result("reauthorize", "授权状态未更新，请返回播放页重新授权"),
+                )
+                return
+            }
+            cookieSettleRunnable = Runnable { poll() }
+            main.postDelayed(cookieSettleRunnable!!, COOKIE_SETTLE_INTERVAL_MS)
+        }
+
+        cookieSettleRunnable = Runnable { poll() }
+        main.postDelayed(cookieSettleRunnable!!, COOKIE_SETTLE_INTERVAL_MS)
+    }
+
+    private fun finish(
+        token: Long,
+        callback: (Map<String, Any?>) -> Unit,
+        value: Map<String, Any?>,
+    ) {
+        if (token != activeToken || finished) return
+        finished = true
         timeoutRunnable?.let(main::removeCallbacks)
         timeoutRunnable = null
+        cookieSettleRunnable?.let(main::removeCallbacks)
+        cookieSettleRunnable = null
+        runCatching { callback(value) }
         cleanup()
-        runCatching { request.callback(value) }
-        if (queuedRequests.isEmpty()) stopSelf() else startNext()
+        activeRequest = null
+        if (requests.isEmpty() && postedRequests.get() == 0) {
+            stopSelf()
+        } else {
+            startNext()
+        }
     }
 
     private fun cleanup() {
@@ -236,6 +357,32 @@ class NativeMediaAuthRefreshService : Service() {
         putAll(extra)
     }
 
+    private fun refreshedResult(
+        request: Request,
+        pageOrigin: String,
+        mediaOrigin: String,
+        cookie: String,
+        digestOverride: String? = null,
+    ): Map<String, Any?> {
+        val digest = digestOverride ?: MessageDigest.getInstance("SHA-256")
+            .digest(cookie.toByteArray(Charsets.UTF_8))
+            .joinToString("") { byte -> "%02x".format(byte) }
+        return result(
+            "refreshed",
+            null,
+            mapOf(
+                "taskId" to request.taskId,
+                "pageOrigin" to pageOrigin,
+                "mediaOrigin" to mediaOrigin,
+                "resourceKey" to request.resourceKey,
+                "cookieDigest" to digest,
+            ),
+        )
+    }
+
+    private fun requiresUrlReauthorization(uri: Uri): Boolean =
+        uri.queryParameterNames.any { it.lowercase() !in NON_AUTH_MEDIA_QUERY_KEYS }
+
     data class Request(
         val taskId: String,
         val pageUrl: String,
@@ -248,33 +395,63 @@ class NativeMediaAuthRefreshService : Service() {
         private const val CHANNEL = "site-lens-media-auth"
         private const val ID = 24003
         private const val TIMEOUT_MS = 15_000L
-        private const val MAX_QUEUED_REQUESTS = 3
-        private const val MAX_PENDING_REQUESTS = 3
+        private const val COOKIE_SETTLE_INTERVAL_MS = 250L
+        private const val COOKIE_SETTLE_TIMEOUT_MS = 3_000L
+        private const val RECENT_REFRESH_TTL_MS = 15_000L
+        private val NON_AUTH_MEDIA_QUERY_KEYS = setOf(
+            "quality",
+            "audio",
+            "format",
+            "type",
+            "profile",
+            "resolution",
+            "codec",
+            "lang",
+            "language",
+            "track",
+            "channel",
+            "bitrate",
+            "width",
+            "height",
+            "fps",
+            "variant",
+            "version",
+            "v",
+            "source",
+            "episode",
+            "season",
+            "start",
+            "offset",
+            "range",
+            "download",
+            "filename",
+            "container",
+        )
         private var instance: NativeMediaAuthRefreshService? = null
-        private val pending = ArrayDeque<() -> Unit>()
+        private val pendingLock = Any()
+        private val pending = ArrayDeque<Request>()
+        private data class RecentRefresh(val cookie: String, val expiresAt: Long)
+        private val recentRefreshes = mutableMapOf<String, RecentRefresh>()
+        private val refreshLock = Any()
 
-        @Synchronized
         fun refresh(context: Context, request: Request) {
-            val service = instance
+            val service = synchronized(pendingLock) {
+                instance ?: run {
+                    pending.addLast(request)
+                    null
+                }
+            }
             if (service != null) {
-                service.main.post { service.enqueue(request) }
+                service.postRequest(request)
                 return
             }
-            val action: () -> Unit = {
-                instance?.main?.post { instance?.enqueue(request) }
-            }
-            if (pending.size >= MAX_PENDING_REQUESTS) {
-                request.callback(mapOf("state" to "waiting_execution", "reason" to "授权刷新队列繁忙"))
-                return
-            }
-            pending.addLast(action)
             try {
                 ContextCompat.startForegroundService(
                     context.applicationContext,
                     Intent(context.applicationContext, NativeMediaAuthRefreshService::class.java),
                 )
             } catch (error: Exception) {
-                pending.remove(action)
+                synchronized(pendingLock) { pending.remove(request) }
                 request.callback(mapOf("state" to "waiting_execution", "reason" to (error.message ?: "系统暂不允许后台执行")))
             }
         }
@@ -292,27 +469,51 @@ class NativeMediaAuthRefreshService : Service() {
                 value = it
                 latch.countDown()
             })
-            latch.await(
-                TIMEOUT_MS * (MAX_PENDING_REQUESTS + 1L) + 2_000L,
-                TimeUnit.MILLISECONDS,
-            )
+            latch.await(TIMEOUT_MS + 2_000L, TimeUnit.MILLISECONDS)
             return value
         }
 
         private fun drainPending() {
-            val actions = synchronized(Companion) {
-                val copy = pending.toList()
-                pending.clear()
-                copy
+            val queued = synchronized(pendingLock) {
+                buildList {
+                    while (pending.isNotEmpty()) add(pending.removeFirst())
+                }
             }
-            actions.forEach { it.invoke() }
+            val service = synchronized(pendingLock) { instance } ?: return
+            queued.forEach(service::postRequest)
+        }
+
+        private fun recentRefresh(origin: String, cookie: String): Boolean {
+            val now = SystemClock.uptimeMillis()
+            synchronized(refreshLock) {
+                val cached = recentRefreshes[origin]
+                if (cached == null || cached.expiresAt <= now) {
+                    recentRefreshes.remove(origin)
+                    return false
+                }
+                return cached.cookie == cookie
+            }
+        }
+
+        private fun rememberRefresh(origin: String, cookie: String) {
+            synchronized(refreshLock) {
+                recentRefreshes[origin] = RecentRefresh(
+                    cookie,
+                    SystemClock.uptimeMillis() + RECENT_REFRESH_TTL_MS,
+                )
+            }
         }
 
         private fun parseHttp(raw: String): Uri? = runCatching {
             Uri.parse(raw).takeIf { it.scheme in setOf("http", "https") && !it.host.isNullOrBlank() && it.userInfo == null }
         }.getOrNull()
 
-        private fun origin(uri: Uri): String =
-            "${uri.scheme}://${uri.host!!.lowercase()}${if (uri.port != -1) ":${uri.port}" else ""}"
+        private fun origin(uri: Uri): String {
+            val scheme = uri.scheme!!.lowercase()
+            val port = uri.port
+            val defaultPort = if (scheme == "https") 443 else 80
+            val suffix = if (port == -1 || port == defaultPort) "" else ":$port"
+            return "$scheme://${uri.host!!.lowercase()}$suffix"
+        }
     }
 }

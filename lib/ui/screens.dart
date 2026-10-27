@@ -30,6 +30,7 @@ import '../settings/app_settings.dart'
         BackgroundModeLabel,
         PlayerVerticalGestureModeLabel,
         SecureDnsProvider,
+        SecureDnsProviderWireId,
         SecureDnsProviderLabel,
         SiteLensGlassQualityMode;
 import 'glass_surface.dart';
@@ -3580,6 +3581,8 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                           generation: current.generation,
                           sourceUrl: authorized.sourceUrl,
                           sessionId: 'candidate_${candidate.id}',
+                          secureDnsProvider:
+                              widget.app.secureDnsResolver.provider.wireId,
                         );
                         if (mounted) {
                           await Navigator.of(context).push(

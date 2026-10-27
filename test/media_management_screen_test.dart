@@ -123,8 +123,19 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    final watchRow = find.ancestor(
+      of: find.text('示例剧集'),
+      matching: find.byType(SiteLensCompactRow),
+    );
+    final detailsButton = find.descendant(
+      of: watchRow,
+      matching: find.byType(SiteLensCompactIconButton),
+    );
+    expect(detailsButton, findsOneWidget);
+    await tester.tap(detailsButton);
+    await tester.pumpAndSettle();
     expect(
-      find.byTooltip('第 1 集 · 00:30 / 02:00 · 已暂停 · 10-24 20:30'),
+      find.text('第 1 集 · 00:30 / 02:00 · 已暂停 · 10-24 20:30'),
       findsOneWidget,
     );
 

@@ -31,7 +31,7 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn('MediaFileLeaseRegistry.Scope.file(File(uri.path!!).parentFile!!)', NATIVE_SESSION)
         self.assertIn('NativeMediaFileLeases.registry.acquireRead(leaseScope)', NATIVE_SESSION)
         self.assertLess(NATIVE_SESSION.index('acquireRead(leaseScope)'), NATIVE_SESSION.index('player.setMediaItem'))
-        stop = NATIVE_MEDIA.split('private fun stop(stopService: Boolean = true)', 1)[1].split('private fun attachSurface(', 1)[0]
+        stop = NATIVE_MEDIA.split('private fun stopLocalPlayer()', 1)[1].split('private fun ensureTexture(', 1)[0]
         self.assertLess(stop.index('media.release()'), stop.index('fileLease?.close()'))
 
     def test_native_media_session_service_owns_background_player_and_promotes_foreground(self):
@@ -51,16 +51,16 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn('serviceSessionId = null', NATIVE_MEDIA)
         for token in (
             'data class PendingAction',
-            'onCancelled',
-            'serviceUnavailable()',
-            'pending.removeFirst().cancel()',
-            'snapshotFromStoredState(context)',
+            'cancel: () -> Unit',
+            'action.cancel()',
+            'pending.removeFirst()',
             'pending.isEmpty()',
+            'instance === service',
         ):
             self.assertIn(token, NATIVE_SESSION)
 
     def test_local_service_replacement_does_not_stop_the_service(self):
-        self.assertIn('stop(stopService = false)', NATIVE_MEDIA)
+        self.assertIn('stopLocalPlayer()', NATIVE_MEDIA)
         replacement = NATIVE_MEDIA.split('private fun openInService(', 1)[1].split(
             'private fun start(', 1
         )[0]
@@ -113,11 +113,15 @@ class NativeMediaContractTests(unittest.TestCase):
             'CookieManager.getInstance().getCookie',
             '"cookieDigest" to digest',
             'startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)',
-            'queuedRequests',
+            'requests',
             'activeRequest',
+            'pendingLock',
+            'postedRequests',
             'activeToken',
             'private fun startNext()',
-            'if (activeRequest == null || token != activeToken) return',
+            'if (activeRequest != null || requests.isEmpty()) return',
+            'private fun postRequest(request: Request)',
+            'if (token != activeToken || finished) return',
         ):
             self.assertIn(token, AUTH_REFRESH)
         self.assertNotIn('evaluateJavascript', AUTH_REFRESH)

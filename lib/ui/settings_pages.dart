@@ -362,6 +362,15 @@ class _ThemePresetSwatch extends StatelessWidget {
                 color: selected ? scheme.primary : scheme.surface,
                 width: selected ? 3 : 2,
               ),
+              boxShadow: selected
+                  ? [
+                      BoxShadow(
+                        color: scheme.primary.withValues(alpha: 0.24),
+                        blurRadius: 0,
+                        spreadRadius: 1,
+                      ),
+                    ]
+                  : null,
             ),
             child: selected
                 ? Icon(Icons.check, size: 22, color: foreground)
@@ -380,7 +389,8 @@ class _BackgroundSetting extends StatelessWidget {
 
   Future<void> _selectMode(BuildContext context, BackgroundMode mode) async {
     if (mode == BackgroundMode.customImage &&
-        app.settings.backgroundAssetId == null) {
+        (app.settings.backgroundAssetId == null ||
+            app.background.assetMissing)) {
       await _pick(context);
       return;
     }
@@ -488,15 +498,25 @@ class _SecureDnsSettingState extends State<_SecureDnsSetting> {
     leading: const Icon(Icons.shield_outlined, size: 18),
     expanded: _expanded,
     onToggle: () => setState(() => _expanded = !_expanded),
-    trailing: SiteLensMenuSelector<SecureDnsProvider>(
-      label: '安全 DNS',
-      value: widget.app.settings.secureDnsProvider,
-      options: [
-        for (final provider in SecureDnsProvider.values)
-          SiteLensMenuOption(value: provider, label: provider.label),
+    trailingBuilder: (context, expanded) => Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SiteLensMenuSelector<SecureDnsProvider>(
+          label: '安全 DNS',
+          value: widget.app.settings.secureDnsProvider,
+          options: [
+            for (final provider in SecureDnsProvider.values)
+              SiteLensMenuOption(value: provider, label: provider.label),
+          ],
+          onSelected: (value) =>
+              safely(context, () => widget.app.setSecureDnsProvider(value)),
+        ),
+        const SizedBox(width: 4),
+        Icon(
+          expanded ? Icons.expand_less : Icons.expand_more,
+          size: SiteLensMetrics.compactIconSize,
+        ),
       ],
-      onSelected: (value) =>
-          safely(context, () => widget.app.setSecureDnsProvider(value)),
     ),
     details: (context) => Text(
       '优先使用 DoH 解析公网域名；DoH 失败时自动回退系统 DNS。WebView、DLNA/局域网和系统托管下载继续使用系统解析。',

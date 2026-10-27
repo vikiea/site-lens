@@ -35,10 +35,8 @@ class BackgroundAssetStore {
     final root = await _root();
     final target = File(p.join(root.path, assetId));
     if (await target.exists() && await target.length() == bytes.length) {
-      final existingDigest = sha256
-          .convert(await target.readAsBytes())
-          .toString();
-      if (existingDigest == digest) return assetId;
+      final existingDigest = await sha256.bind(target.openRead()).first;
+      if (existingDigest.toString() == digest) return assetId;
     }
     final temporary = File('${target.path}.part');
     await temporary.writeAsBytes(bytes, flush: true);
@@ -57,15 +55,23 @@ class BackgroundAssetStore {
     }
     final normalized = _normalizeExtension(extension);
     _validateSignature(bytes, normalized);
-    final headerDimensions = _readHeaderDimensions(bytes, normalized);
-    if (headerDimensions != null) {
-      _validateDimensions(headerDimensions.width, headerDimensions.height);
+    final dimensions = _encodedDimensions(bytes, normalized);
+    if (dimensions.width > maxDimension ||
+        dimensions.height > maxDimension ||
+        dimensions.width * dimensions.height > maxPixels) {
+      throw const FormatException('背景图片解码尺寸过大');
     }
     final codec = await _decode(bytes);
     try {
       final frame = await codec.getNextFrame();
       try {
-        _validateDimensions(frame.image.width, frame.image.height);
+        final width = frame.image.width;
+        final height = frame.image.height;
+        if (width > maxDimension ||
+            height > maxDimension ||
+            width * height > maxPixels) {
+          throw const FormatException('背景图片解码尺寸过大');
+        }
       } finally {
         frame.image.dispose();
       }
@@ -75,54 +81,51 @@ class BackgroundAssetStore {
     return normalized;
   }
 
-  static ({int width, int height})? _readHeaderDimensions(
+  static Future<ui.Codec> _decode(Uint8List bytes) async {
+    try {
+      return await ui.instantiateImageCodec(bytes);
+    } catch (_) {
+      throw const FormatException('背景图片无法解码');
+    }
+  }
+
+  static ({int width, int height}) _encodedDimensions(
     Uint8List bytes,
     String extension,
   ) {
-    return switch (extension) {
-      'png' => _readPngDimensions(bytes),
-      'jpg' || 'jpeg' => _readJpegDimensions(bytes),
-      'webp' => _readWebpDimensions(bytes),
-      _ => null,
-    };
-  }
-
-  static void _validateDimensions(int width, int height) {
-    if (width > maxDimension ||
-        height > maxDimension ||
-        width * height > maxPixels) {
-      throw const FormatException('背景图片解码尺寸过大');
+    switch (extension) {
+      case 'png':
+        if (bytes.length < 24) throw const FormatException('背景图片头无效');
+        return (width: _u32be(bytes, 16), height: _u32be(bytes, 20));
+      case 'jpg':
+      case 'jpeg':
+        return _jpegDimensions(bytes);
+      case 'webp':
+        return _webpDimensions(bytes);
+      default:
+        throw const FormatException('背景图片头无效');
     }
   }
 
-  static ({int width, int height})? _readPngDimensions(Uint8List bytes) {
-    if (bytes.length < 24 ||
-        !_matches(bytes, 12, const [0x49, 0x48, 0x44, 0x52])) {
-      return null;
-    }
-    return (width: _u32be(bytes, 16), height: _u32be(bytes, 20));
-  }
-
-  static ({int width, int height})? _readJpegDimensions(Uint8List bytes) {
-    if (bytes.length < 4) return null;
+  static ({int width, int height}) _jpegDimensions(Uint8List bytes) {
     var offset = 2;
-    while (offset + 1 < bytes.length) {
-      if (bytes[offset] != 0xff) {
-        offset++;
-        continue;
-      }
+    while (offset + 3 < bytes.length) {
       while (offset < bytes.length && bytes[offset] == 0xff) {
         offset++;
       }
-      if (offset >= bytes.length) return null;
+      if (offset >= bytes.length) break;
       final marker = bytes[offset++];
-      if (marker == 0xd8 || marker == 0xd9) continue;
-      if (marker == 0xda) return null;
-      if ((marker >= 0xd0 && marker <= 0xd7) || marker == 0x01) continue;
-      if (offset + 2 > bytes.length) return null;
+      if (marker == 0xd8 || marker == 0xd9 || marker == 0x01) continue;
+      if (marker == 0xda) break;
+      if (offset + 1 >= bytes.length) break;
       final length = _u16be(bytes, offset);
-      if (length < 2 || offset + length > bytes.length) return null;
-      if (_isJpegSof(marker) && length >= 7) {
+      if (length < 2 || offset + length > bytes.length) break;
+      final sof =
+          (marker >= 0xc0 && marker <= 0xc3) ||
+          (marker >= 0xc5 && marker <= 0xc7) ||
+          (marker >= 0xc9 && marker <= 0xcb) ||
+          (marker >= 0xcd && marker <= 0xcf);
+      if (sof && length >= 7) {
         return (
           width: _u16be(bytes, offset + 5),
           height: _u16be(bytes, offset + 3),
@@ -130,81 +133,45 @@ class BackgroundAssetStore {
       }
       offset += length;
     }
-    return null;
+    throw const FormatException('背景图片头无效');
   }
 
-  static ({int width, int height})? _readWebpDimensions(Uint8List bytes) {
-    if (bytes.length < 20 ||
-        !_matches(bytes, 12, const [0x56, 0x50, 0x38, 0x58]) &&
-            !_matches(bytes, 12, const [0x56, 0x50, 0x38, 0x20]) &&
-            !_matches(bytes, 12, const [0x56, 0x50, 0x38, 0x4c])) {
-      return null;
-    }
+  static ({int width, int height}) _webpDimensions(Uint8List bytes) {
     var offset = 12;
     while (offset + 8 <= bytes.length) {
+      final tag = String.fromCharCodes(bytes.sublist(offset, offset + 4));
+      final size = _u32le(bytes, offset + 4);
       final data = offset + 8;
-      final length = _u32le(bytes, offset + 4);
-      final end = data + length;
-      if (end > bytes.length) return null;
-      if (_matches(bytes, offset, const [0x56, 0x50, 0x38, 0x58]) &&
-          length >= 10 &&
-          data + 10 <= bytes.length) {
+      if (data + size > bytes.length) break;
+      if (tag == 'VP8X' && size >= 10) {
         return (
           width: 1 + _u24le(bytes, data + 4),
           height: 1 + _u24le(bytes, data + 7),
         );
       }
-      if (_matches(bytes, offset, const [0x56, 0x50, 0x38, 0x20]) &&
-          length >= 10 &&
-          data + 10 <= bytes.length &&
-          _matches(bytes, data + 3, const [0x9d, 0x01, 0x2a])) {
+      if (tag == 'VP8 ' &&
+          size >= 10 &&
+          bytes[data + 3] == 0x9d &&
+          bytes[data + 4] == 0x01 &&
+          bytes[data + 5] == 0x2a) {
         return (
-          width: _u16le(bytes, data + 6),
-          height: _u16le(bytes, data + 8),
+          width: _u16le(bytes, data + 6) & 0x3fff,
+          height: _u16le(bytes, data + 8) & 0x3fff,
         );
       }
-      if (_matches(bytes, offset, const [0x56, 0x50, 0x38, 0x4c]) &&
-          length >= 5 &&
-          data + 5 <= bytes.length &&
-          bytes[data] == 0x2f) {
-        final second = bytes[data + 1];
-        final third = bytes[data + 2];
+      if (tag == 'VP8L' && size >= 5 && bytes[data] == 0x2f) {
+        final b1 = bytes[data + 1];
+        final b2 = bytes[data + 2];
+        final b3 = bytes[data + 3];
+        final b4 = bytes[data + 4];
         return (
-          width: 1 + second + ((third & 0x3f) << 8),
-          height:
-              1 +
-              ((third >> 6) |
-                  (bytes[data + 3] << 2) |
-                  ((bytes[data + 4] & 0x0f) << 10)),
+          width: 1 + (b1 | ((b2 & 0x3f) << 8)),
+          height: 1 + ((b2 >> 6) | (b3 << 2) | ((b4 & 0x0f) << 10)),
         );
       }
-      offset = data + length + (length.isOdd ? 1 : 0);
+      offset = data + size + (size.isOdd ? 1 : 0);
     }
-    return null;
-  }
-
-  static bool _isJpegSof(int marker) => <int>{
-    0xc0,
-    0xc1,
-    0xc2,
-    0xc3,
-    0xc5,
-    0xc6,
-    0xc7,
-    0xc9,
-    0xca,
-    0xcb,
-    0xcd,
-    0xce,
-    0xcf,
-  }.contains(marker);
-
-  static bool _matches(Uint8List bytes, int offset, List<int> expected) {
-    if (offset < 0 || offset + expected.length > bytes.length) return false;
-    for (var index = 0; index < expected.length; index++) {
-      if (bytes[offset + index] != expected[index]) return false;
-    }
-    return true;
+    throw const FormatException('背景图片头无效');
   }
 
   static int _u16be(Uint8List bytes, int offset) =>
@@ -227,14 +194,6 @@ class BackgroundAssetStore {
       (bytes[offset + 1] << 8) |
       (bytes[offset + 2] << 16) |
       (bytes[offset + 3] << 24);
-
-  static Future<ui.Codec> _decode(Uint8List bytes) async {
-    try {
-      return await ui.instantiateImageCodec(bytes);
-    } catch (_) {
-      throw const FormatException('背景图片无法解码');
-    }
-  }
 
   Future<File?> fileFor(String? assetId) async {
     if (assetId == null || !_assetId.hasMatch(assetId)) return null;
