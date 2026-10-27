@@ -1110,6 +1110,56 @@ void main() {
     expect(http.calls, hasLength(3));
   });
 
+  test(
+    'queued HLS seek priority prefetches the target before backlog',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-hls-seek-priority-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final playlistUrl = Uri.parse('https://cdn.example/seek/index.m3u8');
+      final segment = (String name) => FetchResponse(
+        url: Uri.parse('https://cdn.example/seek/$name'),
+        status: 200,
+        bytes: [1, 2, 3],
+        headers: const {},
+      );
+      final http = _MapHttp({
+        playlistUrl.toString(): FetchResponse(
+          url: playlistUrl,
+          status: 200,
+          bytes: utf8.encode(
+            '#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:2\n'
+            '#EXTINF:2,\nseg00.ts\n#EXTINF:2,\nseg01.ts\n'
+            '#EXTINF:2,\nseg02.ts\n#EXT-X-ENDLIST\n',
+          ),
+          headers: const {},
+        ),
+        for (final name in ['seg00.ts', 'seg01.ts', 'seg02.ts'])
+          'https://cdn.example/seek/$name': segment(name),
+      });
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final hls = candidate(
+        id: 'queued-seek-priority',
+        url: playlistUrl.toString(),
+        mime: 'application/vnd.apple.mpegurl',
+      );
+      final task = store.create(hls);
+      final service = MediaDownloadService(tasks: store, http: http);
+
+      service.prioritizeHlsSeek(task.id, 4500);
+      await service.start(task, hls);
+
+      final segmentCalls = http.calls
+          .where((url) => url.endsWith('.ts'))
+          .toList();
+      expect(
+        segmentCalls.indexWhere((url) => url.endsWith('/seg02.ts')),
+        lessThan(segmentCalls.indexWhere((url) => url.endsWith('/seg01.ts'))),
+      );
+    },
+  );
+
   test('cachedBytes sums HLS resources instead of only the manifest', () async {
     final root = await Directory.systemTemp.createTemp('site-lens-hls-size-');
     addTearDown(() => root.delete(recursive: true));

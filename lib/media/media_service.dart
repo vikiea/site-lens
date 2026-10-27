@@ -1912,7 +1912,10 @@ class MediaDownloadService {
   }
 
   void prioritizeHlsSeek(String taskId, int targetMs) {
-    if (tasks.task(taskId)?.state != MediaTaskState.downloading) return;
+    final state = tasks.task(taskId)?.state;
+    if (state != MediaTaskState.queued && state != MediaTaskState.downloading) {
+      return;
+    }
     _hlsSeekTargets[tasks.resolveTaskId(taskId)] = targetMs.clamp(0, 1 << 62);
     setTaskPriority(taskId, 100);
   }
