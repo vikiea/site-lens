@@ -1118,7 +1118,7 @@ void main() {
       );
       addTearDown(() => root.delete(recursive: true));
       final playlistUrl = Uri.parse('https://cdn.example/seek/index.m3u8');
-      final segment = (String name) => FetchResponse(
+      FetchResponse segment(String name) => FetchResponse(
         url: Uri.parse('https://cdn.example/seek/$name'),
         status: 200,
         bytes: [1, 2, 3],
