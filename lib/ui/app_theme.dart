@@ -1,5 +1,3 @@
-import 'dart:ui' as ui;
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -8,11 +6,16 @@ export '../settings/app_settings.dart' show ThemePresetId, ThemeModePreference;
 
 /// Shared geometry. Every screen takes its spacing, radii and control sizes
 /// from here so the whole app reads as one material instead of five.
-/// Route transitions use a small spatial motion without putting glass surfaces
-/// under an opacity layer, which would make them leave their shared backdrop
-/// group during the transition.
-class SiteLensPageTransitionsBuilder extends PageTransitionsBuilder {
-  const SiteLensPageTransitionsBuilder();
+/// Page routes switch in one frame so transparent glass pages never composite
+/// with the route below them, and expensive glass surfaces are not animated.
+class SiteLensNoAnimationPageTransitionsBuilder extends PageTransitionsBuilder {
+  const SiteLensNoAnimationPageTransitionsBuilder();
+
+  @override
+  Duration get transitionDuration => Duration.zero;
+
+  @override
+  Duration get reverseTransitionDuration => Duration.zero;
 
   @override
   Widget buildTransitions<T>(
@@ -21,83 +24,7 @@ class SiteLensPageTransitionsBuilder extends PageTransitionsBuilder {
     Animation<double> animation,
     Animation<double> secondaryAnimation,
     Widget child,
-  ) {
-    if (MediaQuery.disableAnimationsOf(context)) return child;
-    final entering = CurvedAnimation(
-      parent: animation,
-      curve: Curves.easeOutCubic,
-    );
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        SiteLensTransitionScrim(animation: animation),
-        SlideTransition(
-          position: Tween<Offset>(
-            begin: const Offset(0.04, 0),
-            end: Offset.zero,
-          ).animate(entering),
-          child: child,
-        ),
-      ],
-    );
-  }
-}
-
-class SiteLensTransitionScope extends InheritedWidget {
-  const SiteLensTransitionScope({
-    super.key,
-    required this.webViewVisible,
-    required super.child,
-  });
-
-  final bool webViewVisible;
-
-  static bool webViewVisibleOf(BuildContext context) =>
-      context
-          .dependOnInheritedWidgetOfExactType<SiteLensTransitionScope>()
-          ?.webViewVisible ??
-      false;
-
-  @override
-  bool updateShouldNotify(SiteLensTransitionScope oldWidget) =>
-      oldWidget.webViewVisible != webViewVisible;
-}
-
-class SiteLensTransitionScrim extends StatelessWidget {
-  const SiteLensTransitionScrim({super.key, required this.animation});
-
-  final Animation<double> animation;
-
-  @override
-  Widget build(BuildContext context) => Positioned.fill(
-    child: IgnorePointer(
-      child: AnimatedBuilder(
-        animation: animation,
-        builder: (context, _) {
-          final reverse = animation.status == AnimationStatus.reverse;
-          final progress = (reverse ? animation.value : 1 - animation.value)
-              .clamp(0.0, 1.0)
-              .toDouble();
-          if (progress <= 0.001) return const SizedBox.shrink();
-
-          final scrim = ColoredBox(
-            color: SiteLensColors.of(context).glassSurface
-                .withValues(alpha: 0.58 * progress),
-          );
-          if (SiteLensTransitionScope.webViewVisibleOf(context)) {
-            return scrim;
-          }
-          return BackdropFilter(
-            filter: ui.ImageFilter.blur(
-              sigmaX: 4 * progress,
-              sigmaY: 4 * progress,
-            ),
-            child: scrim,
-          );
-        },
-      ),
-    ),
-  );
+  ) => child;
 }
 
 /// Android edge overscroll can temporarily invalidate the backdrop layer used
@@ -619,12 +546,12 @@ ThemeData buildSiteLensTheme(
     ],
     pageTransitionsTheme: const PageTransitionsTheme(
       builders: {
-        TargetPlatform.android: SiteLensPageTransitionsBuilder(),
-        TargetPlatform.iOS: SiteLensPageTransitionsBuilder(),
-        TargetPlatform.linux: SiteLensPageTransitionsBuilder(),
-        TargetPlatform.macOS: SiteLensPageTransitionsBuilder(),
-        TargetPlatform.windows: SiteLensPageTransitionsBuilder(),
-        TargetPlatform.fuchsia: SiteLensPageTransitionsBuilder(),
+        TargetPlatform.android: SiteLensNoAnimationPageTransitionsBuilder(),
+        TargetPlatform.iOS: SiteLensNoAnimationPageTransitionsBuilder(),
+        TargetPlatform.linux: SiteLensNoAnimationPageTransitionsBuilder(),
+        TargetPlatform.macOS: SiteLensNoAnimationPageTransitionsBuilder(),
+        TargetPlatform.windows: SiteLensNoAnimationPageTransitionsBuilder(),
+        TargetPlatform.fuchsia: SiteLensNoAnimationPageTransitionsBuilder(),
       },
     ),
     appBarTheme: AppBarTheme(

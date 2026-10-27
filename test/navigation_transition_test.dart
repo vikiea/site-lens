@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/ui/app_theme.dart';
-import 'package:site_lens/ui/ui_primitives.dart';
 
 void main() {
-  testWidgets('route transition uses slide motion without fade', (
+  testWidgets('route transitions complete immediately without old content', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -15,17 +14,33 @@ void main() {
     );
     await tester.pump();
 
-    Navigator.of(tester.element(find.text('首页'))).push<void>(
+    final navigator = Navigator.of(tester.element(find.text('首页')));
+    final pushed = navigator.push<void>(
       MaterialPageRoute<void>(builder: (_) => const Scaffold(body: Text('详情'))),
     );
-    await tester.pump(const Duration(milliseconds: 80));
+    await tester.pump();
 
-    expect(find.byType(SlideTransition), findsAtLeastNWidgets(1));
-    expect(find.byType(SiteLensTransitionScrim), findsOneWidget);
+    expect(find.text('详情'), findsOneWidget);
+    expect(find.text('首页'), findsNothing);
+    expect(find.byType(AnimatedSwitcher), findsNothing);
+    expect(find.byType(SlideTransition), findsNothing);
     expect(find.byType(FadeTransition), findsNothing);
+
+    navigator.pop();
+    await tester.pump();
+    await pushed;
+    expect(find.text('首页'), findsOneWidget);
+    expect(find.text('详情'), findsNothing);
   });
 
-  testWidgets('first-level destination switch uses slide motion', (
+  test('route transition durations are zero', () {
+    const builder = SiteLensNoAnimationPageTransitionsBuilder();
+
+    expect(builder.transitionDuration, Duration.zero);
+    expect(builder.reverseTransitionDuration, Duration.zero);
+  });
+
+  testWidgets('first-level destination switch replaces the keyed body', (
     tester,
   ) async {
     var page = 0;
@@ -36,34 +51,20 @@ void main() {
         home: StatefulBuilder(
           builder: (context, setState) {
             rebuild = setState;
-            return SiteLensPageSwitcher(
-              direction: 1,
-              child: KeyedSubtree(key: ValueKey(page), child: Text('页面$page')),
-            );
+            return KeyedSubtree(key: ValueKey(page), child: Text('页面$page'));
           },
         ),
       ),
     );
     await tester.pump();
-    rebuild(() => page = 1);
-    await tester.pump(const Duration(milliseconds: 80));
 
-    expect(
-      find.descendant(
-        of: find.byType(SiteLensPageSwitcher),
-        matching: find.byType(SlideTransition),
-      ),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(
-        of: find.byType(SiteLensPageSwitcher),
-        matching: find.byType(SiteLensTransitionScrim),
-      ),
-      findsOneWidget,
-    );
-    expect(find.byType(FadeTransition), findsNothing);
-    await tester.pump(const Duration(milliseconds: 300));
+    rebuild(() => page = 1);
+    await tester.pump();
+
     expect(find.text('页面1'), findsOneWidget);
+    expect(find.text('页面0'), findsNothing);
+    expect(find.byType(AnimatedSwitcher), findsNothing);
+    expect(find.byType(SlideTransition), findsNothing);
+    expect(find.byType(FadeTransition), findsNothing);
   });
 }

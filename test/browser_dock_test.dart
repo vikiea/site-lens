@@ -228,7 +228,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('second and third level pages show dock after transition only', (
+  testWidgets('second and third level pages show dock immediately', (
     tester,
   ) async {
     app.addTab('a');
@@ -237,18 +237,13 @@ void main() {
     for (final name in ['settings', 'details']) {
       unawaited(siteLensNavigatorKey.currentState!.push(_page(name)));
       await tester.pump();
-      expect(handle, findsNothing);
-      await tester.pump(const Duration(milliseconds: 100));
-      expect(observer.transitioning, isTrue);
-      expect(handle, findsNothing);
       await tester.pumpAndSettle();
+      expect(observer.transitioning, isFalse);
       expect(observer.allowsBrowserDock, isTrue);
       expect(handle, findsOneWidget);
     }
     siteLensNavigatorKey.currentState!.pop();
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 100));
-    expect(handle, findsNothing);
     await tester.pumpAndSettle();
     expect(handle, findsOneWidget);
   });

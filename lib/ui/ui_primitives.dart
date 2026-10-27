@@ -1182,52 +1182,6 @@ class SiteLensPageScaffold extends StatelessWidget {
   );
 }
 
-/// Switches between top-level pages with a small spatial motion while keeping
-/// the previous page out of the shared glass group during the transition.
-class SiteLensPageSwitcher extends StatelessWidget {
-  const SiteLensPageSwitcher({
-    super.key,
-    required this.child,
-    this.direction = 1,
-  });
-
-  final Widget child;
-  final int direction;
-
-  @override
-  Widget build(BuildContext context) => ClipRect(
-    child: AnimatedSwitcher(
-      duration: const Duration(milliseconds: 180),
-      reverseDuration: const Duration(milliseconds: 140),
-      switchInCurve: Curves.easeOutCubic,
-      switchOutCurve: Curves.easeInCubic,
-      layoutBuilder: (currentChild, _) =>
-          currentChild ?? const SizedBox.shrink(),
-      transitionBuilder: (child, animation) {
-        if (MediaQuery.disableAnimationsOf(context)) return child;
-        final curved = CurvedAnimation(
-          parent: animation,
-          curve: Curves.easeOutCubic,
-        );
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            SiteLensTransitionScrim(animation: animation),
-            SlideTransition(
-              position: Tween<Offset>(
-                begin: Offset(0.04 * direction.sign, 0),
-                end: Offset.zero,
-              ).animate(curved),
-              child: child,
-            ),
-          ],
-        );
-      },
-      child: child,
-    ),
-  );
-}
-
 /// One grouped action surface used inside ordinary app bars. The app bar owns
 /// the liquid-glass backdrop; this control adds only the local tint and rim so
 /// it does not create a second glass sampling boundary.
