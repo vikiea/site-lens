@@ -60,6 +60,7 @@ void main() {
 
       expect(copied.id, isNot(task.id));
       expect(copied.cacheKey, isNot(task.cacheKey));
+      expect(copied.resourceKey, isEmpty);
       expect(await File(copied.localRef!).readAsBytes(), bytes);
 
       await source.delete();
@@ -138,6 +139,45 @@ segments/0.ts
       [9, 8, 7],
     );
   });
+
+  test(
+    'copyLocalHls copies coordinator links into independent task bytes',
+    () async {
+      const resourceKey =
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      final taskRoot = Directory(
+        p.join(root.path, 'media_cache', 'series', 'source.hls'),
+      );
+      final sharedRoot = Directory(
+        p.join(root.path, 'media_cache', 'shared_resources'),
+      );
+      final destination = Directory(p.join(root.path, 'copied-shared-hls'));
+      await taskRoot.create(recursive: true);
+      await sharedRoot.create(recursive: true);
+      final shared = File(p.join(sharedRoot.path, 'resource_$resourceKey.bin'));
+      await shared.writeAsBytes([1, 3, 5, 7]);
+      await Link(p.join(taskRoot.path, 'resource_$resourceKey.bin'))
+          .create(shared.path);
+      final manifest = File(p.join(taskRoot.path, 'index.m3u8'));
+      await manifest.writeAsString('''#EXTM3U
+#EXTINF:1,
+resource_$resourceKey.bin
+#EXT-X-ENDLIST
+''');
+
+      await copyLocalHls(manifest, destination);
+
+      expect(
+        await File(p.join(destination.path, 'resource_$resourceKey.bin'))
+            .readAsBytes(),
+        [1, 3, 5, 7],
+      );
+      expect(
+        await File(p.join(destination.path, 'index.m3u8')).exists(),
+        isTrue,
+      );
+    },
+  );
 
   test('copyLocalHls rejects traversal outside the source folder', () async {
     final sourceRoot = Directory(p.join(root.path, 'unsafe-hls'));

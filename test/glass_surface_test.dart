@@ -5,8 +5,11 @@ import 'package:site_lens/settings/app_settings.dart';
 import 'package:site_lens/ui/app_theme.dart';
 import 'package:site_lens/ui/glass_surface.dart';
 
-Widget _backdropApp(BackgroundSnapshot background) => MaterialApp(
-  theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+Widget _backdropApp(
+  BackgroundSnapshot background, {
+  Brightness brightness = Brightness.light,
+}) => MaterialApp(
+  theme: buildSiteLensTheme(ThemePresetId.oceanBlue, brightness),
   home: SiteLensBackdrop(
     background: background,
     child: const SizedBox.expand(),
@@ -51,7 +54,68 @@ void main() {
                 box.decoration is BoxDecoration &&
                 (box.decoration as BoxDecoration).gradient is LinearGradient,
           ),
-      hasLength(1),
+      isEmpty,
+    );
+    expect(find.byType(Image), findsNothing);
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is ColoredBox &&
+            widget.color ==
+                SiteLensColors.of(tester.element(find.byType(Stack)))
+                    .backdropTop,
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('dark transparent mode leaves the app-owned backdrop empty', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _backdropApp(
+        const BackgroundSnapshot(mode: BackgroundMode.transparent),
+        brightness: Brightness.dark,
+      ),
+    );
+
+    expect(find.byType(Image), findsNothing);
+    expect(
+      tester
+          .widgetList<DecoratedBox>(find.byType(DecoratedBox))
+          .where(
+            (box) =>
+                box.decoration is BoxDecoration &&
+                (box.decoration as BoxDecoration).gradient != null,
+          ),
+      isEmpty,
+    );
+    expect(find.byType(ColoredBox), findsNothing);
+  });
+
+  testWidgets('transparent mode ignores a previously uploaded image', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _backdropApp(
+        const BackgroundSnapshot(
+          mode: BackgroundMode.transparent,
+          imagePath: '/site-lens/background.png',
+        ),
+      ),
+    );
+
+    expect(find.byType(Image), findsNothing);
+    expect(find.byType(ColoredBox), findsOneWidget);
+    expect(
+      tester
+          .widgetList<DecoratedBox>(find.byType(DecoratedBox))
+          .where(
+            (box) =>
+                box.decoration is BoxDecoration &&
+                (box.decoration as BoxDecoration).gradient != null,
+          ),
+      isEmpty,
     );
   });
 

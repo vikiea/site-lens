@@ -124,6 +124,9 @@ object SystemMediaNetwork {
             val proxy = selected[(attempt + offset) % selected.size]
             try {
                 if (proxy.type() == Proxy.Type.DIRECT) {
+                    // DIRECT owns origin DNS, so validate every answer locally.
+                    // An HTTP proxy owns origin resolution; forcing local DNS
+                    // here breaks split-DNS and proxy-only hostnames.
                     val addresses = resolve(uri.host)
                     require(addresses.isNotEmpty() && addresses.all {
                         publicAddress(it) || allowProxyFakeIp && fakeIp(it)

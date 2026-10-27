@@ -45,6 +45,7 @@ class BackupService {
     'profile_pages',
     'profile_scripts',
     'profile_health',
+    'watch_saves',
     'probes',
     'script_values',
     'dependencies',
@@ -151,6 +152,17 @@ class BackupService {
   static bool _portableSetting(Object? key) =>
       key == AppPolicy.settingsKey || key == AppPolicy.browserSessionsKey;
 
+  static Map<String, Object?> _legacyDefaults(int schema, String table) {
+    if (table == 'watch_saves' && schema < 14) {
+      return const {
+        'position_ms': 0,
+        'duration_ms': null,
+        'evidence_revision': '',
+      };
+    }
+    return const {};
+  }
+
   Future<BackupSnapshot> validate(Uint8List bytes) async {
     if (bytes.length > maxBytes || bytes.length < 22) {
       throw const FormatException('备份大小无效');
@@ -159,10 +171,13 @@ class BackupService {
     List<int> read(String name) => entries[name]!;
     final manifest = jsonDecode(utf8.decode(read('manifest.json')));
     final body = read('business.json');
+    final schema = manifest is Map ? manifest['schema'] : null;
     if (manifest is! Map ||
         manifest['format'] != 'site-lens-backup' ||
         !{1, 2}.contains(manifest['version']) ||
-        !{8, 9, 10, 11, db.schemaVersion}.contains(manifest['schema']) ||
+        schema is! int ||
+        schema < 8 ||
+        schema > db.schemaVersion ||
         manifest['bytes'] != body.length ||
         manifest['sha256'] != sha256.convert(body).toString() ||
         manifest['createdAt'] is! String ||
@@ -209,8 +224,12 @@ class BackupService {
       throw const FormatException('备份内容无效');
     }
     final raw = data['tables'] as Map;
-    if (raw.length != tableNames.length ||
-        raw.keys.any((k) => !tableNames.contains(k))) {
+    final missingTables = tableNames
+        .where((table) => !raw.containsKey(table))
+        .where((table) => !(table == 'watch_saves' && schema < 13))
+        .toList();
+    if (raw.keys.any((k) => !tableNames.contains(k)) ||
+        missingTables.isNotEmpty) {
       throw const FormatException('备份表结构无效');
     }
     final tables = <String, List<Map<String, Object?>>>{};
@@ -219,19 +238,21 @@ class BackupService {
           .customSelect('PRAGMA table_info("$table")')
           .get();
       final names = columns.map((c) => c.read<String>('name')).toSet();
-      final rows = raw[table];
+      final rows = raw[table] ?? const <Object?>[];
       if (rows is! List || rows.length > maxRows) {
         throw const FormatException('备份行数无效');
       }
       tables[table] = rows.map((row) {
-        if (row is! Map ||
-            row.length != names.length ||
-            row.keys.any((k) => !names.contains(k))) {
+        final defaults = _legacyDefaults(schema, table);
+        if (row is! Map || row.keys.any((k) => !names.contains(k))) {
           throw const FormatException('备份字段无效');
         }
         final values = <String, Object?>{};
         for (final key in names) {
-          var value = row[key];
+          if (!row.containsKey(key) && !defaults.containsKey(key)) {
+            throw const FormatException('备份字段无效');
+          }
+          var value = row.containsKey(key) ? row[key] : defaults[key];
           if (value is Map &&
               value.length == 1 &&
               value['base64'] is String &&

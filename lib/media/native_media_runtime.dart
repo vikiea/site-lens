@@ -75,6 +75,7 @@ class NativeMediaRuntime {
     required int generation,
     required Uri sourceUrl,
     String? sessionId,
+    String secureDnsProvider = 'off',
   }) async {
     const MediaCandidateValidator().validate(
       candidate,
@@ -89,6 +90,7 @@ class NativeMediaRuntime {
       'mime': candidate.effectiveMime,
       'sourceUrl': sourceUrl.toString(),
       'title': candidate.title,
+      'secureDnsProvider': secureDnsProvider,
     });
     return _decode(raw ?? const <String, Object?>{});
   }
@@ -203,6 +205,11 @@ class NativeMediaRuntime {
 
   Future<NativePlaybackSession> state({String? sessionId}) =>
       _command('state', _sessionArgument(sessionId));
+
+  Future<void> discardRestorable() async {
+    await _channel.invokeMethod<void>('discardRestorable');
+    _active = null;
+  }
 
   Future<NativePlaybackSession> _command(
     String method, [

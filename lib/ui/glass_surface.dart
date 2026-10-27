@@ -48,8 +48,8 @@ Widget _siteLensBackdropGradient(
   );
 }
 
-/// The app-wide backdrop: one static, low-saturation gradient (tinted by the
-/// selected theme) that every glass surface refracts.
+/// The app-wide backdrop: one static, low-saturation source selected by the
+/// current background mode that every glass surface refracts.
 ///
 /// It is painted once behind the whole app so screens stay transparent and the
 /// material has something real to sample. Nothing animates, so there is no
@@ -65,64 +65,89 @@ class SiteLensBackdrop extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (background.mode == BackgroundMode.transparent) {
-      return Stack(fit: StackFit.expand, children: [child]);
-    }
     final colors = SiteLensColors.of(context);
+    final dark = Theme.of(context).brightness == Brightness.dark;
     final imagePath = background.imagePath;
     final transparent = background.mode == BackgroundMode.transparent;
+    // Transparent is an explicit no-backdrop mode. A previously uploaded
+    // asset remains available for the custom-image mode, but it must never be
+    // reused by transparent mode.
     final useImage =
-        imagePath != null &&
-        (background.mode == BackgroundMode.customImage || transparent);
-    final useThemeSource =
-        background.mode == BackgroundMode.themeBuiltIn ||
-        (transparent && !useImage);
+        imagePath != null && background.mode == BackgroundMode.customImage;
+    final useThemeSource = background.mode == BackgroundMode.themeBuiltIn;
     final image = !useImage
         ? null
         : Image.file(
             File(imagePath),
             fit: BoxFit.cover,
             filterQuality: FilterQuality.low,
-            errorBuilder: (_, _, _) => _siteLensBackdropGradient(
-              context,
-              // A broken custom image in transparent mode follows the same
-              // fallback order as a missing asset: theme background first.
-              useThemeSource: transparent,
-            ),
+            errorBuilder: (_, _, _) =>
+                _siteLensBackdropGradient(context, useThemeSource: false),
           );
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        if (image != null) Positioned.fill(child: image),
-        if (image == null)
-          _siteLensBackdropGradient(context, useThemeSource: useThemeSource),
-        if (!transparent && image != null)
-          Positioned.fill(
-            child: ColoredBox(
-              color: colors.backdropTint.withValues(
-                alpha: Theme.of(context).brightness == Brightness.dark
-                    ? 0.18
-                    : 0.10,
+    return SiteLensBackdropScope(
+      background: background,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (image != null) Positioned.fill(child: image),
+          if (image == null && (!transparent || !dark))
+            transparent
+                ? ColoredBox(color: colors.backdropTop)
+                : _siteLensBackdropGradient(
+                    context,
+                    useThemeSource: useThemeSource,
+                  ),
+          if (!transparent && image != null)
+            Positioned.fill(
+              child: ColoredBox(
+                color: colors.backdropTint.withValues(
+                  alpha: dark ? 0.18 : 0.10,
+                ),
               ),
             ),
-          ),
-        if (!transparent && image == null)
-          DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: RadialGradient(
-                center: const Alignment(-0.75, -0.95),
-                radius: 1.5,
-                colors: [
-                  colors.backdropTint,
-                  colors.backdropTint.withValues(alpha: 0),
-                ],
+          if (!transparent && image == null)
+            DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: RadialGradient(
+                  center: const Alignment(-0.75, -0.95),
+                  radius: 1.5,
+                  colors: [
+                    colors.backdropTint,
+                    colors.backdropTint.withValues(alpha: 0),
+                  ],
+                ),
               ),
             ),
-          ),
-        child,
-      ],
+          child,
+        ],
+      ),
     );
   }
+}
+
+/// Exposes the active app backdrop source to shared controls. Menus and
+/// chrome use this context to choose a readable local glass tint without
+/// duplicating page-level background logic.
+class SiteLensBackdropScope extends InheritedWidget {
+  const SiteLensBackdropScope({
+    super.key,
+    required this.background,
+    required super.child,
+  });
+
+  final BackgroundSnapshot background;
+
+  static SiteLensBackdropScope? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<SiteLensBackdropScope>();
+
+  static BackgroundMode modeOf(BuildContext context) =>
+      maybeOf(context)?.background.mode ?? BackgroundMode.defaultGradient;
+
+  @override
+  bool updateShouldNotify(SiteLensBackdropScope oldWidget) =>
+      oldWidget.background.mode != background.mode ||
+      oldWidget.background.imagePath != background.imagePath ||
+      oldWidget.background.assetMissing != background.assetMissing;
 }
 
 /// Resolves the current material settings through the shared strategy.

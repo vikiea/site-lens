@@ -76,6 +76,57 @@ void main() {
     );
   });
 
+  test('deletion waits for an independent writer lease', () async {
+    final root = await Directory.systemTemp.createTemp('shared-resource-');
+    addTearDown(() => root.delete(recursive: true));
+    final writerCoordinator = MediaResourceCoordinator(
+      rootProvider: () async => root,
+    );
+    final deleterCoordinator = MediaResourceCoordinator(
+      rootProvider: () async => root,
+    );
+    final writing = writerCoordinator.ensure(key, (staging) async {
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      await staging.writeAsBytes([1, 2, 3], flush: true);
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    final deleting = deleterCoordinator.delete(key);
+
+    final file = await writing;
+    await deleting;
+
+    expect(await file.exists(), isFalse);
+  });
+
+  test('writer rechecks the target after a guarded deletion lease', () async {
+    final root = await Directory.systemTemp.createTemp('shared-resource-');
+    addTearDown(() => root.delete(recursive: true));
+    final coordinator = MediaResourceCoordinator(
+      rootProvider: () async => root,
+    );
+    final original = await coordinator.ensure(key, (staging) async {
+      await staging.writeAsBytes([1, 2, 3], flush: true);
+    });
+    final predicateEntered = Completer<void>();
+    final releasePredicate = Completer<void>();
+    final deleting = coordinator.deleteIf(key, () async {
+      predicateEntered.complete();
+      await releasePredicate.future;
+      return true;
+    });
+    await predicateEntered.future;
+
+    final replacement = coordinator.ensure(key, (staging) async {
+      await staging.writeAsBytes([4, 5, 6], flush: true);
+    });
+    releasePredicate.complete();
+
+    await deleting;
+    final file = await replacement;
+    expect(file.path, original.path);
+    expect(await file.readAsBytes(), [4, 5, 6]);
+  });
+
   test(
     'expired writer lease can be recovered without deleting the partial',
     () async {
@@ -104,6 +155,43 @@ void main() {
 
       expect(await file.readAsBytes(), [3, 4]);
       expect(await partial.exists(), isFalse);
+    },
+  );
+
+  test(
+    'concurrent stale recovery keeps the replacement owner lock intact',
+    () async {
+      final root = await Directory.systemTemp.createTemp('shared-resource-');
+      addTearDown(() => root.delete(recursive: true));
+      final lock = await Directory('${root.path}/$key.resource.lock').create();
+      await File('${lock.path}/owner.json').writeAsString(
+        jsonEncode({
+          'owner': 'dead-process',
+          'updatedAt': DateTime.now()
+              .toUtc()
+              .subtract(const Duration(minutes: 2))
+              .toIso8601String(),
+        }),
+      );
+      final first = MediaResourceCoordinator(rootProvider: () async => root);
+      final second = MediaResourceCoordinator(rootProvider: () async => root);
+      var writes = 0;
+      Future<File> write(MediaResourceCoordinator coordinator) =>
+          coordinator.ensure(key, (staging) async {
+            writes++;
+            await Future<void>.delayed(const Duration(milliseconds: 20));
+            await staging.writeAsBytes([8, 9], flush: true);
+          });
+
+      final files = await Future.wait([write(first), write(second)]);
+
+      expect(writes, 1);
+      expect(files.map((file) => file.path).toSet(), hasLength(1));
+      expect(await files.first.readAsBytes(), [8, 9]);
+      expect(
+        await Directory('${root.path}/$key.resource.lock').exists(),
+        isFalse,
+      );
     },
   );
 

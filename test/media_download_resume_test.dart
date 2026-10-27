@@ -426,6 +426,7 @@ void main() {
     expect(sharedResources, hasLength(1));
     expect(await sharedResources.single.readAsBytes(), [5, 6, 7]);
     expect(await localResource.readAsBytes(), [5, 6, 7]);
+    expect(await store.cachedBytes(task.id), await local.length() + 3);
 
     // The task entry points at the shared file; changing the shared entry is
     // visible through the task path and proves the HLS cache did not copy the
@@ -491,6 +492,54 @@ void main() {
         await File('${sharedRoot.path}/$resourceKey.resource').exists(),
         isFalse,
       );
+    },
+  );
+
+  test(
+    'pruning a completed HLS task releases removed resource owners',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-hls-prune-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final sharedRoot = Directory('${root.path}/media_cache/shared_resources')
+        ..createSync(recursive: true);
+      final playlistUrl = Uri.parse('https://cdn.example/prune/index.m3u8');
+      final http = _ChangingHlsHttp(playlistUrl);
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final store = MediaTaskStore(directoryProvider: () async => root, db: db);
+      final candidate = _candidate(playlistUrl);
+      await db.saveMediaCandidate(candidate);
+      final coordinator = MediaResourceCoordinator(
+        rootProvider: () async => sharedRoot,
+      );
+      final service = MediaDownloadService(
+        tasks: store,
+        http: http,
+        resourceCoordinator: coordinator,
+      );
+      final task = store.create(candidate);
+
+      await service.start(task, candidate);
+      final firstKey = (await db.mediaResourceKeys()).firstWhere(
+        (key) => key != task.resourceKey,
+      );
+      expect(
+        await File('${sharedRoot.path}/$firstKey.resource').exists(),
+        isTrue,
+      );
+
+      store.transition(task.id, MediaTaskState.failed);
+      final retry = store.create(candidate);
+      http.phase = 1;
+      await service.start(retry, candidate);
+
+      expect(
+        await File('${sharedRoot.path}/$firstKey.resource').exists(),
+        isFalse,
+      );
+      expect(await db.mediaResourceOwners(firstKey), isEmpty);
     },
   );
 
@@ -804,6 +853,75 @@ class _HlsResumeHttp extends ControlledHttp {
       bytesWritten: 1,
       totalBytes: 3,
       appended: true,
+    );
+  }
+}
+
+class _ChangingHlsHttp extends ControlledHttp {
+  _ChangingHlsHttp(this.playlist);
+
+  final Uri playlist;
+  final firstSegment = Uri.parse('https://cdn.example/prune/first.ts');
+  final secondSegment = Uri.parse('https://cdn.example/prune/second.ts');
+  var phase = 0;
+
+  Uri get _segment => phase == 0 ? firstSegment : secondSegment;
+
+  @override
+  Future<FetchResponse> fetch(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    String method = 'GET',
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    String? body,
+    Duration timeout = const Duration(seconds: 15),
+    int maxBytes = 1024 * 1024,
+    int routeAttempt = 0,
+  }) async {
+    expect(url, playlist);
+    return FetchResponse(
+      url: playlist,
+      status: HttpStatus.ok,
+      bytes: utf8.encode(
+        '#EXTM3U\n#EXTINF:1,\n${_segment.pathSegments.last}\n#EXT-X-ENDLIST\n',
+      ),
+      headers: const {},
+    );
+  }
+
+  @override
+  Future<FetchFileResponse> fetchToFile(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    required File destination,
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    int resumeOffset = 0,
+    int maxBytes = 2 * 1024 * 1024 * 1024,
+    Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    void Function(int bytesWritten)? onProgress,
+    Duration timeout = const Duration(seconds: 15),
+    int routeAttempt = 0,
+  }) async {
+    expect(url, _segment);
+    final bytes = phase == 0 ? [1, 2, 3] : [4, 5, 6];
+    final responseHeaders = {
+      HttpHeaders.contentLengthHeader: '${bytes.length}',
+    };
+    await onHeaders?.call(HttpStatus.ok, responseHeaders);
+    await destination.writeAsBytes(bytes, flush: true);
+    return FetchFileResponse(
+      url: url,
+      status: HttpStatus.ok,
+      headers: responseHeaders,
+      bytesWritten: bytes.length,
+      totalBytes: bytes.length,
+      appended: false,
     );
   }
 }

@@ -15,6 +15,7 @@ import androidx.media3.common.C
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -27,6 +28,9 @@ import io.flutter.view.TextureRegistry
 import java.io.File
 import java.io.Closeable
 import java.util.UUID
+import java.net.InetAddress
+import okhttp3.Dns
+import okhttp3.OkHttpClient
 import kotlin.math.roundToInt
 
 /**
@@ -43,6 +47,7 @@ class NativeMediaRuntime(
     private var candidateId: String? = null
     private var speed: Float = 1f
     private var channel: MethodChannel? = null
+    private val secureDnsResolver = SecureDnsResolver()
     private var textureEntry: TextureRegistry.SurfaceTextureEntry? = null
     private var surface: Surface? = null
     private var state: String = "stopped"
@@ -93,6 +98,11 @@ class NativeMediaRuntime(
                         onFailure = { error -> result.error("native_media", error.message, null) },
                     )
                 }
+                return
+            }
+            if (call.method == "discardRestorable") {
+                NativeMediaSessionService.abandonRestorable(context)
+                result.success(null)
                 return
             }
             when (call.method) {
@@ -255,16 +265,7 @@ class NativeMediaRuntime(
             context.contentResolver.openFileDescriptor(uri, "r")?.use {
                 require(it.statSize != 0L) { "本地媒体不存在或为空" }
             } ?: error("无法读取本地媒体文件")
-            openInService(
-                call,
-                result,
-                taskId,
-                document,
-                "video/mp4",
-                false,
-                partial = false,
-                resourcePaths = emptyList(),
-            )
+            openInService(call, result, taskId, document, "video/mp4", false)
             return
         }
         val raw = call.argument<String>("path")?.trim() ?: error("缺少本地媒体路径")
@@ -277,26 +278,12 @@ class NativeMediaRuntime(
             "本地媒体路径越界"
         }
         val mime = call.argument<String>("mime")?.trim().orEmpty()
-        val partial = call.argument<Boolean>("partial") == true
-        val resourcePaths = (call.argument<List<*>>("resourcePaths") ?: emptyList<Any?>()).map {
-            (it as? String)?.takeIf { value -> value.length <= 4096 }
-                ?: error("媒体资源路径无效")
-        }.also { require(it.size <= 4096) { "媒体资源过多" } }
         // HLS readers open key/init/segments after the playlist; protect the
         // complete directory, including against deleting a parent directory.
         val hls = mime.contains("mpegurl", ignoreCase = true) ||
             file.extension.lowercase() in setOf("m3u8", "m3u")
         require(file.isFile && file.length() > 0) { "本地媒体不存在或为空" }
-        openInService(
-            call,
-            result,
-            taskId,
-            Uri.fromFile(file).toString(),
-            mime,
-            hls,
-            partial = partial && hls,
-            resourcePaths = resourcePaths,
-        )
+        openInService(call, result, taskId, Uri.fromFile(file).toString(), mime, hls)
     }
 
     private fun openInService(
@@ -306,13 +293,8 @@ class NativeMediaRuntime(
         uri: String,
         mime: String,
         hls: Boolean,
-        partial: Boolean,
-        resourcePaths: List<String>,
     ) {
-        // Replace the item inside the already running MediaSessionService. A
-        // stopSelf() followed by an immediate open can race with onDestroy()
-        // and tear down the replacement session after it is installed.
-        stop(stopService = false)
+        stopLocalPlayer()
         ensureTexture()
         val requestedSession = call.argument<String>("sessionId")?.takeIf { it.isNotBlank() }
             ?: "play_${taskId}_${UUID.randomUUID()}"
@@ -326,8 +308,6 @@ class NativeMediaRuntime(
                 mime = mime,
                 title = call.argument<String>("title").orEmpty(),
                 hls = hls,
-                partial = partial,
-                resourcePaths = resourcePaths,
                 autoPlay = call.argument<Boolean>("autoPlay") ?: true,
                 surface = surface,
             ) { outcome ->
@@ -368,22 +348,39 @@ class NativeMediaRuntime(
         )
         val dataSourceFactory: DataSource.Factory
         if (referer != null) {
-            val http = DefaultHttpDataSource.Factory()
-                .setAllowCrossProtocolRedirects(true)
-                .setConnectTimeoutMs(30_000)
-                .setReadTimeoutMs(30_000)
-                .setUserAgent(WebSettings.getDefaultUserAgent(context))
-                .setDefaultRequestProperties(
-                    buildMap {
-                        put("Referer", referer)
-                        if (origin != null) put("Origin", origin)
-                        put("Accept", "*/*")
-                        put("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-                        val cookie = AndroidCookieReader.get(uri.toString())
-                            ?: referer?.let { AndroidCookieReader.get(it) }
-                        if (!cookie.isNullOrBlank()) put("Cookie", cookie)
-                    },
-                )
+            val requestProperties = buildMap {
+                put("Referer", referer)
+                if (origin != null) put("Origin", origin)
+                put("Accept", "*/*")
+                put("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+                val cookie = AndroidCookieReader.get(uri.toString())
+                    ?: AndroidCookieReader.get(referer)
+                if (!cookie.isNullOrBlank()) put("Cookie", cookie)
+            }
+            val secureDnsProvider = call.argument<String>("secureDnsProvider")?.trim().orEmpty()
+            val http: DataSource.Factory = if (
+                secureDnsProvider.isNotBlank() && secureDnsProvider != "off"
+            ) {
+                val client = OkHttpClient.Builder()
+                    .dns(object : Dns {
+                        override fun lookup(hostname: String): List<InetAddress> =
+                            runCatching {
+                                secureDnsResolver.lookup(secureDnsProvider, hostname)
+                                    .map(InetAddress::getByName)
+                            }.getOrElse { Dns.SYSTEM.lookup(hostname) }
+                    })
+                    .build()
+                OkHttpDataSource.Factory(client)
+                    .setUserAgent(WebSettings.getDefaultUserAgent(context))
+                    .setDefaultRequestProperties(requestProperties)
+            } else {
+                DefaultHttpDataSource.Factory()
+                    .setAllowCrossProtocolRedirects(true)
+                    .setConnectTimeoutMs(30_000)
+                    .setReadTimeoutMs(30_000)
+                    .setUserAgent(WebSettings.getDefaultUserAgent(context))
+                    .setDefaultRequestProperties(requestProperties)
+            }
             playerBuilder.setMediaSourceFactory(DefaultMediaSourceFactory(http))
             dataSourceFactory = http
         } else {
@@ -532,7 +529,15 @@ class NativeMediaRuntime(
         )
     }
 
-    private fun stop(stopService: Boolean = true) {
+    private fun stop() {
+        stopLocalPlayer()
+        if (serviceSessionId != null || NativeMediaSessionService.hasActiveSession()) {
+            NativeMediaSessionService.stop(context)
+            serviceSessionId = null
+        }
+    }
+
+    private fun stopLocalPlayer() {
         player?.let { media ->
             runCatching { media.clearVideoSurface() }
             // If release fails, keep the player and its input lease for a
@@ -552,11 +557,6 @@ class NativeMediaRuntime(
         candidateId = null
         speed = 1f
         state = "stopped"
-        if (stopService &&
-            (serviceSessionId != null || NativeMediaSessionService.hasActiveSession())) {
-            NativeMediaSessionService.stop(context)
-        }
-        serviceSessionId = null
     }
 
     private fun ensureTexture() {
@@ -581,6 +581,7 @@ class NativeMediaRuntime(
     }
 
     fun dispose() {
+        NativeMediaSessionService.cancelPendingActions()
         // The MediaSessionService intentionally survives Flutter engine
         // teardown. Only detach the temporary video surface and unregister
         // callbacks; an explicit Dart stop/close command still stops it.

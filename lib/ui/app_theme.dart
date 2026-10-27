@@ -79,6 +79,7 @@ abstract final class SiteLensMetrics {
   static const compactSwitchScale = 0.84;
   static const rowTextMaxCharacters = 20;
   static const rowTextMinScale = 0.88;
+  static const rowDescriptionFoldThreshold = rowTextMaxCharacters;
   static const themeSwatchColumns = 6;
   static const themeSwatchSize = 46.0;
   static const themeSwatchGap = 10.0;
@@ -124,6 +125,28 @@ abstract final class SiteLensMetrics {
   static const browserDockIconSize = 16.0;
   static const opacityLabelGap = 6.0;
   static const opacitySliderGap = 8.0;
+
+  /// Ordinary top-bar actions share one compact grouped glass control.
+  static const topBarActionGroupRadius = 28.0;
+  static const topBarActionGroupRightInset = 8.0;
+  static const topBarActionGroupVerticalInset = 5.0;
+  static const topBarActionInset = 1.0;
+  static const topBarActionMinSize = 44.0;
+}
+
+/// Alpha and tint tokens for small controls that sit on the app backdrop.
+/// These controls use a local glass tint/rim; they do not create another
+/// backdrop sampling boundary inside the app bar or settings panel.
+abstract final class SiteLensGlassTokens {
+  static const controlFillAlpha = 0.62;
+  static const themeBuiltInControlFillAlpha = 0.56;
+  static const customImageControlFillAlpha = 0.70;
+  static const transparentControlFillAlpha = 0.78;
+  static const controlThemeTintAlpha = 0.16;
+  static const themeBuiltInControlTintAlpha = 0.24;
+  static const customImageControlTintAlpha = 0.18;
+  static const transparentControlTintAlpha = 0.14;
+  static const controlInteractionAlpha = 0.14;
 }
 
 /// One type scale for page headings, sections, rows and secondary facts.
@@ -254,6 +277,41 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
   final Color warning;
   final Color danger;
 
+  /// Resolves the fill and interaction treatment for controls that sit on a
+  /// particular app-owned backdrop source.
+  SiteLensControlSurface controlSurface(BackgroundMode mode, {Color? accent}) {
+    final fillAlpha = switch (mode) {
+      BackgroundMode.defaultGradient => SiteLensGlassTokens.controlFillAlpha,
+      BackgroundMode.themeBuiltIn =>
+        SiteLensGlassTokens.themeBuiltInControlFillAlpha,
+      BackgroundMode.customImage =>
+        SiteLensGlassTokens.customImageControlFillAlpha,
+      BackgroundMode.transparent =>
+        SiteLensGlassTokens.transparentControlFillAlpha,
+    };
+    final tintAlpha = switch (mode) {
+      BackgroundMode.defaultGradient =>
+        SiteLensGlassTokens.controlThemeTintAlpha,
+      BackgroundMode.themeBuiltIn =>
+        SiteLensGlassTokens.themeBuiltInControlTintAlpha,
+      BackgroundMode.customImage =>
+        SiteLensGlassTokens.customImageControlTintAlpha,
+      BackgroundMode.transparent =>
+        SiteLensGlassTokens.transparentControlTintAlpha,
+    };
+    final fill = Color.alphaBlend(
+      (accent ?? backdropTint).withValues(alpha: tintAlpha),
+      glassSurface.withValues(alpha: fillAlpha),
+    );
+    return SiteLensControlSurface(
+      fill: fill,
+      border: panelBorder,
+      interaction: (accent ?? backdropTint).withValues(
+        alpha: SiteLensGlassTokens.controlInteractionAlpha,
+      ),
+    );
+  }
+
   /// Resolves the roles for one preset and brightness.
   factory SiteLensColors.resolve(ThemePresetId preset, Brightness brightness) {
     final seed = preset.seed;
@@ -359,6 +417,19 @@ class SiteLensColors extends ThemeExtension<SiteLensColors> {
       danger: Color.lerp(danger, other.danger, t)!,
     );
   }
+}
+
+@immutable
+class SiteLensControlSurface {
+  const SiteLensControlSurface({
+    required this.fill,
+    required this.border,
+    required this.interaction,
+  });
+
+  final Color fill;
+  final Color border;
+  final Color interaction;
 }
 
 TextTheme _textTheme(ColorScheme scheme) {

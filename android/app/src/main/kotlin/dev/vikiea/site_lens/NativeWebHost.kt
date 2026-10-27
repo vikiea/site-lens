@@ -243,7 +243,17 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
         check(Looper.myLooper() == Looper.getMainLooper()) { "WebView cache must clear on the main thread" }
         val live = hosts.values.toList()
         live.forEach { it.clearHttpCache() }
-        return live.size
+        if (live.isNotEmpty()) return live.size
+        // WebView owns the HTTP cache process-wide, but the cache API is
+        // exposed on an instance. Use a short-lived main-thread instance when
+        // the user has no open browser host.
+        val scratch = WebView(activity)
+        return try {
+            scratch.clearCache(true)
+            1
+        } finally {
+            scratch.destroy()
+        }
     }
     private var isForeground = true
     override fun create(hostId: Long, purpose: HostPurpose, preferences: HostPreferences): HostCapabilities {

@@ -438,6 +438,7 @@ class MediaTaskStore extends ChangeNotifier {
   MediaTaskStore({
     Future<Directory> Function()? directoryProvider,
     this.db,
+    this.resourceCoordinator,
     bool restoreBeforeUse = false,
   }) : _directoryProvider = directoryProvider ?? getApplicationSupportDirectory,
        _ready = !restoreBeforeUse;
@@ -480,6 +481,7 @@ class MediaTaskStore extends ChangeNotifier {
 
   final Future<Directory> Function() _directoryProvider;
   final AppDatabase? db;
+  final MediaResourceCoordinator? resourceCoordinator;
   final _tasks = <String, MediaTask>{};
   final _localMediaReferences = <String, MediaTask>{};
   final _byCacheKey = <String, String>{};
@@ -516,7 +518,7 @@ class MediaTaskStore extends ChangeNotifier {
     final previous = _writes[task.id] ?? Future<void>.value();
     var failureId = task.id;
     final write = previous.then<void>((_) async {
-      final canonicalId = await db!.saveMediaTask(task);
+      final canonicalId = await _saveDurably(task);
       if (canonicalId == task.id) return;
       final current = _tasks[task.id];
       final persisted = await db!.mediaTaskByCacheKey(task.cacheKey);
@@ -555,6 +557,118 @@ class MediaTaskStore extends ChangeNotifier {
         AppErrorLogger.capture(error, module: 'media.store', stack: stack);
       },
     );
+  }
+
+  Future<String> _saveDurably(MediaTask task) async {
+    final database = db!;
+    final coordinator = resourceCoordinator;
+    if (coordinator == null || task.resourceKey.isEmpty) {
+      return database.saveMediaTask(task);
+    }
+    try {
+      return await coordinator.withLease(
+        task.resourceKey,
+        () => database.saveMediaTask(task),
+      );
+    } on MissingPluginException {
+      // Pure Dart/widget tests do not register path_provider. There is no
+      // physical shared-resource root in that environment, so the database
+      // write can proceed without a filesystem lease.
+      return database.saveMediaTask(task);
+    }
+  }
+
+  Future<void> _releaseResourceOwner(String resourceKey, String taskId) async {
+    final database = db;
+    if (database == null) return;
+    await database.removeMediaResourceOwner(resourceKey, 'task:$taskId');
+    final coordinator = resourceCoordinator;
+    if (coordinator == null ||
+        !RegExp(r'^[0-9a-f]{64}$').hasMatch(resourceKey)) {
+      await database.deleteMediaResourceIfUnowned(resourceKey);
+      return;
+    }
+    try {
+      final deleted = await coordinator.deleteIf(
+        resourceKey,
+        () async => (await database.mediaResourceOwners(resourceKey)).isEmpty,
+      );
+      if (deleted) await database.deleteMediaResourceIfUnowned(resourceKey);
+    } on MissingPluginException {
+      await database.deleteMediaResourceIfUnowned(resourceKey);
+    }
+  }
+
+  Future<void> _registerResourceOwner(String resourceKey, String taskId) async {
+    final database = db;
+    if (database == null || !RegExp(r'^[0-9a-f]{64}$').hasMatch(resourceKey)) {
+      return;
+    }
+    final coordinator = resourceCoordinator;
+    if (coordinator == null) {
+      await database.addMediaResourceOwner(resourceKey, 'task:$taskId', 'task');
+      return;
+    }
+    try {
+      await coordinator.withLease(
+        resourceKey,
+        () =>
+            database.addMediaResourceOwner(resourceKey, 'task:$taskId', 'task'),
+      );
+    } on MissingPluginException {
+      await database.addMediaResourceOwner(resourceKey, 'task:$taskId', 'task');
+    }
+  }
+
+  Future<void> _restoreSharedResourceOwners(
+    MediaTask task,
+    Directory storageRoot,
+  ) async {
+    if (task.id.startsWith('media_copy_')) return;
+    final mediaCache = Directory(p.join(storageRoot.path, 'media_cache'));
+    final directories = <String>{};
+    if (task.localRef != null) {
+      directories.add(File(task.localRef!).parent.path);
+    }
+    for (final name in {
+      task.storageDirectoryName,
+      task.legacyStorageDirectoryName,
+    }) {
+      final series = mediaSeriesDirectoryName(name);
+      directories.add(p.join(mediaCache.path, series, '${task.cacheKey}.hls'));
+      directories.add(
+        p.join(mediaCache.path, series, '${task.cacheKey}.hls.part'),
+      );
+    }
+    for (final path in directories) {
+      final directory = Directory(path);
+      if (await directory.exists()) {
+        await for (final entity in directory.list(followLinks: false)) {
+          final match = RegExp(r'^resource_([0-9a-f]{64})\.bin$')
+              .firstMatch(p.basename(entity.path));
+          if (match != null) {
+            await _registerResourceOwner(match.group(1)!, task.id);
+          }
+        }
+      }
+      final sidecar = File(p.join(path, 'resources.json'));
+      if (!await sidecar.exists()) continue;
+      try {
+        final raw = jsonDecode(await sidecar.readAsString());
+        final entries = raw is Map && raw['resources'] is Map
+            ? raw['resources'] as Map
+            : raw is Map
+            ? raw
+            : const <Object?, Object?>{};
+        for (final key in entries.keys) {
+          if (key is String && RegExp(r'^[0-9a-f]{64}$').hasMatch(key)) {
+            await _registerResourceOwner(key, task.id);
+          }
+        }
+      } catch (_) {
+        // A corrupt sidecar cannot establish ownership during startup repair.
+      }
+    }
   }
 
   Future<void> flush(String taskId) async {
@@ -818,7 +932,10 @@ class MediaTaskStore extends ChangeNotifier {
       final migratedRef = task.localRef == null
           ? null
           : rewriteManagedPath(task.localRef!);
-      final resourceKey = task.resourceKey.isNotEmpty
+      final independentCopy = task.id.startsWith('media_copy_');
+      final resourceKey = independentCopy
+          ? ''
+          : task.resourceKey.isNotEmpty
           ? task.resourceKey
           : candidate == null
           ? ''
@@ -841,12 +958,19 @@ class MediaTaskStore extends ChangeNotifier {
               updatedAt: normalized.updatedAt,
               batchDirectory: normalized.batchDirectory,
               localRef: normalized.localRef,
+              resourceKey: normalized.resourceKey,
               displayTitle: missingTitle && candidate.title.trim().isNotEmpty
                   ? candidate.title.trim()
                   : task.displayTitle,
               episodeLabel:
                   task.episodeLabel ?? _candidateEpisodeLabel(candidate),
             );
+      if (independentCopy && task.resourceKey.isNotEmpty) {
+        await _releaseResourceOwner(task.resourceKey, task.id);
+      }
+      if (storageRoot != null) {
+        await _restoreSharedResourceOwners(next, storageRoot);
+      }
       repaired.add(next);
       authorizationKeys[next.id] = mediaCandidateAuthorizationKey(
         candidate?.mediaUrl ?? task.sourceUrl,
@@ -856,7 +980,7 @@ class MediaTaskStore extends ChangeNotifier {
           next.localRef != task.localRef ||
           next.episodeLabel != task.episodeLabel ||
           next.resourceKey != task.resourceKey) {
-        await db!.saveMediaTask(next);
+        await _saveDurably(next);
       }
     }
     if (_references.isNotEmpty || _exclusive.isNotEmpty) {
@@ -1348,7 +1472,9 @@ class MediaTaskStore extends ChangeNotifier {
         generation: original.generation,
         sourceUrl: original.sourceUrl,
         cacheKey: key,
-        resourceKey: original.resourceKey,
+        // The copy owns independent bytes. Keeping the source resource key
+        // would pin the shared HLS object after the original task is deleted.
+        resourceKey: '',
         state: MediaTaskState.playable,
         updatedAt: DateTime.now().toUtc(),
         displayTitle: '${original.displayTitle} 副本',
@@ -1360,7 +1486,7 @@ class MediaTaskStore extends ChangeNotifier {
       );
       // Persist before publishing the new task so a failed write cannot expose
       // a playable row whose bytes have already been rolled back.
-      if (db != null && await db!.saveMediaTask(next) != next.id) {
+      if (db != null && await _saveDurably(next) != next.id) {
         throw StateError('保存媒体副本身份失败');
       }
       _tasks[next.id] = next;
@@ -1395,13 +1521,17 @@ class MediaTaskStore extends ChangeNotifier {
           .lastOrNull;
       if (key != null && folderName == '$key.hls') {
         var total = 0;
+        final seen = <String>{};
         await for (final entity in playlist.parent.list(
           recursive: true,
           followLinks: false,
         )) {
-          if (await FileSystemEntity.type(entity.path, followLinks: true) ==
-              FileSystemEntityType.file) {
-            total += await File(entity.path).length();
+          if (entity is! File && entity is! Link) continue;
+          if (p.basename(entity.path) == 'resources.json') continue;
+          final canonical = await entity.resolveSymbolicLinks();
+          if (seen.add(canonical)) {
+            final target = File(canonical);
+            if (await target.exists()) total += await target.length();
           }
         }
         return total > 0 ? total : null;
@@ -1512,9 +1642,12 @@ class MediaTaskStore extends ChangeNotifier {
     while (DateTime.now().isBefore(deadline)) {
       final current = task(taskId);
       if (current == null) return false;
-      final file =
-          current.state == MediaTaskState.downloading ||
-              current.state == MediaTaskState.paused
+      if (current.state == MediaTaskState.paused) {
+        final file = await partialPlaybackFile(taskId);
+        if (file == null) return false;
+        return _hlsDurationMs(await file.readAsString()) >= targetMs;
+      }
+      final file = current.state == MediaTaskState.downloading
           ? await partialPlaybackFile(taskId)
           : await cachedFile(taskId);
       if (file != null) {
@@ -1563,8 +1696,6 @@ Future<void> copyMediaBytes(File source, File destination) async {
   }
 }
 
-typedef _LocalHlsFile = ({File source, String relativePath});
-
 /// Copies a closed local HLS graph, preserving relative resource references.
 /// Validate every variant, key, init and segment before creating any copy.
 Future<void> copyLocalHls(File manifest, Directory destination) async {
@@ -1580,34 +1711,29 @@ Future<void> copyLocalHls(File manifest, Directory destination) async {
   );
 }
 
-Future<List<_LocalHlsFile>> _localHlsFiles(File manifest) async {
+Future<List<({String relativePath, File source})>> _localHlsFiles(
+  File manifest,
+) async {
   final root = await manifest.parent.resolveSymbolicLinks();
-  final allowedRoots = <String>{p.normalize(root)};
-  var ancestor = p.normalize(root);
-  while (true) {
-    if (p.basename(ancestor) == 'media_cache') {
-      final sharedRoot = Directory(p.join(ancestor, 'shared_resources'));
-      if (await sharedRoot.exists()) {
-        allowedRoots.add(await sharedRoot.resolveSymbolicLinks());
-      }
-      break;
-    }
-    final parent = p.dirname(ancestor);
-    if (parent == ancestor) break;
-    ancestor = parent;
-  }
-
-  bool isAllowed(String path) => allowedRoots.any(
-    (allowed) => path == allowed || p.isWithin(allowed, path),
+  final sharedCandidate = Directory(
+    p.join(Directory(root).parent.parent.path, 'shared_resources'),
   );
-
-  final files = <String, _LocalHlsFile>{};
+  final sharedRoot = await sharedCandidate.exists()
+      ? await sharedCandidate.resolveSymbolicLinks()
+      : null;
+  final files = <String, File>{};
   final visiting = <String>{};
   final visited = <String>{};
-  Future<_LocalHlsFile> resource(
+  bool isAllowed(String canonical) {
+    bool within(String base) =>
+        canonical == base || p.isWithin(base, canonical);
+    return within(root) || sharedRoot != null && within(sharedRoot);
+  }
+
+  Future<({String relativePath, File source})> resource(
     File parent,
+    String parentRelative,
     String reference,
-    String logicalParent,
   ) async {
     final uri = Uri.tryParse(reference);
     if (uri == null ||
@@ -1620,32 +1746,41 @@ Future<List<_LocalHlsFile>> _localHlsFiles(File manifest) async {
         reference.contains('\\')) {
       throw const FormatException('HLS 仅支持文件夹内的相对资源');
     }
-    final relativePath = p.normalize(p.join(logicalParent, uri.toFilePath()));
-    if (p.isAbsolute(relativePath) ||
-        relativePath == '..' ||
-        relativePath.startsWith('..${p.separator}')) {
-      throw const FormatException('HLS 仅支持文件夹内的相对资源');
-    }
     final file = File(p.normalize(p.join(parent.parent.path, uri.toFilePath())))
         .absolute;
-    if (!await file.exists()) {
+    final logical = File(
+      p.normalize(p.join(root, p.dirname(parentRelative), uri.toFilePath())),
+    ).absolute;
+    if (!await file.exists() || await file.length() <= 0) {
       throw const FormatException('HLS 资源缺失、链接或路径越界');
     }
     final canonical = await file.resolveSymbolicLinks();
-    if (!isAllowed(canonical) || await file.length() <= 0) {
+    if (!isAllowed(canonical)) {
+      throw const FormatException('HLS 资源缺失、链接或路径越界');
+    }
+    final relativePath = p.relative(logical.path, from: root);
+    if (relativePath == '.' ||
+        relativePath == '..' ||
+        relativePath.startsWith('..${p.separator}')) {
       throw const FormatException('HLS 资源缺失、链接或路径越界');
     }
     final canonicalFile = File(canonical);
-    final entry = (source: canonicalFile, relativePath: relativePath);
-    files[relativePath] = entry;
-    return entry;
+    final previous = files[relativePath];
+    if (previous != null && previous.path != canonicalFile.path) {
+      throw const FormatException('HLS 资源引用冲突');
+    }
+    files[relativePath] = canonicalFile;
+    return (relativePath: relativePath, source: canonicalFile);
   }
 
-  Future<void> visit(_LocalHlsFile entry, int depth) async {
+  Future<void> visit(
+    ({String relativePath, File source}) entry,
+    int depth,
+  ) async {
     if (depth > 32 || visiting.contains(entry.source.path)) {
       throw const FormatException('HLS 清单循环或嵌套过深');
     }
-    if (!visited.add(entry.relativePath)) return;
+    if (!visited.add(entry.source.path)) return;
     visiting.add(entry.source.path);
     final text = await entry.source.readAsString();
     if (!text.trimLeft().startsWith('#EXTM3U')) {
@@ -1676,9 +1811,12 @@ Future<List<_LocalHlsFile>> _localHlsFiles(File manifest) async {
           throw const FormatException('HLS 资源引用无效');
         }
       }
-      final logicalParent = p.dirname(entry.relativePath);
       for (final reference in references) {
-        final child = await resource(entry.source, reference, logicalParent);
+        final child = await resource(
+          entry.source,
+          entry.relativePath,
+          reference,
+        );
         if (child.source.path.toLowerCase().endsWith('.m3u8') ||
             master && !line.startsWith('#')) {
           await visit(child, depth + 1);
@@ -1689,9 +1827,16 @@ Future<List<_LocalHlsFile>> _localHlsFiles(File manifest) async {
     visiting.remove(entry.source.path);
   }
 
-  final top = await resource(manifest, p.basename(manifest.path), '');
+  final top = await resource(
+    manifest,
+    p.basename(manifest.path),
+    p.basename(manifest.path),
+  );
   await visit(top, 0);
-  return files.values.toList();
+  return [
+    for (final entry in files.entries)
+      (relativePath: entry.key, source: entry.value),
+  ];
 }
 
 class MediaCacheDeletionPlan {
@@ -1767,6 +1912,7 @@ class MediaDownloadService {
   }
 
   void prioritizeHlsSeek(String taskId, int targetMs) {
+    if (tasks.task(taskId)?.state != MediaTaskState.downloading) return;
     _hlsSeekTargets[tasks.resolveTaskId(taskId)] = targetMs.clamp(0, 1 << 62);
     setTaskPriority(taskId, 100);
   }
@@ -2037,28 +2183,18 @@ class MediaDownloadService {
       tasks.acquireExclusive(id);
     }
     MediaCacheDeletionPlan? frozenPlan;
-    Set<String> sharedResourceKeys = <String>{};
-    List<String> sharedResourcePaths = const <String>[];
     String? nativeReservation;
     try {
+      // Freeze the Dart-owned cache set on every platform. Native mutation
+      // reservations add cross-process protection on Android, but Dart-only
+      // platforms still need the plan to discover partial HLS sidecars.
       frozenPlan = await tasks.cacheDeletionPlan(id);
-      final current = tasks.task(id);
-      if (current != null) {
-        sharedResourceKeys = await _sharedResourceKeysForTask(
-          current,
-          frozenPlan,
-        );
-        sharedResourcePaths = await _sharedResourcePaths(sharedResourceKeys);
-      }
       if (native?.supportsMutationReservation == true) {
-        // Freeze the complete Dart-owned cache set before touching transport.
-        // The native reservation then covers both this set and any native
-        // WorkManager/DownloadManager paths for the same task, plus the
-        // physical content-addressed files behind task-local HLS links.
+        // The native reservation covers the same set and any native
+        // WorkManager/DownloadManager paths for the task.
         nativeReservation = await native!.reserveMutation(id, [
           ...frozenPlan.files,
           ...frozenPlan.directories,
-          ...sharedResourcePaths,
         ]);
       }
     } catch (_) {
@@ -2087,6 +2223,13 @@ class MediaDownloadService {
         }
         final current = tasks.task(id);
         if (current == null) return;
+        final sharedResourceKeys = await _sharedResourceKeysForTask(
+          current,
+          frozenPlan,
+        );
+        if (current.resourceKey.isNotEmpty) {
+          sharedResourceKeys.add(current.resourceKey);
+        }
         if (nativeCancel == null &&
             nativeReservation == null &&
             !_dartTasks.contains(id)) {
@@ -2182,44 +2325,33 @@ class MediaDownloadService {
     return keys;
   }
 
-  Future<List<String>> _sharedResourcePaths(
-    Iterable<String> resourceKeys,
-  ) async {
-    final coordinator = resourceCoordinator;
-    if (coordinator == null) return const <String>[];
-    final paths = <String>[];
-    for (final key in resourceKeys) {
-      paths.add((await coordinator.committedFile(key)).path);
-    }
-    return paths;
-  }
-
   Future<void> _releaseSharedResources(
     String taskId,
     Iterable<String> resourceKeys,
   ) async {
-    for (final key in resourceKeys) {
-      await _releaseSharedResourceOwner(key, 'task:$taskId');
-    }
-  }
-
-  Future<void> _releaseSharedResourceOwner(
-    String resourceKey,
-    String ownerId,
-  ) async {
     final db = tasks.db;
     if (db == null) return;
-    await db.removeMediaResourceOwner(resourceKey, ownerId);
-    if ((await db.mediaResourceOwners(resourceKey)).isNotEmpty) return;
-    try {
-      await resourceCoordinator?.delete(resourceKey);
-    } catch (error, stack) {
-      AppErrorLogger.capture(
-        error,
-        module: 'media.resource-gc',
-        context: resourceKey,
-        stack: stack,
-      );
+    for (final key in resourceKeys) {
+      await db.removeMediaResourceOwner(key, 'task:$taskId');
+      try {
+        final coordinator = resourceCoordinator;
+        if (coordinator == null) {
+          await db.deleteMediaResourceIfUnowned(key);
+          continue;
+        }
+        final deleted = await coordinator.deleteIf(
+          key,
+          () async => (await db.mediaResourceOwners(key)).isEmpty,
+        );
+        if (deleted) await db.deleteMediaResourceIfUnowned(key);
+      } catch (error, stack) {
+        AppErrorLogger.capture(
+          error,
+          module: 'media.resource-gc',
+          context: key,
+          stack: stack,
+        );
+      }
     }
   }
 
@@ -2665,20 +2797,8 @@ class MediaDownloadService {
   Future<void> _writeHlsPlaylist(File destination, List<String> lines) async {
     final temporary = File('${destination.path}.tmp');
     await temporary.writeAsString('${lines.join('\n')}\n', flush: true);
-    try {
-      // Android's rename replaces the target atomically, so Media3 never sees
-      // a missing playlist while the download publishes the next segment.
-      try {
-        await temporary.rename(destination.path);
-      } on FileSystemException {
-        // Keep the cross-platform fallback for providers that refuse replace;
-        // the Android path above is the production media contract.
-        if (await destination.exists()) await destination.delete();
-        await temporary.rename(destination.path);
-      }
-    } finally {
-      if (await temporary.exists()) await temporary.delete();
-    }
+    if (await destination.exists()) await destination.delete();
+    await temporary.rename(destination.path);
   }
 
   Future<({Uri url, String text})> _fetchHlsText(
@@ -2778,15 +2898,48 @@ class MediaDownloadService {
     final key = sha256
         .convert(utf8.encode(remote.removeFragment().toString()))
         .toString();
-    final existing = resources[key];
-    if (existing != null) {
-      final cached = File('${staging.path}/$existing');
-      if (await cached.exists() && await cached.length() > 0) {
-        await tasks.db?.addMediaResourceOwner(
+    final coordinator = resourceCoordinator;
+    Future<void> registerOwner() async {
+      final database = tasks.db;
+      if (database == null) return;
+      if (coordinator == null) {
+        await database.addMediaResourceOwner(
           key,
           'task:$ownerId',
           'hls-resource',
         );
+      } else {
+        await coordinator.withLease(
+          key,
+          () => database.addMediaResourceOwner(
+            key,
+            'task:$ownerId',
+            'hls-resource',
+          ),
+        );
+      }
+    }
+
+    await registerOwner();
+    var published = false;
+    Future<void> releaseFailedOwner() async {
+      if (published) return;
+      try {
+        await _releaseSharedResources(ownerId, [key]);
+      } catch (error, stack) {
+        AppErrorLogger.capture(
+          error,
+          module: 'media.resource-gc',
+          context: 'failed-transfer:$key',
+          stack: stack,
+        );
+      }
+    }
+
+    final existing = resources[key];
+    if (existing != null) {
+      final cached = File('${staging.path}/$existing');
+      if (await cached.exists() && await cached.length() > 0) {
         return (name: existing, bytes: 0);
       }
       resources.remove(key);
@@ -2795,12 +2948,6 @@ class MediaDownloadService {
     final local = File('${staging.path}/$name');
     if (await local.exists() && await local.length() > 0) {
       resources[key] = name;
-      await _writeHlsResources(staging, resources);
-      await tasks.db?.addMediaResourceOwner(
-        key,
-        'task:$ownerId',
-        'hls-resource',
-      );
       return (name: name, bytes: 0);
     }
     final resumeKey = sha256
@@ -2808,36 +2955,38 @@ class MediaDownloadService {
         .toString();
     final partial = File('${staging.path}/resume_$resumeKey.part');
     try {
-      final coordinator = resourceCoordinator;
-      Future<void> write(File destination, Cancellation transferCancellation) =>
-          _transferScheduler.schedule<void>(
+      Future<void> write(File destination) => _transferScheduler.schedule<void>(
+        priority: _taskPriority(ownerId),
+        action: () => _downloadFile(
+          remote,
+          destination,
+          cancel,
+          document: document,
+          maxBytes: min(64 * 1024 * 1024, maxBytes),
+          onProgress: onProgress,
+        ),
+      );
+      if (coordinator == null) {
+        await write(partial);
+      } else {
+        // A shared resource must outlive any one task's cancellation. The
+        // requesting task checks its own cancellation after the shared write
+        // completes, while the coordinator-owned transfer continues for all
+        // consumers.
+        final shared = await coordinator.ensure(key, (sharedPartial, _) async {
+          await _transferScheduler.schedule<void>(
             priority: _taskPriority(ownerId),
             action: () => _downloadFile(
               remote,
-              destination,
-              transferCancellation,
+              sharedPartial,
+              Cancellation(),
               document: document,
               maxBytes: min(64 * 1024 * 1024, maxBytes),
               onProgress: onProgress,
             ),
           );
-      if (coordinator == null) {
-        await write(partial, cancel);
-      } else {
-        final shared = await cancel.waitFor(
-          coordinator.ensure(
-            key,
-            (sharedPartial, transferCancellation) =>
-                write(sharedPartial, transferCancellation),
-            resumeFile: partial,
-            ownerCancellation: cancel,
-          ),
-        );
+        });
         cancel.check();
-        if (await partial.exists()) {
-          await partial.delete();
-          await _deleteResumeState(partial);
-        }
         final size = await shared.length();
         if (downloaded + size > maxBytes) {
           throw StateError('媒体响应超过 $maxBytes 字节');
@@ -2846,14 +2995,11 @@ class MediaDownloadService {
         await Link(local.path).create(shared.path);
         resources[key] = name;
         await _writeHlsResources(staging, resources);
-        await tasks.db?.addMediaResourceOwner(
-          key,
-          'task:$ownerId',
-          'hls-resource',
-        );
+        published = true;
         return (name: name, bytes: size);
       }
     } on PlatformException catch (error) {
+      await releaseFailedOwner();
       throw PlatformException(
         code: error.code,
         message: error.message,
@@ -2862,6 +3008,9 @@ class MediaDownloadService {
           if (error.details is Map) ...error.details as Map,
         },
       );
+    } catch (_) {
+      await releaseFailedOwner();
+      rethrow;
     }
     cancel.check();
     final size = await partial.length();
@@ -2873,7 +3022,7 @@ class MediaDownloadService {
     await _deleteResumeState(partial);
     resources[key] = name;
     await _writeHlsResources(staging, resources);
-    await tasks.db?.addMediaResourceOwner(key, 'task:$ownerId', 'hls-resource');
+    published = true;
     return (name: name, bytes: size);
   }
 
@@ -2935,19 +3084,26 @@ class MediaDownloadService {
         );
       }
     }
-    final removed = resources.keys
+    final existingKeys = resources.keys.toSet();
+    await for (final entity in staging.list(followLinks: false)) {
+      if (entity is! File && entity is! Link) continue;
+      final match = RegExp(r'^resource_([0-9a-f]{64})\.bin$')
+          .firstMatch(p.basename(entity.path));
+      if (match != null) existingKeys.add(match.group(1)!);
+    }
+    final removedKeys = existingKeys
         .where((key) => !keys.contains(key))
         .toList(growable: false);
     resources.removeWhere((key, _) => !keys.contains(key));
-    for (final key in removed) {
-      await _releaseSharedResourceOwner(key, 'task:$ownerId');
+    if (removedKeys.isNotEmpty) {
+      await _releaseSharedResources(ownerId, removedKeys);
     }
     final names = {
       for (final key in keys) 'resource_$key.bin',
       ...resources.values,
     };
     await for (final file in staging.list()) {
-      if (file is! File) continue;
+      if (file is! File && file is! Link) continue;
       final match = RegExp(
         r'^(resource_(?:[0-9a-f]{64}|\d{5})\.bin)(?:$|\.part)',
       ).firstMatch(file.uri.pathSegments.last);
@@ -3303,7 +3459,7 @@ class HlsInputValidator {
         ? root.resolveSymbolicLinksSync()
         : root.path;
     final allowedRoots = <String>{rootPath};
-    var ancestor = p.normalize(rootPath);
+    var ancestor = rootPath;
     while (true) {
       if (p.basename(ancestor) == 'media_cache') {
         final sharedRoot = Directory(p.join(ancestor, 'shared_resources'));
@@ -3420,11 +3576,9 @@ class HlsCacheInput {
   HlsResourceGraph get resourceGraph {
     final playlistPath = p.normalize(playlist.toFilePath());
     final taskRoot = p.dirname(playlistPath);
-    final initial = initSegment;
-    final initialResources = initial == null ? const <Uri>[] : [initial];
     final resources = <Uri>{
       ...segments,
-      ...initialResources,
+      ...<Uri>[?initSegment],
       ...initSegments,
       ...keys,
     }.toList(growable: false);
@@ -3628,12 +3782,7 @@ class Mp4ExportService {
           cancellation: cancel,
         );
       } else if (native != null) {
-        final graph = input.resourceGraph;
-        if (!await native!.validateLocalInput(
-          input.playlist.toFilePath(),
-          resourcePaths: graph.resourcePaths,
-          allowedRoots: graph.allowedRootPaths,
-        )) {
+        if (!await native!.validateLocalInput(input.playlist.toFilePath())) {
           throw StateError('HLS 本地输入校验失败');
         }
         cancel.check();
@@ -3651,8 +3800,6 @@ class Mp4ExportService {
           await native!.muxHls(
             playlist: input.playlist.toFilePath(),
             output: temporary.path,
-            resourcePaths: graph.resourcePaths,
-            allowedRoots: graph.allowedRootPaths,
             jobId: jobId,
           );
         } finally {

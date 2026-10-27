@@ -148,6 +148,30 @@ class SiteLensCompactRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final subtitleText = subtitle is Text ? (subtitle as Text).data : null;
+    final action = onTap;
+    final longSubtitle =
+        subtitleText != null &&
+        subtitleText.characters.length >
+            SiteLensMetrics.rowDescriptionFoldThreshold;
+    if (longSubtitle) {
+      if (action == null) {
+        return SiteLensExpandableRow(
+          title: title,
+          description: subtitleText,
+          leading: leading,
+          trailing: trailing,
+        );
+      }
+      return _SiteLensLongDescriptionActionRow(
+        title: title,
+        description: subtitleText,
+        leading: leading,
+        trailing: trailing,
+        onTap: action,
+        quiet: quiet,
+      );
+    }
     final interactionOverlay = SiteLensColors.of(context).rowInteractionOverlay;
     Widget rowText(Widget child, TextStyle? style) =>
         child is Text && child.data != null
@@ -174,7 +198,7 @@ class SiteLensCompactRow extends StatelessWidget {
           ? null
           : rowText(subtitle!, Theme.of(context).textTheme.bodySmall),
       trailing: trailing,
-      onTap: onTap,
+      onTap: action,
       enableFeedback: false,
       focusColor: interactionOverlay,
       hoverColor: interactionOverlay,
@@ -186,6 +210,131 @@ class SiteLensCompactRow extends StatelessWidget {
     // touch/hover overlay remains transparent.
     return SiteLensFoldable(child: themedRow);
   }
+}
+
+/// A compact row for descriptions that exceed the one-line row budget. The
+/// collapsed row keeps the title and a short disclosure hint; the complete
+/// description is built inside the shared foldable detail surface.
+class SiteLensExpandableRow extends StatefulWidget {
+  const SiteLensExpandableRow({
+    super.key,
+    required this.title,
+    required this.description,
+    this.leading,
+    this.trailing,
+    this.initiallyExpanded = false,
+    this.detailsBuilder,
+  });
+
+  final Widget title;
+  final String description;
+  final Widget? leading;
+  final Widget? trailing;
+  final bool initiallyExpanded;
+  final WidgetBuilder? detailsBuilder;
+
+  @override
+  State<SiteLensExpandableRow> createState() => _SiteLensExpandableRowState();
+}
+
+class _SiteLensExpandableRowState extends State<SiteLensExpandableRow> {
+  late bool _expanded = widget.initiallyExpanded;
+
+  @override
+  Widget build(BuildContext context) => SiteLensDisclosure(
+    title: widget.title,
+    subtitle: const Text('查看详情'),
+    leading: widget.leading,
+    expanded: _expanded,
+    onToggle: () => setState(() => _expanded = !_expanded),
+    trailingBuilder: (context, expanded) => Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (widget.trailing != null) widget.trailing!,
+        Icon(
+          expanded ? Icons.expand_less : Icons.expand_more,
+          size: SiteLensMetrics.compactIconSize,
+        ),
+      ],
+    ),
+    details:
+        widget.detailsBuilder ??
+        (context) => Text(
+          widget.description,
+          style: Theme.of(context).textTheme.bodySmall,
+          softWrap: true,
+        ),
+  );
+}
+
+class _SiteLensLongDescriptionActionRow extends StatefulWidget {
+  const _SiteLensLongDescriptionActionRow({
+    required this.title,
+    required this.description,
+    required this.onTap,
+    this.leading,
+    this.trailing,
+    this.quiet = false,
+  });
+
+  final Widget title;
+  final String description;
+  final Widget? leading;
+  final Widget? trailing;
+  final VoidCallback onTap;
+  final bool quiet;
+
+  @override
+  State<_SiteLensLongDescriptionActionRow> createState() =>
+      _SiteLensLongDescriptionActionRowState();
+}
+
+class _SiteLensLongDescriptionActionRowState
+    extends State<_SiteLensLongDescriptionActionRow> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      SiteLensCompactRow(
+        title: widget.title,
+        subtitle: const Text('查看详情'),
+        leading: widget.leading,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (widget.trailing != null) widget.trailing!,
+            SiteLensCompactIconButton(
+              tooltip: _expanded ? '收起详情' : '查看详情',
+              onPressed: () => setState(() => _expanded = !_expanded),
+              icon: Icon(
+                _expanded ? Icons.expand_less : Icons.expand_more,
+                size: SiteLensMetrics.compactIconSize,
+              ),
+            ),
+          ],
+        ),
+        onTap: widget.onTap,
+        quiet: widget.quiet,
+      ),
+      if (_expanded)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            SiteLensMetrics.compactRowHorizontalPadding,
+            0,
+            SiteLensMetrics.compactRowHorizontalPadding,
+            SiteLensMetrics.formGap,
+          ),
+          child: Text(
+            widget.description,
+            style: Theme.of(context).textTheme.bodySmall,
+            softWrap: true,
+          ),
+        ),
+    ],
+  );
 }
 
 /// The complete row toggles silently; only the switch animates on touch.
@@ -206,16 +355,84 @@ class SiteLensSwitchRow extends StatelessWidget {
   final Widget? leading;
 
   @override
-  Widget build(BuildContext context) => SiteLensCompactRow(
-    quiet: true,
-    leading: leading,
-    title: Text(title),
-    subtitle: subtitle == null ? null : Text(subtitle!),
-    onTap: onChanged == null ? null : () => onChanged!(!value),
-    trailing: SiteLensCompactSwitch(
-      value: value,
-      onChanged: onChanged,
-      semanticLabel: title,
+  Widget build(BuildContext context) {
+    final longSubtitle =
+        subtitle != null &&
+        subtitle!.characters.length >
+            SiteLensMetrics.rowDescriptionFoldThreshold;
+    if (longSubtitle) {
+      return _SiteLensExpandableSwitchRow(
+        title: title,
+        description: subtitle!,
+        value: value,
+        onChanged: onChanged,
+        leading: leading,
+      );
+    }
+    return SiteLensCompactRow(
+      quiet: true,
+      leading: leading,
+      title: Text(title),
+      subtitle: subtitle == null ? null : Text(subtitle!),
+      onTap: onChanged == null ? null : () => onChanged!(!value),
+      trailing: SiteLensCompactSwitch(
+        value: value,
+        onChanged: onChanged,
+        semanticLabel: title,
+      ),
+    );
+  }
+}
+
+class _SiteLensExpandableSwitchRow extends StatefulWidget {
+  const _SiteLensExpandableSwitchRow({
+    required this.title,
+    required this.description,
+    required this.value,
+    required this.onChanged,
+    this.leading,
+  });
+
+  final String title;
+  final String description;
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+  final Widget? leading;
+
+  @override
+  State<_SiteLensExpandableSwitchRow> createState() =>
+      _SiteLensExpandableSwitchRowState();
+}
+
+class _SiteLensExpandableSwitchRowState
+    extends State<_SiteLensExpandableSwitchRow> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) => SiteLensDisclosure(
+    title: Text(widget.title),
+    subtitle: const Text('查看详情'),
+    leading: widget.leading,
+    expanded: _expanded,
+    onToggle: () => setState(() => _expanded = !_expanded),
+    trailingBuilder: (context, expanded) => Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SiteLensCompactSwitch(
+          value: widget.value,
+          onChanged: widget.onChanged,
+          semanticLabel: widget.title,
+        ),
+        Icon(
+          expanded ? Icons.expand_less : Icons.expand_more,
+          size: SiteLensMetrics.compactIconSize,
+        ),
+      ],
+    ),
+    details: (context) => Text(
+      widget.description,
+      style: Theme.of(context).textTheme.bodySmall,
+      softWrap: true,
     ),
   );
 }
@@ -627,10 +844,13 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
     final theme = Theme.of(context);
     final colors = SiteLensColors.of(context);
     final textStyle = theme.textTheme.bodySmall ?? const TextStyle();
-    // Keep the menu close to the surrounding glass surface. A neutral fill
-    // keeps the selector visually grouped with the gesture row instead of
-    // making it read like a separate primary-colored control.
-    final fill = colors.glassSurface.withValues(alpha: 1);
+    final controlSurface = colors.controlSurface(
+      SiteLensBackdropScope.modeOf(context),
+      accent: theme.colorScheme.primary,
+    );
+    // The trigger and its overlay share one background-aware glass token so
+    // every backdrop mode keeps the same liquid-glass language.
+    final fill = controlSurface.fill;
     final showFocusOutline =
         FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
     const horizontalPadding = SiteLensMetrics.formGap;
@@ -660,7 +880,13 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
       foregroundColor: foreground,
       iconColor: foreground,
       iconSize: const WidgetStatePropertyAll(iconSize),
-      overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+      overlayColor: WidgetStateProperty.resolveWith(
+        (states) =>
+            states.contains(WidgetState.pressed) ||
+                states.contains(WidgetState.hovered)
+            ? controlSurface.interaction
+            : Colors.transparent,
+      ),
       backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
       elevation: const WidgetStatePropertyAll(0),
       shadowColor: const WidgetStatePropertyAll(Colors.transparent),
@@ -725,7 +951,7 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
                   borderRadius: const BorderRadius.vertical(
                     bottom: Radius.circular(SiteLensMetrics.inputRadius),
                   ),
-                  side: BorderSide.none,
+                  side: BorderSide(color: controlSurface.border),
                 ),
               ),
             ),
@@ -768,7 +994,7 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
                                 states.contains(WidgetState.focused) &&
                                 _enabled
                             ? theme.colorScheme.primary
-                            : Colors.transparent,
+                            : controlSurface.border,
                         width: 1.4,
                       ),
                     ),
@@ -973,17 +1199,24 @@ class SiteLensTopBarActionGroup extends StatelessWidget {
   Widget build(BuildContext context) {
     if (actions.isEmpty) return const SizedBox.shrink();
     final colors = SiteLensColors.of(context);
-    final theme = Theme.of(context);
+    final controlSurface = colors.controlSurface(
+      SiteLensBackdropScope.modeOf(context),
+      accent: Theme.of(context).colorScheme.primary,
+    );
     return Padding(
-      padding: const EdgeInsets.only(right: 8, top: 5, bottom: 5),
+      padding: const EdgeInsets.only(
+        right: SiteLensMetrics.topBarActionGroupRightInset,
+        top: SiteLensMetrics.topBarActionGroupVerticalInset,
+        bottom: SiteLensMetrics.topBarActionGroupVerticalInset,
+      ),
       child: DecoratedBox(
         decoration: ShapeDecoration(
-          color: colors.panelTint.withValues(
-            alpha: theme.brightness == Brightness.dark ? 0.72 : 0.86,
-          ),
+          color: controlSurface.fill,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(28),
-            side: BorderSide(color: colors.panelBorder),
+            borderRadius: BorderRadius.circular(
+              SiteLensMetrics.topBarActionGroupRadius,
+            ),
+            side: BorderSide(color: controlSurface.border),
           ),
         ),
         child: Row(
@@ -1005,33 +1238,52 @@ class SiteLensTopBarAction extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final colors = SiteLensColors.of(context);
+    final controlSurface = colors.controlSurface(
+      SiteLensBackdropScope.modeOf(context),
+      accent: theme.colorScheme.primary,
+    );
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 1, vertical: 1),
+      padding: const EdgeInsets.symmetric(
+        horizontal: SiteLensMetrics.topBarActionInset,
+        vertical: SiteLensMetrics.topBarActionInset,
+      ),
       child: Material(
         type: MaterialType.transparency,
         child: Theme(
           data: theme.copyWith(
             iconButtonTheme: IconButtonThemeData(
               style: ButtonStyle(
-                minimumSize: const WidgetStatePropertyAll(Size(44, 44)),
+                minimumSize: WidgetStatePropertyAll(
+                  Size.square(SiteLensMetrics.topBarActionMinSize),
+                ),
                 padding: const WidgetStatePropertyAll(EdgeInsets.zero),
                 foregroundColor: WidgetStateProperty.resolveWith(
                   (states) => states.contains(WidgetState.disabled)
-                      ? SiteLensColors.of(context).disabledContent
+                      ? colors.disabledContent
                       : theme.colorScheme.onSurfaceVariant,
                 ),
                 overlayColor: WidgetStateProperty.resolveWith(
-                  (states) => states.contains(WidgetState.pressed)
-                      ? theme.colorScheme.primary.withValues(alpha: 0.14)
+                  (states) =>
+                      states.contains(WidgetState.pressed) ||
+                          states.contains(WidgetState.hovered)
+                      ? controlSurface.interaction
                       : Colors.transparent,
                 ),
                 shape: const WidgetStatePropertyAll(CircleBorder()),
               ),
             ),
             popupMenuTheme: theme.popupMenuTheme.copyWith(
+              color: controlSurface.fill,
               elevation: 0,
               shadowColor: Colors.transparent,
               surfaceTintColor: Colors.transparent,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(
+                  SiteLensMetrics.inputRadius + 2,
+                ),
+                side: BorderSide(color: controlSurface.border),
+              ),
             ),
           ),
           child: child,

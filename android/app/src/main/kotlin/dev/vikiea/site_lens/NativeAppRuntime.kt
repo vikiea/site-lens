@@ -14,6 +14,10 @@ class NativeAppRuntime(
     }
     private val main = Handler(Looper.getMainLooper())
 
+    fun dispose() {
+        executor.shutdownNow()
+    }
+
     override fun resolveSecureDns(
         provider: String,
         hostname: String,

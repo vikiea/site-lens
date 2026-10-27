@@ -1,11 +1,151 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
+import 'package:site_lens/background/background_snapshot.dart';
+import 'package:site_lens/settings/app_settings.dart';
 import 'package:site_lens/ui/app_theme.dart';
 import 'package:site_lens/ui/glass_surface.dart';
 import 'package:site_lens/ui/ui_primitives.dart';
 
 void main() {
+  testWidgets('top-bar action glass follows the active backdrop mode', (
+    tester,
+  ) async {
+    for (final mode in BackgroundMode.values) {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+          home: SiteLensBackdrop(
+            background: BackgroundSnapshot(mode: mode),
+            child: SiteLensPageScaffold(
+              title: '操作页',
+              actions: [
+                IconButton(
+                  onPressed: () {},
+                  icon: const Icon(Icons.more_horiz),
+                ),
+              ],
+              body: const SizedBox(),
+            ),
+          ),
+        ),
+      );
+      final context = tester.element(find.byType(SiteLensTopBarActionGroup));
+      final colors = SiteLensColors.of(context);
+      final expected = colors.controlSurface(
+        mode,
+        accent: Theme.of(context).colorScheme.primary,
+      );
+      final decoration =
+          tester
+                  .widget<DecoratedBox>(
+                    find.descendant(
+                      of: find.byType(SiteLensTopBarActionGroup),
+                      matching: find.byType(DecoratedBox),
+                    ),
+                  )
+                  .decoration
+              as ShapeDecoration;
+      expect(decoration.color, expected.fill);
+      expect(decoration.shape, isA<RoundedRectangleBorder>());
+      expect(
+        (decoration.shape as RoundedRectangleBorder).side.color,
+        expected.border,
+      );
+      expect(tester.takeException(), isNull);
+    }
+  });
+
+  testWidgets('top-bar action glass follows the selected theme seed', (
+    tester,
+  ) async {
+    Future<Color> pumpPreset(ThemePresetId preset) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildSiteLensTheme(preset, Brightness.light),
+          home: SiteLensBackdrop(
+            background: const BackgroundSnapshot(
+              mode: BackgroundMode.defaultGradient,
+            ),
+            child: SiteLensPageScaffold(
+              title: '操作页',
+              actions: [
+                IconButton(
+                  onPressed: () {},
+                  icon: const Icon(Icons.more_horiz),
+                ),
+              ],
+              body: const SizedBox(),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final decoration =
+          tester
+                  .widget<DecoratedBox>(
+                    find.descendant(
+                      of: find.byType(SiteLensTopBarActionGroup),
+                      matching: find.byType(DecoratedBox),
+                    ),
+                  )
+                  .decoration
+              as ShapeDecoration;
+      return decoration.color!;
+    }
+
+    final ocean = await pumpPreset(ThemePresetId.oceanBlue);
+    final coral = await pumpPreset(ThemePresetId.sunsetCoral);
+    expect(coral, isNot(equals(ocean)));
+  });
+
+  testWidgets('long descriptions use a foldable detail row', (tester) async {
+    const description = '这是一段超过紧凑行阈值的完整描述，不应被截断后丢失';
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: SiteLensExpandableRow(
+          title: const Text('长描述设置'),
+          description: description,
+        ),
+      ),
+    );
+
+    expect(find.text(description), findsNothing);
+    expect(find.text('查看详情'), findsOneWidget);
+    await tester.tap(find.text('长描述设置'));
+    await tester.pumpAndSettle();
+    expect(find.text(description), findsOneWidget);
+  });
+
+  testWidgets('long tappable descriptions keep the row action', (tester) async {
+    var tapped = false;
+    const description = '这是一个超过紧凑行阈值的可点击行完整说明文字';
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: SiteLensCompactRow(
+          title: const Text('可点击行'),
+          subtitle: const Text(description),
+          onTap: () => tapped = true,
+        ),
+      ),
+    );
+
+    expect(find.text(description), findsNothing);
+    expect(find.byType(SiteLensCompactIconButton), findsOneWidget);
+    await tester.tap(
+      find.descendant(
+        of: find.byType(SiteLensCompactIconButton),
+        matching: find.byType(IconButton),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text(description), findsOneWidget);
+    await tester.tap(find.text('可点击行'));
+    expect(tapped, isTrue);
+  });
+
   testWidgets('page shell shows titles and preserves back and actions', (
     tester,
   ) async {
@@ -163,7 +303,7 @@ void main() {
     expect(find.text('第二项详情'), findsOneWidget);
   });
 
-  testWidgets('compact rows fit short copy and switch rows stay quiet', (
+  testWidgets('long switch descriptions fold without truncation', (
     tester,
   ) async {
     var value = false;
@@ -175,7 +315,7 @@ void main() {
           child: StatefulBuilder(
             builder: (context, setState) => SiteLensSwitchRow(
               title: '这是一个很长的设置标题应该收敛',
-              subtitle: '这是一个很长的说明文字应该保持单行',
+              subtitle: '这是一个超过紧凑行阈值的完整说明文字应该放入可折叠详情',
               value: value,
               onChanged: (next) => setState(() => value = next),
             ),
@@ -185,7 +325,11 @@ void main() {
     );
     expect(find.byType(SiteLensRowText), findsNWidgets(2));
     expect(find.byType(ListTile), findsOneWidget);
-    await tester.tap(find.byType(SiteLensSwitchRow));
+    expect(find.text('查看详情'), findsOneWidget);
+    await tester.tap(find.text('查看详情'));
+    await tester.pumpAndSettle();
+    expect(find.text('这是一个超过紧凑行阈值的完整说明文字应该放入可折叠详情'), findsOneWidget);
+    await tester.tap(find.byType(Switch));
     await tester.pumpAndSettle();
     expect(value, isTrue);
     final quietTheme = tester.widget<Theme>(

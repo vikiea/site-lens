@@ -182,7 +182,7 @@ void main() {
       );
       await db.saveMediaCandidate(original);
       final firstStore = MediaTaskStore(db: db);
-      final task = firstStore.create(original);
+      final task = firstStore.create(original).copyWith(resourceKey: '');
       await db.saveMediaTask(task);
       final replacement = candidate(
         id: 'reused',
