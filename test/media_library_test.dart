@@ -865,32 +865,28 @@ void main() {
     },
   );
 
-  test('bounded SAF metadata failures remain visible instead of falling back silently', () async {
-    final runtime = _OversizedMetadataRuntime();
-    library.dispose();
-    library = MediaLibrary(db: db, tasks: tasks, native: runtime);
-    final value = MediaArtifact(
-      taskId: task.id,
-      location: 'content://provider/tree/root/document/large',
-      name: mediaExportFileName(task),
-      size: 600,
-      createdAt: DateTime.now().toUtc(),
-    );
-    await db.saveMediaArtifact(task.id, value.toJson());
-    await library.restore();
+  test(
+    'oversized SAF metadata keeps basic facts through a stat fallback',
+    () async {
+      final runtime = _OversizedMetadataRuntime();
+      library.dispose();
+      library = MediaLibrary(db: db, tasks: tasks, native: runtime);
+      final value = MediaArtifact(
+        taskId: task.id,
+        location: 'content://provider/tree/root/document/large',
+        name: mediaExportFileName(task),
+        size: 600,
+        createdAt: DateTime.now().toUtc(),
+      );
+      await db.saveMediaArtifact(task.id, value.toJson());
+      await library.restore();
 
-    await expectLater(
-      library.inspect(task.id),
-      throwsA(
-        isA<PlatformException>().having(
-          (error) => error.code,
-          'code',
-          'media_file_too_large',
-        ),
-      ),
-    );
-    expect(runtime.statCalls, 0);
-  });
+      final inspected = await library.inspect(task.id);
+      expect(inspected.size, 1);
+      expect(inspected.mime, 'video/mp4');
+      expect(runtime.statCalls, 1);
+    },
+  );
 
   test('missing exported document remains indexed for recovery', () async {
     final runtime = _MissingArtifactRuntime();

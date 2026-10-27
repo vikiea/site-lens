@@ -232,7 +232,10 @@ void main() {
       expect(find.text('重新加载'), findsNothing);
       expect(find.byType(CircularProgressIndicator), findsNothing);
       expect(app.browserVisible, isTrue);
-      await tester.runAsync(() => app.closeTab(app.activeBrowser!));
+      // closeTab serializes the session write through a microtask queue. In a
+      // widget test, wrapping this controller operation in runAsync waits on
+      // the same fake-async boundary that must advance that queue.
+      await app.closeTab(app.activeBrowser!);
       await tester.pumpAndSettle();
       expect(app.activeBrowser!.loadedHost, isNotNull);
       expect(find.byType(CircularProgressIndicator), findsNothing);
@@ -417,7 +420,7 @@ void main() {
         () => Future<void>.delayed(const Duration(milliseconds: 50)),
       );
       expect(app.browserVisible, false);
-      await tester.runAsync(() => app.closeTab(app.browserTabs.first));
+      await app.closeTab(app.browserTabs.first);
       expect(app.activeBrowser!.loadedHost, isNull);
       await tester.runAsync(app.shutdown);
     },

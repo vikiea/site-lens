@@ -151,12 +151,31 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             "validateLocalInput", "muxHls" -> {
                 val path = call.argument<String>(if (call.method == "muxHls") "playlist" else "path")
                     ?: return MediaFileLeaseRegistry.Scope()
-                return MediaFileLeaseRegistry.Scope.file(File(path).canonicalFile.parentFile!!)
+                var scope = MediaFileLeaseRegistry.Scope.file(File(path).canonicalFile.parentFile!!)
+                hlsResourcePaths(call).forEach { resource ->
+                    scope += MediaFileLeaseRegistry.Scope.source(resource)
+                }
+                return scope
             }
             else -> null
         }
         return raw?.let(MediaFileLeaseRegistry.Scope::source) ?: MediaFileLeaseRegistry.Scope()
     }
+
+    private fun hlsResourcePaths(call: MethodCall): List<String> =
+        (call.argument<List<*>>("resourcePaths") ?: emptyList<Any?>()).map {
+            (it as? String)?.takeIf { value -> value.length <= 4096 }
+                ?: error("HLS 资源路径无效")
+        }.also { require(it.size <= 4096) { "HLS 资源过多" } }
+
+    private fun hlsAllowedRoots(call: MethodCall): List<File> =
+        (call.argument<List<*>>("allowedRoots") ?: emptyList<Any?>()).map {
+            val raw = (it as? String)?.takeIf { value -> value.length <= 4096 }
+                ?: error("HLS 允许目录无效")
+            File(raw).canonicalFile.also { root ->
+                require(root.isDirectory && isAppLocal(root)) { "HLS 允许目录越界" }
+            }
+        }.also { require(it.size <= 32) { "HLS 允许目录过多" } }
 
     private fun mutationScope(call: MethodCall): MediaFileLeaseRegistry.Scope {
         fun source(name: String) = call.argument<String>(name)?.let(MediaFileLeaseRegistry.Scope::source)
@@ -210,10 +229,25 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
     private fun execute(call: MethodCall, cancellation: AtomicBoolean): Any? {
         fun argument(name: String) = call.argument<String>(name) ?: error("缺少 $name")
         return when (call.method) {
-            "validateLocalInput" -> validateLocal(argument("path"))
+            "validateLocalInput" -> {
+                val path = argument("path")
+                validateLocal(path)
+                parseHlsSegments(
+                    path,
+                    hlsAllowedRoots(call),
+                    hlsResourcePaths(call).map { File(it).canonicalPath }.toSet(),
+                )
+                true
+            }
             "muxHls" -> {
                 val output = argument("output")
-                muxHls(argument("playlist"), output, cancellation)
+                muxHls(
+                    argument("playlist"),
+                    output,
+                    cancellation,
+                    hlsAllowedRoots(call),
+                    hlsResourcePaths(call).map { File(it).canonicalPath }.toSet(),
+                )
                 mapOf("output" to output)
             }
             "validateOutput" -> validateOutput(argument("path"))
@@ -381,11 +415,17 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         keyFrameSampleIndices = keyFrames.toList(),
     )
 
-    private fun muxHls(playlistPath: String, outputPath: String, cancelled: AtomicBoolean) {
+    private fun muxHls(
+        playlistPath: String,
+        outputPath: String,
+        cancelled: AtomicBoolean,
+        allowedRoots: List<File>,
+        declaredResources: Set<String>,
+    ) {
         validateLocal(playlistPath)
         val output = File(outputPath).canonicalFile
         require(nativeValidatePath(output.path, filesRoot.path)) { "输出路径越界" }
-        val segments = parseHlsSegments(playlistPath)
+        val segments = parseHlsSegments(playlistPath, allowedRoots, declaredResources)
         require(segments.isNotEmpty()) { "HLS 清单没有媒体分片" }
         require(output != File(playlistPath).canonicalFile && segments.none {
             output == it.file || output == it.key || output == it.init || output == it.initKey
@@ -666,9 +706,14 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         val durationUs: Long,
     )
 
-    private fun parseHlsSegments(playlistPath: String): List<HlsSegment> {
+    private fun parseHlsSegments(
+        playlistPath: String,
+        allowedRoots: List<File> = emptyList(),
+        declaredResources: Set<String> = emptySet(),
+    ): List<HlsSegment> {
         val playlist = File(playlistPath).canonicalFile
         val base = playlist.parentFile ?: error("HLS 清单目录无效")
+        val roots = (listOf(base) + allowedRoots).map { it.canonicalFile }.distinctBy { it.path }
         var sequence = 0L
         var keyFile: File? = null
         var explicitIv: ByteArray? = null
@@ -710,7 +755,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                         keyFile = null
                         explicitIv = null
                     } else {
-                        keyFile = localResource(base, rawKey, "HLS 密钥")
+                        keyFile = localResource(base, rawKey, "HLS 密钥", roots)
                         explicitIv = attribute(line, "IV")?.let(::parseIv)
                     }
                 } else if (method.equals("NONE", ignoreCase = true)) {
@@ -724,6 +769,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                         base,
                         rawKey ?: error("HLS 密钥地址缺失"),
                         "HLS 密钥",
+                        roots,
                     )
                     explicitIv = attribute(line, "IV")?.let(::parseIv)
                 }
@@ -732,7 +778,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             if (line.startsWith("#EXT-X-MAP:")) {
                 require(attribute(line, "BYTERANGE") == null) { "暂不支持 HLS 初始化分片字节范围" }
                 val rawInit = attribute(line, "URI") ?: error("HLS 初始化分片地址缺失")
-                initFile = localResource(base, rawInit, "HLS 初始化分片")
+                initFile = localResource(base, rawInit, "HLS 初始化分片", roots)
                 initKey = keyFile
                 initIv = explicitIv
                 require(initKey == null || initIv != null) { "HLS 加密初始化分片必须指定 IV" }
@@ -744,7 +790,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             }
             require(durationUs > 0L) { "HLS 分片时长无效" }
             result += HlsSegment(
-                file = localResource(base, line, "HLS 输入分片"),
+                file = localResource(base, line, "HLS 输入分片", roots),
                 key = keyFile,
                 explicitIv = explicitIv,
                 sequence = sequence++,
@@ -755,16 +801,30 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             )
             durationUs = 0L
         }
+        if (declaredResources.isNotEmpty()) {
+            val actual = result.flatMap { listOfNotNull(it.file, it.key, it.init, it.initKey) }
+                .map { it.canonicalPath }
+                .toSet() + playlist.canonicalPath
+            require(actual.all { it in declaredResources }) { "HLS 资源清单与输入不一致" }
+        }
         return result
     }
 
-    private fun localResource(base: File, raw: String, label: String): File {
+    private fun localResource(
+        base: File,
+        raw: String,
+        label: String,
+        allowedRoots: List<File>,
+    ): File {
         val value = raw.trim().removeSurrounding("\"")
         val uri = Uri.parse(value)
         require(uri.scheme == null && uri.authority == null && uri.query == null && uri.fragment == null &&
             !File(value).isAbsolute) { "${label}必须是本地相对路径" }
         val file = File(base, value).canonicalFile
-        require(nativeValidatePath(file.path, base.canonicalPath) && isAppLocal(file) && file.isFile) {
+        require(
+            allowedRoots.any { nativeValidatePath(file.path, it.canonicalPath) } &&
+                isAppLocal(file) && file.isFile,
+        ) {
             "${label}缺失或越界"
         }
         return file
@@ -1458,12 +1518,20 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         }
     }
 
-    /** SAF providers can revoke a grant between stat() and Media3 inspection.
-     * Stage the bytes into app-private storage so Media3 never touches a stale
-     * provider descriptor and a revoked grant becomes a normal permission error. */
+    /** Prefer direct SAF reads; stage only when a small provider cannot support
+     * the Media3 access pattern. Large documents keep their basic stat facts
+     * and never fail solely because a temporary inspection copy would be large. */
     private fun <T> withInspectionSource(source: String, block: (Uri) -> T): T {
         val uri = Uri.parse(source)
         if (uri.scheme != "content") return block(localMediaUri(source))
+        val size = runCatching { (stat(source)["size"] as? Number)?.toLong() ?: -1L }
+            .getOrDefault(-1L)
+        try {
+            return block(uri)
+        } catch (error: Exception) {
+            preserveInspectionControl(error)
+            if (size > MAX_INSPECTION_COPY_BYTES) throw error
+        }
         val key = MessageDigest.getInstance("SHA-256").digest(source.toByteArray()).toHex()
         val directory = File(filesRoot, "media_exports/inspection").apply { mkdirs() }
         val staleBefore = System.currentTimeMillis() - STALE_INSPECTION_TEMP_MILLIS
@@ -1482,7 +1550,9 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                         if (count < 0) break
                         require(count > 0) { "媒体文件读取无进展" }
                         copied += count
-                        require(copied <= MAX_INSPECTION_COPY_BYTES) { "媒体文件过大，无法读取详细信息" }
+                        require(copied <= MAX_INSPECTION_COPY_BYTES) {
+                            "媒体文件过大，无法读取详细信息"
+                        }
                         output.write(buffer, 0, count)
                     }
                     output.flush()

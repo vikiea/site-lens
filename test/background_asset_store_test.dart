@@ -55,4 +55,54 @@ void main() {
     expect(await store.fileFor(first), isNotNull);
     expect(await store.fileFor(second), isNull);
   });
+
+  test('repairs a same-length corrupted asset on reimport', () async {
+    final store = BackgroundAssetStore(rootProvider: () async => root);
+    final id = await store.importBytes(png1x1, 'png');
+    final file = await store.fileFor(id);
+    expect(file, isNotNull);
+    final corrupted = Uint8List.fromList(png1x1);
+    corrupted[corrupted.length - 1] ^= 0x01;
+    await file!.writeAsBytes(corrupted, flush: true);
+
+    expect(await file.length(), png1x1.length);
+    await store.importBytes(png1x1, 'png');
+    expect(await file.readAsBytes(), png1x1);
+  });
+
+  test('rejects an oversized PNG from its header before decoding', () async {
+    final oversized = Uint8List.fromList([
+      0x89,
+      0x50,
+      0x4e,
+      0x47,
+      0x0d,
+      0x0a,
+      0x1a,
+      0x0a,
+      0x00,
+      0x00,
+      0x00,
+      0x0d,
+      0x49,
+      0x48,
+      0x44,
+      0x52,
+      0x00,
+      0x00,
+      0x10,
+      0x01,
+      0x00,
+      0x00,
+      0x00,
+      0x01,
+    ]);
+
+    await expectLater(
+      BackgroundAssetStore.validateBytes(oversized, 'png'),
+      throwsA(
+        predicate<FormatException>((error) => error.message == '背景图片解码尺寸过大'),
+      ),
+    );
+  });
 }

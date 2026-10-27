@@ -1399,7 +1399,10 @@ class MediaTaskStore extends ChangeNotifier {
           recursive: true,
           followLinks: false,
         )) {
-          if (entity is File) total += await entity.length();
+          if (await FileSystemEntity.type(entity.path, followLinks: true) ==
+              FileSystemEntityType.file) {
+            total += await File(entity.path).length();
+          }
         }
         return total > 0 ? total : null;
       }
@@ -1560,26 +1563,52 @@ Future<void> copyMediaBytes(File source, File destination) async {
   }
 }
 
+typedef _LocalHlsFile = ({File source, String relativePath});
+
 /// Copies a closed local HLS graph, preserving relative resource references.
 /// Validate every variant, key, init and segment before creating any copy.
 Future<void> copyLocalHls(File manifest, Directory destination) async {
   final files = await _localHlsFiles(manifest);
-  final root = await manifest.parent.resolveSymbolicLinks();
-  for (final source in files) {
-    final relative = p.relative(source.path, from: root);
-    await copyMediaBytes(source, File(p.join(destination.path, relative)));
+  for (final entry in files) {
+    await copyMediaBytes(
+      entry.source,
+      File(p.join(destination.path, entry.relativePath)),
+    );
   }
   await _localHlsFiles(
     File(p.join(destination.path, p.basename(manifest.path))),
   );
 }
 
-Future<List<File>> _localHlsFiles(File manifest) async {
+Future<List<_LocalHlsFile>> _localHlsFiles(File manifest) async {
   final root = await manifest.parent.resolveSymbolicLinks();
-  final files = <String, File>{};
+  final allowedRoots = <String>{p.normalize(root)};
+  var ancestor = p.normalize(root);
+  while (true) {
+    if (p.basename(ancestor) == 'media_cache') {
+      final sharedRoot = Directory(p.join(ancestor, 'shared_resources'));
+      if (await sharedRoot.exists()) {
+        allowedRoots.add(await sharedRoot.resolveSymbolicLinks());
+      }
+      break;
+    }
+    final parent = p.dirname(ancestor);
+    if (parent == ancestor) break;
+    ancestor = parent;
+  }
+
+  bool isAllowed(String path) => allowedRoots.any(
+    (allowed) => path == allowed || p.isWithin(allowed, path),
+  );
+
+  final files = <String, _LocalHlsFile>{};
   final visiting = <String>{};
   final visited = <String>{};
-  Future<File> resource(File parent, String reference) async {
+  Future<_LocalHlsFile> resource(
+    File parent,
+    String reference,
+    String logicalParent,
+  ) async {
     final uri = Uri.tryParse(reference);
     if (uri == null ||
         uri.hasScheme ||
@@ -1591,26 +1620,34 @@ Future<List<File>> _localHlsFiles(File manifest) async {
         reference.contains('\\')) {
       throw const FormatException('HLS 仅支持文件夹内的相对资源');
     }
+    final relativePath = p.normalize(p.join(logicalParent, uri.toFilePath()));
+    if (p.isAbsolute(relativePath) ||
+        relativePath == '..' ||
+        relativePath.startsWith('..${p.separator}')) {
+      throw const FormatException('HLS 仅支持文件夹内的相对资源');
+    }
     final file = File(p.normalize(p.join(parent.parent.path, uri.toFilePath())))
         .absolute;
+    if (!await file.exists()) {
+      throw const FormatException('HLS 资源缺失、链接或路径越界');
+    }
     final canonical = await file.resolveSymbolicLinks();
-    if (!p.isWithin(root, canonical) ||
-        !await file.exists() ||
-        await file.length() <= 0) {
+    if (!isAllowed(canonical) || await file.length() <= 0) {
       throw const FormatException('HLS 资源缺失、链接或路径越界');
     }
     final canonicalFile = File(canonical);
-    files[canonical] = canonicalFile;
-    return canonicalFile;
+    final entry = (source: canonicalFile, relativePath: relativePath);
+    files[relativePath] = entry;
+    return entry;
   }
 
-  Future<void> visit(File file, int depth) async {
-    if (depth > 32 || visiting.contains(file.path)) {
+  Future<void> visit(_LocalHlsFile entry, int depth) async {
+    if (depth > 32 || visiting.contains(entry.source.path)) {
       throw const FormatException('HLS 清单循环或嵌套过深');
     }
-    if (!visited.add(file.path)) return;
-    visiting.add(file.path);
-    final text = await file.readAsString();
+    if (!visited.add(entry.relativePath)) return;
+    visiting.add(entry.source.path);
+    final text = await entry.source.readAsString();
     if (!text.trimLeft().startsWith('#EXTM3U')) {
       throw const FormatException('HLS 清单格式无效');
     }
@@ -1639,19 +1676,20 @@ Future<List<File>> _localHlsFiles(File manifest) async {
           throw const FormatException('HLS 资源引用无效');
         }
       }
+      final logicalParent = p.dirname(entry.relativePath);
       for (final reference in references) {
-        final child = await resource(file, reference);
-        if (child.path.toLowerCase().endsWith('.m3u8') ||
+        final child = await resource(entry.source, reference, logicalParent);
+        if (child.source.path.toLowerCase().endsWith('.m3u8') ||
             master && !line.startsWith('#')) {
           await visit(child, depth + 1);
         }
       }
     }
     if (count == 0) throw const FormatException('HLS 清单没有媒体分片');
-    visiting.remove(file.path);
+    visiting.remove(entry.source.path);
   }
 
-  final top = await resource(manifest, p.basename(manifest.path));
+  final top = await resource(manifest, p.basename(manifest.path), '');
   await visit(top, 0);
   return files.values.toList();
 }
@@ -1999,16 +2037,28 @@ class MediaDownloadService {
       tasks.acquireExclusive(id);
     }
     MediaCacheDeletionPlan? frozenPlan;
+    Set<String> sharedResourceKeys = <String>{};
+    List<String> sharedResourcePaths = const <String>[];
     String? nativeReservation;
     try {
+      frozenPlan = await tasks.cacheDeletionPlan(id);
+      final current = tasks.task(id);
+      if (current != null) {
+        sharedResourceKeys = await _sharedResourceKeysForTask(
+          current,
+          frozenPlan,
+        );
+        sharedResourcePaths = await _sharedResourcePaths(sharedResourceKeys);
+      }
       if (native?.supportsMutationReservation == true) {
         // Freeze the complete Dart-owned cache set before touching transport.
         // The native reservation then covers both this set and any native
-        // WorkManager/DownloadManager paths for the same task.
-        frozenPlan = await tasks.cacheDeletionPlan(id);
+        // WorkManager/DownloadManager paths for the same task, plus the
+        // physical content-addressed files behind task-local HLS links.
         nativeReservation = await native!.reserveMutation(id, [
           ...frozenPlan.files,
           ...frozenPlan.directories,
+          ...sharedResourcePaths,
         ]);
       }
     } catch (_) {
@@ -2037,10 +2087,6 @@ class MediaDownloadService {
         }
         final current = tasks.task(id);
         if (current == null) return;
-        final sharedResourceKeys = await _sharedResourceKeysForTask(
-          current,
-          frozenPlan,
-        );
         if (nativeCancel == null &&
             nativeReservation == null &&
             !_dartTasks.contains(id)) {
@@ -2136,26 +2182,44 @@ class MediaDownloadService {
     return keys;
   }
 
+  Future<List<String>> _sharedResourcePaths(
+    Iterable<String> resourceKeys,
+  ) async {
+    final coordinator = resourceCoordinator;
+    if (coordinator == null) return const <String>[];
+    final paths = <String>[];
+    for (final key in resourceKeys) {
+      paths.add((await coordinator.committedFile(key)).path);
+    }
+    return paths;
+  }
+
   Future<void> _releaseSharedResources(
     String taskId,
     Iterable<String> resourceKeys,
   ) async {
+    for (final key in resourceKeys) {
+      await _releaseSharedResourceOwner(key, 'task:$taskId');
+    }
+  }
+
+  Future<void> _releaseSharedResourceOwner(
+    String resourceKey,
+    String ownerId,
+  ) async {
     final db = tasks.db;
     if (db == null) return;
-    for (final key in resourceKeys) {
-      await db.removeMediaResourceOwner(key, 'task:$taskId');
-      if ((await db.mediaResourceOwners(key)).isEmpty) {
-        try {
-          await resourceCoordinator?.delete(key);
-        } catch (error, stack) {
-          AppErrorLogger.capture(
-            error,
-            module: 'media.resource-gc',
-            context: key,
-            stack: stack,
-          );
-        }
-      }
+    await db.removeMediaResourceOwner(resourceKey, ownerId);
+    if ((await db.mediaResourceOwners(resourceKey)).isNotEmpty) return;
+    try {
+      await resourceCoordinator?.delete(resourceKey);
+    } catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.resource-gc',
+        context: resourceKey,
+        stack: stack,
+      );
     }
   }
 
@@ -2411,7 +2475,13 @@ class MediaDownloadService {
       }
 
       final resources = await _readHlsResources(staging);
-      await _pruneHlsResources(staging, resources, playlistUri, playlistText);
+      await _pruneHlsResources(
+        staging,
+        resources,
+        playlistUri,
+        playlistText,
+        ownerId: task.id,
+      );
       var downloadedBytes = 0;
       for (final name in resources.values) {
         final file = File('${staging.path}/$name');
@@ -2595,8 +2665,20 @@ class MediaDownloadService {
   Future<void> _writeHlsPlaylist(File destination, List<String> lines) async {
     final temporary = File('${destination.path}.tmp');
     await temporary.writeAsString('${lines.join('\n')}\n', flush: true);
-    if (await destination.exists()) await destination.delete();
-    await temporary.rename(destination.path);
+    try {
+      // Android's rename replaces the target atomically, so Media3 never sees
+      // a missing playlist while the download publishes the next segment.
+      try {
+        await temporary.rename(destination.path);
+      } on FileSystemException {
+        // Keep the cross-platform fallback for providers that refuse replace;
+        // the Android path above is the production media contract.
+        if (await destination.exists()) await destination.delete();
+        await temporary.rename(destination.path);
+      }
+    } finally {
+      if (await temporary.exists()) await temporary.delete();
+    }
   }
 
   Future<({Uri url, String text})> _fetchHlsText(
@@ -2696,11 +2778,15 @@ class MediaDownloadService {
     final key = sha256
         .convert(utf8.encode(remote.removeFragment().toString()))
         .toString();
-    await tasks.db?.addMediaResourceOwner(key, 'task:$ownerId', 'hls-resource');
     final existing = resources[key];
     if (existing != null) {
       final cached = File('${staging.path}/$existing');
       if (await cached.exists() && await cached.length() > 0) {
+        await tasks.db?.addMediaResourceOwner(
+          key,
+          'task:$ownerId',
+          'hls-resource',
+        );
         return (name: existing, bytes: 0);
       }
       resources.remove(key);
@@ -2709,6 +2795,12 @@ class MediaDownloadService {
     final local = File('${staging.path}/$name');
     if (await local.exists() && await local.length() > 0) {
       resources[key] = name;
+      await _writeHlsResources(staging, resources);
+      await tasks.db?.addMediaResourceOwner(
+        key,
+        'task:$ownerId',
+        'hls-resource',
+      );
       return (name: name, bytes: 0);
     }
     final resumeKey = sha256
@@ -2717,23 +2809,35 @@ class MediaDownloadService {
     final partial = File('${staging.path}/resume_$resumeKey.part');
     try {
       final coordinator = resourceCoordinator;
-      Future<void> write(File destination) => _transferScheduler.schedule<void>(
-        priority: _taskPriority(ownerId),
-        action: () => _downloadFile(
-          remote,
-          destination,
-          cancel,
-          document: document,
-          maxBytes: min(64 * 1024 * 1024, maxBytes),
-          onProgress: onProgress,
-        ),
-      );
+      Future<void> write(File destination, Cancellation transferCancellation) =>
+          _transferScheduler.schedule<void>(
+            priority: _taskPriority(ownerId),
+            action: () => _downloadFile(
+              remote,
+              destination,
+              transferCancellation,
+              document: document,
+              maxBytes: min(64 * 1024 * 1024, maxBytes),
+              onProgress: onProgress,
+            ),
+          );
       if (coordinator == null) {
-        await write(partial);
+        await write(partial, cancel);
       } else {
-        final shared = await coordinator.ensure(key, (sharedPartial) async {
-          await write(sharedPartial);
-        });
+        final shared = await cancel.waitFor(
+          coordinator.ensure(
+            key,
+            (sharedPartial, transferCancellation) =>
+                write(sharedPartial, transferCancellation),
+            resumeFile: partial,
+            ownerCancellation: cancel,
+          ),
+        );
+        cancel.check();
+        if (await partial.exists()) {
+          await partial.delete();
+          await _deleteResumeState(partial);
+        }
         final size = await shared.length();
         if (downloaded + size > maxBytes) {
           throw StateError('媒体响应超过 $maxBytes 字节');
@@ -2742,6 +2846,11 @@ class MediaDownloadService {
         await Link(local.path).create(shared.path);
         resources[key] = name;
         await _writeHlsResources(staging, resources);
+        await tasks.db?.addMediaResourceOwner(
+          key,
+          'task:$ownerId',
+          'hls-resource',
+        );
         return (name: name, bytes: size);
       }
     } on PlatformException catch (error) {
@@ -2764,6 +2873,7 @@ class MediaDownloadService {
     await _deleteResumeState(partial);
     resources[key] = name;
     await _writeHlsResources(staging, resources);
+    await tasks.db?.addMediaResourceOwner(key, 'task:$ownerId', 'hls-resource');
     return (name: name, bytes: size);
   }
 
@@ -2795,8 +2905,9 @@ class MediaDownloadService {
     Directory staging,
     Map<String, String> resources,
     Uri playlist,
-    String text,
-  ) async {
+    String text, {
+    required String ownerId,
+  }) async {
     final keys = <String>{};
     final resumeNames = <String>{};
     for (final raw in text.split(RegExp(r'\r?\n'))) {
@@ -2824,7 +2935,13 @@ class MediaDownloadService {
         );
       }
     }
+    final removed = resources.keys
+        .where((key) => !keys.contains(key))
+        .toList(growable: false);
     resources.removeWhere((key, _) => !keys.contains(key));
+    for (final key in removed) {
+      await _releaseSharedResourceOwner(key, 'task:$ownerId');
+    }
     final names = {
       for (final key in keys) 'resource_$key.bin',
       ...resources.values,
@@ -3185,12 +3302,19 @@ class HlsInputValidator {
     final rootPath = root.existsSync()
         ? root.resolveSymbolicLinksSync()
         : root.path;
-    final sharedRoot = Directory(
-      p.join(root.parent.parent.path, 'shared_resources'),
-    );
     final allowedRoots = <String>{rootPath};
-    if (sharedRoot.existsSync()) {
-      allowedRoots.add(sharedRoot.resolveSymbolicLinksSync());
+    var ancestor = p.normalize(rootPath);
+    while (true) {
+      if (p.basename(ancestor) == 'media_cache') {
+        final sharedRoot = Directory(p.join(ancestor, 'shared_resources'));
+        if (sharedRoot.existsSync()) {
+          allowedRoots.add(sharedRoot.resolveSymbolicLinksSync());
+        }
+        break;
+      }
+      final parent = p.dirname(ancestor);
+      if (parent == ancestor) break;
+      ancestor = parent;
     }
     final all = <Uri>[
       playlist,
@@ -3258,6 +3382,26 @@ Future<void> _validateHlsCachePathsInIsolate({
   );
 });
 
+class HlsResourceGraph {
+  const HlsResourceGraph({
+    required this.playlist,
+    required this.resources,
+    required this.allowedRoots,
+  });
+
+  final Uri playlist;
+  final List<Uri> resources;
+  final List<Uri> allowedRoots;
+
+  List<String> get resourcePaths => [
+    playlist.toFilePath(),
+    ...resources.map((value) => value.toFilePath()),
+  ];
+
+  List<String> get allowedRootPaths =>
+      allowedRoots.map((value) => value.toFilePath()).toList(growable: false);
+}
+
 class HlsCacheInput {
   const HlsCacheInput({
     required this.playlist,
@@ -3272,6 +3416,42 @@ class HlsCacheInput {
   final Uri? initSegment;
   final List<Uri> initSegments;
   final List<Uri> keys;
+
+  HlsResourceGraph get resourceGraph {
+    final playlistPath = p.normalize(playlist.toFilePath());
+    final taskRoot = p.dirname(playlistPath);
+    final initial = initSegment;
+    final initialResources = initial == null ? const <Uri>[] : [initial];
+    final resources = <Uri>{
+      ...segments,
+      ...initialResources,
+      ...initSegments,
+      ...keys,
+    }.toList(growable: false);
+    var current = taskRoot;
+    String? mediaCacheRoot;
+    while (true) {
+      if (p.basename(current) == 'media_cache') {
+        mediaCacheRoot = current;
+        break;
+      }
+      final parent = p.dirname(current);
+      if (parent == current) break;
+      current = parent;
+    }
+    final roots = <Uri>[Uri.file(taskRoot)];
+    if (mediaCacheRoot != null) {
+      final sharedRoot = p.join(mediaCacheRoot, 'shared_resources');
+      if (Directory(sharedRoot).existsSync()) {
+        roots.add(Uri.file(sharedRoot));
+      }
+    }
+    return HlsResourceGraph(
+      playlist: playlist,
+      resources: resources,
+      allowedRoots: List.unmodifiable(roots),
+    );
+  }
 }
 
 class HlsPlaylistParser {
@@ -3448,7 +3628,12 @@ class Mp4ExportService {
           cancellation: cancel,
         );
       } else if (native != null) {
-        if (!await native!.validateLocalInput(input.playlist.toFilePath())) {
+        final graph = input.resourceGraph;
+        if (!await native!.validateLocalInput(
+          input.playlist.toFilePath(),
+          resourcePaths: graph.resourcePaths,
+          allowedRoots: graph.allowedRootPaths,
+        )) {
           throw StateError('HLS 本地输入校验失败');
         }
         cancel.check();
@@ -3466,6 +3651,8 @@ class Mp4ExportService {
           await native!.muxHls(
             playlist: input.playlist.toFilePath(),
             output: temporary.path,
+            resourcePaths: graph.resourcePaths,
+            allowedRoots: graph.allowedRootPaths,
             jobId: jobId,
           );
         } finally {

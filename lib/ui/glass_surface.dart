@@ -65,6 +65,9 @@ class SiteLensBackdrop extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (background.mode == BackgroundMode.transparent) {
+      return Stack(fit: StackFit.expand, children: [child]);
+    }
     final colors = SiteLensColors.of(context);
     final imagePath = background.imagePath;
     final transparent = background.mode == BackgroundMode.transparent;

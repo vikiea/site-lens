@@ -1126,8 +1126,11 @@ void main() {
     final directory = await store.cacheDirectory();
     final cache = Directory('${directory.path}/${task.cacheKey}.hls')
       ..createSync(recursive: true);
-    final segment = File('${cache.path}/segment.ts')
+    final sharedRoot = Directory('${directory.path}/shared_resources')
+      ..createSync(recursive: true);
+    final segment = File('${sharedRoot.path}/segment.ts')
       ..writeAsBytesSync(List.filled(97, 1));
+    await Link('${cache.path}/segment.ts').create(segment.path);
     final init1 = File('${cache.path}/init-1.mp4')
       ..writeAsBytesSync(List.filled(17, 2));
     final init = File('${cache.path}/init-2.mp4')
@@ -1745,6 +1748,35 @@ void main() {
       ),
       throwsFormatException,
     );
+  });
+
+  test('HLS resource graph accepts shared symlink targets', () async {
+    final root = await Directory.systemTemp.createTemp('site-lens-hls-graph-');
+    addTearDown(() => root.delete(recursive: true));
+    final taskRoot = await Directory('${root.path}/media_cache/series/task.hls')
+        .create(recursive: true);
+    final sharedRoot = await Directory(
+      '${root.path}/media_cache/shared_resources',
+    ).create(recursive: true);
+    final sharedKey = File('${sharedRoot.path}/shared-key.bin')
+      ..writeAsBytesSync(List.filled(16, 1));
+    final linkedKey = Link('${taskRoot.path}/resource_key.bin');
+    await linkedKey.create(sharedKey.path);
+    final segment = File('${taskRoot.path}/segment.ts')
+      ..writeAsBytesSync([0, 1, 2]);
+    final playlist = File('${taskRoot.path}/index.m3u8')
+      ..writeAsStringSync(
+        '#EXTM3U\n'
+        '#EXT-X-KEY:METHOD=AES-128,URI="resource_key.bin"\n'
+        '#EXTINF:1,\nsegment.ts\n',
+      );
+
+    final input = await const HlsPlaylistParser().parseFile(playlist.uri);
+    await validateHlsCacheInput(input);
+
+    expect(input.resourceGraph.allowedRootPaths, contains(sharedRoot.path));
+    expect(input.resourceGraph.resourcePaths, contains(linkedKey.path));
+    expect(input.resourceGraph.resourcePaths, contains(segment.path));
   });
 
   test('HLS attributes accept unquoted encryption method and URI', () async {

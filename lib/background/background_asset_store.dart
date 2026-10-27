@@ -35,7 +35,10 @@ class BackgroundAssetStore {
     final root = await _root();
     final target = File(p.join(root.path, assetId));
     if (await target.exists() && await target.length() == bytes.length) {
-      return assetId;
+      final existingDigest = sha256
+          .convert(await target.readAsBytes())
+          .toString();
+      if (existingDigest == digest) return assetId;
     }
     final temporary = File('${target.path}.part');
     await temporary.writeAsBytes(bytes, flush: true);
@@ -54,17 +57,15 @@ class BackgroundAssetStore {
     }
     final normalized = _normalizeExtension(extension);
     _validateSignature(bytes, normalized);
+    final headerDimensions = _readHeaderDimensions(bytes, normalized);
+    if (headerDimensions != null) {
+      _validateDimensions(headerDimensions.width, headerDimensions.height);
+    }
     final codec = await _decode(bytes);
     try {
       final frame = await codec.getNextFrame();
       try {
-        final width = frame.image.width;
-        final height = frame.image.height;
-        if (width > maxDimension ||
-            height > maxDimension ||
-            width * height > maxPixels) {
-          throw const FormatException('背景图片解码尺寸过大');
-        }
+        _validateDimensions(frame.image.width, frame.image.height);
       } finally {
         frame.image.dispose();
       }
@@ -73,6 +74,159 @@ class BackgroundAssetStore {
     }
     return normalized;
   }
+
+  static ({int width, int height})? _readHeaderDimensions(
+    Uint8List bytes,
+    String extension,
+  ) {
+    return switch (extension) {
+      'png' => _readPngDimensions(bytes),
+      'jpg' || 'jpeg' => _readJpegDimensions(bytes),
+      'webp' => _readWebpDimensions(bytes),
+      _ => null,
+    };
+  }
+
+  static void _validateDimensions(int width, int height) {
+    if (width > maxDimension ||
+        height > maxDimension ||
+        width * height > maxPixels) {
+      throw const FormatException('背景图片解码尺寸过大');
+    }
+  }
+
+  static ({int width, int height})? _readPngDimensions(Uint8List bytes) {
+    if (bytes.length < 24 ||
+        !_matches(bytes, 12, const [0x49, 0x48, 0x44, 0x52])) {
+      return null;
+    }
+    return (width: _u32be(bytes, 16), height: _u32be(bytes, 20));
+  }
+
+  static ({int width, int height})? _readJpegDimensions(Uint8List bytes) {
+    if (bytes.length < 4) return null;
+    var offset = 2;
+    while (offset + 1 < bytes.length) {
+      if (bytes[offset] != 0xff) {
+        offset++;
+        continue;
+      }
+      while (offset < bytes.length && bytes[offset] == 0xff) {
+        offset++;
+      }
+      if (offset >= bytes.length) return null;
+      final marker = bytes[offset++];
+      if (marker == 0xd8 || marker == 0xd9) continue;
+      if (marker == 0xda) return null;
+      if ((marker >= 0xd0 && marker <= 0xd7) || marker == 0x01) continue;
+      if (offset + 2 > bytes.length) return null;
+      final length = _u16be(bytes, offset);
+      if (length < 2 || offset + length > bytes.length) return null;
+      if (_isJpegSof(marker) && length >= 7) {
+        return (
+          width: _u16be(bytes, offset + 5),
+          height: _u16be(bytes, offset + 3),
+        );
+      }
+      offset += length;
+    }
+    return null;
+  }
+
+  static ({int width, int height})? _readWebpDimensions(Uint8List bytes) {
+    if (bytes.length < 20 ||
+        !_matches(bytes, 12, const [0x56, 0x50, 0x38, 0x58]) &&
+            !_matches(bytes, 12, const [0x56, 0x50, 0x38, 0x20]) &&
+            !_matches(bytes, 12, const [0x56, 0x50, 0x38, 0x4c])) {
+      return null;
+    }
+    var offset = 12;
+    while (offset + 8 <= bytes.length) {
+      final data = offset + 8;
+      final length = _u32le(bytes, offset + 4);
+      final end = data + length;
+      if (end > bytes.length) return null;
+      if (_matches(bytes, offset, const [0x56, 0x50, 0x38, 0x58]) &&
+          length >= 10 &&
+          data + 10 <= bytes.length) {
+        return (
+          width: 1 + _u24le(bytes, data + 4),
+          height: 1 + _u24le(bytes, data + 7),
+        );
+      }
+      if (_matches(bytes, offset, const [0x56, 0x50, 0x38, 0x20]) &&
+          length >= 10 &&
+          data + 10 <= bytes.length &&
+          _matches(bytes, data + 3, const [0x9d, 0x01, 0x2a])) {
+        return (
+          width: _u16le(bytes, data + 6),
+          height: _u16le(bytes, data + 8),
+        );
+      }
+      if (_matches(bytes, offset, const [0x56, 0x50, 0x38, 0x4c]) &&
+          length >= 5 &&
+          data + 5 <= bytes.length &&
+          bytes[data] == 0x2f) {
+        final second = bytes[data + 1];
+        final third = bytes[data + 2];
+        return (
+          width: 1 + second + ((third & 0x3f) << 8),
+          height:
+              1 +
+              ((third >> 6) |
+                  (bytes[data + 3] << 2) |
+                  ((bytes[data + 4] & 0x0f) << 10)),
+        );
+      }
+      offset = data + length + (length.isOdd ? 1 : 0);
+    }
+    return null;
+  }
+
+  static bool _isJpegSof(int marker) => <int>{
+    0xc0,
+    0xc1,
+    0xc2,
+    0xc3,
+    0xc5,
+    0xc6,
+    0xc7,
+    0xc9,
+    0xca,
+    0xcb,
+    0xcd,
+    0xce,
+    0xcf,
+  }.contains(marker);
+
+  static bool _matches(Uint8List bytes, int offset, List<int> expected) {
+    if (offset < 0 || offset + expected.length > bytes.length) return false;
+    for (var index = 0; index < expected.length; index++) {
+      if (bytes[offset + index] != expected[index]) return false;
+    }
+    return true;
+  }
+
+  static int _u16be(Uint8List bytes, int offset) =>
+      (bytes[offset] << 8) | bytes[offset + 1];
+
+  static int _u32be(Uint8List bytes, int offset) =>
+      (bytes[offset] << 24) |
+      (bytes[offset + 1] << 16) |
+      (bytes[offset + 2] << 8) |
+      bytes[offset + 3];
+
+  static int _u16le(Uint8List bytes, int offset) =>
+      bytes[offset] | (bytes[offset + 1] << 8);
+
+  static int _u24le(Uint8List bytes, int offset) =>
+      bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16);
+
+  static int _u32le(Uint8List bytes, int offset) =>
+      bytes[offset] |
+      (bytes[offset + 1] << 8) |
+      (bytes[offset + 2] << 16) |
+      (bytes[offset + 3] << 24);
 
   static Future<ui.Codec> _decode(Uint8List bytes) async {
     try {

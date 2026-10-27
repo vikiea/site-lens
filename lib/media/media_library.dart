@@ -512,81 +512,98 @@ class MediaLibrary extends ChangeNotifier {
     return inspect(task.id);
   }
 
-  Future<MediaArtifact> inspect(String taskId) => _inspections.putIfAbsent(
-    taskId,
-    () async {
-      try {
-        await restore();
-        final value = _items[taskId] ?? (throw StateError('媒体文件不存在'));
-        late final Map<String, Object?> metadata;
-        if (native == null) {
-          final file = File(value.location);
-          if (!await file.exists()) {
-            throw FileSystemException(
-              '媒体文件不存在',
-              value.location,
-              const OSError('No such file', 2),
-            );
-          }
-          metadata = <String, Object?>{'size': (await file.stat()).size};
-        } else {
-          try {
-            metadata = await native!.inspect(value.location);
-          } on PlatformException catch (error) {
-            // A revoked SAF grant is a definitive storage error. Do not call
-            // stat() again: it only repeats the provider failure and can make
-            // a stale document look like a codec metadata problem.
-            if ({
-              'media_permission',
-              'media_file_missing',
-              'media_file_too_large',
-              'media_file_empty',
-              'media_inspection_timeout',
-            }.contains(error.code)) {
-              rethrow;
+  Future<MediaArtifact> inspect(String taskId) =>
+      _inspections.putIfAbsent(taskId, () async {
+        try {
+          await restore();
+          final value = _items[taskId] ?? (throw StateError('媒体文件不存在'));
+          late final Map<String, Object?> metadata;
+          if (native == null) {
+            final file = File(value.location);
+            if (!await file.exists()) {
+              throw FileSystemException(
+                '媒体文件不存在',
+                value.location,
+                const OSError('No such file', 2),
+              );
             }
-            AppErrorLogger.capture(
-              error,
-              module: 'media.metadata',
-              context: 'stat-fallback:$taskId',
-            );
-            metadata = await native!.stat(value.location);
-          } catch (error, stack) {
-            // Codec metadata is best effort. A readable SAF document must
-            // remain exportable when the device retriever is unavailable.
-            AppErrorLogger.capture(
-              error,
-              module: 'media.metadata',
-              context: 'stat-fallback:$taskId',
-              stack: stack,
-            );
-            metadata = await native!.stat(value.location);
+            metadata = <String, Object?>{'size': (await file.stat()).size};
+          } else {
+            try {
+              metadata = await native!.inspect(value.location);
+            } on PlatformException catch (error, stack) {
+              // A revoked SAF grant is a definitive storage error. Do not call
+              // stat() again: it only repeats the provider failure and can make
+              // a stale document look like a codec metadata problem.
+              if ({
+                'media_permission',
+                'media_file_missing',
+                'media_file_empty',
+                'media_inspection_timeout',
+              }.contains(error.code)) {
+                rethrow;
+              }
+              if (error.code == 'media_file_too_large') {
+                AppErrorLogger.capture(
+                  error,
+                  module: 'media.metadata',
+                  context: 'large-file-fallback:$taskId',
+                  stack: stack,
+                );
+                metadata = await native!.stat(value.location);
+                // Keep the catalog entry readable with its existing MIME and
+                // dimensions. Optional codec fields remain nullable.
+                return await _saveInspectedArtifact(value, metadata);
+              }
+              AppErrorLogger.capture(
+                error,
+                module: 'media.metadata',
+                context: 'stat-fallback:$taskId',
+              );
+              metadata = await native!.stat(value.location);
+            } catch (error, stack) {
+              // Codec metadata is best effort. A readable SAF document must
+              // remain exportable when the device retriever is unavailable.
+              AppErrorLogger.capture(
+                error,
+                module: 'media.metadata',
+                context: 'stat-fallback:$taskId',
+                stack: stack,
+              );
+              metadata = await native!.stat(value.location);
+            }
           }
+          return await _saveInspectedArtifact(value, metadata);
+        } finally {
+          _inspections.remove(taskId);
         }
-        if (!identical(_items[taskId], value)) return _items[taskId] ?? value;
-        final next = MediaArtifact(
-          taskId: taskId,
-          location: value.location,
-          libraryCopy: value.libraryCopy,
-          materializedCopy: value.materializedCopy,
-          name: value.name,
-          size: _positiveInt(metadata['size']) ?? value.size,
-          mime: metadata['mime'] as String? ?? value.mime,
-          durationMs: _positiveInt(metadata['durationMs']) ?? value.durationMs,
-          width: _positiveInt(metadata['width']) ?? value.width,
-          height: _positiveInt(metadata['height']) ?? value.height,
-          thumbnailPath:
-              metadata['thumbnailPath'] as String? ?? value.thumbnailPath,
-          folder: value.folder,
-          createdAt: value.createdAt,
-        );
-        await _save(next, structural: false, expectedArtifact: value);
-        return _items[taskId] ?? value;
-      } finally {
-        _inspections.remove(taskId);
-      }
-    },
-  );
+      });
+
+  Future<MediaArtifact> _saveInspectedArtifact(
+    MediaArtifact value,
+    Map<String, Object?> metadata,
+  ) async {
+    final current = _items[value.taskId];
+    if (!identical(current, value)) return current ?? value;
+    final next = MediaArtifact(
+      taskId: value.taskId,
+      location: value.location,
+      libraryCopy: value.libraryCopy,
+      materializedCopy: value.materializedCopy,
+      name: value.name,
+      size: _positiveInt(metadata['size']) ?? value.size,
+      mime: metadata['mime'] as String? ?? value.mime,
+      durationMs: _positiveInt(metadata['durationMs']) ?? value.durationMs,
+      width: _positiveInt(metadata['width']) ?? value.width,
+      height: _positiveInt(metadata['height']) ?? value.height,
+      thumbnailPath:
+          metadata['thumbnailPath'] as String? ?? value.thumbnailPath,
+      folder: value.folder,
+      createdAt: value.createdAt,
+    );
+    await _save(next, structural: false, expectedArtifact: value);
+    return _items[value.taskId] ?? value;
+  }
 
   /// Recovers an exported artifact when its SAF document disappeared but an
   /// app-private staging copy still exists. Returns null when regeneration

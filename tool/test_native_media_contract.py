@@ -25,13 +25,13 @@ class NativeMediaContractTests(unittest.TestCase):
         for token in ('acquireRead', 'acquireMutation', 'overlaps', 'taskIds', 'documents'):
             self.assertIn(token, NATIVE_LEASES)
         local = NATIVE_MEDIA.split('private fun openLocal(', 1)[1].split('private fun start(', 1)[0]
-        self.assertIn('openInService(call, result, taskId', local)
+        self.assertIn('openInService(', local)
         self.assertLess(local.index('openFileDescriptor'), local.index('openInService'))
         self.assertIn('Uri.fromFile(file).toString()', local)
         self.assertIn('MediaFileLeaseRegistry.Scope.file(File(uri.path!!).parentFile!!)', NATIVE_SESSION)
         self.assertIn('NativeMediaFileLeases.registry.acquireRead(leaseScope)', NATIVE_SESSION)
         self.assertLess(NATIVE_SESSION.index('acquireRead(leaseScope)'), NATIVE_SESSION.index('player.setMediaItem'))
-        stop = NATIVE_MEDIA.split('private fun stop()', 1)[1].split('private fun attachSurface(', 1)[0]
+        stop = NATIVE_MEDIA.split('private fun stop(stopService: Boolean = true)', 1)[1].split('private fun attachSurface(', 1)[0]
         self.assertLess(stop.index('media.release()'), stop.index('fileLease?.close()'))
 
     def test_native_media_session_service_owns_background_player_and_promotes_foreground(self):
@@ -49,6 +49,22 @@ class NativeMediaContractTests(unittest.TestCase):
             self.assertIn(token, NATIVE_SESSION)
         self.assertIn('NativeMediaSessionService.detachSurface(context)', NATIVE_MEDIA)
         self.assertIn('serviceSessionId = null', NATIVE_MEDIA)
+        for token in (
+            'data class PendingAction',
+            'onCancelled',
+            'serviceUnavailable()',
+            'pending.removeFirst().cancel()',
+            'snapshotFromStoredState(context)',
+            'pending.isEmpty()',
+        ):
+            self.assertIn(token, NATIVE_SESSION)
+
+    def test_local_service_replacement_does_not_stop_the_service(self):
+        self.assertIn('stop(stopService = false)', NATIVE_MEDIA)
+        replacement = NATIVE_MEDIA.split('private fun openInService(', 1)[1].split(
+            'private fun start(', 1
+        )[0]
+        self.assertNotIn('NativeMediaSessionService.stop(context)', replacement)
 
     def test_native_media_session_persists_recoverable_state_without_autoplay(self):
         for token in (
@@ -97,6 +113,11 @@ class NativeMediaContractTests(unittest.TestCase):
             'CookieManager.getInstance().getCookie',
             '"cookieDigest" to digest',
             'startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)',
+            'queuedRequests',
+            'activeRequest',
+            'activeToken',
+            'private fun startNext()',
+            'if (activeRequest == null || token != activeToken) return',
         ):
             self.assertIn(token, AUTH_REFRESH)
         self.assertNotIn('evaluateJavascript', AUTH_REFRESH)
@@ -306,8 +327,9 @@ class NativeMediaContractTests(unittest.TestCase):
         for source in ("DefaultDataSource", "HttpDataSource"):
             self.assertFalse(source in body, f"Network-capable fallback: {source}")
         resources = NATIVE_EXPORT.split("private fun localResource(", 1)[1].split("private fun attribute(", 1)[0]
-        self.assertTrue("nativeValidatePath(file.path, base.canonicalPath)" in resources,
-                        "HLS resources must stay inside the playlist directory tree")
+        self.assertTrue("allowedRoots.any" in resources,
+                        "HLS resources must stay inside an explicitly allowed root")
+        self.assertIn("nativeValidatePath(file.path, it.canonicalPath)", resources)
         playlist = NATIVE_EXPORT.split("private fun writeTransformerPlaylist(", 1)[1].split("private fun mediaTrackKind(", 1)[0]
         for token in ("METHOD=AES-128", "METHOD=NONE", "#EXT-X-MAP", "#EXT-X-ENDLIST"):
             self.assertTrue(token in playlist, f"Normalized playlist omits {token}")

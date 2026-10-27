@@ -499,10 +499,17 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
           return await widget.app.nativeMedia.openDocument(task, uri!);
         }
       }
-      final cached = await widget.app.mediaPlaybackFile(
-        task,
-        preferExported: widget.preferExported,
-      );
+      final cached =
+          await widget.app.mediaPlaybackFile(
+            task,
+            preferExported: widget.preferExported,
+          ) ??
+          (!widget.preferExported &&
+                  widget.app.allowStreamingWhileDownloading &&
+                  (task.state == MediaTaskState.downloading ||
+                      task.state == MediaTaskState.paused)
+              ? await widget.app.mediaPartialPlaybackFile(task)
+              : null);
       if (cached != null) {
         return await widget.app.nativeMedia.openLocal(task, cached);
       }
@@ -1001,10 +1008,14 @@ Future<void> openMediaTaskPlayer(
     final playlistIndex = playlist.indexWhere((item) => item.id == task.id);
     final artifact = preferExported ? app.mediaLibrary.item(task.id) : null;
     final document = Uri.tryParse(artifact?.location ?? '');
+    final allowPartial =
+        app.allowStreamingWhileDownloading &&
+        (task.state == MediaTaskState.downloading ||
+            task.state == MediaTaskState.paused);
     final cached = document?.scheme == 'content'
         ? null
         : await app.mediaPlaybackFile(task, preferExported: preferExported) ??
-              (preferExported
+              (preferExported || !allowPartial
                   ? null
                   : await app.mediaPartialPlaybackFile(task));
     if (cached != null || document?.scheme == 'content') {
@@ -1893,15 +1904,36 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
               icon: Icons.bookmark_outline,
               title: '观看保存',
               subtitle: saves.isEmpty
-                  ? '播放中的内容会在确认后出现在这里'
+                  ? app.autoSaveWebPlayback
+                        ? '已开启，等待有效播放记录'
+                        : '暂无记录，自动保存已关闭'
                   : '${saves.length} 条观看记录',
+            ),
+            const SiteLensPanelDivider(),
+            SiteLensCompactRow(
+              title: const Text('自动保存网页观看记录'),
+              subtitle: Text(
+                app.autoSaveWebPlayback
+                    ? '已开启，稳定识别后保存播放进度'
+                    : '已关闭，点击开启；不会创建下载任务',
+              ),
+              onTap: () => safely(
+                context,
+                () => app.setAutoSaveWebPlayback(!app.autoSaveWebPlayback),
+              ),
+              trailing: SiteLensCompactSwitch(
+                value: app.autoSaveWebPlayback,
+                semanticLabel: '自动保存网页观看记录',
+                onChanged: (value) =>
+                    safely(context, () => app.setAutoSaveWebPlayback(value)),
+              ),
             ),
             if (saves.isEmpty)
               const Padding(
                 padding: EdgeInsets.fromLTRB(18, 0, 18, 14),
                 child: Align(
                   alignment: Alignment.centerLeft,
-                  child: Text('开启“自动保存网页观看记录”后，稳定识别的剧集会自动保存。'),
+                  child: Text('只有确认剧名、集数和实际播放状态后，记录才会出现在这里。'),
                 ),
               )
             else
@@ -2957,6 +2989,8 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           : _TaskThumbnail(
               task: task,
               candidate: snapshot.data,
+              candidateLoading:
+                  snapshot.connectionState == ConnectionState.waiting,
               localThumbnailPath: widget.app.mediaLibrary
                   .item(task.id)
                   ?.thumbnailPath,
@@ -3130,10 +3164,12 @@ class _TaskThumbnail extends StatelessWidget {
   const _TaskThumbnail({
     required this.task,
     this.candidate,
+    this.candidateLoading = false,
     this.localThumbnailPath,
   });
   final MediaTask task;
   final MediaCandidate? candidate;
+  final bool candidateLoading;
   final String? localThumbnailPath;
 
   @override
@@ -3146,9 +3182,17 @@ class _TaskThumbnail extends StatelessWidget {
     final networkImage = thumbnail == null
         ? null
         : NetworkImage(thumbnail.toString());
+    final ImageProvider? image = candidateLoading
+        ? null
+        : networkImage ?? localImage;
+    final ImageProvider? fallback = candidateLoading
+        ? null
+        : networkImage == null
+        ? null
+        : localImage;
     return MediaThumbnail(
-      image: localImage ?? networkImage,
-      fallbackImage: localImage == null ? null : networkImage,
+      image: image,
+      fallbackImage: fallback,
       placeholder: task.state == MediaTaskState.playable
           ? Icons.play_circle
           : Icons.downloading,

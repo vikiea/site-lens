@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/media/media_resource_coordinator.dart';
+import 'package:site_lens/network/transport.dart';
 
 void main() {
   const key =
@@ -17,7 +19,7 @@ void main() {
     var writes = 0;
     final futures = List.generate(
       8,
-      (_) => coordinator.ensure(key, (staging) async {
+      (_) => coordinator.ensure(key, (staging, _) async {
         writes++;
         await Future<void>.delayed(const Duration(milliseconds: 10));
         await staging.writeAsBytes([1, 2, 3, 4], flush: true);
@@ -37,14 +39,14 @@ void main() {
       rootProvider: () async => root,
     );
     await expectLater(
-      coordinator.ensure(key, (staging) async {
+      coordinator.ensure(key, (staging, _) async {
         await staging.writeAsBytes([9], flush: true);
         throw StateError('temporary network failure');
       }),
       throwsStateError,
     );
     expect(await File('${root.path}/$key.resource.part').readAsBytes(), [9]);
-    final file = await coordinator.ensure(key, (staging) async {
+    final file = await coordinator.ensure(key, (staging, _) async {
       await staging.writeAsBytes([5, 6], flush: true);
     });
     expect(await file.readAsBytes(), [5, 6]);
@@ -57,7 +59,7 @@ void main() {
     final second = MediaResourceCoordinator(rootProvider: () async => root);
     var writes = 0;
     Future<File> write(MediaResourceCoordinator coordinator) =>
-        coordinator.ensure(key, (staging) async {
+        coordinator.ensure(key, (staging, _) async {
           writes++;
           await Future<void>.delayed(const Duration(milliseconds: 80));
           await staging.writeAsBytes([7, 8, 9], flush: true);
@@ -95,7 +97,7 @@ void main() {
         rootProvider: () async => root,
       );
 
-      final file = await coordinator.ensure(key, (staging) async {
+      final file = await coordinator.ensure(key, (staging, _) async {
         expect(await staging.readAsBytes(), [1, 2]);
         await staging.writeAsBytes([3, 4], flush: true);
       });
@@ -110,8 +112,90 @@ void main() {
       rootProvider: () async => Directory.systemTemp,
     );
     expect(
-      () => coordinator.ensure('../escape', (_) async {}),
+      () => coordinator.ensure('../escape', (_, _) async {}),
       throwsFormatException,
     );
   });
+
+  test('delete and a later ensure share one resource gate', () async {
+    final root = await Directory.systemTemp.createTemp('shared-resource-');
+    addTearDown(() => root.delete(recursive: true));
+    final coordinator = MediaResourceCoordinator(
+      rootProvider: () async => root,
+    );
+    final first = coordinator.ensure(key, (staging, _) async {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await staging.writeAsBytes([1], flush: true);
+    });
+    final deletion = coordinator.delete(key);
+    await (await first).readAsBytes();
+    final second = coordinator.ensure(key, (staging, _) async {
+      await staging.writeAsBytes([2], flush: true);
+    });
+
+    await deletion;
+    expect(await (await second).readAsBytes(), [2]);
+    expect(await File('${root.path}/$key.resource').readAsBytes(), [2]);
+  });
+
+  test(
+    'publishes a supplied stable resume file under the shared key',
+    () async {
+      final root = await Directory.systemTemp.createTemp('shared-resource-');
+      addTearDown(() => root.delete(recursive: true));
+      final coordinator = MediaResourceCoordinator(
+        rootProvider: () async => root,
+      );
+      final resume = File('${root.path}/resume-stable.part');
+      final file = await coordinator.ensure(
+        key,
+        (staging, _) async => staging.writeAsBytes([4, 5], flush: true),
+        resumeFile: resume,
+      );
+
+      expect(await file.readAsBytes(), [4, 5]);
+      expect(await resume.exists(), isFalse);
+    },
+  );
+
+  test(
+    'cancelling one owner keeps a shared transfer for another owner',
+    () async {
+      final root = await Directory.systemTemp.createTemp('shared-resource-');
+      addTearDown(() => root.delete(recursive: true));
+      final coordinator = MediaResourceCoordinator(
+        rootProvider: () async => root,
+      );
+      final firstCancellation = Cancellation();
+      final secondCancellation = Cancellation();
+      final started = Completer<void>();
+      final release = Completer<void>();
+
+      Future<void> writer(File staging, Cancellation sharedCancellation) async {
+        started.complete();
+        await sharedCancellation.waitFor(release.future);
+        await staging.writeAsBytes([6, 7], flush: true);
+      }
+
+      final first = coordinator.ensure(
+        key,
+        writer,
+        ownerCancellation: firstCancellation,
+      );
+      await started.future;
+      final second = coordinator.ensure(
+        key,
+        writer,
+        ownerCancellation: secondCancellation,
+      );
+
+      firstCancellation.cancel();
+      await expectLater(first, throwsA(isA<Cancelled>()));
+      expect(secondCancellation.cancelled, isFalse);
+
+      release.complete();
+      final file = await second;
+      expect(await file.readAsBytes(), [6, 7]);
+    },
+  );
 }

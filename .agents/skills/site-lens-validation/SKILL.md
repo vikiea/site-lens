@@ -34,3 +34,9 @@ The unified entry point supports `--auto`, `--level L0..L4`, `--paths`, `--devic
 The runner may reuse exact non-device L0-L2 evidence from `.ci_cache/` when the complete worktree, toolchain, command, and relevant environment fingerprints match. Device stages perform a current preflight and rerun their command; L3 and L4 always perform current critical checks. Do not treat cache hits as a substitute for a missing device or release gate.
 
 Keep the existing `make check`, `make acceptance`, and CI gates working. Complete the project's independent review requirement before committing; review does not by itself require the highest validation level.
+
+## Release artifact evidence
+
+For a routine GitHub Release, treat release completion as the combination of a successful `Release Site Lens` workflow and a published Release asset digest. Confirm both with `gh run view <run-id> --json status,conclusion,jobs` and `gh release view <tag> --json isDraft,isPrerelease,assets,url`; record the APK asset name and its `digest` value when available.
+
+Do not download the APK or checksum asset during routine validation. Download and locally verify assets only when the user explicitly requests it, a device installation is part of the current acceptance gate, the package/signature/version identity must be inspected, or the workflow/Release metadata shows an anomaly or lacks a digest.
