@@ -1940,6 +1940,7 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
               for (final save in saves) ...[
                 const SiteLensPanelDivider(),
                 SiteLensCompactRow(
+                  key: ValueKey('watch-save-${save.ownerId}'),
                   leading: const Icon(Icons.play_circle_outline),
                   title: Text(
                     save.title,

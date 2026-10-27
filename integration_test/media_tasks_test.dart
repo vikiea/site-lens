@@ -1030,8 +1030,15 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
+        final savedRow = find.byKey(
+          ValueKey('watch-save-${WatchSave.ownerIdFor(playing)}'),
+        );
+        expect(savedRow, findsOneWidget);
         expect(
-          find.byTooltip('第 3 集 · 00:45 / 02:00 · 已暂停 · 10-25 01:02'),
+          find.descendant(
+            of: savedRow,
+            matching: find.text('Alpha1 示例剧 - 第3集'),
+          ),
           findsOneWidget,
         );
         debugPrint(
