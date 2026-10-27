@@ -5,6 +5,7 @@ import 'package:site_lens/data/database.dart';
 import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/error_logs_screen.dart';
+import 'package:site_lens/ui/ui_primitives.dart';
 
 import 'fake_web_host_api.dart';
 
@@ -84,6 +85,9 @@ void main() {
     });
     await tester.pumpWidget(MaterialApp(home: ErrorLogsScreen(app: app)));
     await tester.pumpAndSettle();
+    expect(find.byType(SiteLensExpandableRow), findsNothing);
+    expect(find.textContaining('test ·'), findsNothing);
+    expect(find.textContaining('2026-10-20'), findsOneWidget);
     await tester.tap(find.text('需要查看详情'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));

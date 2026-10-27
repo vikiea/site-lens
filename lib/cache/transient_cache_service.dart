@@ -25,12 +25,14 @@ class CacheClearReport {
     required this.deletedBytes,
     required this.webViewsCleared,
     required this.webViewCleared,
+    required this.remainingInventory,
   });
 
   final int deletedFiles;
   final int deletedBytes;
   final int webViewsCleared;
   final bool webViewCleared;
+  final CacheInventory remainingInventory;
 }
 
 class TransientCacheService {
@@ -58,7 +60,10 @@ class TransientCacheService {
     final temporary = await _temporaryDirectoryProvider();
     final thumbnails = await _thumbnailDirectory();
     return CacheInventory(
-      flutterTemporaryBytes: await _directoryBytes(temporary),
+      flutterTemporaryBytes: await _directoryBytes(
+        temporary,
+        skipNames: protectedTemporaryDirectories,
+      ),
       thumbnailBytes: await _directoryBytes(thumbnails),
       webViewCacheIncluded: runtime != null,
     );
@@ -99,29 +104,40 @@ class TransientCacheService {
       deletedBytes: deletedBytes,
       webViewsCleared: webViewsCleared,
       webViewCleared: webViewCleared,
+      remainingInventory: await inspect(),
     );
   }
 
-  static Future<int> _directoryBytes(Directory directory) async {
+  static Future<int> _directoryBytes(
+    Directory directory, {
+    Set<String> skipNames = const {},
+  }) async {
     if (!await directory.exists()) return 0;
     var total = 0;
     try {
-      await for (final entity in directory.list(
-        recursive: true,
-        followLinks: false,
-      )) {
-        if (entity is File) {
-          try {
-            total += await entity.length();
-          } on FileSystemException catch (error) {
-            if (!_isMissing(error)) rethrow;
-          }
-        }
+      final children = await directory.list(followLinks: false).toList();
+      for (final child in children) {
+        if (skipNames.contains(p.basename(child.path))) continue;
+        total += await _entityBytes(child);
       }
     } on FileSystemException catch (error) {
       if (!_isMissing(error)) rethrow;
     }
     return total;
+  }
+
+  static Future<int> _entityBytes(FileSystemEntity entity) async {
+    final type = await FileSystemEntity.type(entity.path, followLinks: false);
+    if (type == FileSystemEntityType.file) {
+      try {
+        return await File(entity.path).length();
+      } on FileSystemException catch (error) {
+        if (!_isMissing(error)) rethrow;
+      }
+      return 0;
+    }
+    if (type != FileSystemEntityType.directory) return 0;
+    return _directoryBytes(Directory(entity.path));
   }
 
   static Future<(int, int)> _deleteChildren(

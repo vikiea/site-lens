@@ -46,14 +46,17 @@ void main() {
     );
 
     final inventory = await service.inspect();
-    expect(inventory.flutterTemporaryBytes, 5);
+    expect(inventory.flutterTemporaryBytes, 3);
     expect(inventory.thumbnailBytes, 2);
+    expect(inventory.knownBytes, 5);
     expect(inventory.webViewCacheIncluded, isTrue);
 
     final report = await service.clear();
     expect(report.deletedFiles, 2);
     expect(report.deletedBytes, 5);
     expect(report.webViewsCleared, 2);
+    expect(report.remainingInventory.knownBytes, 0);
+    expect((await service.inspect()).knownBytes, 0);
     expect(await File('${support.path}/site_lens.sqlite').exists(), isTrue);
     expect(await File('${temporary.path}/temp.bin').exists(), isFalse);
     expect(await File('${updates.path}/verified.apk').exists(), isTrue);

@@ -571,20 +571,24 @@ class _CacheSettingState extends State<_CacheSetting> {
     );
     if (confirmed != true || !mounted) return;
     setState(() => _busy = true);
+    CacheClearReport? cleared;
     await safely(context, () async {
-      final report = await widget.app.clearTransientCache();
+      cleared = await widget.app.clearTransientCache();
       if (!mounted) return;
       showShortToast(
         context,
-        report.webViewCleared
-            ? '已清理 ${report.deletedFiles} 个临时文件和网页缓存'
-            : '已清理 ${report.deletedFiles} 个临时文件；网页缓存稍后可重试',
+        cleared!.webViewCleared
+            ? '已清理 ${cleared!.deletedFiles} 个临时文件和网页缓存'
+            : '已清理 ${cleared!.deletedFiles} 个临时文件；网页缓存稍后可重试',
       );
     });
     if (mounted) {
+      final result = cleared;
       setState(() {
         _busy = false;
-        _refresh();
+        _inventory = result == null
+            ? widget.app.transientCacheInventory()
+            : Future<CacheInventory>.value(result.remainingInventory);
       });
     }
   }

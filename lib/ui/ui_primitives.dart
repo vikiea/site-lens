@@ -948,10 +948,10 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
               visualDensity: VisualDensity.standard,
               shape: WidgetStatePropertyAll(
                 RoundedRectangleBorder(
-                  borderRadius: const BorderRadius.vertical(
-                    bottom: Radius.circular(SiteLensMetrics.inputRadius),
+                  borderRadius: BorderRadius.circular(
+                    SiteLensMetrics.inputRadius,
                   ),
-                  side: BorderSide(color: controlSurface.border),
+                  side: BorderSide.none,
                 ),
               ),
             ),
@@ -977,13 +977,8 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
                     backgroundColor: WidgetStatePropertyAll(fill),
                     shape: WidgetStatePropertyAll(
                       RoundedRectangleBorder(
-                        borderRadius: BorderRadius.vertical(
-                          top: const Radius.circular(
-                            SiteLensMetrics.inputRadius,
-                          ),
-                          bottom: Radius.circular(
-                            _expanded ? 0 : SiteLensMetrics.inputRadius,
-                          ),
+                        borderRadius: BorderRadius.circular(
+                          SiteLensMetrics.inputRadius,
                         ),
                       ),
                     ),
@@ -994,7 +989,7 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
                                 states.contains(WidgetState.focused) &&
                                 _enabled
                             ? theme.colorScheme.primary
-                            : controlSurface.border,
+                            : Colors.transparent,
                         width: 1.4,
                       ),
                     ),
@@ -1183,6 +1178,46 @@ class SiteLensPageScaffold extends StatelessWidget {
       namesRoute: true,
       label: title,
       child: SafeArea(child: body),
+    ),
+  );
+}
+
+/// Switches between top-level pages with a small spatial motion while keeping
+/// the previous page out of the shared glass group during the transition.
+class SiteLensPageSwitcher extends StatelessWidget {
+  const SiteLensPageSwitcher({
+    super.key,
+    required this.child,
+    this.direction = 1,
+  });
+
+  final Widget child;
+  final int direction;
+
+  @override
+  Widget build(BuildContext context) => ClipRect(
+    child: AnimatedSwitcher(
+      duration: const Duration(milliseconds: 220),
+      reverseDuration: const Duration(milliseconds: 180),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      layoutBuilder: (currentChild, _) =>
+          currentChild ?? const SizedBox.shrink(),
+      transitionBuilder: (child, animation) {
+        if (MediaQuery.disableAnimationsOf(context)) return child;
+        final curved = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutCubic,
+        );
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: Offset(0.04 * direction.sign, 0),
+            end: Offset.zero,
+          ).animate(curved),
+          child: child,
+        );
+      },
+      child: child,
     ),
   );
 }

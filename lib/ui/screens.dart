@@ -12,6 +12,7 @@ import 'package:re_highlight/languages/javascript.dart';
 import 'package:re_highlight/styles/atom-one-dark.dart';
 import 'package:re_highlight/styles/atom-one-light.dart';
 
+import '../cache/transient_cache_service.dart';
 import '../domain/models.dart';
 import '../network/transport.dart';
 import '../scripts/metadata.dart';
@@ -173,6 +174,7 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
   int page = 0;
+  int _pageDirection = 1;
   final _doubleBackExit = DoubleBackExitController();
   @override
   void initState() {
@@ -313,22 +315,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       }),
                     ),
               body: SafeArea(
-                child: switch (destination) {
-                  AppDestination.sites => ProfilesPanel(
-                    app: app,
-                    onOpen: (profile) => _openProfile(app, profile),
-                    onEnterProfile: (profile) => _enterProfile(app, profile),
-                    onResume: () => _resume(app),
+                child: SiteLensPageSwitcher(
+                  direction: _pageDirection,
+                  child: KeyedSubtree(
+                    key: ValueKey(destination),
+                    child: switch (destination) {
+                      AppDestination.sites => ProfilesPanel(
+                        app: app,
+                        onOpen: (profile) => _openProfile(app, profile),
+                        onEnterProfile: (profile) =>
+                            _enterProfile(app, profile),
+                        onResume: () => _resume(app),
+                      ),
+                      AppDestination.browser => BrowserTabsPage(
+                        app: app,
+                        onResume: (tab) => _resumeTab(app, tab),
+                        onNewTab: () =>
+                            safely(context, () => promptNewTab(context, app)),
+                      ),
+                      AppDestination.media => MediaLibraryScreen(app: app),
+                      AppDestination.settings => SettingsPage(app: app),
+                    },
                   ),
-                  AppDestination.browser => BrowserTabsPage(
-                    app: app,
-                    onResume: (tab) => _resumeTab(app, tab),
-                    onNewTab: () =>
-                        safely(context, () => promptNewTab(context, app)),
-                  ),
-                  AppDestination.media => MediaLibraryScreen(app: app),
-                  AppDestination.settings => SettingsPage(app: app),
-                },
+                ),
               ),
               // A fixed, single-row labelled glass capsule: destinations never
               // wrap, move or shrink, and the surface refracts the app backdrop.
@@ -345,8 +354,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     radius: SiteLensMetrics.navRadius,
                     child: SiteLensBottomNavigation(
                       selectedIndex: page.clamp(0, destinations.length - 1),
-                      onDestinationSelected: (value) =>
-                          setState(() => page = value),
+                      onDestinationSelected: (value) {
+                        if (value == page) return;
+                        setState(() {
+                          _pageDirection = value > page ? 1 : -1;
+                          page = value;
+                        });
+                      },
                       items: [
                         const SiteLensBottomNavigationItem(
                           icon: Icons.travel_explore_outlined,

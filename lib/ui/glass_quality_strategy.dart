@@ -54,6 +54,7 @@ class SiteLensGlassQualityStrategy {
     this.allSurfacesHighQuality = false,
     this.webViewVisible = false,
     this.hcppEffective = false,
+    this.backgroundMode = BackgroundMode.defaultGradient,
     this.lightweightShaderSupported,
     this.adaptiveQualityOverride,
   });
@@ -71,6 +72,12 @@ class SiteLensGlassQualityStrategy {
   /// shader path; only the native WebView role is fenced while that view is
   /// mounted.
   final bool hcppEffective;
+
+  /// Transparent dark mode deliberately leaves the app-owned backdrop empty.
+  /// Glass shaders need a real backdrop to sample, so this mode uses the
+  /// stable clipped fill path for every surface instead of sampling the host
+  /// window.
+  final BackgroundMode backgroundMode;
 
   /// Optional override for the package's lightweight shader capability.
   ///
@@ -116,6 +123,7 @@ class SiteLensGlassQualityStrategy {
     // Flutter-owned surfaces; only the native WebView surface needs the
     // clipped fill because its pixels cannot be captured by the glass shader.
     final useCompatibilityFallback =
+        backgroundMode == BackgroundMode.transparent ||
         (androidWebViewComposition &&
             role == SiteLensSurfaceRole.platformView) ||
         (lightweightShaderSupported == false && !platformViewBackdrop);

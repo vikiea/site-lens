@@ -114,6 +114,36 @@ void main() {
     }
   });
 
+  testWidgets('transparent backdrop uses a stable fallback for every surface', (
+    tester,
+  ) async {
+    late BuildContext context;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.dark),
+        home: Builder(
+          builder: (value) {
+            context = value;
+            return const SizedBox();
+          },
+        ),
+      ),
+    );
+
+    const strategy = SiteLensGlassQualityStrategy(
+      mode: SiteLensGlassQualityMode.high,
+      allSurfacesHighQuality: true,
+      backgroundMode: BackgroundMode.transparent,
+      lightweightShaderSupported: true,
+    );
+    for (final role in SiteLensSurfaceRole.values) {
+      expect(
+        strategy.resolve(context, role: role).useCompatibilityFallback,
+        isTrue,
+      );
+    }
+  });
+
   testWidgets('automatic follows adaptive quality for eligible chrome', (
     tester,
   ) async {

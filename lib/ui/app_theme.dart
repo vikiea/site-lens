@@ -6,10 +6,11 @@ export '../settings/app_settings.dart' show ThemePresetId, ThemeModePreference;
 
 /// Shared geometry. Every screen takes its spacing, radii and control sizes
 /// from here so the whole app reads as one material instead of five.
-/// Route transitions use the app backdrop as their underlay instead of the
-/// platform default black frame, which is visible through transparent glass.
-class SiteLensFadePageTransitionsBuilder extends PageTransitionsBuilder {
-  const SiteLensFadePageTransitionsBuilder();
+/// Route transitions use a small spatial motion without putting glass surfaces
+/// under an opacity layer, which would make them leave their shared backdrop
+/// group during the transition.
+class SiteLensPageTransitionsBuilder extends PageTransitionsBuilder {
+  const SiteLensPageTransitionsBuilder();
 
   @override
   Widget buildTransitions<T>(
@@ -19,11 +20,28 @@ class SiteLensFadePageTransitionsBuilder extends PageTransitionsBuilder {
     Animation<double> secondaryAnimation,
     Widget child,
   ) {
-    final curved = CurvedAnimation(
+    if (MediaQuery.disableAnimationsOf(context)) return child;
+    final entering = CurvedAnimation(
       parent: animation,
       curve: Curves.easeOutCubic,
     );
-    return FadeTransition(opacity: curved, child: child);
+    final leaving = CurvedAnimation(
+      parent: secondaryAnimation,
+      curve: Curves.easeInCubic,
+    );
+    return SlideTransition(
+      position: Tween<Offset>(
+        begin: const Offset(0.04, 0),
+        end: Offset.zero,
+      ).animate(entering),
+      child: SlideTransition(
+        position: Tween<Offset>(
+          begin: Offset.zero,
+          end: const Offset(-0.02, 0),
+        ).animate(leaving),
+        child: child,
+      ),
+    );
   }
 }
 
@@ -546,12 +564,12 @@ ThemeData buildSiteLensTheme(
     ],
     pageTransitionsTheme: const PageTransitionsTheme(
       builders: {
-        TargetPlatform.android: SiteLensFadePageTransitionsBuilder(),
-        TargetPlatform.iOS: SiteLensFadePageTransitionsBuilder(),
-        TargetPlatform.linux: SiteLensFadePageTransitionsBuilder(),
-        TargetPlatform.macOS: SiteLensFadePageTransitionsBuilder(),
-        TargetPlatform.windows: SiteLensFadePageTransitionsBuilder(),
-        TargetPlatform.fuchsia: SiteLensFadePageTransitionsBuilder(),
+        TargetPlatform.android: SiteLensPageTransitionsBuilder(),
+        TargetPlatform.iOS: SiteLensPageTransitionsBuilder(),
+        TargetPlatform.linux: SiteLensPageTransitionsBuilder(),
+        TargetPlatform.macOS: SiteLensPageTransitionsBuilder(),
+        TargetPlatform.windows: SiteLensPageTransitionsBuilder(),
+        TargetPlatform.fuchsia: SiteLensPageTransitionsBuilder(),
       },
     ),
     appBarTheme: AppBarTheme(

@@ -65,6 +65,7 @@ Widget settingsApp(
             allSurfacesHighQuality: app.settings.highQualityAllSurfaces,
             adaptiveQualityOverride: app.effectiveGlassQuality,
             lightweightShaderSupported: true,
+            backgroundMode: app.background.mode,
           ),
           child: SiteLensBackdrop(child: child!),
         ),

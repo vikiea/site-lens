@@ -315,7 +315,7 @@ void main() {
           BackgroundMode.defaultGradient,
           accent: theme.colorScheme.primary,
         );
-        expect(trigger.style!.side!.resolve({})!.color, control.border);
+        expect(trigger.style!.side!.resolve({})!.color, Colors.transparent);
         for (final state in [
           WidgetState.pressed,
           WidgetState.focused,
@@ -346,12 +346,12 @@ void main() {
         await press.up();
         await tester.pump();
         final anchor = tester.widget<MenuAnchor>(find.byType(MenuAnchor));
-        expect(anchor.style!.shape!.resolve({})!.side.color, control.border);
+        expect(anchor.style!.shape!.resolve({})!.side, BorderSide.none);
         expect(
           (_buttonMaterial(tester, _trigger).shape! as OutlinedBorder)
               .side
               .color,
-          control.border,
+          Colors.transparent,
         );
         expect(
           anchor.style!.backgroundColor!.resolve({}),
@@ -409,10 +409,56 @@ void main() {
         accent: Theme.of(context).colorScheme.primary,
       );
       expect(trigger.style!.backgroundColor!.resolve({}), control.fill);
-      expect(trigger.style!.side!.resolve({})!.color, control.border);
+      expect(trigger.style!.side!.resolve({})!.color, Colors.transparent);
       expect(tester.takeException(), isNull);
     });
   }
+
+  testWidgets('menu keeps full rounded corners when it opens upward', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: Scaffold(
+          body: SizedBox.expand(
+            child: Align(
+              alignment: Alignment.bottomLeft,
+              child: SiteLensMenuSelector<int>(
+                label: '选择上下滑动操作',
+                value: 0,
+                options: _options,
+                onSelected: (_) {},
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(_trigger);
+    await tester.pump();
+
+    final triggerRect = tester.getRect(_trigger);
+    final menuRect = tester.getRect(_item('上一集 / 下一集'));
+    expect(menuRect.bottom, lessThanOrEqualTo(triggerRect.top + 1));
+
+    final anchor = tester.widget<MenuAnchor>(find.byType(MenuAnchor));
+    final menuShape =
+        anchor.style!.shape!.resolve({}) as RoundedRectangleBorder;
+    expect(
+      menuShape.borderRadius,
+      BorderRadius.circular(SiteLensMetrics.inputRadius),
+    );
+    expect(menuShape.side, BorderSide.none);
+
+    final trigger = tester.widget<TextButton>(_trigger);
+    final triggerShape =
+        trigger.style!.shape!.resolve({}) as RoundedRectangleBorder;
+    expect(
+      triggerShape.borderRadius,
+      BorderRadius.circular(SiteLensMetrics.inputRadius),
+    );
+  });
 
   for (final direction in TextDirection.values) {
     testWidgets('narrow viewport wraps large labels in $direction', (

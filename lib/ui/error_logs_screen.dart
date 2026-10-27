@@ -162,9 +162,7 @@ class _ErrorLogsScreenState extends State<ErrorLogsScreen> {
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
-                      subtitle: Text(
-                        '${log.module} · ${clock(log.happenedAt)}',
-                      ),
+                      subtitle: Text(clock(log.happenedAt)),
                       trailing: const Icon(
                         Icons.chevron_right,
                         size: SiteLensMetrics.compactIconSize,
