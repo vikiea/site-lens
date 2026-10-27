@@ -2848,7 +2848,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
             (_) {},
             onError: (Object _, StackTrace _) {},
           );
-    final nativeDispose = nativeMedia.dispose();
+    final nativeDispose = _clearAndDisposeNativeMedia();
     _shutdownFuture = Future.wait<void>([
       flush,
       mediaFlush,
@@ -2880,5 +2880,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     watchSaves.dispose();
     AppErrorLogger.detach(errorLogger);
     super.dispose();
+  }
+
+  Future<void> _clearAndDisposeNativeMedia() async {
+    await nativeMedia.clearForAppShutdown();
+    await nativeMedia.dispose();
   }
 }

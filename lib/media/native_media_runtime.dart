@@ -271,7 +271,11 @@ class NativeMediaRuntime {
     return value;
   }
 
-  Future<void> dispose() async {
+  /// Releases the native session when the whole application is shutting down.
+  ///
+  /// A plain [dispose] only detaches this Dart bridge. The native MediaSession
+  /// intentionally survives that detach so a new bridge can rebind to it.
+  Future<void> clearForAppShutdown() async {
     try {
       final current = _active ?? await state();
       if (current.state == NativePlaybackState.restorable) {
@@ -284,6 +288,9 @@ class NativeMediaRuntime {
       // Shutdown must still release the Dart channel when the native service
       // has already gone away or the engine is detaching.
     }
+  }
+
+  Future<void> dispose() async {
     await _states.close();
     _channel.setMethodCallHandler(null);
   }
