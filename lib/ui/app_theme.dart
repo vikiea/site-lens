@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -25,24 +27,77 @@ class SiteLensPageTransitionsBuilder extends PageTransitionsBuilder {
       parent: animation,
       curve: Curves.easeOutCubic,
     );
-    final leaving = CurvedAnimation(
-      parent: secondaryAnimation,
-      curve: Curves.easeInCubic,
-    );
-    return SlideTransition(
-      position: Tween<Offset>(
-        begin: const Offset(0.04, 0),
-        end: Offset.zero,
-      ).animate(entering),
-      child: SlideTransition(
-        position: Tween<Offset>(
-          begin: Offset.zero,
-          end: const Offset(-0.02, 0),
-        ).animate(leaving),
-        child: child,
-      ),
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        SiteLensTransitionScrim(animation: animation),
+        SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0.04, 0),
+            end: Offset.zero,
+          ).animate(entering),
+          child: child,
+        ),
+      ],
     );
   }
+}
+
+class SiteLensTransitionScope extends InheritedWidget {
+  const SiteLensTransitionScope({
+    super.key,
+    required this.webViewVisible,
+    required super.child,
+  });
+
+  final bool webViewVisible;
+
+  static bool webViewVisibleOf(BuildContext context) =>
+      context
+          .dependOnInheritedWidgetOfExactType<SiteLensTransitionScope>()
+          ?.webViewVisible ??
+      false;
+
+  @override
+  bool updateShouldNotify(SiteLensTransitionScope oldWidget) =>
+      oldWidget.webViewVisible != webViewVisible;
+}
+
+class SiteLensTransitionScrim extends StatelessWidget {
+  const SiteLensTransitionScrim({super.key, required this.animation});
+
+  final Animation<double> animation;
+
+  @override
+  Widget build(BuildContext context) => Positioned.fill(
+    child: IgnorePointer(
+      child: AnimatedBuilder(
+        animation: animation,
+        builder: (context, _) {
+          final reverse = animation.status == AnimationStatus.reverse;
+          final progress = (reverse ? animation.value : 1 - animation.value)
+              .clamp(0.0, 1.0)
+              .toDouble();
+          if (progress <= 0.001) return const SizedBox.shrink();
+
+          final scrim = ColoredBox(
+            color: SiteLensColors.of(context).glassSurface
+                .withValues(alpha: 0.58 * progress),
+          );
+          if (SiteLensTransitionScope.webViewVisibleOf(context)) {
+            return scrim;
+          }
+          return BackdropFilter(
+            filter: ui.ImageFilter.blur(
+              sigmaX: 4 * progress,
+              sigmaY: 4 * progress,
+            ),
+            child: scrim,
+          );
+        },
+      ),
+    ),
+  );
 }
 
 /// Android edge overscroll can temporarily invalidate the backdrop layer used

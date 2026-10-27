@@ -21,6 +21,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 80));
 
     expect(find.byType(SlideTransition), findsAtLeastNWidgets(1));
+    expect(find.byType(SiteLensTransitionScrim), findsOneWidget);
     expect(find.byType(FadeTransition), findsNothing);
   });
 
@@ -51,6 +52,13 @@ void main() {
       find.descendant(
         of: find.byType(SiteLensPageSwitcher),
         matching: find.byType(SlideTransition),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byType(SiteLensPageSwitcher),
+        matching: find.byType(SiteLensTransitionScrim),
       ),
       findsOneWidget,
     );

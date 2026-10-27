@@ -137,18 +137,21 @@ class SiteLensApp extends ConsumerWidget {
                   hcppEffective: app.deviceDiagnostics.effectiveHcpp,
                   backgroundMode: app.background.mode,
                 ),
-                child: GlassAccessibilityScope(
-                  // The material does not step down for high contrast; contrast is
-                  // handled by the colour roles instead of by dropping the glass.
-                  reduceTransparency: false,
-                  // The update notice sits above the navigator so a completed
-                  // download can surface on any page, WebView included.
-                  child: SiteLensBackdrop(
-                    background: app.background,
-                    child: SiteLensUpdateNoticeLayer(
-                      child: BrowserDock(
-                        app: app,
-                        child: child ?? const SizedBox(),
+                child: SiteLensTransitionScope(
+                  webViewVisible: app.browserSurfaceActive,
+                  child: GlassAccessibilityScope(
+                    // The material does not step down for high contrast; contrast is
+                    // handled by the colour roles instead of by dropping the glass.
+                    reduceTransparency: false,
+                    // The update notice sits above the navigator so a completed
+                    // download can surface on any page, WebView included.
+                    child: SiteLensBackdrop(
+                      background: app.background,
+                      child: SiteLensUpdateNoticeLayer(
+                        child: BrowserDock(
+                          app: app,
+                          child: child ?? const SizedBox(),
+                        ),
                       ),
                     ),
                   ),

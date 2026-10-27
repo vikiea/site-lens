@@ -215,13 +215,7 @@ void main() {
       scrollable: find.byType(Scrollable),
     );
     expect(find.text('安全 DNS'), findsOneWidget);
-    expect(
-      find.descendant(
-        of: find.byType(SiteLensDisclosure),
-        matching: find.byIcon(Icons.expand_more),
-      ),
-      findsWidgets,
-    );
+    expect(find.byType(SiteLensDisclosure), findsNothing);
     await tester.tap(
       find
           .descendant(

@@ -42,8 +42,15 @@ void main() {
       Brightness.light,
       glassOpacity: 22,
     );
-    await tester.pumpWidget(MaterialApp(theme: theme, home: const SizedBox()));
-    final context = tester.element(find.byType(SizedBox));
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: theme,
+        home: const SizedBox(key: ValueKey<String>('theme-test-content')),
+      ),
+    );
+    final context = tester.element(
+      find.byKey(const ValueKey<String>('theme-test-content')),
+    );
     final panel = siteLensGlassSettings(context);
     final chrome = siteLensGlassSettings(
       context,
@@ -76,9 +83,14 @@ void main() {
       glassOpacity: 45,
     );
     await tester.pumpWidget(
-      MaterialApp(theme: defaultTheme, home: const SizedBox()),
+      MaterialApp(
+        theme: defaultTheme,
+        home: const SizedBox(key: ValueKey<String>('theme-test-content')),
+      ),
     );
-    final defaultContext = tester.element(find.byType(SizedBox));
+    final defaultContext = tester.element(
+      find.byKey(const ValueKey<String>('theme-test-content')),
+    );
     final defaultPanel = siteLensGlassSettings(defaultContext);
     final fullTheme = buildSiteLensTheme(
       ThemePresetId.oceanBlue,
@@ -86,9 +98,14 @@ void main() {
       glassOpacity: 100,
     );
     await tester.pumpWidget(
-      MaterialApp(theme: fullTheme, home: const SizedBox()),
+      MaterialApp(
+        theme: fullTheme,
+        home: const SizedBox(key: ValueKey<String>('theme-test-content')),
+      ),
     );
-    final fullContext = tester.element(find.byType(SizedBox));
+    final fullContext = tester.element(
+      find.byKey(const ValueKey<String>('theme-test-content')),
+    );
     final fullPanel = siteLensGlassSettings(fullContext);
     expect(fullPanel.frostOpacity, closeTo(defaultPanel.frostOpacity, 0.001));
     expect(fullPanel.blur, greaterThan(0));

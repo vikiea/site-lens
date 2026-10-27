@@ -1197,8 +1197,8 @@ class SiteLensPageSwitcher extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ClipRect(
     child: AnimatedSwitcher(
-      duration: const Duration(milliseconds: 220),
-      reverseDuration: const Duration(milliseconds: 180),
+      duration: const Duration(milliseconds: 180),
+      reverseDuration: const Duration(milliseconds: 140),
       switchInCurve: Curves.easeOutCubic,
       switchOutCurve: Curves.easeInCubic,
       layoutBuilder: (currentChild, _) =>
@@ -1209,12 +1209,18 @@ class SiteLensPageSwitcher extends StatelessWidget {
           parent: animation,
           curve: Curves.easeOutCubic,
         );
-        return SlideTransition(
-          position: Tween<Offset>(
-            begin: Offset(0.04 * direction.sign, 0),
-            end: Offset.zero,
-          ).animate(curved),
-          child: child,
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            SiteLensTransitionScrim(animation: animation),
+            SlideTransition(
+              position: Tween<Offset>(
+                begin: Offset(0.04 * direction.sign, 0),
+                end: Offset.zero,
+              ).animate(curved),
+              child: child,
+            ),
+          ],
         );
       },
       child: child,

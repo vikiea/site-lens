@@ -479,48 +479,24 @@ class _BackgroundSetting extends StatelessWidget {
   }
 }
 
-class _SecureDnsSetting extends StatefulWidget {
+class _SecureDnsSetting extends StatelessWidget {
   const _SecureDnsSetting({required this.app});
 
   final AppController app;
 
   @override
-  State<_SecureDnsSetting> createState() => _SecureDnsSettingState();
-}
-
-class _SecureDnsSettingState extends State<_SecureDnsSetting> {
-  bool _expanded = false;
-
-  @override
-  Widget build(BuildContext context) => SiteLensDisclosure(
+  Widget build(BuildContext context) => SiteLensCompactRow(
     title: const Text('安全 DNS'),
-    subtitle: Text(widget.app.settings.secureDnsProvider.label),
     leading: const Icon(Icons.shield_outlined, size: 18),
-    expanded: _expanded,
-    onToggle: () => setState(() => _expanded = !_expanded),
-    trailingBuilder: (context, expanded) => Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        SiteLensMenuSelector<SecureDnsProvider>(
-          label: '安全 DNS',
-          value: widget.app.settings.secureDnsProvider,
-          options: [
-            for (final provider in SecureDnsProvider.values)
-              SiteLensMenuOption(value: provider, label: provider.label),
-          ],
-          onSelected: (value) =>
-              safely(context, () => widget.app.setSecureDnsProvider(value)),
-        ),
-        const SizedBox(width: 4),
-        Icon(
-          expanded ? Icons.expand_less : Icons.expand_more,
-          size: SiteLensMetrics.compactIconSize,
-        ),
+    trailing: SiteLensMenuSelector<SecureDnsProvider>(
+      label: '安全 DNS',
+      value: app.settings.secureDnsProvider,
+      options: [
+        for (final provider in SecureDnsProvider.values)
+          SiteLensMenuOption(value: provider, label: provider.label),
       ],
-    ),
-    details: (context) => Text(
-      '优先使用 DoH 解析公网域名；DoH 失败时自动回退系统 DNS。WebView、DLNA/局域网和系统托管下载继续使用系统解析。',
-      style: Theme.of(context).textTheme.bodySmall,
+      onSelected: (value) =>
+          safely(context, () => app.setSecureDnsProvider(value)),
     ),
   );
 }

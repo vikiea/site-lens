@@ -57,13 +57,12 @@ void main() {
       isEmpty,
     );
     expect(find.byType(Image), findsNothing);
+    final backdropContext = tester.element(find.byType(SiteLensBackdrop));
     expect(
       find.byWidgetPredicate(
         (widget) =>
             widget is ColoredBox &&
-            widget.color ==
-                SiteLensColors.of(tester.element(find.byType(Stack)))
-                    .backdropTop,
+            widget.color == SiteLensColors.of(backdropContext).backdropTop,
       ),
       findsOneWidget,
     );
