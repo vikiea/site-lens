@@ -276,6 +276,7 @@ class NativeMediaRuntime {
   /// A plain [dispose] only detaches this Dart bridge. The native MediaSession
   /// intentionally survives that detach so a new bridge can rebind to it.
   Future<void> clearForAppShutdown() async {
+    if (!Platform.isAndroid) return;
     try {
       final current = _active ?? await state();
       if (current.state == NativePlaybackState.restorable) {
