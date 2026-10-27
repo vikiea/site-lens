@@ -154,6 +154,11 @@ class DeviceDiagnosticsService extends ChangeNotifier {
     notifyListeners();
   }
 
+  void clearObservation(String id) {
+    if (_disposed || _observations.remove(id) == null) return;
+    notifyListeners();
+  }
+
   /// Merges declared support, current engine policy and historical facts. The
   /// snapshot timestamp never replaces a producer's actual observation time.
   List<CapabilityRecord> records({

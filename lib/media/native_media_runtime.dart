@@ -272,6 +272,18 @@ class NativeMediaRuntime {
   }
 
   Future<void> dispose() async {
+    try {
+      final current = _active ?? await state();
+      if (current.state == NativePlaybackState.restorable) {
+        await discardRestorable();
+      } else if (current.state != NativePlaybackState.stopped &&
+          current.id.isNotEmpty) {
+        await stop(sessionId: current.id);
+      }
+    } catch (_) {
+      // Shutdown must still release the Dart channel when the native service
+      // has already gone away or the engine is detaching.
+    }
     await _states.close();
     _channel.setMethodCallHandler(null);
   }

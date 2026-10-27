@@ -164,6 +164,28 @@ void main() {
     expect(jsonDecode(row.detailsJson!)['identity'], 'session-1');
   });
 
+  test('clearing a playback observation returns the capability to unknown', () {
+    final service = DeviceDiagnosticsService(
+      api: FakeDeviceDiagnosticsApi(),
+      platform: 'android',
+      hcppReader: () async => false,
+    );
+    addTearDown(service.dispose);
+    service.recordObservation(
+      id: 'media.playback.session',
+      observed: 'paused',
+      source: 'actualEvent',
+      identity: 'session-1',
+    );
+
+    service.clearObservation('media.playback.session');
+
+    final row = records(service)
+        .singleWhere((row) => row.id == 'media.playback.session');
+    expect(row.state, CapabilityState.unknown);
+    expect(row.observed, isNull);
+  });
+
   test(
     'SAF directory matches ledger only and never declares writable proof',
     () async {

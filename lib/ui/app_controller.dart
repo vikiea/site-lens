@@ -128,6 +128,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         ? NativeMediaAuthRefresh()
         : null;
     _diagnosticPlaybackEvents = nativeMedia.states.listen((session) {
+      if (session.state == NativePlaybackState.stopped ||
+          session.state == NativePlaybackState.restorable) {
+        deviceDiagnostics.clearObservation('media.playback.session');
+        return;
+      }
       deviceDiagnostics.recordObservation(
         id: 'media.playback.session',
         observed: session.state.name,
