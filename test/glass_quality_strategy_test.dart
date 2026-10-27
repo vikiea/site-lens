@@ -11,6 +11,7 @@ import 'package:site_lens/ui/glass_quality_cache.dart';
 import 'package:site_lens/ui/glass_quality_strategy.dart';
 
 void main() {
+  // REGRESSION CONTRACT: UI-GLASS-001
   testWidgets('HCPP restores Flutter glass while native overlays stay fenced', (
     tester,
   ) async {

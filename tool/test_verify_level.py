@@ -229,6 +229,7 @@ class ValidationPlannerTests(unittest.TestCase):
 
 
 class StrictDeviceTests(unittest.TestCase):
+    # REGRESSION CONTRACT: RELEASE-001
     def test_tcp_preflight_restarts_adb_once_and_retries(self):
         runner = Mock(
             side_effect=[

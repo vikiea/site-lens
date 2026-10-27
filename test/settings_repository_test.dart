@@ -7,6 +7,7 @@ import 'package:site_lens/settings/app_settings.dart';
 import 'package:site_lens/settings/settings_repository.dart';
 
 void main() {
+  // REGRESSION CONTRACT: MEDIA-UPGRADE-001
   late AppDatabase db;
   late SettingsRepository settings;
   setUp(() {

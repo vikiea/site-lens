@@ -18,6 +18,8 @@ import 'package:site_lens/ui/ui_primitives.dart';
 
 import 'fake_web_host_api.dart';
 
+// REGRESSION CONTRACT: UI-DOCK-001
+
 final handle = find.byKey(const ValueKey('browser-dock-handle'));
 final title = find.byKey(const ValueKey('browser-dock-title'));
 final close = find.byKey(const ValueKey('browser-dock-close'));

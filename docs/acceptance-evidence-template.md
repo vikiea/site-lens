@@ -2,6 +2,8 @@
 
 复制此模板到 `.ci_cache/acceptance/<date>-<revision>.md`，只填写已执行的命令和设备结果。没有真实设备、接收端或正式签名时保留“待验收”，不要把模拟结果写成通过。
 
+使用 `tool/run_android_acceptance.py --skip-check` 的结果必须标记为 `diagnostic-only`；它可以证明设备场景，但不能满足完整 L1/L4 发布证据。
+
 ## 构建身份
 
 - Revision：

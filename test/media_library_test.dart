@@ -256,6 +256,7 @@ class _MaterializeRuntime extends _ScanRuntime {
 }
 
 void main() {
+  // REGRESSION CONTRACT: MEDIA-EXPORT-001
   late Directory root;
   late AppDatabase db;
   late MediaTaskStore tasks;

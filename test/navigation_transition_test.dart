@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/ui/app_theme.dart';
 
 void main() {
+  // REGRESSION CONTRACT: UI-TRANSITION-001
   testWidgets('route transitions complete immediately without old content', (
     tester,
   ) async {

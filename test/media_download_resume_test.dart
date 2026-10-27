@@ -12,6 +12,54 @@ import 'package:site_lens/media/media_resource_coordinator.dart';
 import 'package:site_lens/network/transport.dart';
 
 void main() {
+  // REGRESSION CONTRACT: MEDIA-HLS-001
+  // REGRESSION CONTRACT: MEDIA-PLAY-001
+  // REGRESSION CONTRACT: MEDIA-UPGRADE-001
+  test('legacy batch cache directory is normalized during restore', () async {
+    final root = await Directory.systemTemp.createTemp('site-lens-upgrade-');
+    addTearDown(() => root.delete(recursive: true));
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final candidate = _candidate(
+      Uri.parse('https://cdn.example/upgrade/index.m3u8'),
+    );
+    await db.saveMediaCandidate(candidate);
+    final store = MediaTaskStore(directoryProvider: () async => root, db: db);
+    final task = MediaTask(
+      id: 'legacy-upgrade-task',
+      candidateId: candidate.id,
+      hostId: candidate.hostId,
+      generation: candidate.generation,
+      sourceUrl: candidate.mediaUrl,
+      cacheKey: store.cacheKey(candidate),
+      state: MediaTaskState.playable,
+      updatedAt: DateTime.utc(2026, 10, 25),
+      displayTitle: '系统带我攻略弟弟（漫剧版）',
+      batchDirectory: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
+      episodeLabel: '第1集',
+      localRef: '',
+    );
+    final legacyDirectory = Directory(
+      '${root.path}/media_cache/${task.legacyStorageDirectoryName}',
+    );
+    await legacyDirectory.create(recursive: true);
+    final playlist = File('${legacyDirectory.path}/index.m3u8');
+    await playlist.writeAsString('#EXTM3U\n#EXT-X-ENDLIST\n');
+    await db.saveMediaTask(task.copyWith(localRef: playlist.path));
+
+    await store.restore();
+
+    final restored = store.task(task.id);
+    expect(restored, isNotNull);
+    expect(restored!.batchDirectory, '系统带我攻略弟弟（漫剧版）');
+    expect(restored.storageDirectoryName, '系统带我攻略弟弟（漫剧版）');
+    expect(await playlist.exists(), isFalse);
+    expect(
+      await File('${root.path}/media_cache/系统带我攻略弟弟（漫剧版）/index.m3u8').exists(),
+      isTrue,
+    );
+  });
+
   for (final resource in ['key', 'map', 'segment']) {
     test(
       'native HLS $resource failure retains safe transfer context',

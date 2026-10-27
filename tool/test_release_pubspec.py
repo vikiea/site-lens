@@ -4,6 +4,8 @@ from verify_release_pubspec import verify
 
 
 class ReleasePubspecTests(unittest.TestCase):
+    # REGRESSION CONTRACT: UPDATE-001
+    # REGRESSION CONTRACT: RELEASE-001
     def test_stable_and_beta_match_tag_and_reserved_code(self):
         for version in ("0.4.0", "0.4.0.alpha16", "0.4.0.beta1", "0.4.0.rc2"):
             source = version.replace(".alpha", "-alpha").replace(".beta", "-beta").replace(".rc", "-rc")

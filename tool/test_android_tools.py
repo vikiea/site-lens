@@ -56,6 +56,17 @@ class AndroidToolsTests(unittest.TestCase):
             restore.assert_not_called()
             self.assertEqual((backup_dir / 'site_lens.sqlite').read_bytes(), b'partial checkpoint')
 
+    def test_skip_check_pass_is_explicitly_diagnostic_only(self):
+        skipped = acceptance.acceptance_pass_message(
+            'user database restored', local_check_skipped=True
+        )
+        self.assertIn('diagnostic-only', skipped)
+        self.assertIn('release evidence incomplete', skipped)
+        normal = acceptance.acceptance_pass_message(
+            'user database restored', local_check_skipped=False
+        )
+        self.assertNotIn('diagnostic-only', normal)
+
     def test_database_absence_is_explicit_and_transport_errors_fail_closed(self):
         relative = 'files/site_lens.sqlite'
         for status, expected in ((b'PRESENT', True), (b'ABSENT', False)):

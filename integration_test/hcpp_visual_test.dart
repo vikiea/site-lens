@@ -42,6 +42,7 @@ Future<void> _wait(
 }
 
 void main() {
+  // REGRESSION CONTRACT: UI-GLASS-001
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   testWidgets(
     'real HCPP compositor matrix with video and Flutter surfaces',

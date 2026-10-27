@@ -4,6 +4,7 @@ from record_acceptance_evidence import render_evidence
 
 
 class AcceptanceEvidenceTests(unittest.TestCase):
+    # REGRESSION CONTRACT: RELEASE-001
     def test_local_report_keeps_real_device_gates_pending(self):
         report = render_evidence(
             revision="abc123",

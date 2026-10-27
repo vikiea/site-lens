@@ -20,6 +20,7 @@ import 'update_widget_support.dart';
 /// [WidgetTester.runAsync], while every widget assertion is made on a tree the
 /// test renders explicitly afterwards.
 void main() {
+  // REGRESSION CONTRACT: UPDATE-001
   late Directory work;
   late Directory handoff;
 

@@ -18,6 +18,8 @@ AUTH_REFRESH = (ANDROID / "NativeMediaAuthRefreshService.kt").read_text()
 NATIVE_EXPORT = (ANDROID / "NativeExportRuntime.kt").read_text()
 NATIVE_LEASES = (ANDROID / "NativeMediaFileLeases.kt").read_text()
 
+# REGRESSION CONTRACT: MEDIA-HLS-001
+
 
 class NativeMediaContractTests(unittest.TestCase):
     def test_native_playback_file_lease_contract_is_fail_closed(self):

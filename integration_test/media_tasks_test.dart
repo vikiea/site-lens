@@ -25,6 +25,9 @@ import 'media3_fixture.dart';
 import 'video_fixture.dart';
 
 void main() {
+  // REGRESSION CONTRACT: MEDIA-HLS-001
+  // REGRESSION CONTRACT: MEDIA-PLAY-001
+  // REGRESSION CONTRACT: MEDIA-EXPORT-001
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets('background media authorization refresh stays same-origin', (

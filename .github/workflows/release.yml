@@ -332,6 +332,15 @@ jobs:
           unset FLUTTER_ROOT FLUTTER_BIN_DIR SITE_LENS_ENV_FILE
           ./tool/check.sh
 
+      - name: Verify release source identity
+        env:
+          TAG: ${{ needs.allocate_version.outputs.tag }}
+          VERSION_CODE: ${{ needs.allocate_version.outputs.version_code }}
+        run: |
+          python3 tool/check_release_identity.py \
+            --tag "$TAG" \
+            --version-code "$VERSION_CODE"
+
       - name: Restore formal signing configuration
         env:
           SITE_LENS_KEYSTORE_BASE64: ${{ secrets.SITE_LENS_KEYSTORE_BASE64 }}

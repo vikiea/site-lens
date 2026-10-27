@@ -728,6 +728,15 @@ def run_single_suite_with_media_driver(
         raise driver_error
 
 
+def acceptance_pass_message(restored: str, *, local_check_skipped: bool) -> str:
+    if local_check_skipped:
+        return (
+            f"Android acceptance PASS; {restored}; debug build running; "
+            "local check skipped (diagnostic-only; release evidence incomplete)."
+        )
+    return f"Android acceptance PASS; {restored}; debug build running."
+
+
 def backup_hashes(directory: Path) -> dict[str, str]:
     """Hashes the retained database copies, so a restore-only run can verify."""
     return {
@@ -1057,7 +1066,7 @@ def main() -> int:
         if backup
         else "no user database was present (nothing to restore)"
     )
-    print(f"Android acceptance PASS; {restored}; debug build running.")
+    print(acceptance_pass_message(restored, local_check_skipped=args.skip_check))
     print(
         "script-driven installs: "
         + (", ".join(installs) if installs else "none")

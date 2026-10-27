@@ -67,6 +67,7 @@ Uint8List rewriteSchema(
 }
 
 void main() {
+  // REGRESSION CONTRACT: MEDIA-UPGRADE-001
   late AppDatabase db;
   late BackupService backup;
   setUp(() async {

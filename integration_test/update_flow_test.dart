@@ -29,6 +29,7 @@ Future<void> _wait(
 /// The update download runs against an in-memory release asset server, so the
 /// flow is exercised on a device without reaching GitHub.
 void main() {
+  // REGRESSION CONTRACT: UPDATE-001
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   testWidgets(
     'update download survives leaving the page and installs from the notice',

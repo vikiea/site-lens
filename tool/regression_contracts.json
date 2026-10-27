@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "contracts": [
+    {
+      "id": "UI-TRANSITION-001",
+      "description": "页面切换不产生白屏、旧页面残留或玻璃层脱离共享背景。",
+      "changedPaths": ["lib/main.dart", "lib/ui/app_theme.dart", "lib/ui/screens.dart", "lib/ui/ui_primitives.dart"],
+      "testFiles": ["test/navigation_transition_test.dart"],
+      "validation": "L1",
+      "blocking": true
+    },
+    {
+      "id": "UI-GLASS-001",
+      "description": "高质量模式保持 Flutter 自有面板的 premium 策略，并区分 platformView 降级。",
+      "changedPaths": ["lib/ui/app_theme.dart", "lib/ui/glass_quality_strategy.dart", "lib/ui/glass_surface.dart"],
+      "testFiles": ["test/glass_quality_strategy_test.dart", "integration_test/hcpp_visual_test.dart", "tool/test_ui_tokens.py"],
+      "validation": "L2",
+      "blocking": true
+    },
+    {
+      "id": "UI-DOCK-001",
+      "description": "浏览器浮窗贴边几何、六点标记、导航和页面切换状态保持一致。",
+      "changedPaths": ["lib/ui/app_theme.dart", "lib/ui/browser_dock.dart", "lib/ui/screens.dart"],
+      "testFiles": ["test/browser_dock_test.dart"],
+      "validation": "L1",
+      "blocking": true
+    },
+    {
+      "id": "MEDIA-HLS-001",
+      "description": "Dart、原生导出和 Media3 对 HLS 共享资源使用相同的路径、key、init 和 segment 语义。",
+      "changedPaths": ["lib/media/media_resource_coordinator.dart", "lib/media/media_service.dart", "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeExportRuntime.kt"],
+      "testFiles": ["test/media_download_resume_test.dart", "tool/test_native_media_contract.py", "integration_test/media_tasks_test.dart"],
+      "validation": "L3",
+      "blocking": true
+    },
+    {
+      "id": "MEDIA-PLAY-001",
+      "description": "边下边播、未缓存 seek、目标分片优先和清单原子发布保持可恢复。",
+      "changedPaths": ["lib/media/media_service.dart", "android/app/src/main/kotlin/dev/vikiea/site_lens/GrowingFileDataSource.kt"],
+      "testFiles": ["test/media_download_resume_test.dart", "integration_test/media_tasks_test.dart"],
+      "validation": "L3",
+      "blocking": true
+    },
+    {
+      "id": "MEDIA-EXPORT-001",
+      "description": "MP4 导出、独立索引、媒体库重扫和任务删除保持独立所有权。",
+      "changedPaths": ["lib/media/media_library.dart", "lib/media/media_service.dart", "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeExportRuntime.kt"],
+      "testFiles": ["test/media_library_test.dart", "integration_test/media_tasks_test.dart"],
+      "validation": "L3",
+      "blocking": true
+    },
+    {
+      "id": "MEDIA-UPGRADE-001",
+      "description": "稳定版本升级后数据库、设置、媒体缓存、历史和浏览器会话仍可恢复。",
+      "changedPaths": ["lib/data/database.dart", "lib/settings", "lib/media", "lib/browser"],
+      "testFiles": ["test/profile_migration_test.dart", "test/backup_service_test.dart", "test/settings_repository_test.dart", "test/media_download_resume_test.dart"],
+      "validation": "L2",
+      "blocking": true
+    },
+    {
+      "id": "UPDATE-001",
+      "description": "更新渠道、GitHub Token、断点下载和安装状态在异步页面生命周期中保持一致。",
+      "changedPaths": ["lib/update", "lib/ui/software_update_screen.dart", "android/app"],
+      "testFiles": ["test/software_update_screen_test.dart", "integration_test/update_flow_test.dart", "tool/test_release_pubspec.py"],
+      "validation": "L2",
+      "blocking": true
+    },
+    {
+      "id": "RELEASE-001",
+      "description": "本地、设备、Verify、Release 使用同一提交、版本、APK 身份和验证证据。",
+      "changedPaths": ["tool/check.sh", "tool/run_android_acceptance.py", ".github/workflows/verify.yml", ".github/workflows/release.yml"],
+      "testFiles": ["tool/test_verify_level.py", "tool/test_acceptance_evidence.py", "tool/test_release_pubspec.py", "tool/test_release_identity.py"],
+      "validation": "L4",
+      "blocking": true
+    }
+  ]
+}

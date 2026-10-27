@@ -125,6 +125,7 @@ List<Map<String, Object?>> _rows(Database db, String sql) =>
     db.select(sql).map((r) => Map<String, Object?>.from(r)).toList();
 
 void main() {
+  // REGRESSION CONTRACT: MEDIA-UPGRADE-001
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory dir;
   setUp(() => dir = Directory.systemTemp.createTempSync('site-lens-migration'));
