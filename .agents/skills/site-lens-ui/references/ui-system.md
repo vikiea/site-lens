@@ -47,7 +47,7 @@ Use `SiteLensMetrics`, `SiteLensColors`, `Theme.of(context).colorScheme`, and `T
 | Segmented controls | `segmentedHeight=40`, `segmentedInset=2` |
 | Browser chrome | `toolbarHeight=48`, `toolbarIconSize=18`, `toolbarInset=12`, `toolbarRadius=26` |
 | Browser dock | `browserDockWidth=toolbarHeight/3=16`, `browserDockIconSize=16`; the six-dot mark stays inside the 16 dp strip, outer edge straight and inward edge rounded |
-| Top-bar actions | `topBarActionGroupRadius=28`, `topBarActionGroupRightInset=8`, `topBarActionGroupVerticalInset=5`, `topBarActionInset=1`, `topBarActionMinSize=44` |
+| Top-bar actions | `topBarActionGroupRadius=28`, `topBarActionGroupRightInset=8`, `topBarActionGroupVerticalInset=5`, `topBarActionMinSize=44`; all actions in one group share one continuous glass surface |
 | Glass controls | `controlFillAlpha=0.62`, `themeBuiltInControlFillAlpha=0.56`, `customImageControlFillAlpha=0.70`, `transparentControlFillAlpha=0.78`, `controlThemeTintAlpha=0.16`, `themeBuiltInControlTintAlpha=0.24`, `customImageControlTintAlpha=0.18`, `transparentControlTintAlpha=0.14`, `controlInteractionAlpha=0.14` |
 | Opacity layout | default `55`, value format `n / 100`, `opacityLabelGap=6`, `opacitySliderGap=8`; the slider is trailing-aligned |
 | Typography | page `20/w600`, section `16/w600`, row `15/w500`, body `14/w400`, description `12.5/w400`, caption `12/w400`, line height `1.35` |
@@ -73,15 +73,15 @@ Theme preset IDs are compatibility data: `oceanBlue`, `mistPine`, `irisViolet`, 
 - Opacity setting: show the selected value as `n / 100`, and align the slider to the trailing edge after a fixed label-to-control gap.
 - Long media paths: keep the compact row title and subtitle to one line each. Tapping opens a detail area with the complete selectable path or explanation; do not put an ellipsized path in the only readable location, and do not let the collapsed row height change.
 
-Use `SiteLensColors.of(context)` for backdrop, panel, navigation, divider, section-label, success, warning, danger and small-control roles. The glass fill token must remain visually separated from the static backdrop in both appearances; current defaults are neutral light gray `#E7EAEE` in light mode and neutral charcoal `#25272B` in dark mode. Use `SiteLensColors.controlSurface(SiteLensBackdropScope.modeOf(context))` for shared menus and top-bar actions so their fill and interaction tint follow the active backdrop source. Do not use a raw `Colors.*` value in a screen unless it is a platform or asset color with an explicit reason.
+Use `SiteLensColors.of(context)` for backdrop, panel, navigation, divider, section-label, success, warning, danger and small-control roles. The glass fill token must remain visually separated from the static backdrop in both appearances; current defaults are neutral light gray `#E7EAEE` in light mode and neutral charcoal `#25272B` in dark mode. Shared menus and top-bar action groups use the active glass render plan's `glassColor` for their base fill, so they match glass panels regardless of backdrop mode or glass quality; use `SiteLensColors.controlSurface(...).interaction` or the theme accent only for pressed, hover and focus feedback. Do not use a raw `Colors.*` value in a screen unless it is a platform or asset color with an explicit reason.
 
 ### Backdrop source semantics
 
 - `defaultGradient` uses the current low-saturation default gradient.
 - `themeBuiltIn` derives a visibly different gradient from the selected theme seed.
 - `customImage` uses the validated uploaded image with `cover` and the light/dark protection tint.
-- `transparent` does not reuse the uploaded image, the theme gradient, or the default gradient. In dark appearance it leaves the app-owned backdrop unpainted; in light appearance it uses the neutral solid backdrop.
-- `SiteLensBackdropScope` is the source of truth for shared controls. Menus and top-bar actions can adjust local glass opacity and tint for readability while keeping one surface language across all four modes.
+- `transparent` is the legacy wire id for the `纯色背景` mode. It does not reuse the uploaded image, the theme gradient, or the default gradient; dark appearance paints an opaque black backdrop and light appearance uses the neutral solid backdrop.
+- `SiteLensBackdropScope` is the source of truth for backdrop painting. Shared menus and top-bar actions keep the panel glass color stable across all four modes while the backdrop remains available to the glass renderer.
 
 Full-screen video playback and its native-style transport controls are an explicit exception to the app-surface color rule: black video backdrops, white playback glyphs, and transparent control overlays may use raw colors so controls remain legible over arbitrary video frames. Keep those colors inside the playback surface; app panels, settings, notices, dialogs, and browser chrome still use `SiteLensColors` and theme text roles.
 
@@ -102,6 +102,8 @@ Full-screen video playback and its native-style transport controls are an explic
 - Disabled rows: mute the icon, title, subtitle, and secondary controls through the disabled content token while retaining readable status and accessible toggles.
 - Feedback: use the shared notice/error surface for persistent page feedback; reserve snack bars for short-lived confirmation.
 - Dialogs and sheets: keep Material semantics and actions, but use the themed opaque overlay or a liquid-glass wrapper. Do not restore default elevation or default opaque blue/grey surfaces.
+- Glass menus overlap page panels and must opt out of the page's shared backdrop group with `GlassBackdropGroup(enabled: false)`; otherwise the shared capture can erase the glass underneath and produce black bands on Impeller.
+- Solid-backdrop Flutter surfaces keep premium refraction, blur, frost, and rim lighting while sampling the app-owned backdrop.
 - Empty states: use one icon, one title, optional explanation, and one action with shared spacing.
 
 ## Review checklist
@@ -122,7 +124,7 @@ Full-screen video playback and its native-style transport controls are an explic
 Use `SiteLensMenuSelector<T>` with typed `SiteLensMenuOption<T>` values for an inline choice that opens a menu on one activation. Supply a concise accessible label and exactly one option matching the current value. A null callback or no enabled options disables the trigger; individual options can also be disabled.
 
 - Size the trigger and menu to the longest option in the active typography, locale, direction, and text scale, plus control padding and icon space. Let the trigger shrink within its parent instead of filling the row. Ellipsize its visual value when constrained, preserve the full semantic value, and wrap menu labels within the available viewport. Keep a minimum 48 dp hit height and allow rows to grow with text scale.
-- Align inline selectors to the trailing edge of their setting row. Use `bodySmall` typography and the shared background-aware control surface from `SiteLensColors.controlSurface(SiteLensBackdropScope.modeOf(context))` for both trigger and menu. Keep adjoining edges with token radii, a subtle token border, zero elevation and no shadow. Press and hover use the token interaction tint without a grey Material slab. Show a primary-color outline only for keyboard or other traditional focus. Keep disabled colors.
+- Align inline selectors to the trailing edge of their setting row. Use `bodySmall` typography and the active glass render plan's `glassColor` for the trigger and menu base fill; obtain interaction feedback from `SiteLensColors.controlSurface(SiteLensBackdropScope.modeOf(context))`. Keep adjoining edges with token radii, a subtle token border, zero elevation and no shadow. Press and hover use the token interaction tint without a grey Material slab. Show a primary-color outline only for keyboard or other traditional focus. Keep disabled colors.
 - The trigger carries the current value and expanded semantics; list only alternative values in the menu. Measure every option, including the selected one, so changing selection keeps the width stable. Disable a selector without an enabled alternative.
 - Preserve Material activation, arrow-key traversal, Escape/outside dismissal, and focus return. Cover one-tap opening, selection, stable width, keyboard focus, disabled states, narrow screens, large text, light/dark appearances, and a non-default preset in targeted widget tests.
 
@@ -144,4 +146,4 @@ Use `SiteLensMenuSelector<T>` with typed `SiteLensMenuOption<T>` values for an i
 - Keep simple setting labels and subtitles concise; do not expose implementation notes, raw platform names, internal reasons, or duplicated detail blocks in the user-facing settings page. Use one concise action row for device diagnostics. Its dedicated read-only detail page may show support/configuration/effective/observed facts, source, timestamps and platform policy in shared foldable surfaces; never trigger active probes merely to populate that page.
 - Theme preset swatches must be perceptually distinct at a glance in both light and dark modes. Choose seeds with separated hue/value families instead of relying on names that differ while colors remain near each other.
 
-- Global backdrop gradients are opaque static colors, never glass or affected by opacity settings. Transparent mode ignores an uploaded image; in dark mode it paints no app-owned backdrop, while light mode uses the theme's neutral solid backdrop. Validate modal dialogs at opacity 1, 45 and 100 in both appearances. Keep stored preset IDs stable when revising colors; verify generated primary colors as well as raw seed swatches.
+- Global backdrop gradients are opaque static colors, never glass or affected by opacity settings. The legacy transparent wire id selects `纯色背景`, ignores an uploaded image, paints an opaque black app-owned backdrop in dark mode and uses the theme's neutral solid backdrop in light mode. Validate modal dialogs at opacity 1, 45 and 100 in both appearances. Keep stored preset IDs stable when revising colors; verify generated primary colors as well as raw seed swatches.

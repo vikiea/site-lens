@@ -130,7 +130,6 @@ abstract final class SiteLensMetrics {
   static const topBarActionGroupRadius = 28.0;
   static const topBarActionGroupRightInset = 8.0;
   static const topBarActionGroupVerticalInset = 5.0;
-  static const topBarActionInset = 1.0;
   static const topBarActionMinSize = 44.0;
 }
 

@@ -13,7 +13,7 @@ import 'screens.dart' show BrowserScreen;
 import 'ui_primitives.dart';
 import 'ui_util.dart';
 
-/// Root overlay for ordinary Flutter routes, including nested settings pages.
+/// Floating layer for ordinary Flutter routes, including nested settings pages.
 /// Place around MaterialApp.builder's navigator child, under the glass policy.
 /// Route eligibility comes from the same observer installed on that navigator.
 class BrowserDock extends StatelessWidget {
@@ -35,11 +35,51 @@ class BrowserDock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) =>
-      Overlay.wrap(child: _BrowserDockBody(dock: this));
+      _BrowserDockOverlay(child: _BrowserDockBody(dock: this));
 }
 
-// The state lives inside the overlay so route notifications rebuild its entry
-// in the same frame, and Material tooltips have a valid Overlay ancestor.
+/// Keeps the outer Overlay and its entry stable while MaterialApp rebuilds.
+/// Recreating Overlay.wrap on every app notification can briefly host the same
+/// Navigator and OverlayEntry global keys in both the old and new trees.
+class _BrowserDockOverlay extends StatefulWidget {
+  const _BrowserDockOverlay({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_BrowserDockOverlay> createState() => _BrowserDockOverlayState();
+}
+
+class _BrowserDockOverlayState extends State<_BrowserDockOverlay> {
+  late final OverlayEntry _entry = OverlayEntry(
+    canSizeOverlay: true,
+    opaque: true,
+    builder: (_) => widget.child,
+  );
+
+  @override
+  void didUpdateWidget(covariant _BrowserDockOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _entry.markNeedsBuild();
+  }
+
+  @override
+  void dispose() {
+    _entry
+      ..remove()
+      ..dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Overlay(
+    key: const ValueKey('site-lens-browser-dock-overlay'),
+    initialEntries: [_entry],
+  );
+}
+
+// The state lives inside the stable overlay so route notifications rebuild its
+// entry in the same frame, and Material tooltips have a valid Overlay ancestor.
 class _BrowserDockBody extends StatefulWidget {
   const _BrowserDockBody({required this.dock});
   final BrowserDock dock;

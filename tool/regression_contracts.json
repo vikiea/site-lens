@@ -34,19 +34,24 @@
     },
     {
       "id": "UI-GLASS-001",
-      "description": "高质量模式保持 Flutter 自有面板的 premium 策略，并区分 platformView 降级。",
+      "description": "高质量模式保持 Flutter 自有面板、顶栏和菜单的 premium 玻璃策略；纯色背景为深色提供稳定纯黑采样底，并区分 platformView 降级。",
       "status": "active",
       "owner": "site-lens-quality",
       "introducedIn": "v0.5.0.alpha11",
       "lastVerified": null,
       "replacedBy": null,
       "changedPaths": [
+        "lib/settings/app_settings.dart",
         "lib/ui/app_theme.dart",
         "lib/ui/glass_quality_strategy.dart",
-        "lib/ui/glass_surface.dart"
+        "lib/ui/glass_surface.dart",
+        "lib/ui/ui_primitives.dart"
       ],
       "testFiles": [
         "test/glass_quality_strategy_test.dart",
+        "test/glass_surface_test.dart",
+        "test/site_lens_menu_selector_test.dart",
+        "test/ui_primitives_test.dart",
         "integration_test/hcpp_visual_test.dart",
         "tool/test_ui_tokens.py"
       ],
@@ -61,6 +66,18 @@
         },
         {
           "kind": "test",
+          "ref": "test/glass_surface_test.dart"
+        },
+        {
+          "kind": "test",
+          "ref": "test/site_lens_menu_selector_test.dart"
+        },
+        {
+          "kind": "test",
+          "ref": "test/ui_primitives_test.dart"
+        },
+        {
+          "kind": "test",
           "ref": "integration_test/hcpp_visual_test.dart"
         },
         {
@@ -70,11 +87,11 @@
       ],
       "validation": "L2",
       "blocking": true,
-      "revision": 1
+      "revision": 2
     },
     {
       "id": "UI-DOCK-001",
-      "description": "浏览器浮窗贴边几何、六点标记、导航和页面切换状态保持一致。",
+      "description": "浏览器浮窗贴边几何、六点标记、导航、页面切换和稳定 Overlay 生命周期保持一致，重建 MaterialApp 时不重复挂载 Navigator 或 OverlayEntry；浏览标签菜单的返回、关闭、无障碍展开状态和页面回退行为保持一致。",
       "status": "active",
       "owner": "site-lens-quality",
       "introducedIn": "v0.5.0.alpha11",
@@ -83,10 +100,12 @@
       "changedPaths": [
         "lib/ui/app_theme.dart",
         "lib/ui/browser_dock.dart",
-        "lib/ui/screens.dart"
+        "lib/ui/screens.dart",
+        "lib/ui/ui_primitives.dart"
       ],
       "testFiles": [
-        "test/browser_dock_test.dart"
+        "test/browser_dock_test.dart",
+        "test/widget_test.dart"
       ],
       "evidence": [
         {
@@ -96,11 +115,15 @@
         {
           "kind": "test",
           "ref": "test/browser_dock_test.dart"
+        },
+        {
+          "kind": "test",
+          "ref": "test/widget_test.dart"
         }
       ],
-      "validation": "L1",
+      "validation": "L2",
       "blocking": true,
-      "revision": 1
+      "revision": 4
     },
     {
       "id": "MEDIA-HLS-001",
@@ -453,6 +476,50 @@
       "status": "active",
       "stateHash": "a4de36bd31b03e654cd8cbffa9f0026f48160b4bf9bbc45b40f69b54af7e238d",
       "behaviorHash": "7516a8e8eead896096e356b81b837ccae29ba7c794d628c69c72a54a343174e7"
+    },
+    {
+      "id": "UI-GLASS-001",
+      "revision": 2,
+      "action": "updated",
+      "date": "2026-10-28",
+      "version": "0.5.0-alpha13",
+      "summary": "将纯色背景、菜单和顶栏 premium 玻璃行为纳入回归契约",
+      "status": "active",
+      "stateHash": "a390d5d15dbb1b19e50989651c74985f4bae6421b2c13421438412120b649b00",
+      "behaviorHash": "e2e781f4b01e9a79d474e1e8a3e41e8711b51cc9909b4ff6e48b16dffaad284d"
+    },
+    {
+      "id": "UI-DOCK-001",
+      "revision": 2,
+      "action": "updated",
+      "date": "2026-10-28",
+      "version": "0.5.0-alpha13",
+      "summary": "记录稳定 Overlay 生命周期，防止 Navigator 和 OverlayEntry 重复挂载",
+      "status": "active",
+      "stateHash": "4741c49d62bab80c72a07c1da83d8323c80d373209a7b9ddfb8e4daef6ea3d96",
+      "behaviorHash": "19d70f083d3a149f6ff659987fe0acb7cd258f289b74c492882a06b98d871f4b"
+    },
+    {
+      "id": "UI-DOCK-001",
+      "revision": 3,
+      "action": "updated",
+      "date": "2026-10-28",
+      "version": "0.5.0-alpha13",
+      "summary": "补充浏览标签菜单返回关闭回归与 OverlayEntry 生命周期约束",
+      "status": "active",
+      "stateHash": "56b88d20d6e13cbb4e1c0658d6f5818a501b1bd380f3c4f503a71ca17aed7c40",
+      "behaviorHash": "23c93830cc62c67a0f9cb11965a824dec36894e197a7f7035566d529ee622616"
+    },
+    {
+      "id": "UI-DOCK-001",
+      "revision": 4,
+      "action": "updated",
+      "date": "2026-10-28",
+      "version": "0.5.0-alpha13",
+      "summary": "补充菜单无障碍展开状态并登记共享菜单实现路径",
+      "status": "active",
+      "stateHash": "2f98590f1b7cd217cbc4191baee28291cb82bc96a2c2833656d7f0997688a059",
+      "behaviorHash": "c340d9ffedc45cb502d2f5efec1809e81f4f3b064136e9a043a317d0b1bc87f3"
     }
   ]
 }

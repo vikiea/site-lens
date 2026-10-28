@@ -757,6 +757,250 @@ class SiteLensMenuOption<T> {
   final bool enabled;
 }
 
+@immutable
+class SiteLensGlassMenuAction<T> {
+  const SiteLensGlassMenuAction({
+    required this.value,
+    required this.label,
+    this.icon,
+    this.enabled = true,
+  });
+
+  final T value;
+  final String label;
+  final IconData? icon;
+  final bool enabled;
+}
+
+class _SiteLensGlassMenuPanel extends StatelessWidget {
+  const _SiteLensGlassMenuPanel({required this.width, required this.children});
+
+  final double width;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: width,
+    // Menus overlap the page glass. Sharing its backdrop key would omit the
+    // panels underneath from the capture, leaving black bands in transparent
+    // mode on Impeller. Keep only this overlay out of the page's blend group.
+    child: GlassBackdropGroup(
+      enabled: false,
+      child: SiteLensGlassSurface(
+        role: SiteLensSurfaceRole.menu,
+        radius: SiteLensMetrics.inputRadius,
+        padding: EdgeInsets.zero,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: children,
+        ),
+      ),
+    ),
+  );
+}
+
+class SiteLensGlassMenuButton<T> extends StatefulWidget {
+  const SiteLensGlassMenuButton({
+    super.key,
+    required this.tooltip,
+    required this.icon,
+    required this.actions,
+    required this.onSelected,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final List<SiteLensGlassMenuAction<T>> actions;
+  final ValueChanged<T>? onSelected;
+
+  @override
+  State<SiteLensGlassMenuButton<T>> createState() =>
+      _SiteLensGlassMenuButtonState<T>();
+}
+
+class _SiteLensGlassMenuButtonState<T>
+    extends State<SiteLensGlassMenuButton<T>> {
+  final _controller = MenuController();
+  final _focusNode = FocusNode();
+  VoidCallback? _releasePopup;
+  LocalHistoryEntry? _historyEntry;
+  bool _expanded = false;
+
+  void _opened() {
+    final route = ModalRoute.of(context);
+    if (route != null) {
+      late final LocalHistoryEntry entry;
+      entry = LocalHistoryEntry(
+        impliesAppBarDismissal: false,
+        onRemove: () {
+          if (!identical(_historyEntry, entry)) return;
+          _historyEntry = null;
+          if (_controller.isOpen) _controller.close();
+        },
+      );
+      _historyEntry = entry;
+      route.addLocalHistoryEntry(entry);
+    }
+    _releasePopup?.call();
+    _releasePopup = Navigator.maybeOf(context, rootNavigator: true)
+        ?.widget
+        .observers
+        .whereType<SiteLensRouteObserver>()
+        .firstOrNull
+        ?.holdOverlayPopup();
+    if (mounted) setState(() => _expanded = true);
+  }
+
+  void _closed() {
+    _removeHistory();
+    _releasePopup?.call();
+    _releasePopup = null;
+    if (mounted) setState(() => _expanded = false);
+  }
+
+  void _removeHistory() {
+    final entry = _historyEntry;
+    _historyEntry = null;
+    entry?.remove();
+  }
+
+  @override
+  void dispose() {
+    _removeHistory();
+    _releasePopup?.call();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final textStyle = theme.textTheme.bodySmall ?? const TextStyle();
+    final iconSize = SiteLensMetrics.navIconSize;
+    var labelWidth = 0.0;
+    for (final action in widget.actions) {
+      final painter = TextPainter(
+        text: TextSpan(text: action.label, style: textStyle),
+        textDirection: Directionality.of(context),
+        textScaler: MediaQuery.textScalerOf(context),
+        locale: Localizations.maybeLocaleOf(context),
+        maxLines: 1,
+      )..layout();
+      labelWidth = math.max(labelWidth, painter.width);
+      painter.dispose();
+    }
+    final preferredWidth =
+        labelWidth.ceilToDouble() +
+        SiteLensMetrics.formGap * 2 +
+        iconSize +
+        SiteLensMetrics.itemGap;
+    final viewportWidth = MediaQuery.sizeOf(context).width;
+    final maxMenuWidth = viewportWidth > 0
+        ? math.max(0.0, viewportWidth - SiteLensMetrics.pagePadding * 2)
+        : preferredWidth;
+    final menuWidth = math.min(preferredWidth, maxMenuWidth);
+    final itemContentWidth = math.max(
+      0.0,
+      menuWidth - SiteLensMetrics.formGap * 2,
+    );
+    final itemStyle = ButtonStyle(
+      textStyle: WidgetStatePropertyAll(textStyle),
+      foregroundColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.disabled)
+            ? SiteLensColors.of(context).disabledContent
+            : theme.colorScheme.onSurface,
+      ),
+      iconColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.disabled)
+            ? SiteLensColors.of(context).disabledContent
+            : theme.colorScheme.onSurface,
+      ),
+      backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
+      overlayColor: WidgetStatePropertyAll(
+        SiteLensColors.of(context)
+            .controlSurface(
+              SiteLensBackdropScope.modeOf(context),
+              accent: theme.colorScheme.primary,
+            )
+            .interaction,
+      ),
+      elevation: const WidgetStatePropertyAll(0),
+      shadowColor: const WidgetStatePropertyAll(Colors.transparent),
+      surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+      minimumSize: const WidgetStatePropertyAll(
+        Size(0, kMinInteractiveDimension),
+      ),
+      padding: const WidgetStatePropertyAll(
+        EdgeInsets.symmetric(
+          horizontal: SiteLensMetrics.formGap,
+          vertical: SiteLensMetrics.itemGap / 2,
+        ),
+      ),
+      splashFactory: NoSplash.splashFactory,
+      animationDuration: Duration.zero,
+    );
+    return MenuAnchor(
+      controller: _controller,
+      childFocusNode: _focusNode,
+      consumeOutsideTap: true,
+      crossAxisUnconstrained: false,
+      onOpen: _opened,
+      onClose: _closed,
+      style: MenuStyle(
+        alignment: AlignmentDirectional.bottomEnd,
+        backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
+        elevation: const WidgetStatePropertyAll(0),
+        shadowColor: const WidgetStatePropertyAll(Colors.transparent),
+        surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+        padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+        minimumSize: WidgetStatePropertyAll(Size(menuWidth, 0)),
+        maximumSize: WidgetStatePropertyAll(Size(menuWidth, double.infinity)),
+      ),
+      menuChildren: [
+        _SiteLensGlassMenuPanel(
+          width: menuWidth,
+          children: [
+            for (final action in widget.actions)
+              MenuItemButton(
+                style: itemStyle,
+                onPressed: widget.onSelected == null || !action.enabled
+                    ? null
+                    : () => widget.onSelected!(action.value),
+                child: SizedBox(
+                  width: itemContentWidth,
+                  child: Row(
+                    children: [
+                      if (action.icon != null) ...[
+                        Icon(action.icon, size: iconSize),
+                        const SizedBox(width: SiteLensMetrics.itemGap),
+                      ],
+                      Expanded(child: Text(action.label, softWrap: true)),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ],
+      builder: (context, controller, _) => Semantics(
+        expanded: _expanded,
+        child: IconButton(
+          focusNode: _focusNode,
+          tooltip: widget.tooltip,
+          icon: Icon(widget.icon),
+          onPressed:
+              widget.actions.any((action) => action.enabled) &&
+                  widget.onSelected != null
+              ? () => controller.isOpen ? controller.close() : controller.open()
+              : null,
+          isSelected: _expanded,
+        ),
+      ),
+    );
+  }
+}
+
 /// A single-tap choice menu sized to its longest label, within parent bounds.
 class SiteLensMenuSelector<T> extends StatefulWidget {
   const SiteLensMenuSelector({
@@ -845,12 +1089,12 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
     final theme = Theme.of(context);
     final textStyle = theme.textTheme.bodySmall ?? const TextStyle();
     final controlSurface = _siteLensControlSurface(context);
-    final menuPlan = SiteLensGlassPolicyScope.of(context)
-        .resolve(context, role: SiteLensSurfaceRole.menu);
-    final usePremiumMenuSurface = menuPlan.quality == GlassQuality.premium;
     // The trigger and its overlay share one background-aware glass token so
     // every backdrop mode keeps the same liquid-glass language.
-    final fill = controlSurface.fill;
+    final fill = _siteLensControlSurface(
+      context,
+      role: SiteLensSurfaceRole.menu,
+    ).fill;
     final showFocusOutline =
         FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
     const horizontalPadding = SiteLensMetrics.formGap;
@@ -919,36 +1163,25 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
         ),
       ),
     );
-    final menuItems = [
-      for (final option in widget.options)
-        if (option.value != widget.value)
-          MenuItemButton(
-            style: style,
-            onPressed: !_enabled || !option.enabled
-                ? null
-                : () => widget.onSelected?.call(option.value),
-            child: Semantics(child: Text(option.label)),
-          ),
-    ];
-    final menuChildren = usePremiumMenuSurface
-        ? [
-            SiteLensGlassControl(
-              role: SiteLensSurfaceRole.menu,
-              radius: SiteLensMetrics.inputRadius,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: menuItems,
-              ),
-            ),
-          ]
-        : menuItems;
     return LayoutBuilder(
       builder: (context, constraints) {
         final maxWidth = constraints.hasBoundedWidth
             ? constraints.maxWidth
             : preferredWidth;
         final width = math.min(preferredWidth, maxWidth);
+        final menuItems = [
+          for (final option in widget.options)
+            if (option.value != widget.value)
+              MenuItemButton(
+                style: style.copyWith(
+                  shape: const WidgetStatePropertyAll(RoundedRectangleBorder()),
+                ),
+                onPressed: !_enabled || !option.enabled
+                    ? null
+                    : () => widget.onSelected?.call(option.value),
+                child: Semantics(child: Text(option.label)),
+              ),
+        ];
         return SizedBox(
           width: width,
           child: MenuAnchor(
@@ -960,9 +1193,7 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
             onClose: _menuClosed,
             style: MenuStyle(
               alignment: AlignmentDirectional.bottomStart,
-              backgroundColor: WidgetStatePropertyAll(
-                usePremiumMenuSurface ? Colors.transparent : fill,
-              ),
+              backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
               elevation: const WidgetStatePropertyAll(0),
               shadowColor: const WidgetStatePropertyAll(Colors.transparent),
               surfaceTintColor: const WidgetStatePropertyAll(
@@ -981,7 +1212,9 @@ class _SiteLensMenuSelectorState<T> extends State<SiteLensMenuSelector<T>> {
                 ),
               ),
             ),
-            menuChildren: menuChildren,
+            menuChildren: [
+              _SiteLensGlassMenuPanel(width: width, children: menuItems),
+            ],
             builder: (context, controller, _) => Tooltip(
               message: widget.label,
               excludeFromSemantics: true,
@@ -1202,23 +1435,13 @@ class SiteLensPageScaffold extends StatelessWidget {
 /// the liquid-glass backdrop; this control adds only the local tint and rim so
 /// it does not create a second glass sampling boundary.
 class SiteLensTopBarActionGroup extends StatelessWidget {
-  const SiteLensTopBarActionGroup({
-    super.key,
-    required this.actions,
-    this.individualButtons = true,
-  });
+  const SiteLensTopBarActionGroup({super.key, required this.actions});
 
   final List<Widget> actions;
-  final bool individualButtons;
 
   @override
   Widget build(BuildContext context) {
     if (actions.isEmpty) return const SizedBox.shrink();
-    final colors = SiteLensColors.of(context);
-    final controlSurface = colors.controlSurface(
-      SiteLensBackdropScope.modeOf(context),
-      accent: Theme.of(context).colorScheme.primary,
-    );
     return Padding(
       padding: const EdgeInsets.only(
         right: SiteLensMetrics.topBarActionGroupRightInset,
@@ -1227,23 +1450,28 @@ class SiteLensTopBarActionGroup extends StatelessWidget {
       ),
       child: DecoratedBox(
         decoration: ShapeDecoration(
-          color: controlSurface.fill,
+          color: _siteLensControlSurface(context).fill,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(
               SiteLensMetrics.topBarActionGroupRadius,
             ),
-            side: BorderSide(color: controlSurface.border),
+            side: BorderSide(color: SiteLensColors.of(context).panelBorder),
           ),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (final action in actions)
-              SiteLensTopBarAction(
-                individualGlass: individualButtons,
-                child: action,
-              ),
-          ],
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(
+            SiteLensMetrics.topBarActionGroupRadius,
+          ),
+          child: Material(
+            type: MaterialType.transparency,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final action in actions)
+                  SiteLensTopBarAction(child: action),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -1251,14 +1479,9 @@ class SiteLensTopBarActionGroup extends StatelessWidget {
 }
 
 class SiteLensTopBarAction extends StatelessWidget {
-  const SiteLensTopBarAction({
-    super.key,
-    required this.child,
-    this.individualGlass = true,
-  });
+  const SiteLensTopBarAction({super.key, required this.child});
 
   final Widget child;
-  final bool individualGlass;
 
   @override
   Widget build(BuildContext context) {
@@ -1303,40 +1526,31 @@ class SiteLensTopBarAction extends StatelessWidget {
       ),
       child: child,
     );
-    final boundedAction = SizedBox.square(
+    return SizedBox.square(
       dimension: SiteLensMetrics.topBarActionMinSize,
-      child: individualGlass
-          ? SiteLensGlassControl(
-              radius: SiteLensMetrics.topBarActionMinSize / 2,
-              child: action,
-            )
-          : action,
-    );
-    return Padding(
-      padding: const EdgeInsets.symmetric(
-        horizontal: SiteLensMetrics.topBarActionInset,
-        vertical: SiteLensMetrics.topBarActionInset,
-      ),
-      child: boundedAction,
+      child: action,
     );
   }
 }
 
-List<Widget> siteLensTopBarActions(
-  Iterable<Widget> actions, {
-  bool individualButtons = true,
-}) => [
-  SiteLensTopBarActionGroup(
-    actions: actions.toList(growable: false),
-    individualButtons: individualButtons,
-  ),
+List<Widget> siteLensTopBarActions(Iterable<Widget> actions) => [
+  SiteLensTopBarActionGroup(actions: actions.toList(growable: false)),
 ];
 
-SiteLensControlSurface _siteLensControlSurface(BuildContext context) {
+SiteLensControlSurface _siteLensControlSurface(
+  BuildContext context, {
+  SiteLensSurfaceRole role = SiteLensSurfaceRole.chrome,
+}) {
   final theme = Theme.of(context);
-  return SiteLensColors.of(context).controlSurface(
-    SiteLensBackdropScope.modeOf(context),
-    accent: theme.colorScheme.primary,
+  final colors = SiteLensColors.of(context);
+  final plan = SiteLensGlassPolicyScope.of(context)
+      .resolve(context, role: role);
+  return SiteLensControlSurface(
+    fill: plan.glassColor,
+    border: colors.panelBorder,
+    interaction: theme.colorScheme.primary.withValues(
+      alpha: SiteLensGlassTokens.controlInteractionAlpha,
+    ),
   );
 }
 

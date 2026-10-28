@@ -1,11 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:site_lens/background/background_snapshot.dart';
 import 'package:site_lens/settings/app_settings.dart';
 import 'package:site_lens/ui/app_theme.dart';
 import 'package:site_lens/ui/glass_surface.dart';
+import 'package:site_lens/ui/navigation_observer.dart';
 import 'package:site_lens/ui/ui_primitives.dart';
+
+// REGRESSION CONTRACT: UI-GLASS-001
 
 void main() {
   testWidgets('top-bar action glass follows the active backdrop mode', (
@@ -32,25 +37,22 @@ void main() {
       );
       final context = tester.element(find.byType(SiteLensTopBarActionGroup));
       final colors = SiteLensColors.of(context);
-      final expected = colors.controlSurface(
-        mode,
-        accent: Theme.of(context).colorScheme.primary,
-      );
-      final decoration =
-          tester
-                  .widget<DecoratedBox>(
-                    find.descendant(
-                      of: find.byType(SiteLensTopBarActionGroup),
-                      matching: find.byType(DecoratedBox),
-                    ),
-                  )
-                  .decoration
-              as ShapeDecoration;
-      expect(decoration.color, expected.fill);
-      expect(decoration.shape, isA<RoundedRectangleBorder>());
+      final plan = SiteLensGlassPolicyScope.of(context)
+          .resolve(context, role: SiteLensSurfaceRole.chrome);
+      expect(plan.glassColor, colors.glassSurface.withValues(alpha: 0.55));
       expect(
-        (decoration.shape as RoundedRectangleBorder).side.color,
-        expected.border,
+        find.descendant(
+          of: find.byType(SiteLensTopBarActionGroup),
+          matching: find.byType(SiteLensGlassSurface),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.descendant(
+          of: find.byType(SiteLensTopBarActionGroup),
+          matching: find.byType(DecoratedBox),
+        ),
+        findsOneWidget,
       );
       expect(tester.takeException(), isNull);
     }
@@ -81,25 +83,17 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      final decoration =
-          tester
-                  .widget<DecoratedBox>(
-                    find.descendant(
-                      of: find.byType(SiteLensTopBarActionGroup),
-                      matching: find.byType(DecoratedBox),
-                    ),
-                  )
-                  .decoration
-              as ShapeDecoration;
-      return decoration.color!;
+      return SiteLensColors.of(
+        tester.element(find.byType(SiteLensTopBarActionGroup)),
+      ).glassSurface;
     }
 
     final ocean = await pumpPreset(ThemePresetId.oceanBlue);
     final coral = await pumpPreset(ThemePresetId.sunsetCoral);
-    expect(coral, isNot(equals(ocean)));
+    expect(coral, equals(ocean));
   });
 
-  testWidgets('top-bar keeps a merged capsule with circular glass actions', (
+  testWidgets('top-bar keeps one continuous glass capsule for all actions', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -119,12 +113,16 @@ void main() {
     final group = find.byType(SiteLensTopBarActionGroup);
     expect(group, findsOneWidget);
     expect(
-      find.descendant(of: group, matching: find.byType(SiteLensGlassControl)),
-      findsNWidgets(2),
+      find.descendant(of: group, matching: find.byType(SiteLensGlassSurface)),
+      findsNothing,
     );
     expect(
-      find.descendant(of: group, matching: find.byType(SiteLensGlassSurface)),
-      findsNWidgets(2),
+      find.descendant(of: group, matching: find.byType(DecoratedBox)),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: group, matching: find.byType(SiteLensGlassControl)),
+      findsNothing,
     );
     expect(tester.takeException(), isNull);
   });
@@ -158,13 +156,219 @@ void main() {
 
     await tester.tap(find.byTooltip('菜单'));
     await tester.pump();
-    final menuGlass = tester.widget<SiteLensGlassControl>(
-      find.byType(SiteLensGlassControl),
+    final menuGlass = tester.widget<SiteLensGlassSurface>(
+      find.descendant(
+        of: find.byType(SiteLensMenuSelector<int>),
+        matching: find.byType(SiteLensGlassSurface),
+      ),
     );
     expect(menuGlass.role, SiteLensSurfaceRole.menu);
+    expect(find.byType(SiteLensGlassControl), findsNothing);
     expect(find.byType(MenuItemButton), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('overlapping menus do not share the page backdrop capture', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.dark),
+        home: SiteLensGlassPolicyScope(
+          strategy: const SiteLensGlassQualityStrategy(
+            mode: SiteLensGlassQualityMode.high,
+            backgroundMode: BackgroundMode.transparent,
+          ),
+          child: GlassBackdropGroup(
+            child: Scaffold(
+              body: SiteLensPanel(
+                child: SiteLensMenuSelector<int>(
+                  label: '菜单',
+                  value: 0,
+                  options: const [
+                    SiteLensMenuOption(value: 0, label: '当前'),
+                    SiteLensMenuOption(value: 1, label: '第一项'),
+                    SiteLensMenuOption(value: 2, label: '第二项'),
+                  ],
+                  onSelected: (_) {},
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(
+      GlassBackdropGroup.keyOf(tester.element(find.byType(SiteLensPanel))),
+      isNotNull,
+    );
+    await tester.tap(find.byTooltip('菜单'));
+    await tester.pumpAndSettle();
+    final menu = find.byWidgetPredicate(
+      (w) => w is SiteLensGlassSurface && w.role == SiteLensSurfaceRole.menu,
+    );
+    expect(menu, findsOneWidget);
+    expect(GlassBackdropGroup.keyOf(tester.element(menu)), isNull);
+    expect(find.byType(MenuItemButton), findsNWidgets(2));
+  });
+
+  testWidgets('glass command menu stays compact and uses one menu surface', (
+    tester,
+  ) async {
+    var selected = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.dark),
+        home: SiteLensGlassPolicyScope(
+          strategy: const SiteLensGlassQualityStrategy(
+            mode: SiteLensGlassQualityMode.high,
+            adaptiveQualityOverride: GlassQuality.premium,
+            lightweightShaderSupported: true,
+          ),
+          child: Scaffold(
+            body: SiteLensGlassMenuButton<String>(
+              tooltip: '操作',
+              icon: Icons.more_horiz,
+              actions: [
+                const SiteLensGlassMenuAction(
+                  value: 'close',
+                  label: '全部关闭',
+                  icon: Icons.close,
+                ),
+              ],
+              onSelected: (_) => selected = true,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byTooltip('操作'));
+    await tester.pump();
+
+    final panel = find.byType(SiteLensGlassSurface);
+    expect(panel, findsOneWidget);
+    expect(
+      tester.widget<SiteLensGlassSurface>(panel).role,
+      SiteLensSurfaceRole.menu,
+    );
+    expect(find.byType(ListTile), findsNothing);
+    expect(find.byType(ColoredBox), findsNothing);
+    expect(tester.getSize(panel).height, lessThan(80));
+    await tester.tap(find.text('全部关闭'));
+    await tester.pumpAndSettle();
+    expect(selected, isTrue);
+  });
+
+  testWidgets(
+    'command menu releases history and popup hold on dismissal and removal',
+    (tester) async {
+      final observer = SiteLensRouteObserver();
+      late StateSetter rebuild;
+      var visible = true;
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorObservers: [observer],
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) {
+                rebuild = setState;
+                return visible
+                    ? SiteLensGlassMenuButton<int>(
+                        tooltip: '操作',
+                        icon: Icons.more_horiz,
+                        actions: const [
+                          SiteLensGlassMenuAction(value: 1, label: '操作一'),
+                        ],
+                        onSelected: (_) {},
+                      )
+                    : const SizedBox();
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final route = observer.topRoute! as ModalRoute<dynamic>;
+      expect(observer.allowsBrowserDock, isTrue);
+      for (final dismissal in ['outside', 'escape', 'remove']) {
+        await tester.tap(find.byTooltip('操作'));
+        await tester.pumpAndSettle();
+        expect(route.willHandlePopInternally, isTrue);
+        expect(observer.allowsBrowserDock, isFalse);
+        switch (dismissal) {
+          case 'outside':
+            await tester.tapAt(const Offset(700, 500));
+          case 'escape':
+            await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+          case 'remove':
+            rebuild(() => visible = false);
+        }
+        await tester.pumpAndSettle();
+        expect(route.willHandlePopInternally, isFalse);
+        expect(observer.allowsBrowserDock, isTrue);
+        expect(find.byType(MenuItemButton), findsNothing);
+        expect(tester.takeException(), isNull);
+      }
+      await tester.pumpWidget(const SizedBox());
+      observer.dispose();
+    },
+  );
+
+  for (final density in [VisualDensity.standard, VisualDensity.compact]) {
+    for (final scale in [1.0, 2.0]) {
+      testWidgets('command menu labels fit one line at $density / $scale', (
+        tester,
+      ) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSiteLensTheme(
+              ThemePresetId.oceanBlue,
+              Brightness.light,
+            ).copyWith(visualDensity: density),
+            home: MediaQuery(
+              data: MediaQueryData(textScaler: TextScaler.linear(scale)),
+              child: Scaffold(
+                body: Align(
+                  alignment: Alignment.topRight,
+                  child: SiteLensGlassMenuButton<String>(
+                    tooltip: '操作',
+                    icon: Icons.more_horiz,
+                    actions: const [
+                      SiteLensGlassMenuAction(
+                        value: 'close',
+                        label: '全部关闭',
+                        icon: Icons.close,
+                      ),
+                    ],
+                    onSelected: (_) {},
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.tap(find.byTooltip('操作'));
+        await tester.pumpAndSettle();
+        final paragraph = tester.renderObject<RenderParagraph>(
+          find.descendant(
+            of: find.text('全部关闭'),
+            matching: find.byType(RichText),
+          ),
+        );
+        final boxes = paragraph.getBoxesForSelection(
+          const TextSelection(baseOffset: 0, extentOffset: 4),
+        );
+        expect(
+          boxes,
+          hasLength(1),
+          reason: 'the complete label must fit one line',
+        );
+        final row = find.byType(MenuItemButton);
+        expect(tester.getSize(row).height, lessThanOrEqualTo(60));
+        expect(tester.takeException(), isNull);
+      });
+    }
+  }
 
   testWidgets('long descriptions use a foldable detail row', (tester) async {
     const description = '这是一段超过紧凑行阈值的完整描述，不应被截断后丢失';

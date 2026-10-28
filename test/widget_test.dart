@@ -5,6 +5,7 @@ import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:site_lens/browser/browser_session_store.dart';
 import 'package:site_lens/update/update_controller.dart';
 import 'package:site_lens/update/update_service.dart';
 import 'package:site_lens/data/database.dart';
@@ -18,6 +19,8 @@ import 'package:site_lens/ui/ui_primitives.dart';
 
 import 'fake_update_platform.dart';
 import 'fake_web_host_api.dart';
+
+// REGRESSION CONTRACT: UI-DOCK-001
 
 class _ReconTestApp extends AppController {
   _ReconTestApp(super.db) : super(api: FakeWebHostApi());
@@ -66,6 +69,66 @@ void main() {
     await tester.pump();
     expect(find.text('Site Lens'), findsOneWidget);
 
+    await tester.pumpWidget(const SizedBox());
+    await tester.runAsync(() async {
+      await app.shutdown();
+      await db.close();
+    });
+  });
+
+  testWidgets('browser menu back dismisses before home exit and can reopen', (
+    tester,
+  ) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final app = AppController(db, api: FakeWebHostApi());
+    await tester.runAsync(() async {
+      await app.initialize();
+      await app.startupSettled;
+    });
+    final url = Uri.parse('https://menu.example/');
+    final tab = ActiveBrowserSession.restored(
+      Candidate(id: 0, url: url, label: '菜单'),
+      SavedBrowserTab(
+        id: 'menu-tab',
+        initialUrl: url,
+        currentUrl: url,
+        title: '菜单',
+      ),
+    );
+    app.browserTabs.add(tab);
+    app.activeBrowser = tab;
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWithValue(app)],
+        child: const MaterialApp(home: HomeScreen()),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.text('浏览'));
+    await tester.pumpAndSettle();
+    final context = tester.element(find.byType(HomeScreen));
+    final route = ModalRoute.of(context)!;
+    for (var i = 0; i < 2; i++) {
+      await tester.tap(find.byTooltip('标签页操作'));
+      await tester.pumpAndSettle();
+      expect(route.willHandlePopInternally, isTrue);
+      expect(find.text('全部关闭'), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.text('全部关闭'), findsNothing);
+      expect(route.willHandlePopInternally, isFalse);
+      expect(find.text('再按一次退出应用'), findsNothing);
+      expect(app.browserTabs, hasLength(1));
+    }
+    await tester.tap(find.byTooltip('标签页操作'));
+    await tester.pumpAndSettle();
+    await tester.runAsync(() async {
+      await tester.tap(find.text('全部关闭'));
+    });
+    await tester.pumpAndSettle();
+    expect(route.willHandlePopInternally, isFalse);
+    expect(app.browserTabs, isEmpty);
+    expect(find.text('Site Lens'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
     await tester.runAsync(() async {
       await app.shutdown();

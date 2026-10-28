@@ -7,6 +7,8 @@ import 'package:site_lens/ui/app_theme.dart';
 import 'package:site_lens/ui/glass_surface.dart';
 import 'package:site_lens/ui/ui_primitives.dart';
 
+// REGRESSION CONTRACT: UI-GLASS-001
+
 const _options = [
   SiteLensMenuOption(value: 0, label: '亮度 / 音量'),
   SiteLensMenuOption(value: 1, label: '上一集 / 下一集'),
@@ -310,10 +312,10 @@ void main() {
         final theme = buildSiteLensTheme(preset, brightness);
         await tester.pumpWidget(_harness(theme: theme, onSelected: (_) {}));
         final trigger = tester.widget<TextButton>(_trigger);
-        final colors = SiteLensColors.of(tester.element(_trigger));
-        final control = colors.controlSurface(
-          BackgroundMode.defaultGradient,
-          accent: theme.colorScheme.primary,
+        final plan = SiteLensGlassPolicyScope.of(tester.element(_trigger))
+            .resolve(tester.element(_trigger), role: SiteLensSurfaceRole.menu);
+        final interaction = theme.colorScheme.primary.withValues(
+          alpha: SiteLensGlassTokens.controlInteractionAlpha,
         );
         expect(trigger.style!.side!.resolve({})!.color, Colors.transparent);
         for (final state in [
@@ -324,12 +326,12 @@ void main() {
           expect(
             trigger.style!.overlayColor!.resolve({state}),
             state == WidgetState.pressed || state == WidgetState.hovered
-                ? control.interaction
+                ? interaction
                 : Colors.transparent,
           );
           expect(
             trigger.style!.backgroundColor!.resolve({state}),
-            control.fill,
+            plan.glassColor,
           );
         }
         expect(trigger.style!.splashFactory, NoSplash.splashFactory);
@@ -339,10 +341,7 @@ void main() {
         final ink = tester.widget<InkWell>(
           find.descendant(of: _trigger, matching: find.byType(InkWell)),
         );
-        expect(
-          ink.overlayColor!.resolve({WidgetState.pressed}),
-          control.interaction,
-        );
+        expect(ink.overlayColor!.resolve({WidgetState.pressed}), interaction);
         await press.up();
         await tester.pump();
         final anchor = tester.widget<MenuAnchor>(find.byType(MenuAnchor));
@@ -353,10 +352,7 @@ void main() {
               .color,
           Colors.transparent,
         );
-        expect(
-          anchor.style!.backgroundColor!.resolve({}),
-          trigger.style!.backgroundColor!.resolve({}),
-        );
+        expect(anchor.style!.backgroundColor!.resolve({}), Colors.transparent);
         expect(anchor.style!.elevation!.resolve({}), 0);
         for (final button in tester.widgetList<MenuItemButton>(
           find.byType(MenuItemButton),
@@ -403,12 +399,9 @@ void main() {
       );
       final trigger = tester.widget<TextButton>(_trigger);
       final context = tester.element(_trigger);
-      final colors = SiteLensColors.of(context);
-      final control = colors.controlSurface(
-        mode,
-        accent: Theme.of(context).colorScheme.primary,
-      );
-      expect(trigger.style!.backgroundColor!.resolve({}), control.fill);
+      final plan = SiteLensGlassPolicyScope.of(context)
+          .resolve(context, role: SiteLensSurfaceRole.menu);
+      expect(trigger.style!.backgroundColor!.resolve({}), plan.glassColor);
       expect(trigger.style!.side!.resolve({})!.color, Colors.transparent);
       expect(tester.takeException(), isNull);
     });

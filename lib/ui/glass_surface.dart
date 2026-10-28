@@ -68,10 +68,10 @@ class SiteLensBackdrop extends StatelessWidget {
     final colors = SiteLensColors.of(context);
     final dark = Theme.of(context).brightness == Brightness.dark;
     final imagePath = background.imagePath;
-    final transparent = background.mode == BackgroundMode.transparent;
-    // Transparent is an explicit no-backdrop mode. A previously uploaded
-    // asset remains available for the custom-image mode, but it must never be
-    // reused by transparent mode.
+    final solid = background.mode == BackgroundMode.transparent;
+    // The legacy transparent wire id now means a solid theme backdrop. A
+    // previously uploaded asset remains available for custom-image mode, but
+    // it must never be reused by this mode.
     final useImage =
         imagePath != null && background.mode == BackgroundMode.customImage;
     final useThemeSource = background.mode == BackgroundMode.themeBuiltIn;
@@ -90,14 +90,13 @@ class SiteLensBackdrop extends StatelessWidget {
         fit: StackFit.expand,
         children: [
           if (image != null) Positioned.fill(child: image),
-          if (image == null && (!transparent || !dark))
-            transparent
-                ? ColoredBox(color: colors.backdropTop)
-                : _siteLensBackdropGradient(
-                    context,
-                    useThemeSource: useThemeSource,
-                  ),
-          if (!transparent && image != null)
+          if (image == null && solid)
+            ColoredBox(
+              color: dark ? const Color(0xff000000) : colors.backdropTop,
+            )
+          else if (image == null)
+            _siteLensBackdropGradient(context, useThemeSource: useThemeSource),
+          if (!solid && image != null)
             Positioned.fill(
               child: ColoredBox(
                 color: colors.backdropTint.withValues(
@@ -105,7 +104,7 @@ class SiteLensBackdrop extends StatelessWidget {
                 ),
               ),
             ),
-          if (!transparent && image == null)
+          if (!solid && image == null)
             DecoratedBox(
               decoration: BoxDecoration(
                 gradient: RadialGradient(
@@ -232,13 +231,13 @@ class SiteLensGlassSurface extends StatelessWidget {
       }
 
       late final Widget decoration;
-      final useTransparentLocalGlassFallback =
+      final useSolidLocalGlassFallback =
           policy.backgroundMode == BackgroundMode.transparent &&
           role != SiteLensSurfaceRole.platformView;
-      if (useTransparentLocalGlassFallback) {
-        // Transparent mode leaves the app-owned backdrop empty. Keep that
-        // transparency outside the surface, but let Flutter-owned controls
-        // retain a local glass material instead of becoming a full-color slab.
+      if (useSolidLocalGlassFallback) {
+        // The solid backdrop is intentionally separate from each local glass
+        // boundary. Keep Flutter-owned controls on the premium material path
+        // without turning the whole page into one opaque slab.
         decoration = AdaptiveGlass(
           shape: shape,
           settings: plan.settings,

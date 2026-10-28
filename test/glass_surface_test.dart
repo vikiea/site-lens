@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:site_lens/background/background_snapshot.dart';
 import 'package:site_lens/settings/app_settings.dart';
 import 'package:site_lens/ui/app_theme.dart';
 import 'package:site_lens/ui/glass_surface.dart';
+
+// REGRESSION CONTRACT: UI-GLASS-001
 
 Widget _backdropApp(
   BackgroundSnapshot background, {
@@ -27,6 +30,57 @@ List<Color> _linearGradientColors(WidgetTester tester) {
 }
 
 void main() {
+  testWidgets('solid backdrop pages keep premium glass settings', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(
+          ThemePresetId.oceanBlue,
+          Brightness.dark,
+          glassOpacity: 0,
+        ),
+        home: SiteLensGlassPolicyScope(
+          strategy: const SiteLensGlassQualityStrategy(
+            mode: SiteLensGlassQualityMode.high,
+            backgroundMode: BackgroundMode.transparent,
+          ),
+          child: const SiteLensGlassGroup(
+            child: Scaffold(
+              body: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SiteLensPanel(child: Text('外观')),
+                  SiteLensPanel(child: Text('浏览')),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    final context = tester.element(find.byType(SiteLensPanel).first);
+    final plan = SiteLensGlassPolicyScope.of(context)
+        .resolve(context, role: SiteLensSurfaceRole.panel);
+    expect(plan.quality, GlassQuality.premium);
+    expect(plan.useCompatibilityFallback, isFalse);
+    expect(
+      plan.settings.frostWeight,
+      LiquidGlassSettings.ios27Dark.frostWeight,
+    );
+    expect(plan.settings.frost, greaterThan(0));
+    expect(
+      plan.settings.refractiveIndex,
+      LiquidGlassSettings.ios27Dark.refractiveIndex,
+    );
+    expect(
+      tester
+          .widgetList<AdaptiveGlass>(find.byType(AdaptiveGlass))
+          .map((w) => w.quality),
+      everyElement(GlassQuality.premium),
+    );
+  });
+
   testWidgets('background modes select different static sources', (
     tester,
   ) async {
@@ -68,7 +122,7 @@ void main() {
     );
   });
 
-  testWidgets('dark transparent mode leaves the app-owned backdrop empty', (
+  testWidgets('dark solid mode paints an opaque black app-owned backdrop', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -79,17 +133,11 @@ void main() {
     );
 
     expect(find.byType(Image), findsNothing);
+    expect(find.byType(ColoredBox), findsOneWidget);
     expect(
-      tester
-          .widgetList<DecoratedBox>(find.byType(DecoratedBox))
-          .where(
-            (box) =>
-                box.decoration is BoxDecoration &&
-                (box.decoration as BoxDecoration).gradient != null,
-          ),
-      isEmpty,
+      tester.widget<ColoredBox>(find.byType(ColoredBox)).color,
+      const Color(0xff000000),
     );
-    expect(find.byType(ColoredBox), findsNothing);
   });
 
   testWidgets('transparent mode ignores a previously uploaded image', (

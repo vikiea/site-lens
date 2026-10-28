@@ -76,10 +76,9 @@ class SiteLensGlassQualityStrategy {
   /// mounted.
   final bool hcppEffective;
 
-  /// Transparent dark mode deliberately leaves the app-owned backdrop empty.
-  /// Glass shaders need a real backdrop to sample, so this mode uses the
-  /// stable clipped fill path for every surface instead of sampling the host
-  /// window.
+  /// The legacy transparent wire id selects the solid backdrop mode. Glass
+  /// shaders therefore always have an app-owned source to sample, including
+  /// in dark appearance.
   final BackgroundMode backgroundMode;
 
   /// Optional override for the package's lightweight shader capability.

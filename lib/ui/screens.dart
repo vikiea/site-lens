@@ -222,7 +222,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         return PopScope(
           canPop: false,
           onPopInvokedWithResult: (didPop, _) {
-            if (didPop || !Platform.isAndroid) return;
+            if (didPop) return;
+            // MenuAnchor overlays use local history rather than a PopupRoute.
+            // Consume their dismissal before arming the app-exit gesture.
+            if (ModalRoute.of(context)?.willHandlePopInternally ?? false) {
+              Navigator.of(context).pop();
+              return;
+            }
+            if (!Platform.isAndroid) return;
             if (_doubleBackExit.handleBack(DateTime.now())) {
               SystemNavigator.pop();
             } else {
@@ -290,24 +297,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                               () => promptNewTab(context, app),
                             ),
                           ),
-                          PopupMenuButton<String>(
+                          SiteLensGlassMenuButton<String>(
                             tooltip: '标签页操作',
-                            onSelected: (choice) => safely(context, () async {
-                              if (choice == 'closeAll') {
-                                await app.closeAllTabs();
-                              }
-                            }),
-                            itemBuilder: (_) => [
-                              PopupMenuItem(
+                            icon: Icons.more_horiz,
+                            actions: [
+                              SiteLensGlassMenuAction(
                                 value: 'closeAll',
+                                label: '全部关闭',
+                                icon: Icons.close,
                                 enabled: app.browserTabs.isNotEmpty,
-                                child: const ListTile(
-                                  leading: Icon(Icons.close),
-                                  title: Text('全部关闭'),
-                                  contentPadding: EdgeInsets.zero,
-                                ),
                               ),
                             ],
+                            onSelected: (_) => safely(context, () async {
+                              await app.closeAllTabs();
+                              if (!mounted || page != 1) return;
+                              if (app.browserTabs.isEmpty) {
+                                setState(() => page = 0);
+                              }
+                            }),
                           ),
                         ],
                         AppDestination.media => const <Widget>[],
@@ -2120,46 +2127,10 @@ class _GitHubTokenEntryState extends State<_GitHubTokenEntry> {
   }
 
   Future<void> _edit() async {
-    final controller = TextEditingController();
     final result = await showDialog<_GitHubTokenDialogResult>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('GitHub API Token'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          obscureText: true,
-          autocorrect: false,
-          enableSuggestions: false,
-          decoration: const InputDecoration(
-            hintText: '粘贴 ghp_ 或 github_pat_ Token',
-            helperText: '仅保存在系统安全存储，不会进入备份或日志。',
-          ),
-        ),
-        actions: [
-          if (_configured == true)
-            TextButton(
-              onPressed: () => Navigator.pop(
-                context,
-                const _GitHubTokenDialogResult.clear(),
-              ),
-              child: const Text('清除'),
-            ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(
-              context,
-              _GitHubTokenDialogResult.save(controller.text),
-            ),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
+      builder: (_) => _GitHubTokenDialog(configured: _configured == true),
     );
-    controller.dispose();
     if (result == null || !mounted) return;
     setState(() => _busy = true);
     try {
@@ -2216,6 +2187,60 @@ class _GitHubTokenEntryState extends State<_GitHubTokenEntry> {
             child: Text(_configured == true ? '管理' : '设置'),
           ),
     onTap: _busy ? null : _edit,
+  );
+}
+
+class _GitHubTokenDialog extends StatefulWidget {
+  const _GitHubTokenDialog({required this.configured});
+
+  final bool configured;
+
+  @override
+  State<_GitHubTokenDialog> createState() => _GitHubTokenDialogState();
+}
+
+class _GitHubTokenDialogState extends State<_GitHubTokenDialog> {
+  late final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('GitHub API Token'),
+    content: TextField(
+      controller: _controller,
+      autofocus: true,
+      obscureText: true,
+      autocorrect: false,
+      enableSuggestions: false,
+      decoration: const InputDecoration(
+        hintText: '粘贴 ghp_ 或 github_pat_ Token',
+        helperText: '仅保存在系统安全存储，不会进入备份或日志。',
+      ),
+    ),
+    actions: [
+      if (widget.configured)
+        TextButton(
+          onPressed: () =>
+              Navigator.pop(context, const _GitHubTokenDialogResult.clear()),
+          child: const Text('清除'),
+        ),
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      FilledButton(
+        onPressed: () => Navigator.pop(
+          context,
+          _GitHubTokenDialogResult.save(_controller.text),
+        ),
+        child: const Text('保存'),
+      ),
+    ],
   );
 }
 

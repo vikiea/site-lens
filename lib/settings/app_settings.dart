@@ -48,7 +48,9 @@ extension BackgroundModeWireId on BackgroundMode {
 extension BackgroundModeLabel on BackgroundMode {
   String get label => switch (this) {
     BackgroundMode.defaultGradient => '当前默认渐变',
-    BackgroundMode.transparent => '全透明',
+    // Keep the wire id for backwards compatibility; the mode now paints a
+    // solid theme-aware backdrop so premium glass always has a stable source.
+    BackgroundMode.transparent => '纯色背景',
     BackgroundMode.themeBuiltIn => '主题色内置背景',
     BackgroundMode.customImage => '自定义图片',
   };
