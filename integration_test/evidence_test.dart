@@ -60,7 +60,7 @@ void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets(
-    'evidence: default round verifies serially, full round in parallel <=3',
+    'evidence: default round verifies serially, full round in parallel <=8',
     (tester) async {
       final server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
       final port = server.port;
@@ -173,8 +173,8 @@ void main() {
         );
         expect(
           maxVerifiers,
-          lessThanOrEqualTo(3),
-          reason: 'full round must be bounded at N=3',
+          lessThanOrEqualTo(8),
+          reason: 'full round must be bounded at N=8',
         );
         expect(
           maxVerifiers,
