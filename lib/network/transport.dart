@@ -290,11 +290,11 @@ class NetworkPolicy {
     Cancellation? cancel,
     Future<List<InternetAddress>> Function(String) resolve =
         InternetAddress.lookup,
+    Duration timeout = const Duration(seconds: 5),
   }) async {
     if (proxyHost != null) throw StateError('GM 网络不使用系统代理');
     cancel?.check();
-    final addresses = await resolve(uri.host)
-        .timeout(const Duration(seconds: 5));
+    final addresses = await resolve(uri.host).timeout(timeout);
     if (addresses.isEmpty ||
         (!allowLocal &&
             addresses.any(
@@ -348,7 +348,7 @@ class NetworkPolicy {
             socket = await SecureSocket.secure(
               socket!,
               host: uri.host,
-            ).timeout(const Duration(seconds: 10));
+            ).timeout(timeout);
           }
           if (cancelled) {
             socket!.destroy();
@@ -366,7 +366,7 @@ class NetworkPolicy {
       if (lastError != null) throw lastError;
       throw SocketException('无法连接 ${uri.host}:${uri.port}');
     })();
-    return ConnectionTask.fromSocket(future, abort);
+    return ConnectionTask.fromSocket(future.timeout(timeout), abort);
   }
 }
 
@@ -475,6 +475,7 @@ class ControlledHttp {
     bool mediaRequest,
     Cancellation cancel,
     int routeAttempt,
+    Duration? timeout,
   ) async {
     final pendingRoute = routeForAttempt != null
         ? routeForAttempt!(uri, routeAttempt)
@@ -483,7 +484,7 @@ class ControlledHttp {
         : Future.value(const MediaNetworkRoute());
     final route = await cancel.waitFor(
       pendingRoute.timeout(
-        client.connectionTimeout ?? const Duration(seconds: 15),
+        timeout ?? client.connectionTimeout ?? const Duration(seconds: 15),
       ),
     );
     cancel.check();
@@ -509,6 +510,8 @@ class ControlledHttp {
         resolve: resolve,
         allowLocal: allowLocal,
         allowProxyFakeIp: route.allowProxyFakeIp,
+        timeout:
+            timeout ?? client.connectionTimeout ?? const Duration(seconds: 15),
       );
     };
     return route;
@@ -663,6 +666,7 @@ class ControlledHttp {
           mediaRequest,
           cancel,
           currentRouteAttempt,
+          null,
         );
         try {
           final request = await client.openUrl(method, uri);
@@ -777,6 +781,7 @@ class ControlledHttp {
         mediaRequest,
         cancel,
         routeAttempt,
+        null,
       );
       final request = await client.openUrl('GET', uri).timeout(timeout);
       request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
@@ -954,8 +959,8 @@ class ControlledHttp {
 
 class HttpProbe {
   static const _maxRouteAttempts = 2;
-  static const _probeAttemptTimeout = Duration(seconds: 4);
-  static const _probeOverallTimeout = Duration(seconds: 10);
+  static const candidateDeadline = Duration(seconds: 5);
+  static const _probeAttemptTimeout = candidateDeadline;
 
   HttpProbe({
     this.allowLocal = allowLocalTestPages,
@@ -994,8 +999,16 @@ class HttpProbe {
     );
     try {
       return await (() async {
+        Duration remaining() {
+          final value = candidateDeadline - watch.elapsed;
+          return value > Duration.zero ? value : Duration.zero;
+        }
+
         for (var i = 0; i <= 5; i++) {
           requestCancel.check();
+          if (remaining() <= Duration.zero) {
+            throw TimeoutException('probe deadline');
+          }
           if (!allowLocal) {
             NetworkPolicy.validateTarget(current, const {'*'}, current);
           }
@@ -1015,11 +1028,12 @@ class HttpProbe {
                 false,
                 requestCancel,
                 routeAttempt,
+                remaining(),
               );
-              final request = await client.getUrl(current);
+              final request = await client.getUrl(current).timeout(remaining());
               request.followRedirects = false;
               request.headers.set('Range', 'bytes=0-1023');
-              response = await request.close().timeout(_probeAttemptTimeout);
+              response = await request.close().timeout(remaining());
               break;
             } on Cancelled {
               rethrow;
@@ -1064,7 +1078,7 @@ class HttpProbe {
           );
         }
         return result(ProbeStatus.unavailable);
-      })().timeout(_probeOverallTimeout);
+      })().timeout(candidateDeadline);
     } on Cancelled {
       return result(ProbeStatus.cancelled);
     } on TimeoutException {

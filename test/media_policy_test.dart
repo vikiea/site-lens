@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:drift/native.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/ui/app_controller.dart';
 
@@ -41,6 +42,24 @@ class HeldUnsupportedMediaApi extends UnsupportedMediaApi {
   }
 }
 
+class DestroyedHostMediaApi extends FakeWebHostApi {
+  final entered = Completer<void>();
+  final release = Completer<void>();
+
+  @override
+  Future<bool> setHostActivity(
+    int id,
+    bool current,
+    bool visible,
+    bool foreground,
+    bool background,
+  ) async {
+    if (!entered.isCompleted) entered.complete();
+    await release.future;
+    throw PlatformException(code: 'host_destroyed');
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   test('media policy follows current tab, route coverage, lifecycle and user setting', () async {
@@ -73,6 +92,29 @@ void main() {
     await app.syncMediaPolicy();
     expect(api.activity[a.host.id]![3], false);
   });
+
+  test(
+    'host_destroyed from a removed host is treated as stale policy work',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final api = DestroyedHostMediaApi();
+      final app = AppController(db, api: api);
+      addTearDown(() async {
+        await app.shutdown();
+        await db.close();
+      });
+      await app.load();
+      final tab = await app.openUrl(Uri.parse('https://stale.example/'));
+      app.browserVisible = true;
+      final pending = app.syncMediaPolicy();
+      await api.entered.future;
+      tab.host.disposed = true;
+      app.hosts.sessions.remove(tab.host.id);
+      api.release.complete();
+      await pending;
+      expect(app.error, isNull);
+    },
+  );
   test(
     'unsupported Android closes a hidden host and retains cold metadata',
     () async {

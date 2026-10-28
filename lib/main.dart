@@ -61,6 +61,10 @@ Future<void> main() async {
           StartupPhase.databaseOpen,
           AppDatabase.open,
         );
+        final bootstrap = await startup.measure(
+          StartupPhase.preferencesRead,
+          () => readAppBootstrap(database),
+        );
         // Liquid glass is composed through wrap() below and loads shader programs
         // on demand. Do not prewarm during Android startup: emulator Impeller
         // rasterization can crash while a warmup future is active.
@@ -69,7 +73,10 @@ Future<void> main() async {
         unawaited(HealthScheduler.initializeForAppStartup());
         runApp(
           ProviderScope(
-            overrides: [databaseProvider.overrideWithValue(database)],
+            overrides: [
+              databaseProvider.overrideWithValue(database),
+              appBootstrapProvider.overrideWithValue(bootstrap),
+            ],
             child: const SiteLensApp(),
           ),
         );

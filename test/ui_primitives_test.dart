@@ -99,6 +99,73 @@ void main() {
     expect(coral, isNot(equals(ocean)));
   });
 
+  testWidgets('top-bar keeps a merged capsule with circular glass actions', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: SiteLensPageScaffold(
+          title: '操作页',
+          actions: [
+            IconButton(onPressed: () {}, icon: const Icon(Icons.add)),
+            IconButton(onPressed: () {}, icon: const Icon(Icons.more_horiz)),
+          ],
+          body: const SizedBox(),
+        ),
+      ),
+    );
+
+    final group = find.byType(SiteLensTopBarActionGroup);
+    expect(group, findsOneWidget);
+    expect(
+      find.descendant(of: group, matching: find.byType(SiteLensGlassControl)),
+      findsNWidgets(2),
+    );
+    expect(
+      find.descendant(of: group, matching: find.byType(SiteLensGlassSurface)),
+      findsNWidgets(2),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('high-quality menu uses the shared menu glass surface', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: SiteLensGlassPolicyScope(
+          strategy: const SiteLensGlassQualityStrategy(
+            mode: SiteLensGlassQualityMode.high,
+            adaptiveQualityOverride: GlassQuality.premium,
+            lightweightShaderSupported: true,
+          ),
+          child: Scaffold(
+            body: SiteLensMenuSelector<int>(
+              label: '菜单',
+              value: 0,
+              options: [
+                const SiteLensMenuOption(value: 0, label: '当前'),
+                const SiteLensMenuOption(value: 1, label: '下一项'),
+              ],
+              onSelected: (_) {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byTooltip('菜单'));
+    await tester.pump();
+    final menuGlass = tester.widget<SiteLensGlassControl>(
+      find.byType(SiteLensGlassControl),
+    );
+    expect(menuGlass.role, SiteLensSurfaceRole.menu);
+    expect(find.byType(MenuItemButton), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('long descriptions use a foldable detail row', (tester) async {
     const description = '这是一段超过紧凑行阈值的完整描述，不应被截断后丢失';
     await tester.pumpWidget(

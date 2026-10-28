@@ -485,20 +485,48 @@ class _SecureDnsSetting extends StatelessWidget {
   final AppController app;
 
   @override
-  Widget build(BuildContext context) => SiteLensCompactRow(
-    title: const Text('安全 DNS'),
-    leading: const Icon(Icons.shield_outlined, size: 18),
-    trailing: SiteLensMenuSelector<SecureDnsProvider>(
-      label: '安全 DNS',
-      value: app.settings.secureDnsProvider,
-      options: [
-        for (final provider in SecureDnsProvider.values)
-          SiteLensMenuOption(value: provider, label: provider.label),
-      ],
-      onSelected: (value) =>
-          safely(context, () => app.setSecureDnsProvider(value)),
-    ),
-  );
+  Widget build(BuildContext context) {
+    final resolution = app.secureDnsResolver.resolution;
+    final status = switch (resolution.status) {
+      SecureDnsResolutionStatus.idle => '尚未验证',
+      SecureDnsResolutionStatus.resolving => '验证中…',
+      SecureDnsResolutionStatus.success =>
+        resolution.source == SecureDnsResolutionSource.secureDns
+            ? '安全 DNS 已生效'
+            : '系统 DNS',
+      SecureDnsResolutionStatus.fallback => '安全 DNS 超时，已回退系统 DNS',
+      SecureDnsResolutionStatus.failed => '解析失败',
+    };
+    return SiteLensCompactRow(
+      title: const Text('安全 DNS'),
+      subtitle: Text(status),
+      leading: const Icon(Icons.shield_outlined, size: 18),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: '验证安全 DNS',
+            onPressed: () async {
+              await safely(context, () async {
+                await app.verifySecureDns();
+              });
+            },
+            icon: const Icon(Icons.refresh, size: 18),
+          ),
+          SiteLensMenuSelector<SecureDnsProvider>(
+            label: '安全 DNS',
+            value: app.settings.secureDnsProvider,
+            options: [
+              for (final provider in SecureDnsProvider.values)
+                SiteLensMenuOption(value: provider, label: provider.label),
+            ],
+            onSelected: (value) =>
+                safely(context, () => app.setSecureDnsProvider(value)),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _CacheSetting extends StatefulWidget {

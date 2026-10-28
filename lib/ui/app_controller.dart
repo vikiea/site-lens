@@ -58,9 +58,58 @@ import 'ui_util.dart';
 final databaseProvider = Provider<AppDatabase>(
   (ref) => throw StateError('Database not initialized'),
 );
+final appBootstrapProvider = Provider<AppBootstrapSnapshot?>((ref) => null);
+
+class AppBootstrapSnapshot {
+  const AppBootstrapSnapshot({
+    required this.settings,
+    required this.background,
+    required this.glassQualityCache,
+  });
+
+  final AppSettings settings;
+  final BackgroundSnapshot background;
+  final SiteLensGlassQualityCache? glassQualityCache;
+}
+
+Future<AppBootstrapSnapshot> readAppBootstrap(AppDatabase db) async {
+  var settings = const AppSettings();
+  var background = const BackgroundSnapshot();
+  SiteLensGlassQualityCache? glassQualityCache;
+  try {
+    final repository = SettingsRepository(db);
+    settings = await repository.read();
+    await repository.dispose();
+  } catch (error, stack) {
+    AppErrorLogger.capture(error, module: 'startup.preferences', stack: stack);
+  }
+  try {
+    final assets = BackgroundAssetStore();
+    final file = await assets.fileFor(settings.backgroundAssetId);
+    background = BackgroundSnapshot(
+      mode: settings.backgroundMode,
+      imagePath: file?.path,
+      assetMissing: settings.backgroundAssetId != null && file == null,
+    );
+  } catch (error, stack) {
+    AppErrorLogger.capture(error, module: 'startup.preferences', stack: stack);
+  }
+  try {
+    glassQualityCache = await SiteLensGlassQualityCacheRepository(db).read();
+  } catch (error, stack) {
+    AppErrorLogger.capture(error, module: 'startup.preferences', stack: stack);
+  }
+  return AppBootstrapSnapshot(
+    settings: settings,
+    background: background,
+    glassQualityCache: glassQualityCache,
+  );
+}
+
 final appControllerProvider = Provider<AppController>((ref) {
   final controller = AppController(
     ref.watch(databaseProvider),
+    bootstrap: ref.watch(appBootstrapProvider),
     startupTrace: StartupTrace.process,
   );
   ref.onDispose(controller.dispose);
@@ -75,6 +124,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   /// device. Same seam [NativeHosts] already exposes.
   AppController(
     this.db, {
+    AppBootstrapSnapshot? bootstrap,
     WebHostApi? api,
     HttpProbe? httpProbe,
     HomepageVerifier? homepageVerifier,
@@ -83,12 +133,24 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     StartupTrace? startupTrace,
     Future<Directory> Function()? mediaDirectoryProvider,
   }) : startupTrace = startupTrace ?? StartupTrace() {
+    if (bootstrap != null) {
+      settings = bootstrap.settings;
+      background = bootstrap.background;
+      glassQualityCache = bootstrap.glassQualityCache;
+      effectiveGlassQuality = switch (settings.glassQualityMode) {
+        SiteLensGlassQualityMode.high => GlassQuality.premium,
+        SiteLensGlassQualityMode.standard => GlassQuality.standard,
+        SiteLensGlassQualityMode.automatic =>
+          glassQualityCache?.quality ?? GlassQuality.standard,
+      };
+    }
     deviceDiagnostics = diagnostics ?? DeviceDiagnosticsService();
     deviceDiagnostics.addListener(_diagnosticsChanged);
     unawaited(deviceDiagnostics.refreshHcpp());
     settingsRepository = SettingsRepository(db);
     backgroundAssets = BackgroundAssetStore();
     secureDnsResolver = SecureDnsResolver();
+    if (bootstrap != null) _applySettings();
     transientCache = TransientCacheService(runtime: AppRuntimeApi());
     errorLogger = AppErrorLogger(db);
     glassQualityCacheRepository = SiteLensGlassQualityCacheRepository(db);
@@ -219,6 +281,18 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     if (!_disposed) super.notifyListeners();
   }
 
+  void _recordSecureDnsObservation() {
+    final resolution = secureDnsResolver.resolution;
+    deviceDiagnostics.recordObservation(
+      id: 'network.secure_dns',
+      observed: '${resolution.status.name}:${resolution.source.name}',
+      source: 'SecureDnsResolver',
+      identity: resolution.provider.wireId,
+      failed: resolution.status == SecureDnsResolutionStatus.failed,
+    );
+    if (!_disposed) super.notifyListeners();
+  }
+
   void _observeCastForDiagnostics() {
     final session = mediaCast.active;
     if (session == null) return;
@@ -320,7 +394,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    _foreground = state == AppLifecycleState.resumed;
+    // Android reports the notification shade and transient focus changes as
+    // inactive/hidden before a real pause. Keep the media policy foreground
+    // during those short transitions so MediaSession actions are not revoked
+    // while the user is interacting with the notification.
+    _foreground =
+        state != AppLifecycleState.paused &&
+        state != AppLifecycleState.detached;
     if (_foreground) unawaited(deviceDiagnostics.refreshHcpp());
     if (state != AppLifecycleState.resumed) {
       unawaited(_observeActivePlayback());
@@ -391,6 +471,12 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         }
       } catch (e) {
         if (_disposed || epoch != _mediaPolicyEpoch) return;
+        if (e is PlatformException && e.code == 'host_destroyed') {
+          final currentHost = hosts.sessions[h.id];
+          if (h.disposed || currentHost == null || !identical(currentHost, h)) {
+            continue;
+          }
+        }
         AppErrorLogger.capture(e, module: 'media.policy');
         if (!h.disposed && !_disposed) {
           error = '播放策略应用失败：${friendlyError(e)}';
@@ -1046,6 +1132,16 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> setSecureDnsProvider(SecureDnsProvider value) =>
       updateSettings({'secureDnsProvider': value.wireId});
 
+  Future<SecureDnsResolution> verifySecureDns() async {
+    try {
+      await secureDnsResolver.resolve('example.com');
+    } catch (_) {
+      // The resolver exposes the failure through its observable status.
+    }
+    _recordSecureDnsObservation();
+    return secureDnsResolver.resolution;
+  }
+
   Future<void> clearBackgroundAsset() async {
     final old = settings.backgroundAssetId;
     await updateSettings({
@@ -1314,12 +1410,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> deleteMediaArtifact(
     String taskId, {
     bool deleteTaskCache = false,
-    bool deleteTask = false,
+    bool? deleteTask,
   }) async {
+    final removeTask = deleteTask ?? deleteTaskCache;
     if (deleteTaskCache) {
       await mediaDownloads.delete(
         taskId,
-        deleteTask: deleteTask,
+        deleteTask: removeTask,
         beforeDelete: mediaLibrary.item(taskId) == null
             ? null
             : (nativeMutationReservation) => mediaLibrary.delete(
@@ -1513,7 +1610,6 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     if (host == null ||
         host.disposed ||
         evidence == null ||
-        !evidence.watchSaveEligible ||
         !browserTabs.contains(tab) && requireCurrent) {
       return;
     }

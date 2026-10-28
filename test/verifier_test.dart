@@ -175,12 +175,12 @@ void main() {
     'ProbeTiming picks the tighter WiFi bound and looser cellular bound',
     () {
       const timing = ProbeTiming();
-      expect(timing.boundFor(NetworkClass.wifi), const Duration(seconds: 6));
+      expect(timing.boundFor(NetworkClass.wifi), const Duration(seconds: 5));
       expect(
         timing.boundFor(NetworkClass.cellular),
-        const Duration(seconds: 8),
+        const Duration(seconds: 5),
       );
-      expect(timing.boundFor(NetworkClass.other), const Duration(seconds: 6));
+      expect(timing.boundFor(NetworkClass.other), const Duration(seconds: 5));
     },
   );
 

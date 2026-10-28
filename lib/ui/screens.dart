@@ -15,6 +15,7 @@ import 'package:re_highlight/styles/atom-one-light.dart';
 import '../cache/transient_cache_service.dart';
 import '../domain/models.dart';
 import '../network/transport.dart';
+import '../network/secure_dns_resolver.dart';
 import '../scripts/metadata.dart';
 import '../update/update_controller.dart';
 import '../update/github_token_store.dart';

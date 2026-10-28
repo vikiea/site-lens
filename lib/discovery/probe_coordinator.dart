@@ -13,8 +13,8 @@ import '../web_host/web_host.g.dart';
 /// onPageFinished is still given to hydrate before we give up early.
 class ProbeTiming {
   const ProbeTiming({
-    this.wifi = const Duration(seconds: 6),
-    this.cellular = const Duration(seconds: 8),
+    this.wifi = const Duration(seconds: 5),
+    this.cellular = const Duration(seconds: 5),
     this.loadedGrace = const Duration(seconds: 3),
   });
   final Duration wifi;
@@ -47,7 +47,7 @@ class NativeHomepageVerifier implements HomepageVerifier {
     int round,
     Cancellation cancel,
   ) async {
-    final watch = Stopwatch();
+    final watch = Stopwatch()..start();
     HostSession? host;
     Uri? finalUrl;
     ProbeResult result(ProbeStatus status, [String? reason]) => ProbeResult(
@@ -61,19 +61,41 @@ class NativeHomepageVerifier implements HomepageVerifier {
       checkedAt: DateTime.now(),
       reason: reason,
     );
-    final bound = timing.boundFor(await _networkClass());
+    final network = await _networkClass().timeout(
+      const Duration(seconds: 1),
+      onTimeout: () => NetworkClass.other,
+    );
+    final bound = timing.boundFor(network);
     try {
       cancel.check();
-      host = await hosts.create(HostPurpose.verification);
+      final create = hosts.create(HostPurpose.verification);
+      try {
+        host = await create.timeout(_remaining(watch, bound));
+      } on TimeoutException {
+        unawaited(
+          create.then<void>((lateHost) async {
+            try {
+              await hosts.destroy(lateHost).timeout(const Duration(seconds: 1));
+            } catch (_) {}
+          }, onError: (Object _, StackTrace _) {}),
+        );
+        rethrow;
+      }
       cancel.check();
       final active = host;
       cancel.onCancel(() {
-        unawaited(hosts.destroy(active));
+        unawaited(
+          hosts
+              .destroy(active)
+              .timeout(const Duration(seconds: 1))
+              .catchError((_) {}),
+        );
       });
-      watch.start();
       // Bound the navigation hand-off too, so a hung native call cannot blow
-      // past the 6/8-second candidate budget.
-      await hosts.navigate(host, candidate.url).timeout(bound - watch.elapsed);
+      // past the five-second candidate budget.
+      await hosts
+          .navigate(host, candidate.url)
+          .timeout(_remaining(watch, bound));
       Duration? loadedAt;
       while (watch.elapsed < bound) {
         cancel.check();
@@ -132,7 +154,8 @@ class NativeHomepageVerifier implements HomepageVerifier {
             );
           }
         }
-        await Future<void>.delayed(const Duration(milliseconds: 150));
+        await Future<void>.delayed(const Duration(milliseconds: 150))
+            .timeout(_remaining(watch, bound));
       }
       return result(
         host.loaded ? ProbeStatus.unavailable : ProbeStatus.timeout,
@@ -151,12 +174,26 @@ class NativeHomepageVerifier implements HomepageVerifier {
         readableError(e),
       );
     } finally {
-      if (host != null) await hosts.destroy(host);
+      if (host != null) {
+        try {
+          await hosts.destroy(host).timeout(const Duration(seconds: 1));
+        } catch (_) {}
+      }
     }
+  }
+
+  Duration _remaining(Stopwatch watch, Duration bound) {
+    final remaining = bound - watch.elapsed;
+    return remaining > Duration.zero
+        ? remaining
+        : const Duration(milliseconds: 1);
   }
 }
 
 class ProbeCoordinator extends ChangeNotifier {
+  static const maxConcurrentProbes = 8;
+  static const verifierCleanupTimeout = Duration(seconds: 2);
+
   ProbeCoordinator({
     required this.candidates,
     required this.httpProbe,
@@ -220,6 +257,67 @@ class ProbeCoordinator extends ChangeNotifier {
       notifyListeners();
     }
 
+    Future<ProbeResult> verifyWithinCandidateDeadline(
+      Candidate site,
+      ProbeResult preliminary,
+    ) async {
+      final spent = preliminary.elapsed ?? Duration.zero;
+      final remaining = HttpProbe.candidateDeadline - spent;
+      ProbeResult timedOut(ProbeStatus status, [String? reason]) => ProbeResult(
+        round: id,
+        candidateId: site.id,
+        stage: ProbeStage.homepage,
+        status: status,
+        entryUrl: site.url,
+        finalUrl: preliminary.finalUrl,
+        elapsed: spent,
+        checkedAt: DateTime.now(),
+        reason: reason,
+      );
+      if (remaining <= Duration.zero) {
+        return timedOut(
+          ProbeStatus.timeout,
+          'HTTP 初筛与首页验证合计超过 ${HttpProbe.candidateDeadline.inSeconds} 秒',
+        );
+      }
+
+      final candidateCancel = Cancellation();
+      final detach = token.onCancel(candidateCancel.cancel);
+      final verification = verifier.verify(site, id, candidateCancel);
+      try {
+        return await verification.timeout(remaining);
+      } on TimeoutException {
+        candidateCancel.cancel();
+        // Future.timeout returns before the verifier's finally block runs.
+        // NativeHomepageVerifier uses that finally block to destroy its host;
+        // wait for it before releasing this worker slot and creating another
+        // WebView.
+        try {
+          await verification.timeout(verifierCleanupTimeout);
+        } on TimeoutException {
+          // A misbehaving verifier cannot hold the coordinator forever. Keep
+          // observing the future so a late error is not unhandled while its
+          // native cleanup finishes in the background.
+          unawaited(
+            verification.then<void>(
+              (_) {},
+              onError: (Object _, StackTrace _) {},
+            ),
+          );
+        } catch (_) {
+          // The timeout result owns the public outcome; cleanup errors are
+          // handled by the verifier's own failure path.
+        }
+        return timedOut(
+          ProbeStatus.timeout,
+          'HTTP 初筛与首页验证合计超过 ${HttpProbe.candidateDeadline.inSeconds} 秒',
+        );
+      } finally {
+        detach();
+        candidateCancel.cancel();
+      }
+    }
+
     try {
       final sites = (await candidates())
           .where(
@@ -235,7 +333,10 @@ class ProbeCoordinator extends ChangeNotifier {
       }
 
       await Future.wait(
-        List.generate(sites.length.clamp(0, 4), (_) => worker()),
+        List.generate(
+          sites.length.clamp(0, maxConcurrentProbes),
+          (_) => worker(),
+        ),
       );
       token.check();
       final reachable =
@@ -251,7 +352,8 @@ class ProbeCoordinator extends ChangeNotifier {
       }
       final toVerify = all ? selected : selected.take(3).toList();
       if (all) {
-        // Full-coverage round runs the DOM checks with a hard concurrency of 3.
+        // Full-coverage round runs the DOM checks with the same hard limit as
+        // HTTP screening so a discovery round never exceeds eight candidates.
         var next = 0;
         Future<void> worker() async {
           while (!token.cancelled && next < toVerify.length) {
@@ -260,12 +362,15 @@ class ProbeCoordinator extends ChangeNotifier {
             final site = sites.firstWhere(
               (c) => c.id == preliminary.candidateId,
             );
-            publish(await verifier.verify(site, id, token));
+            publish(await verifyWithinCandidateDeadline(site, preliminary));
           }
         }
 
         await Future.wait(
-          List.generate(toVerify.length.clamp(0, 3), (_) => worker()),
+          List.generate(
+            toVerify.length.clamp(0, maxConcurrentProbes),
+            (_) => worker(),
+          ),
         );
       } else {
         // Default round stays serial so the three numbers are directly
@@ -273,7 +378,7 @@ class ProbeCoordinator extends ChangeNotifier {
         for (final preliminary in toVerify) {
           token.check();
           final site = sites.firstWhere((c) => c.id == preliminary.candidateId);
-          publish(await verifier.verify(site, id, token));
+          publish(await verifyWithinCandidateDeadline(site, preliminary));
         }
       }
       await Future.wait(pendingSaves);

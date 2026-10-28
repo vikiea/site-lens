@@ -62,6 +62,54 @@ class FakeVerifier implements HomepageVerifier {
   }
 }
 
+class _HangingVerifier implements HomepageVerifier {
+  @override
+  Future<ProbeResult> verify(
+    Candidate c,
+    int round,
+    Cancellation cancel,
+  ) async {
+    await Future<void>.delayed(const Duration(seconds: 5));
+    return ProbeResult(
+      round: round,
+      candidateId: c.id,
+      stage: ProbeStage.homepage,
+      status: ProbeStatus.ready,
+      entryUrl: c.url,
+      finalUrl: c.url,
+      elapsed: const Duration(seconds: 5),
+      checkedAt: DateTime.now(),
+    );
+  }
+}
+
+class _CleanupAwareVerifier implements HomepageVerifier {
+  bool cleanupFinished = false;
+
+  @override
+  Future<ProbeResult> verify(
+    Candidate c,
+    int round,
+    Cancellation cancel,
+  ) async {
+    try {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      return ProbeResult(
+        round: round,
+        candidateId: c.id,
+        stage: ProbeStage.homepage,
+        status: ProbeStatus.ready,
+        entryUrl: c.url,
+        finalUrl: c.url,
+        elapsed: const Duration(milliseconds: 100),
+        checkedAt: DateTime.now(),
+      );
+    } finally {
+      cleanupFinished = true;
+    }
+  }
+}
+
 void main() {
   final sites = List.generate(
     8,
@@ -87,7 +135,10 @@ void main() {
       );
       addTearDown(p.dispose);
       await p.run();
-      expect(http.maxActive, lessThanOrEqualTo(4));
+      expect(
+        http.maxActive,
+        lessThanOrEqualTo(ProbeCoordinator.maxConcurrentProbes),
+      );
       expect(verifier.ids, [1, 2, 3]);
       // Default round is serial so its three timings are directly comparable.
       expect(verifier.maxActive, 1);
@@ -98,7 +149,7 @@ void main() {
     },
   );
   test(
-    'full round is bounded-parallel (<=3) and covers every reachable landing',
+    'full round is bounded-parallel (<=8) and covers every reachable landing',
     () async {
       final verifier = FakeVerifier();
       final p = ProbeCoordinator(
@@ -110,7 +161,10 @@ void main() {
       addTearDown(p.dispose);
       await p.run(all: true);
       expect(verifier.ids.toSet(), {1, 2, 3, 4, 5, 6, 7, 8});
-      expect(verifier.maxActive, lessThanOrEqualTo(3));
+      expect(
+        verifier.maxActive,
+        lessThanOrEqualTo(ProbeCoordinator.maxConcurrentProbes),
+      );
       expect(verifier.maxActive, greaterThan(1)); // genuinely parallel
       expect(p.recommendations.first.candidateId, 8);
     },
@@ -136,4 +190,62 @@ void main() {
     expect(p.running, isFalse);
     expect(p.notice, 'user selected');
   });
+
+  test('homepage verification consumes the HTTP candidate budget', () async {
+    final p = ProbeCoordinator(
+      candidates: () async => [sites.first],
+      httpProbe: _ElapsedHttp(const Duration(seconds: 5)),
+      verifier: _HangingVerifier(),
+      save: (_) async {},
+    );
+    addTearDown(p.dispose);
+
+    await p.run(all: true);
+
+    expect(p.results[1]?.status, ProbeStatus.timeout);
+    expect(p.results[1]?.reason, contains('合计超过 5 秒'));
+  });
+
+  test(
+    'homepage timeout waits for verifier cleanup before releasing worker',
+    () async {
+      final verifier = _CleanupAwareVerifier();
+      final p = ProbeCoordinator(
+        candidates: () async => [sites.first],
+        httpProbe: _ElapsedHttp(const Duration(seconds: 4, milliseconds: 950)),
+        verifier: verifier,
+        save: (_) async {},
+      );
+      addTearDown(p.dispose);
+
+      final watch = Stopwatch()..start();
+      await p.run(all: true);
+
+      expect(p.results[1]?.status, ProbeStatus.timeout);
+      expect(verifier.cleanupFinished, isTrue);
+      expect(
+        watch.elapsed,
+        greaterThanOrEqualTo(const Duration(milliseconds: 90)),
+      );
+    },
+  );
+}
+
+class _ElapsedHttp extends HttpProbe {
+  _ElapsedHttp(this.elapsed);
+
+  final Duration elapsed;
+
+  @override
+  Future<ProbeResult> run(Candidate c, int round, Cancellation cancel) async =>
+      ProbeResult(
+        round: round,
+        candidateId: c.id,
+        stage: ProbeStage.http,
+        status: ProbeStatus.reachable,
+        entryUrl: c.url,
+        finalUrl: c.url,
+        elapsed: elapsed,
+        checkedAt: DateTime.now(),
+      );
 }

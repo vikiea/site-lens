@@ -185,6 +185,19 @@ class DeviceDiagnosticsService extends ChangeNotifier {
       ),
     ];
     final isAndroid = platform == 'android';
+    if (isAndroid &&
+        rows.every((row) => row.id != 'platform.renderer.policy')) {
+      rows.add(
+        CapabilityRecord(
+          id: 'platform.renderer.policy',
+          state: CapabilityState.unknown,
+          configured: null,
+          reason: '原生诊断未返回渲染策略；Flutter 玻璃仍按当前角色策略运行',
+          source: 'DeviceDiagnosticsService fallback',
+          capturedAtMs: now,
+        ),
+      );
+    }
     final hcppNotApplicable = !isAndroid || (native?.apiLevel ?? 34) < 34;
     rows.add(
       CapabilityRecord(

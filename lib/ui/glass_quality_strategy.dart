@@ -23,6 +23,9 @@ enum SiteLensSurfaceRole {
   /// Content: panels, cards, sheets, dialogs.
   panel,
 
+  /// Overlay choices and compact menus owned by Flutter.
+  menu,
+
   /// Directly over a native WebView.
   platformView,
 }
@@ -123,7 +126,6 @@ class SiteLensGlassQualityStrategy {
     // Flutter-owned surfaces; only the native WebView surface needs the
     // clipped fill because its pixels cannot be captured by the glass shader.
     final useCompatibilityFallback =
-        backgroundMode == BackgroundMode.transparent ||
         (androidWebViewComposition &&
             role == SiteLensSurfaceRole.platformView) ||
         (lightweightShaderSupported == false && !platformViewBackdrop);
@@ -156,7 +158,10 @@ class SiteLensGlassQualityStrategy {
     };
     final quality = switch (role) {
       SiteLensSurfaceRole.panel =>
-        allSurfacesHighQuality ? selectedQuality : GlassQuality.standard,
+        mode == SiteLensGlassQualityMode.high || allSurfacesHighQuality
+            ? selectedQuality
+            : GlassQuality.standard,
+      SiteLensSurfaceRole.menu => selectedQuality,
       SiteLensSurfaceRole.platformView => GlassQuality.standard,
       SiteLensSurfaceRole.chrome => selectedQuality,
     };
@@ -177,7 +182,8 @@ class SiteLensGlassQualityStrategy {
     // endpoint. The floor preserves the navigation surface and its contrast;
     // content panels continue to honor the exact requested alpha. Their neutral
     // theme tokens provide the contrast needed to make low values readable.
-    final fillAlpha = role == SiteLensSurfaceRole.chrome
+    final fillAlpha =
+        role == SiteLensSurfaceRole.chrome || role == SiteLensSurfaceRole.menu
         ? requestedAlpha.clamp(0.16, 1.0)
         : requestedAlpha;
     return SiteLensColors.of(context).glassSurface.withValues(alpha: fillAlpha);

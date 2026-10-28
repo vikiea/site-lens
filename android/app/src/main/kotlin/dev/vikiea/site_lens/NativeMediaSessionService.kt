@@ -93,17 +93,29 @@ class NativeMediaSessionService : MediaSessionService() {
             controllerInfo: MediaSession.ControllerInfo,
             playerCommand: Int,
         ): Int {
-            if (!isAllowedController(controllerInfo)) return Player.COMMAND_INVALID
-            if (playerCommand == Player.COMMAND_STOP) {
-                stopAndRelease()
-                return Player.COMMAND_INVALID
+            val decision = NativeMediaSessionPolicy.playerCommandDecision(
+                controllerAllowed = isAllowedController(controllerInfo),
+                appController = isAppController(controllerInfo),
+                command = playerCommand,
+            )
+            return when (decision) {
+                NativeMediaSessionPolicy.PlayerCommandDecision.REJECT -> Player.COMMAND_INVALID
+                NativeMediaSessionPolicy.PlayerCommandDecision.ALLOW,
+                NativeMediaSessionPolicy.PlayerCommandDecision.ALLOW_AND_RELEASE -> playerCommand
             }
-            if (!isAppController(controllerInfo) &&
-                !NativeMediaSessionPolicy.isExternalPlayerCommandAllowed(playerCommand)
+        }
+
+        override fun onPlayerInteractionFinished(
+            session: MediaSession,
+            controllerInfo: MediaSession.ControllerInfo,
+            playerCommands: Player.Commands,
+        ) {
+            if (isAllowedController(controllerInfo) &&
+                playerCommands.contains(Player.COMMAND_STOP) &&
+                NativeMediaSessionPolicy.shouldReleaseAfterPlayerCommand(Player.COMMAND_STOP)
             ) {
-                return Player.COMMAND_INVALID
+                stopAndRelease()
             }
-            return playerCommand
         }
     }
     private val positionPersistence = object : Runnable {

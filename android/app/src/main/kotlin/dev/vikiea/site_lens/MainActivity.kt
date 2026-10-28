@@ -406,6 +406,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onPause() { hosts?.foreground(false); super.onPause() }
     override fun onResume() { super.onResume(); hosts?.foreground(true) }
+    override fun onStop() { hosts?.foreground(false); super.onStop() }
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
         diagnosticsGeneration++
         authRefreshGeneration++

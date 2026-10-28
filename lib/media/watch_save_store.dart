@@ -17,8 +17,16 @@ class WatchSaveStore extends ChangeNotifier {
   Future<void>? _writes;
   bool _restored = false;
   bool _disposed = false;
+  String? _lastFailureReason;
 
   List<WatchSave> get saves => List.unmodifiable(_items.values.toList());
+  String? get lastFailureReason => _lastFailureReason;
+
+  void _recordFailure(String reason) {
+    if (_lastFailureReason == reason) return;
+    _lastFailureReason = reason;
+    if (!_disposed) notifyListeners();
+  }
 
   Future<void> restore() {
     if (_restored) return Future<void>.value();
@@ -55,12 +63,25 @@ class WatchSaveStore extends ChangeNotifier {
     required int? profileId,
     bool Function()? isCurrent,
   }) async {
-    if (!evidence.watchSaveEligible || evidence.sourceUrl == null) return null;
+    if (evidence.sourceUrl == null) {
+      _recordFailure('当前播放缺少有效媒体地址');
+      return null;
+    }
+    if (!evidence.watchSaveEligible) {
+      _recordFailure(evidence.reason ?? '当前播放缺少稳定的系列或集数信息');
+      return null;
+    }
     await restore();
-    if (_disposed || isCurrent?.call() == false) return null;
+    if (_disposed || isCurrent?.call() == false) {
+      _recordFailure('播放页面已切换，已忽略陈旧播放事件');
+      return null;
+    }
     final next = WatchSave.fromEvidence(evidence, profileId: profileId);
     final previous = _items[next.ownerId];
-    if (previous == null && !evidence.autoSaveEligible) return null;
+    if (previous == null && !evidence.autoSaveEligible) {
+      _recordFailure('当前播放状态尚未达到可保存条件');
+      return null;
+    }
     final save = previous == null
         ? next
         : previous.copyWith(
@@ -83,6 +104,7 @@ class WatchSaveStore extends ChangeNotifier {
       final accepted = await db.saveWatchSave(save);
       if (accepted) {
         committed = true;
+        _lastFailureReason = null;
         if (!_disposed) {
           _items[save.ownerId] = save;
           notifyListeners();

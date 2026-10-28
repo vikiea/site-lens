@@ -3,6 +3,12 @@ package dev.vikiea.site_lens
 import androidx.media3.common.Player
 
 internal object NativeMediaSessionPolicy {
+    enum class PlayerCommandDecision {
+        ALLOW,
+        ALLOW_AND_RELEASE,
+        REJECT,
+    }
+
     enum class TaskRemovalAction {
         KEEP_RUNNING,
         PRESERVE_RESTORABLE,
@@ -32,6 +38,21 @@ internal object NativeMediaSessionPolicy {
         Player.COMMAND_SET_VIDEO_SURFACE,
         Player.COMMAND_RELEASE,
     )
+
+    fun playerCommandDecision(
+        controllerAllowed: Boolean,
+        appController: Boolean,
+        command: Int,
+    ): PlayerCommandDecision = when {
+        !controllerAllowed -> PlayerCommandDecision.REJECT
+        !appController && !isExternalPlayerCommandAllowed(command) ->
+            PlayerCommandDecision.REJECT
+        command == Player.COMMAND_STOP -> PlayerCommandDecision.ALLOW_AND_RELEASE
+        else -> PlayerCommandDecision.ALLOW
+    }
+
+    fun shouldReleaseAfterPlayerCommand(command: Int): Boolean =
+        command == Player.COMMAND_STOP
 
     fun isExplicitPlayWhenReadyChange(reason: Int): Boolean =
         reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST ||

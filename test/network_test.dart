@@ -211,6 +211,28 @@ void main() {
     expect(r.status, ProbeStatus.cancelled);
   });
 
+  test('one HTTP candidate has a strict five-second total deadline', () async {
+    final route = Completer<MediaNetworkRoute>();
+    final probe = HttpProbe(
+      allowLocal: true,
+      routeForAttempt: (_, _) => route.future,
+    );
+    final watch = Stopwatch()..start();
+    final result = await probe.run(
+      Candidate(
+        id: 1,
+        url: Uri.parse('http://127.0.0.1:1/'),
+        label: 'deadline',
+      ),
+      1,
+      Cancellation(),
+    );
+    expect(result.status, ProbeStatus.timeout);
+    expect(result.elapsed, lessThan(const Duration(seconds: 6)));
+    expect(watch.elapsed, lessThan(const Duration(seconds: 6)));
+    route.complete(const MediaNetworkRoute());
+  });
+
   test(
     'cancelling while reading the system route prevents a late connection',
     () async {

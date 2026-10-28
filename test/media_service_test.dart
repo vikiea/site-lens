@@ -12,6 +12,7 @@ import 'package:site_lens/media/media_directory_migration.dart';
 import 'package:site_lens/media/media_library.dart';
 import 'package:site_lens/media/media_service.dart';
 import 'package:site_lens/media/native_download_runtime.dart';
+import 'package:site_lens/media/native_export_runtime.dart';
 import 'package:site_lens/network/transport.dart';
 
 class FakeNativeDownloads extends NativeDownloadRuntime {
@@ -75,6 +76,41 @@ class FakeNativeDownloads extends NativeDownloadRuntime {
     calls.add('resume:$taskId');
     return statuses[taskId] ?? {'state': 'downloading'};
   }
+}
+
+class _CaptureExportRuntime extends NativeExportRuntime {
+  List<String> validatedResources = const [];
+  List<String> validatedRoots = const [];
+  List<String> muxedResources = const [];
+  List<String> muxedRoots = const [];
+
+  @override
+  Future<bool> validateLocalInput(
+    String path, {
+    List<String> resourcePaths = const [],
+    List<String> allowedRoots = const [],
+  }) async {
+    validatedResources = List.of(resourcePaths);
+    validatedRoots = List.of(allowedRoots);
+    return true;
+  }
+
+  @override
+  Future<String> muxHls({
+    required String playlist,
+    required String output,
+    List<String> resourcePaths = const [],
+    List<String> allowedRoots = const [],
+    String? jobId,
+  }) async {
+    muxedResources = List.of(resourcePaths);
+    muxedRoots = List.of(allowedRoots);
+    await File(output).writeAsBytes([9, 8, 7]);
+    return output;
+  }
+
+  @override
+  Future<bool> validateOutput(String path, {String? jobId}) async => true;
 }
 
 MediaCandidate candidate({
@@ -1827,6 +1863,45 @@ void main() {
     expect(input.resourceGraph.allowedRootPaths, contains(sharedRoot.path));
     expect(input.resourceGraph.resourcePaths, contains(linkedKey.path));
     expect(input.resourceGraph.resourcePaths, contains(segment.path));
+  });
+
+  test('native HLS export receives shared resource graph paths', () async {
+    final root = await Directory.systemTemp.createTemp('site-lens-native-graph-');
+    addTearDown(() => root.delete(recursive: true));
+    final taskRoot = await Directory('${root.path}/media_cache/task.hls')
+        .create(recursive: true);
+    final sharedRoot = await Directory(
+      '${root.path}/media_cache/shared_resources',
+    ).create(recursive: true);
+    final key = File('${sharedRoot.path}/key.bin')
+      ..writeAsBytesSync(List.filled(16, 1));
+    final linkedKey = Link('${taskRoot.path}/key.bin');
+    await linkedKey.create(key.path);
+    final segment = File('${taskRoot.path}/seg.ts')..writeAsBytesSync([1, 2, 3]);
+    final playlist = File('${taskRoot.path}/index.m3u8')
+      ..writeAsStringSync(
+        '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\n'
+        '#EXTINF:1,\nseg.ts\n',
+      );
+    final input = await const HlsPlaylistParser().parseFile(playlist.uri);
+    final tasks = MediaTaskStore(directoryProvider: () async => root);
+    final task = tasks.create(candidate(url: 'https://cdn.example/index.m3u8'));
+    tasks.transition(task.id, MediaTaskState.downloading);
+    tasks.transition(task.id, MediaTaskState.completed);
+    tasks.transition(task.id, MediaTaskState.playable);
+    final native = _CaptureExportRuntime();
+
+    await Mp4ExportService(
+      tasks: tasks,
+      native: native,
+      directoryProvider: () async => root,
+    ).export(task.id, input);
+
+    expect(native.validatedResources, contains(linkedKey.path));
+    expect(native.validatedResources, contains(segment.path));
+    expect(native.validatedRoots, contains(sharedRoot.path));
+    expect(native.muxedResources, native.validatedResources);
+    expect(native.muxedRoots, native.validatedRoots);
   });
 
   test('HLS attributes accept unquoted encryption method and URI', () async {

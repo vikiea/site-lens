@@ -91,4 +91,35 @@ class NativeMediaSessionPolicyTest {
             ),
         )
     }
+
+    @Test fun stopIsAcceptedThenReleasedAfterInteraction() {
+        assertEquals(
+            NativeMediaSessionPolicy.PlayerCommandDecision.ALLOW_AND_RELEASE,
+            NativeMediaSessionPolicy.playerCommandDecision(
+                controllerAllowed = true,
+                appController = false,
+                command = Player.COMMAND_STOP,
+            ),
+        )
+        assertTrue(NativeMediaSessionPolicy.shouldReleaseAfterPlayerCommand(Player.COMMAND_STOP))
+    }
+
+    @Test fun rejectedControllersCannotTriggerReleaseOrReplaceMedia() {
+        assertEquals(
+            NativeMediaSessionPolicy.PlayerCommandDecision.REJECT,
+            NativeMediaSessionPolicy.playerCommandDecision(
+                controllerAllowed = false,
+                appController = false,
+                command = Player.COMMAND_STOP,
+            ),
+        )
+        assertEquals(
+            NativeMediaSessionPolicy.PlayerCommandDecision.REJECT,
+            NativeMediaSessionPolicy.playerCommandDecision(
+                controllerAllowed = true,
+                appController = false,
+                command = Player.COMMAND_SET_MEDIA_ITEM,
+            ),
+        )
+    }
 }

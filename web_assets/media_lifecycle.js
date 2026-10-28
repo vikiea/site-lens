@@ -274,6 +274,47 @@
       return route;
     } catch (_) { return null; }
   }
+  function explicitSeriesIdentity(element) {
+    const candidates = [];
+    const add = value => {
+      if (typeof value !== 'string') return;
+      const normalized = value.trim();
+      if (normalized && normalized.length <= 256) candidates.push(normalized);
+    };
+    const owner = element?.closest?.(
+      '[data-series-id],[data-series-key],[data-show-id],[data-play-id]'
+    );
+    if (owner && typeof owner.getAttribute === 'function') {
+      add(owner.getAttribute('data-series-id'));
+      add(owner.getAttribute('data-series-key'));
+      add(owner.getAttribute('data-show-id'));
+      add(owner.getAttribute('data-play-id'));
+    }
+    const root = document.documentElement;
+    if (root && typeof root.getAttribute === 'function') {
+      add(root.getAttribute('data-series-id'));
+      add(root.getAttribute('data-series-key'));
+      add(root.getAttribute('data-show-id'));
+    }
+    const elementData = initialDataElement();
+    if (elementData && elementData.getAttribute?.('type') === 'application/json') {
+      try {
+        const raw = elementData.textContent || '';
+        if (raw.length <= 256 * 1024) {
+          const data = JSON.parse(raw);
+          if (data && typeof data === 'object' && !Array.isArray(data)) {
+            add(String(data.seriesId ?? ''));
+            add(String(data.seriesKey ?? ''));
+          }
+        }
+      } catch (_) { /* Explicit page identity is advisory and fail-closed. */ }
+    }
+    const value = candidates[0];
+    if (!value) return null;
+    let origin = '';
+    try { origin = new URL(pageUrl()).origin; } catch (_) {}
+    return `explicit:${origin}:${value}`.slice(0, 512);
+  }
   function belongsToSeries(element, context) {
     if (!context || typeof element.closest !== 'function') return true;
     const owner = element.closest('[data-play-id]');
@@ -808,8 +849,10 @@
     let sourceUrl = null;
     let sourceKey = '';
     let episodeNumber = null;
+    let explicitSeries = null;
     let evidenceTitle = String(document.title || '').slice(0, 512);
     if (activeNode) {
+      explicitSeries = explicitSeriesIdentity(activeNode);
       const rawSource = activeNode.currentSrc || activeNode.src || '';
       try {
         const source = new URL(rawSource, document.baseURI);
@@ -857,7 +900,7 @@
       pageUrl: pageUrl(),
       sourceUrl,
       sourceKey,
-      seriesKey: context?.series || null,
+      seriesKey: context?.series || explicitSeries || null,
       episodeNumber,
       title: evidenceTitle,
       state: evidenceState,
@@ -1293,7 +1336,7 @@
   if (typeof MutationObserver === 'function') {
     new MutationObserver(() => scheduleReport()).observe(document, {
       childList: true, subtree: true, characterData: true, attributes: true,
-      attributeFilter: [...mediaAttributes, 'src', 'type', 'poster', 'data-poster', 'data-play-id', 'data-episode', 'data-episode-index', 'data-num'],
+      attributeFilter: [...mediaAttributes, 'src', 'type', 'poster', 'data-poster', 'data-play-id', 'data-series-id', 'data-series-key', 'data-show-id', 'data-episode', 'data-episode-index', 'data-num'],
     });
   }
   let resourceObserver = null;

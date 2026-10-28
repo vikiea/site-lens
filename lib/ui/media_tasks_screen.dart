@@ -1268,7 +1268,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
                     CheckboxListTile(
                       contentPadding: EdgeInsets.zero,
                       controlAffinity: ListTileControlAffinity.leading,
-                      title: const Text('同时删除媒体任务缓存'),
+                      title: const Text('同时删除媒体任务及缓存'),
                       subtitle: const Text('默认保留，删除后需要重新下载'),
                       value: deleteTaskCache,
                       onChanged: (value) =>
@@ -1293,6 +1293,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
           await app.deleteMediaArtifact(
             item.taskId,
             deleteTaskCache: linkedTask != null && deleteTaskCache,
+            deleteTask: linkedTask != null && deleteTaskCache,
           );
           await _organization.removeItems([item.taskId]);
         }
@@ -1905,7 +1906,9 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
               title: '观看保存',
               subtitle: saves.isEmpty
                   ? app.autoSaveWebPlayback
-                        ? '已开启，等待有效播放记录'
+                        ? (app.watchSaves.lastFailureReason == null
+                              ? '已开启，等待有效播放记录'
+                              : '已开启：${app.watchSaves.lastFailureReason}')
                         : '暂无记录，自动保存已关闭'
                   : '${saves.length} 条观看记录',
             ),

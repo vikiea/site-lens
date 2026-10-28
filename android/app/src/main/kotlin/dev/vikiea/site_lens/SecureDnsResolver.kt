@@ -9,9 +9,11 @@ import okhttp3.dnsoverhttps.DnsOverHttps
 import java.util.Locale
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 class SecureDnsResolver {
     private data class CacheEntry(
+        val epoch: Long,
         val expiresAtNanos: Long,
         val addresses: List<String>,
     )
@@ -19,12 +21,13 @@ class SecureDnsResolver {
     companion object {
         private const val CACHE_TTL_SECONDS = 60L
         private const val MAX_CACHE_ENTRIES = 256
-        private const val LOOKUP_TIMEOUT_SECONDS = 10L
+        private const val LOOKUP_TIMEOUT_MILLIS = 5_000L
     }
 
     private val dnsByProvider = ConcurrentHashMap<String, Dns>()
     private val cache = ConcurrentHashMap<String, CacheEntry>()
     private val inFlight = ConcurrentHashMap<String, CompletableFuture<List<String>>>()
+    private val cacheEpoch = AtomicLong(0)
     private val providers = mapOf(
         "tencent" to "https://doh.pub/dns-query",
         "alibaba" to "https://dns.alidns.com/dns-query",
@@ -41,13 +44,17 @@ class SecureDnsResolver {
         require(normalizedHostname.isNotBlank()) { "hostname is empty" }
         require(provider in providers) { "unsupported secure DNS provider" }
         val key = "$provider\u0000$normalizedHostname"
+        val nowEpoch = cacheEpoch.get()
         val now = System.nanoTime()
-        cache[key]?.takeIf { it.expiresAtNanos > now }?.let { return it.addresses }
+        cache[key]
+            ?.takeIf { it.epoch == nowEpoch && it.expiresAtNanos > now }
+            ?.let { return it.addresses }
 
         val pending = CompletableFuture<List<String>>()
-        val existing = inFlight.putIfAbsent(key, pending)
+        val flightKey = "$key\u0000$nowEpoch"
+        val existing = inFlight.putIfAbsent(flightKey, pending)
         if (existing != null) {
-            return existing.get(LOOKUP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            return existing.get(LOOKUP_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
         }
 
         try {
@@ -59,11 +66,14 @@ class SecureDnsResolver {
                 throw IllegalStateException("secure DNS returned no address")
             }
             val stable = addresses.toList()
-            cache[key] = CacheEntry(
-                expiresAtNanos = System.nanoTime() +
-                    TimeUnit.SECONDS.toNanos(CACHE_TTL_SECONDS),
-                addresses = stable,
-            )
+            if (cacheEpoch.get() == nowEpoch) {
+                cache[key] = CacheEntry(
+                    epoch = nowEpoch,
+                    expiresAtNanos = System.nanoTime() +
+                        TimeUnit.SECONDS.toNanos(CACHE_TTL_SECONDS),
+                    addresses = stable,
+                )
+            }
             if (cache.size > MAX_CACHE_ENTRIES) {
                 cache.keys.firstOrNull()?.let(cache::remove)
             }
@@ -73,16 +83,23 @@ class SecureDnsResolver {
             pending.completeExceptionally(error)
             throw error
         } finally {
-            inFlight.remove(key, pending)
+            inFlight.remove(flightKey, pending)
         }
     }
 
     fun clearCache() {
+        cacheEpoch.incrementAndGet()
         cache.clear()
     }
 
     private fun dns(provider: String): Dns = dnsByProvider.getOrPut(provider) {
-        val bootstrap = OkHttpClient.Builder().build()
+        val timeout = LOOKUP_TIMEOUT_MILLIS
+        val bootstrap = OkHttpClient.Builder()
+            .connectTimeout(timeout, TimeUnit.MILLISECONDS)
+            .readTimeout(timeout, TimeUnit.MILLISECONDS)
+            .writeTimeout(timeout, TimeUnit.MILLISECONDS)
+            .callTimeout(timeout, TimeUnit.MILLISECONDS)
+            .build()
         DnsOverHttps.Builder()
             .client(bootstrap)
             .url(providers.getValue(provider).toHttpUrl())

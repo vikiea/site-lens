@@ -3785,7 +3785,12 @@ class Mp4ExportService {
           cancellation: cancel,
         );
       } else if (native != null) {
-        if (!await native!.validateLocalInput(input.playlist.toFilePath())) {
+        final graph = input.resourceGraph;
+        if (!await native!.validateLocalInput(
+          input.playlist.toFilePath(),
+          resourcePaths: graph.resourcePaths,
+          allowedRoots: graph.allowedRootPaths,
+        )) {
           throw StateError('HLS 本地输入校验失败');
         }
         cancel.check();
@@ -3803,6 +3808,8 @@ class Mp4ExportService {
           await native!.muxHls(
             playlist: input.playlist.toFilePath(),
             output: temporary.path,
+            resourcePaths: graph.resourcePaths,
+            allowedRoots: graph.allowedRootPaths,
             jobId: jobId,
           );
         } finally {

@@ -232,7 +232,22 @@ class SiteLensGlassSurface extends StatelessWidget {
       }
 
       late final Widget decoration;
-      if (plan.useCompatibilityFallback) {
+      final useTransparentLocalGlassFallback =
+          policy.backgroundMode == BackgroundMode.transparent &&
+          role != SiteLensSurfaceRole.platformView;
+      if (useTransparentLocalGlassFallback) {
+        // Transparent mode leaves the app-owned backdrop empty. Keep that
+        // transparency outside the surface, but let Flutter-owned controls
+        // retain a local glass material instead of becoming a full-color slab.
+        decoration = AdaptiveGlass(
+          shape: shape,
+          settings: plan.settings,
+          quality: plan.quality,
+          platformViewBackdrop: false,
+          allowElevation: false,
+          child: const SizedBox.expand(),
+        );
+      } else if (plan.useCompatibilityFallback) {
         final backer = plan.settings.effectiveBackerColor;
         decoration = ClipPath(
           clipper: ShapeBorderClipper(shape: shape),
@@ -388,6 +403,30 @@ class SiteLensGlassGroup extends StatelessWidget {
             SiteLensGlassPolicyScope.of(context).webViewVisible &&
             !SiteLensGlassPolicyScope.of(context).hcppEffective),
     joinEnclosing: true,
+    child: child,
+  );
+}
+
+/// A bounded glass control for buttons that sit on another shared surface.
+/// The control has its own semantic shape while its caller owns layout and
+/// interaction semantics.
+class SiteLensGlassControl extends StatelessWidget {
+  const SiteLensGlassControl({
+    super.key,
+    required this.child,
+    required this.radius,
+    this.role = SiteLensSurfaceRole.chrome,
+  });
+
+  final Widget child;
+  final double radius;
+  final SiteLensSurfaceRole role;
+
+  @override
+  Widget build(BuildContext context) => SiteLensGlassSurface(
+    role: role,
+    radius: radius,
+    padding: EdgeInsets.zero,
     child: child,
   );
 }
