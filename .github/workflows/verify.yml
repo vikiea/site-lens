@@ -17,6 +17,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
+          # Contract lifecycle checks compare registry history with the event base.
+          fetch-depth: 0
           persist-credentials: false
       - name: Fixed Flutter SDK
         shell: bash

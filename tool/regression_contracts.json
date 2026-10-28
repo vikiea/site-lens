@@ -1,77 +1,458 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "contracts": [
     {
       "id": "UI-TRANSITION-001",
       "description": "页面切换不产生白屏、旧页面残留或玻璃层脱离共享背景。",
-      "changedPaths": ["lib/main.dart", "lib/ui/app_theme.dart", "lib/ui/screens.dart", "lib/ui/ui_primitives.dart"],
-      "testFiles": ["test/navigation_transition_test.dart"],
+      "status": "active",
+      "owner": "site-lens-quality",
+      "introducedIn": "v0.5.0.alpha11",
+      "lastVerified": null,
+      "replacedBy": null,
+      "changedPaths": [
+        "lib/main.dart",
+        "lib/ui/app_theme.dart",
+        "lib/ui/screens.dart",
+        "lib/ui/ui_primitives.dart"
+      ],
+      "testFiles": [
+        "test/navigation_transition_test.dart"
+      ],
+      "evidence": [
+        {
+          "kind": "command",
+          "ref": "make check"
+        },
+        {
+          "kind": "test",
+          "ref": "test/navigation_transition_test.dart"
+        }
+      ],
       "validation": "L1",
-      "blocking": true
+      "blocking": true,
+      "revision": 1
     },
     {
       "id": "UI-GLASS-001",
       "description": "高质量模式保持 Flutter 自有面板的 premium 策略，并区分 platformView 降级。",
-      "changedPaths": ["lib/ui/app_theme.dart", "lib/ui/glass_quality_strategy.dart", "lib/ui/glass_surface.dart"],
-      "testFiles": ["test/glass_quality_strategy_test.dart", "integration_test/hcpp_visual_test.dart", "tool/test_ui_tokens.py"],
+      "status": "active",
+      "owner": "site-lens-quality",
+      "introducedIn": "v0.5.0.alpha11",
+      "lastVerified": null,
+      "replacedBy": null,
+      "changedPaths": [
+        "lib/ui/app_theme.dart",
+        "lib/ui/glass_quality_strategy.dart",
+        "lib/ui/glass_surface.dart"
+      ],
+      "testFiles": [
+        "test/glass_quality_strategy_test.dart",
+        "integration_test/hcpp_visual_test.dart",
+        "tool/test_ui_tokens.py"
+      ],
+      "evidence": [
+        {
+          "kind": "command",
+          "ref": "make check"
+        },
+        {
+          "kind": "test",
+          "ref": "test/glass_quality_strategy_test.dart"
+        },
+        {
+          "kind": "test",
+          "ref": "integration_test/hcpp_visual_test.dart"
+        },
+        {
+          "kind": "test",
+          "ref": "tool/test_ui_tokens.py"
+        }
+      ],
       "validation": "L2",
-      "blocking": true
+      "blocking": true,
+      "revision": 1
     },
     {
       "id": "UI-DOCK-001",
       "description": "浏览器浮窗贴边几何、六点标记、导航和页面切换状态保持一致。",
-      "changedPaths": ["lib/ui/app_theme.dart", "lib/ui/browser_dock.dart", "lib/ui/screens.dart"],
-      "testFiles": ["test/browser_dock_test.dart"],
+      "status": "active",
+      "owner": "site-lens-quality",
+      "introducedIn": "v0.5.0.alpha11",
+      "lastVerified": null,
+      "replacedBy": null,
+      "changedPaths": [
+        "lib/ui/app_theme.dart",
+        "lib/ui/browser_dock.dart",
+        "lib/ui/screens.dart"
+      ],
+      "testFiles": [
+        "test/browser_dock_test.dart"
+      ],
+      "evidence": [
+        {
+          "kind": "command",
+          "ref": "make check"
+        },
+        {
+          "kind": "test",
+          "ref": "test/browser_dock_test.dart"
+        }
+      ],
       "validation": "L1",
-      "blocking": true
+      "blocking": true,
+      "revision": 1
     },
     {
       "id": "MEDIA-HLS-001",
       "description": "Dart、原生导出和 Media3 对 HLS 共享资源使用相同的路径、key、init 和 segment 语义。",
-      "changedPaths": ["lib/media/media_resource_coordinator.dart", "lib/media/media_service.dart", "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeExportRuntime.kt"],
-      "testFiles": ["test/media_download_resume_test.dart", "tool/test_native_media_contract.py", "integration_test/media_tasks_test.dart"],
+      "status": "active",
+      "owner": "site-lens-quality",
+      "introducedIn": "v0.5.0.alpha11",
+      "lastVerified": null,
+      "replacedBy": null,
+      "changedPaths": [
+        "lib/media/media_resource_coordinator.dart",
+        "lib/media/media_service.dart",
+        "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeExportRuntime.kt"
+      ],
+      "testFiles": [
+        "test/media_download_resume_test.dart",
+        "tool/test_native_media_contract.py",
+        "integration_test/media_tasks_test.dart"
+      ],
+      "evidence": [
+        {
+          "kind": "command",
+          "ref": "make check"
+        },
+        {
+          "kind": "test",
+          "ref": "test/media_download_resume_test.dart"
+        },
+        {
+          "kind": "test",
+          "ref": "tool/test_native_media_contract.py"
+        },
+        {
+          "kind": "test",
+          "ref": "integration_test/media_tasks_test.dart"
+        }
+      ],
       "validation": "L3",
-      "blocking": true
+      "blocking": true,
+      "revision": 1
     },
     {
       "id": "MEDIA-PLAY-001",
       "description": "边下边播、未缓存 seek、目标分片优先和清单原子发布保持可恢复。",
-      "changedPaths": ["lib/media/media_service.dart", "android/app/src/main/kotlin/dev/vikiea/site_lens/GrowingFileDataSource.kt"],
-      "testFiles": ["test/media_download_resume_test.dart", "integration_test/media_tasks_test.dart"],
+      "status": "active",
+      "owner": "site-lens-quality",
+      "introducedIn": "v0.5.0.alpha11",
+      "lastVerified": null,
+      "replacedBy": null,
+      "changedPaths": [
+        "lib/media/media_service.dart",
+        "android/app/src/main/kotlin/dev/vikiea/site_lens/GrowingFileDataSource.kt"
+      ],
+      "testFiles": [
+        "test/media_download_resume_test.dart",
+        "integration_test/media_tasks_test.dart"
+      ],
+      "evidence": [
+        {
+          "kind": "command",
+          "ref": "make check"
+        },
+        {
+          "kind": "test",
+          "ref": "test/media_download_resume_test.dart"
+        },
+        {
+          "kind": "test",
+          "ref": "integration_test/media_tasks_test.dart"
+        }
+      ],
       "validation": "L3",
-      "blocking": true
+      "blocking": true,
+      "revision": 1
     },
     {
       "id": "MEDIA-EXPORT-001",
       "description": "MP4 导出、独立索引、媒体库重扫和任务删除保持独立所有权。",
-      "changedPaths": ["lib/media/media_library.dart", "lib/media/media_service.dart", "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeExportRuntime.kt"],
-      "testFiles": ["test/media_library_test.dart", "integration_test/media_tasks_test.dart"],
+      "status": "active",
+      "owner": "site-lens-quality",
+      "introducedIn": "v0.5.0.alpha11",
+      "lastVerified": null,
+      "replacedBy": null,
+      "changedPaths": [
+        "lib/media/media_library.dart",
+        "lib/media/media_service.dart",
+        "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeExportRuntime.kt"
+      ],
+      "testFiles": [
+        "test/media_library_test.dart",
+        "integration_test/media_tasks_test.dart"
+      ],
+      "evidence": [
+        {
+          "kind": "command",
+          "ref": "make check"
+        },
+        {
+          "kind": "test",
+          "ref": "test/media_library_test.dart"
+        },
+        {
+          "kind": "test",
+          "ref": "integration_test/media_tasks_test.dart"
+        }
+      ],
       "validation": "L3",
-      "blocking": true
+      "blocking": true,
+      "revision": 1
     },
     {
       "id": "MEDIA-UPGRADE-001",
       "description": "稳定版本升级后数据库、设置、媒体缓存、历史和浏览器会话仍可恢复。",
-      "changedPaths": ["lib/data/database.dart", "lib/settings", "lib/media", "lib/browser"],
-      "testFiles": ["test/profile_migration_test.dart", "test/backup_service_test.dart", "test/settings_repository_test.dart", "test/media_download_resume_test.dart"],
+      "status": "active",
+      "owner": "site-lens-quality",
+      "introducedIn": "v0.5.0.alpha11",
+      "lastVerified": null,
+      "replacedBy": null,
+      "changedPaths": [
+        "lib/data/database.dart",
+        "lib/settings",
+        "lib/media",
+        "lib/browser"
+      ],
+      "testFiles": [
+        "test/profile_migration_test.dart",
+        "test/backup_service_test.dart",
+        "test/settings_repository_test.dart",
+        "test/media_download_resume_test.dart"
+      ],
+      "evidence": [
+        {
+          "kind": "command",
+          "ref": "make check"
+        },
+        {
+          "kind": "test",
+          "ref": "test/profile_migration_test.dart"
+        },
+        {
+          "kind": "test",
+          "ref": "test/backup_service_test.dart"
+        },
+        {
+          "kind": "test",
+          "ref": "test/settings_repository_test.dart"
+        },
+        {
+          "kind": "test",
+          "ref": "test/media_download_resume_test.dart"
+        }
+      ],
       "validation": "L2",
-      "blocking": true
+      "blocking": true,
+      "revision": 1
     },
     {
       "id": "UPDATE-001",
       "description": "更新渠道、GitHub Token、断点下载和安装状态在异步页面生命周期中保持一致。",
-      "changedPaths": ["lib/update", "lib/ui/software_update_screen.dart", "android/app"],
-      "testFiles": ["test/software_update_screen_test.dart", "integration_test/update_flow_test.dart", "tool/test_release_pubspec.py"],
+      "status": "active",
+      "owner": "site-lens-quality",
+      "introducedIn": "v0.5.0.alpha11",
+      "lastVerified": null,
+      "replacedBy": null,
+      "changedPaths": [
+        "lib/update",
+        "lib/ui/software_update_screen.dart",
+        "android/app"
+      ],
+      "testFiles": [
+        "test/software_update_screen_test.dart",
+        "integration_test/update_flow_test.dart",
+        "tool/test_release_pubspec.py"
+      ],
+      "evidence": [
+        {
+          "kind": "command",
+          "ref": "make check"
+        },
+        {
+          "kind": "test",
+          "ref": "test/software_update_screen_test.dart"
+        },
+        {
+          "kind": "test",
+          "ref": "integration_test/update_flow_test.dart"
+        },
+        {
+          "kind": "test",
+          "ref": "tool/test_release_pubspec.py"
+        }
+      ],
       "validation": "L2",
-      "blocking": true
+      "blocking": true,
+      "revision": 1
     },
     {
       "id": "RELEASE-001",
       "description": "本地、设备、Verify、Release 使用同一提交、版本、APK 身份和验证证据。",
-      "changedPaths": ["tool/check.sh", "tool/run_android_acceptance.py", ".github/workflows/verify.yml", ".github/workflows/release.yml"],
-      "testFiles": ["tool/test_verify_level.py", "tool/test_acceptance_evidence.py", "tool/test_release_pubspec.py", "tool/test_release_identity.py"],
+      "status": "active",
+      "owner": "site-lens-quality",
+      "introducedIn": "v0.5.0.alpha11",
+      "lastVerified": null,
+      "replacedBy": null,
+      "changedPaths": [
+        "tool/check.sh",
+        "tool/check_regression_contracts.py",
+        "tool/generate_regression_matrix.py",
+        "tool/run_android_acceptance.py",
+        ".github/workflows/verify.yml",
+        ".github/workflows/release.yml",
+        "tool/update_regression_contract.py",
+        "tool/regression_contracts.json",
+        "docs/validation/regression-contract-lifecycle.md"
+      ],
+      "testFiles": [
+        "tool/test_verify_level.py",
+        "tool/test_acceptance_evidence.py",
+        "tool/test_release_pubspec.py",
+        "tool/test_release_identity.py",
+        "tool/test_regression_contracts.py"
+      ],
+      "evidence": [
+        {
+          "kind": "command",
+          "ref": "make check"
+        },
+        {
+          "kind": "test",
+          "ref": "tool/test_verify_level.py"
+        },
+        {
+          "kind": "test",
+          "ref": "tool/test_acceptance_evidence.py"
+        },
+        {
+          "kind": "test",
+          "ref": "tool/test_release_pubspec.py"
+        },
+        {
+          "kind": "test",
+          "ref": "tool/test_release_identity.py"
+        },
+        {
+          "kind": "test",
+          "ref": "tool/test_regression_contracts.py"
+        }
+      ],
       "validation": "L4",
-      "blocking": true
+      "blocking": true,
+      "revision": 1
+    }
+  ],
+  "history": [
+    {
+      "id": "UI-TRANSITION-001",
+      "revision": 1,
+      "action": "introduced",
+      "date": "2026-10-28",
+      "version": "0.5.0-alpha11",
+      "summary": "从 schema 1 迁入可审计注册表；沿用既有行为与测试，补充生命周期元数据。",
+      "status": "active",
+      "stateHash": "e906125f62dda8abcf88747adb404856e4a9fb578aff504fab08b84a15869134",
+      "behaviorHash": "6ee9f665b089055ac946c1300856eca722893ad3f998842373cb2535541b59f0"
+    },
+    {
+      "id": "UI-GLASS-001",
+      "revision": 1,
+      "action": "introduced",
+      "date": "2026-10-28",
+      "version": "0.5.0-alpha11",
+      "summary": "从 schema 1 迁入可审计注册表；沿用既有行为与测试，补充生命周期元数据。",
+      "status": "active",
+      "stateHash": "1406b9caf29e46a8377ef801388538b34c9f51cbb11fdae830de32140b4cbcdb",
+      "behaviorHash": "ca777f21de4fd51fab01a912acc6dbb3a58932cb02331e2e99b274af2c192fb9"
+    },
+    {
+      "id": "UI-DOCK-001",
+      "revision": 1,
+      "action": "introduced",
+      "date": "2026-10-28",
+      "version": "0.5.0-alpha11",
+      "summary": "从 schema 1 迁入可审计注册表；沿用既有行为与测试，补充生命周期元数据。",
+      "status": "active",
+      "stateHash": "3bd2d6f110bc2601fc30d2931ebe55b4ce4e9f52177b007f27fd0656e51d8ec4",
+      "behaviorHash": "3c2cf7a9d60a7902198389303eff2fd66e47d73c0841a3cfd7bd7f47a9734d0b"
+    },
+    {
+      "id": "MEDIA-HLS-001",
+      "revision": 1,
+      "action": "introduced",
+      "date": "2026-10-28",
+      "version": "0.5.0-alpha11",
+      "summary": "从 schema 1 迁入可审计注册表；沿用既有行为与测试，补充生命周期元数据。",
+      "status": "active",
+      "stateHash": "c0acff38c8d612680f28ab4619e163f19f5cd76d9778848fd5fcdcdf672d9ef1",
+      "behaviorHash": "4d6d1bc3023307405e91a90e5b48cb34459c4da5883c068e0aae6799988d8efd"
+    },
+    {
+      "id": "MEDIA-PLAY-001",
+      "revision": 1,
+      "action": "introduced",
+      "date": "2026-10-28",
+      "version": "0.5.0-alpha11",
+      "summary": "从 schema 1 迁入可审计注册表；沿用既有行为与测试，补充生命周期元数据。",
+      "status": "active",
+      "stateHash": "7608a8021278ca996a2ff4f6f13321e028970a0097975573e5ddcaf0e1946d9c",
+      "behaviorHash": "726176be291132697d5cc42dcb6e55ff52e98e3d612f5a9430511c2539010df9"
+    },
+    {
+      "id": "MEDIA-EXPORT-001",
+      "revision": 1,
+      "action": "introduced",
+      "date": "2026-10-28",
+      "version": "0.5.0-alpha11",
+      "summary": "从 schema 1 迁入可审计注册表；沿用既有行为与测试，补充生命周期元数据。",
+      "status": "active",
+      "stateHash": "0fca658540338e838370ced1640663c755ecf9c724f2e6eea9f9688c01de1bbd",
+      "behaviorHash": "d1665b9ad720cbd436aa1e6d40ca0ac0efd8f58f5f70b3c27722f667b8151f8f"
+    },
+    {
+      "id": "MEDIA-UPGRADE-001",
+      "revision": 1,
+      "action": "introduced",
+      "date": "2026-10-28",
+      "version": "0.5.0-alpha11",
+      "summary": "从 schema 1 迁入可审计注册表；沿用既有行为与测试，补充生命周期元数据。",
+      "status": "active",
+      "stateHash": "5e0035486f637aecf00bcefc4da004e0366d502ddcde72c6455c18190acddb99",
+      "behaviorHash": "6d35002dec789e283e6ae802edfc0b50dc526159cdcde2feec9302aa7559cd8e"
+    },
+    {
+      "id": "UPDATE-001",
+      "revision": 1,
+      "action": "introduced",
+      "date": "2026-10-28",
+      "version": "0.5.0-alpha11",
+      "summary": "从 schema 1 迁入可审计注册表；沿用既有行为与测试，补充生命周期元数据。",
+      "status": "active",
+      "stateHash": "6ab49fb6013c2f1e2a94c2b464408a3aae7c7036c0a0ad71ad718876d4ea193b",
+      "behaviorHash": "c4d90067bfdad1d8ed5de7df42f6364e0348c2ec6400f7182e59bc21d627d9c0"
+    },
+    {
+      "id": "RELEASE-001",
+      "revision": 1,
+      "action": "introduced",
+      "date": "2026-10-28",
+      "version": "0.5.0-alpha11",
+      "summary": "从 schema 1 迁入可审计注册表；沿用既有行为与测试，补充生命周期元数据。",
+      "status": "active",
+      "stateHash": "a4de36bd31b03e654cd8cbffa9f0026f48160b4bf9bbc45b40f69b54af7e238d",
+      "behaviorHash": "7516a8e8eead896096e356b81b837ccae29ba7c794d628c69c72a54a343174e7"
     }
   ]
 }
