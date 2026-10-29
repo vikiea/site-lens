@@ -788,7 +788,7 @@ class _SiteLensGlassMenuPanel extends StatelessWidget {
       enabled: false,
       child: SiteLensGlassSurface(
         role: SiteLensSurfaceRole.menu,
-        radius: SiteLensMetrics.inputRadius,
+        radius: SiteLensMetrics.menuRadius,
         padding: EdgeInsets.zero,
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -807,12 +807,14 @@ class SiteLensGlassMenuButton<T> extends StatefulWidget {
     required this.icon,
     required this.actions,
     required this.onSelected,
+    this.iconWidget,
   });
 
   final String tooltip;
   final IconData icon;
   final List<SiteLensGlassMenuAction<T>> actions;
   final ValueChanged<T>? onSelected;
+  final Widget? iconWidget;
 
   @override
   State<SiteLensGlassMenuButton<T>> createState() =>
@@ -877,7 +879,7 @@ class _SiteLensGlassMenuButtonState<T>
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final textStyle = theme.textTheme.bodySmall ?? const TextStyle();
-    final iconSize = SiteLensMetrics.navIconSize;
+    final iconSize = SiteLensMetrics.menuIconSize;
     var labelWidth = 0.0;
     for (final action in widget.actions) {
       final painter = TextPainter(
@@ -892,9 +894,9 @@ class _SiteLensGlassMenuButtonState<T>
     }
     final preferredWidth =
         labelWidth.ceilToDouble() +
-        SiteLensMetrics.formGap * 2 +
+        SiteLensMetrics.menuHorizontalPadding * 2 +
         iconSize +
-        SiteLensMetrics.itemGap;
+        SiteLensMetrics.menuItemGap;
     final viewportWidth = MediaQuery.sizeOf(context).width;
     final maxMenuWidth = viewportWidth > 0
         ? math.max(0.0, viewportWidth - SiteLensMetrics.pagePadding * 2)
@@ -902,7 +904,7 @@ class _SiteLensGlassMenuButtonState<T>
     final menuWidth = math.min(preferredWidth, maxMenuWidth);
     final itemContentWidth = math.max(
       0.0,
-      menuWidth - SiteLensMetrics.formGap * 2,
+      menuWidth - SiteLensMetrics.menuHorizontalPadding * 2,
     );
     final itemStyle = ButtonStyle(
       textStyle: WidgetStatePropertyAll(textStyle),
@@ -929,12 +931,12 @@ class _SiteLensGlassMenuButtonState<T>
       shadowColor: const WidgetStatePropertyAll(Colors.transparent),
       surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
       minimumSize: const WidgetStatePropertyAll(
-        Size(0, kMinInteractiveDimension),
+        Size(0, SiteLensMetrics.menuItemMinHeight),
       ),
       padding: const WidgetStatePropertyAll(
         EdgeInsets.symmetric(
-          horizontal: SiteLensMetrics.formGap,
-          vertical: SiteLensMetrics.itemGap / 2,
+          horizontal: SiteLensMetrics.menuHorizontalPadding,
+          vertical: SiteLensMetrics.menuItemGap / 2,
         ),
       ),
       splashFactory: NoSplash.splashFactory,
@@ -973,7 +975,7 @@ class _SiteLensGlassMenuButtonState<T>
                     children: [
                       if (action.icon != null) ...[
                         Icon(action.icon, size: iconSize),
-                        const SizedBox(width: SiteLensMetrics.itemGap),
+                        const SizedBox(width: SiteLensMetrics.menuItemGap),
                       ],
                       Expanded(child: Text(action.label, softWrap: true)),
                     ],
@@ -988,7 +990,7 @@ class _SiteLensGlassMenuButtonState<T>
         child: IconButton(
           focusNode: _focusNode,
           tooltip: widget.tooltip,
-          icon: Icon(widget.icon),
+          icon: widget.iconWidget ?? Icon(widget.icon),
           onPressed:
               widget.actions.any((action) => action.enabled) &&
                   widget.onSelected != null
@@ -1497,9 +1499,7 @@ class SiteLensTopBarAction extends StatelessWidget {
           shadowColor: Colors.transparent,
           surfaceTintColor: Colors.transparent,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(
-              SiteLensMetrics.inputRadius + 2,
-            ),
+            borderRadius: BorderRadius.circular(SiteLensMetrics.menuRadius),
             side: BorderSide(color: controlSurface.border),
           ),
         ),

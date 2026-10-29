@@ -38,6 +38,7 @@ Use `SiteLensMetrics`, `SiteLensColors`, `Theme.of(context).colorScheme`, and `T
 | Token group | Current values |
 | --- | --- |
 | Page and panel | `pagePadding=16`, `itemGap=10`, `listGap=14`, `formGap=12`, `sectionGap=24`, `panelRadius=22`, `panelPadding=18`, `inputRadius=14` |
+| Menus | `menuRadius=16`, `menuItemMinHeight=48`, `menuHorizontalPadding=12`, `menuItemGap=10`, `menuIconSize=18`; glass operation menus use one shadow-free menu surface and wrap labels within the viewport |
 | Compact rows | `compactRowHorizontalPadding=12`, `compactRowVerticalPadding=0`, `compactRowMinHeight=64`, `compactIconSize=18`, `compactIconButtonSize=36`, `compactSwitchScale=0.84` |
 | Row interaction | `rowInteractionOverlay=transparent`; ordinary row press/hover/focus feedback stays visually quiet, while selected state uses `selectedTileColor` |
 | Row fitting | `rowTextMaxCharacters=20`, `rowTextMinScale=0.88`, `rowDescriptionFoldThreshold=20`; short copy uses `SiteLensRowText`, long descriptions use `SiteLensExpandableRow`/`SiteLensDisclosure` |
@@ -57,6 +58,7 @@ Theme preset IDs are compatibility data: `oceanBlue`, `mistPine`, `irisViolet`, 
 - Page padding: `SiteLensMetrics.pagePadding`.
 - Panel radius and padding: `SiteLensMetrics.panelRadius` and `SiteLensMetrics.panelPadding`.
 - Input/control radius: `SiteLensMetrics.inputRadius`.
+- Operation menus: `menuRadius`, `menuItemMinHeight`, `menuHorizontalPadding`, `menuItemGap`, and `menuIconSize`; use `SiteLensGlassMenuButton` for compact action menus and keep labels readable when the viewport is narrow.
 - Compact rows: `compactRowHorizontalPadding`, `compactRowVerticalPadding`, `compactRowMinHeight`, `compactIconSize`, and `compactIconButtonSize`.
 - Compact controls: `compactSwitchScale`, `SiteLensCompactSwitch`, `SiteLensSwitchRow`, and `SiteLensCompactIconButton`; keep the row as the accessible activation target while reserving width for the label. Switch touch feedback stays transparent so only the thumb/track animation communicates the change.
 - Row typography: `SiteLensTypography.pageTitle`, `sectionTitle`, `rowTitle`, `body`, `description`, and `caption` define the global hierarchy. `SiteLensMetrics.rowTextMaxCharacters` is `20`, `rowTextMinScale` is `0.88`, and `rowDescriptionFoldThreshold` is `20`; use `SiteLensRowText` for short title/description widgets, then use `SiteLensExpandableRow` or `SiteLensDisclosure` for longer descriptions so the full copy lives in a foldable detail.

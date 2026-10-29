@@ -16,6 +16,11 @@ SNAPSHOT = ROOT / ".agents/skills/site-lens-ui/references/ui-system.md"
 REQUIRED = {
     "pagePadding": ("pagePadding = 16.0", "pagePadding=16"),
     "panelRadius": ("panelRadius = 22.0", "panelRadius=22"),
+    "menuRadius": ("menuRadius = 16.0", "menuRadius=16"),
+    "menuItemMinHeight": ("menuItemMinHeight = 48.0", "menuItemMinHeight=48"),
+    "menuHorizontalPadding": ("menuHorizontalPadding = 12.0", "menuHorizontalPadding=12"),
+    "menuItemGap": ("menuItemGap = 10.0", "menuItemGap=10"),
+    "menuIconSize": ("menuIconSize = 18.0", "menuIconSize=18"),
     "compactRowMinHeight": ("compactRowMinHeight = 64.0", "compactRowMinHeight=64"),
     "rowTextMaxCharacters": ("rowTextMaxCharacters = 20", "rowTextMaxCharacters=20"),
     "rowTextMinScale": ("rowTextMinScale = 0.88", "rowTextMinScale=0.88"),

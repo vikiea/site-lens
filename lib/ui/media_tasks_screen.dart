@@ -1706,34 +1706,41 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
                 height: 20,
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
-            : PopupMenuButton<String>(
+            : SiteLensGlassMenuButton<String>(
                 tooltip: '媒体文件操作',
+                icon: Icons.more_horiz,
+                actions: mediaBrowserFileMenuActions(
+                  extraActions: [
+                    const SiteLensGlassMenuAction(
+                      value: 'details',
+                      label: '查看详情',
+                      icon: Icons.info_outline,
+                    ),
+                    const SiteLensGlassMenuAction(
+                      value: 'play',
+                      label: '原生播放',
+                      icon: Icons.play_circle_outline,
+                    ),
+                    if (widget.app.mediaTasks.task(item.taskId) != null)
+                      const SiteLensGlassMenuAction(
+                        value: 'cast',
+                        label: 'DLNA 投屏',
+                        icon: Icons.cast_outlined,
+                      ),
+                    if (widget.app.mediaTasks.task(item.taskId) != null)
+                      const SiteLensGlassMenuAction(
+                        value: 'regenerate',
+                        label: '重新导出 MP4',
+                        icon: Icons.file_download_outlined,
+                      ),
+                    const SiteLensGlassMenuAction(
+                      value: 'movePhysical',
+                      label: '移动文件到系统目录',
+                      icon: Icons.folder_copy_outlined,
+                    ),
+                  ],
+                ),
                 onSelected: widget.onAction,
-                itemBuilder: (_) => [
-                  ...mediaBrowserFileMenu(
-                    extra: [
-                      const PopupMenuItem(
-                        value: 'details',
-                        child: Text('查看详情'),
-                      ),
-                      const PopupMenuItem(value: 'play', child: Text('原生播放')),
-                      if (widget.app.mediaTasks.task(item.taskId) != null)
-                        const PopupMenuItem(
-                          value: 'cast',
-                          child: Text('DLNA 投屏'),
-                        ),
-                      if (widget.app.mediaTasks.task(item.taskId) != null)
-                        const PopupMenuItem(
-                          value: 'regenerate',
-                          child: Text('重新导出 MP4'),
-                        ),
-                      const PopupMenuItem(
-                        value: 'movePhysical',
-                        child: Text('移动文件到系统目录'),
-                      ),
-                    ],
-                  ),
-                ],
               ),
       );
     },
@@ -2334,6 +2341,12 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
             '已删除 ${result.succeeded.length} 项，${result.failed.length} 项失败',
           );
         }
+      case 'retry':
+        await _runFolderBatch(folder.id, _MediaBatchAction.retry);
+      case 'refresh':
+        await _runFolderBatch(folder.id, _MediaBatchAction.refresh);
+      case 'export':
+        await _runFolderBatch(folder.id, _MediaBatchAction.export);
     }
   }
 
@@ -2578,11 +2591,30 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         _MediaBatchAction.refresh || _MediaBatchAction.delete => true,
       };
 
-  Future<void> _runBatch(_MediaBatchAction action) async {
+  Future<void> _runFolderBatch(
+    String folderId,
+    _MediaBatchAction action,
+  ) async {
+    await _runBatch(
+      action,
+      taskIds: _organization.itemIdsInFolder(folderId),
+      retainFailedSelection: false,
+    );
+  }
+
+  Future<void> _runBatch(
+    _MediaBatchAction action, {
+    Iterable<String>? taskIds,
+    bool retainFailedSelection = true,
+  }) async {
     if (_batchBusy || !mounted) return;
-    final selectedIds = <String>{..._browser.selectedItemIds};
-    for (final folderId in _browser.selectedFolderIds) {
-      selectedIds.addAll(_organization.itemIdsInFolder(folderId));
+    final selectedIds = taskIds == null
+        ? <String>{..._browser.selectedItemIds}
+        : taskIds.toSet();
+    if (taskIds == null) {
+      for (final folderId in _browser.selectedFolderIds) {
+        selectedIds.addAll(_organization.itemIdsInFolder(folderId));
+      }
     }
     final selected = widget.app.mediaTasks.tasks
         .where((task) => selectedIds.contains(task.id))
@@ -2653,7 +2685,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         }
       }
       if (!mounted) return;
-      if (mounted) {
+      if (mounted && retainFailedSelection) {
         _browser.selectedItemIds
           ..clear()
           ..addAll(failedIds);
@@ -2697,10 +2729,22 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     );
     final activePlayback = widget.app.nativeMedia.active;
     final current = _browser.currentFolder;
-    final selectionExtras = <PopupMenuEntry<String>>[
-      const PopupMenuItem(value: 'retry', child: Text('批量重试下载')),
-      const PopupMenuItem(value: 'refresh', child: Text('批量刷新后台状态')),
-      const PopupMenuItem(value: 'export', child: Text('批量导出 MP4')),
+    final selectionExtras = <SiteLensGlassMenuAction<String>>[
+      const SiteLensGlassMenuAction(
+        value: 'retry',
+        label: '批量重试下载',
+        icon: Icons.replay,
+      ),
+      const SiteLensGlassMenuAction(
+        value: 'refresh',
+        label: '批量刷新后台状态',
+        icon: Icons.refresh,
+      ),
+      const SiteLensGlassMenuAction(
+        value: 'export',
+        label: '批量导出 MP4',
+        icon: Icons.file_download_outlined,
+      ),
     ];
     return SiteLensPageScaffold(
       title: _browser.selectionMode ? '已选 ${_browser.selectedCount} 项' : '媒体任务',
@@ -2722,7 +2766,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
             visibleItemIds: visibleTasks.map((task) => task.id),
             visibleFolderIds: folders.map((folder) => folder.id),
             onAction: (action) => unawaited(_taskSharedBatchAction(action)),
-            extraItems: selectionExtras,
+            extraActions: selectionExtras,
             onExtraAction: (action) {
               final value = _MediaBatchAction.values.firstWhere(
                 (candidate) => candidate.name == action,
@@ -2812,6 +2856,23 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                               context,
                               () => _taskFolderAction(folder, action),
                             ),
+                            extraActions: const [
+                              SiteLensGlassMenuAction(
+                                value: 'retry',
+                                label: '重试文件夹任务',
+                                icon: Icons.replay,
+                              ),
+                              SiteLensGlassMenuAction(
+                                value: 'refresh',
+                                label: '刷新文件夹状态',
+                                icon: Icons.refresh,
+                              ),
+                              SiteLensGlassMenuAction(
+                                value: 'export',
+                                label: '导出文件夹 MP4',
+                                icon: Icons.file_download_outlined,
+                              ),
+                            ],
                           );
                         },
                       ),
@@ -2859,196 +2920,35 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     );
   }
 
-  Widget _buildMediaTaskRow(
-    BuildContext context,
-    MediaTask task,
-  ) => FutureBuilder<MediaCandidate?>(
-    future: widget.app.db.mediaCandidate(task.candidateId),
-    builder: (context, snapshot) {
-      final busy = _taskBusy(task.id);
-      final menu = PopupMenuButton<String>(
-        // Keep the overflow affordance usable while another action is in
-        // flight. Individual actions remain guarded by _run; details stay
-        // available so a stuck operation can still be diagnosed.
-        enabled: true,
-        tooltip: '媒体任务操作',
-        padding: EdgeInsets.zero,
-        constraints: const BoxConstraints(
-          minWidth: kMinInteractiveDimension,
-          minHeight: kMinInteractiveDimension,
-        ),
-        iconSize: SiteLensMetrics.compactIconSize,
-        onSelected: (value) {
-          switch (value) {
-            case 'refresh':
-              unawaited(_run(() => _refreshNative(task), taskId: task.id));
-            case 'details':
-              unawaited(_showDetails(task, snapshot.data));
-            case 'play':
-              unawaited(_run(() => _play(task), taskId: task.id));
-            case 'cast':
-              unawaited(_run(() => _cast(task), taskId: task.id));
-            case 'export':
-              unawaited(_run(() => _export(task), taskId: task.id));
-            case 'cancel':
-              unawaited(
-                _run(() async {
-                  await widget.app.mediaDownloads.cancel(task.id);
-                  if (mounted) setState(() {});
-                }, taskId: task.id),
-              );
-            case 'pause':
-              unawaited(_run(() => _togglePause(task), taskId: task.id));
-            case 'retry':
-              unawaited(_run(() => _retry(task), taskId: task.id));
-            case 'rename':
-            case 'move':
-            case 'copy':
-            case 'delete':
-              unawaited(
-                _run(() => _taskFileManagement(value, task), taskId: task.id),
-              );
-          }
-        },
-        itemBuilder: (_) => [
-          ...mediaBrowserFileMenu(
-            enabled: !busy,
-            extra: [
-              PopupMenuItem(
-                value: 'refresh',
-                enabled: !busy,
-                child: const Text('刷新后台状态'),
-              ),
-              const PopupMenuItem(value: 'details', child: Text('查看详情')),
-              if (task.state == MediaTaskState.playable)
-                PopupMenuItem(
-                  value: 'play',
-                  enabled: !busy,
-                  child: const Text('原生播放'),
-                ),
-              if (widget.app.allowStreamingWhileDownloading &&
-                  snapshot.data?.isHls == true &&
-                  (task.state == MediaTaskState.downloading ||
-                      task.state == MediaTaskState.paused))
-                PopupMenuItem(
-                  value: 'play',
-                  enabled: !busy,
-                  child: const Text('边下边播'),
-                ),
-              if (task.state == MediaTaskState.playable)
-                PopupMenuItem(
-                  value: 'cast',
-                  enabled: !busy,
-                  child: const Text('DLNA 投屏'),
-                ),
-              if (_isBatchExportable(task))
-                PopupMenuItem(
-                  value: 'export',
-                  enabled: !busy,
-                  child: const Text('导出 MP4'),
-                ),
-              if (task.state == MediaTaskState.downloading)
-                PopupMenuItem(
-                  value: 'pause',
-                  enabled: !busy,
-                  child: const Text('暂停下载'),
-                ),
-              if (task.state == MediaTaskState.paused)
-                PopupMenuItem(
-                  value: 'pause',
-                  enabled: !busy,
-                  child: const Text('继续下载'),
-                ),
-              if (task.state == MediaTaskState.failed ||
-                  task.state == MediaTaskState.cancelled ||
-                  task.state == MediaTaskState.reauthorize)
-                PopupMenuItem(
-                  value: 'retry',
-                  enabled: !busy,
-                  child: Text(
-                    task.state == MediaTaskState.reauthorize
-                        ? '刷新授权后重试'
-                        : '重试下载',
-                  ),
-                ),
-              if (task.state == MediaTaskState.downloading ||
-                  task.state == MediaTaskState.paused)
-                PopupMenuItem(
-                  value: 'cancel',
-                  enabled: !busy,
-                  child: const Text('取消下载'),
-                ),
-            ],
-          ),
-        ],
+  Widget _buildMediaTaskRow(BuildContext context, MediaTask task) =>
+      _MediaTaskRow(
+        key: ValueKey(task.id),
+        app: widget.app,
+        task: task,
+        organization: _organization,
+        browser: _browser,
+        busy: _taskBusy(task.id),
+        isBatchSelectable: _isBatchSelectable,
+        isBatchExportable: _isBatchExportable,
+        taskTitle: _taskTitle,
+        taskProgress: _taskProgress,
+        taskProgressLabel: _taskProgressLabel,
+        taskErrorLabel: _taskErrorLabel,
+        onRefresh: (value) =>
+            _run(() => _refreshNative(value), taskId: value.id),
+        onDetails: _showDetails,
+        onPlay: (value) => _run(() => _play(value), taskId: value.id),
+        onCast: (value) => _run(() => _cast(value), taskId: value.id),
+        onExport: (value) => _run(() => _export(value), taskId: value.id),
+        onCancel: (value) => _run(() async {
+          await widget.app.mediaDownloads.cancel(value.id);
+          if (mounted) setState(() {});
+        }, taskId: value.id),
+        onPause: (value) => _run(() => _togglePause(value), taskId: value.id),
+        onRetry: (value) => _run(() => _retry(value), taskId: value.id),
+        onFileManagement: (action, value) =>
+            _run(() => _taskFileManagement(action, value), taskId: value.id),
       );
-      final leading = _browser.selectionMode
-          ? Checkbox(
-              value: _browser.selectedItemIds.contains(task.id),
-              onChanged: _isBatchSelectable(task)
-                  ? (_) => _browser.toggleItem(task.id)
-                  : null,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            )
-          : _TaskThumbnail(
-              task: task,
-              candidate: snapshot.data,
-              candidateLoading:
-                  snapshot.connectionState == ConnectionState.waiting,
-              localThumbnailPath: widget.app.mediaLibrary
-                  .item(task.id)
-                  ?.thumbnailPath,
-            );
-      return Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SiteLensCompactRow(
-            leading: leading,
-            title: Text(
-              _organization.nameFor(task.id, _taskTitle(task, snapshot.data)),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            subtitle: Text(
-              '${_mediaTaskStateLabel(task.state)} · ${_taskProgressLabel(task)}${_taskErrorLabel(task).isEmpty ? '' : ' · ${_taskErrorLabel(task)}'}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            onTap: _browser.selectionMode
-                ? (_isBatchSelectable(task)
-                      ? () => _browser.toggleItem(task.id)
-                      : null)
-                : task.state == MediaTaskState.playable ||
-                      (widget.app.allowStreamingWhileDownloading &&
-                          snapshot.data?.isHls == true &&
-                          (task.state == MediaTaskState.downloading ||
-                              task.state == MediaTaskState.paused))
-                ? () => unawaited(_run(() => _play(task), taskId: task.id))
-                : null,
-            trailing: _browser.selectionMode
-                ? Text(
-                    _isBatchSelectable(task) ? '可处理' : '执行中',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  )
-                : SizedBox(
-                    width: kMinInteractiveDimension,
-                    height: kMinInteractiveDimension,
-                    child: menu,
-                  ),
-          ),
-          if (task.state == MediaTaskState.downloading ||
-              task.state == MediaTaskState.paused)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(18, 0, 18, 10),
-              child: LinearProgressIndicator(
-                value: _taskProgress(task),
-                minHeight: 4,
-              ),
-            ),
-        ],
-      );
-    },
-  );
 
   double? _taskProgress(MediaTask task) {
     final total = task.totalBytes;
@@ -3080,6 +2980,294 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
       filename == null || filename.isEmpty ? task.id : filename,
     );
   }
+}
+
+class _MediaTaskRow extends StatefulWidget {
+  const _MediaTaskRow({
+    super.key,
+    required this.app,
+    required this.task,
+    required this.organization,
+    required this.browser,
+    required this.busy,
+    required this.isBatchSelectable,
+    required this.isBatchExportable,
+    required this.taskTitle,
+    required this.taskProgress,
+    required this.taskProgressLabel,
+    required this.taskErrorLabel,
+    required this.onRefresh,
+    required this.onDetails,
+    required this.onPlay,
+    required this.onCast,
+    required this.onExport,
+    required this.onCancel,
+    required this.onPause,
+    required this.onRetry,
+    required this.onFileManagement,
+  });
+
+  final AppController app;
+  final MediaTask task;
+  final MediaOrganizationService organization;
+  final MediaBrowserController browser;
+  final bool busy;
+  final bool Function(MediaTask) isBatchSelectable;
+  final bool Function(MediaTask) isBatchExportable;
+  final String Function(MediaTask, MediaCandidate?) taskTitle;
+  final double? Function(MediaTask) taskProgress;
+  final String Function(MediaTask) taskProgressLabel;
+  final String Function(MediaTask) taskErrorLabel;
+  final Future<void> Function(MediaTask) onRefresh;
+  final Future<void> Function(MediaTask, MediaCandidate?) onDetails;
+  final Future<void> Function(MediaTask) onPlay;
+  final Future<void> Function(MediaTask) onCast;
+  final Future<void> Function(MediaTask) onExport;
+  final Future<void> Function(MediaTask) onCancel;
+  final Future<void> Function(MediaTask) onPause;
+  final Future<void> Function(MediaTask) onRetry;
+  final Future<void> Function(String, MediaTask) onFileManagement;
+
+  @override
+  State<_MediaTaskRow> createState() => _MediaTaskRowState();
+}
+
+class _MediaTaskRowState extends State<_MediaTaskRow> {
+  late Future<MediaCandidate?> _candidate;
+  late Future<MediaArtifact?> _artifact;
+
+  @override
+  void initState() {
+    super.initState();
+    _resetSources();
+  }
+
+  @override
+  void didUpdateWidget(covariant _MediaTaskRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldArtifact = oldWidget.app.mediaLibrary.item(oldWidget.task.id);
+    final newArtifact = widget.app.mediaLibrary.item(widget.task.id);
+    if (oldWidget.task.id != widget.task.id ||
+        oldWidget.task.candidateId != widget.task.candidateId ||
+        oldArtifact?.location != newArtifact?.location ||
+        oldArtifact?.thumbnailPath != newArtifact?.thumbnailPath) {
+      _resetSources();
+    }
+  }
+
+  void _resetSources() {
+    _candidate = widget.app.db.mediaCandidate(widget.task.candidateId);
+    _artifact = _resolveArtifact();
+  }
+
+  Future<MediaArtifact?> _resolveArtifact() async {
+    final current = widget.app.mediaLibrary.item(widget.task.id);
+    if (current == null) return null;
+    final thumbnail = current.thumbnailPath;
+    if (thumbnail != null && !thumbnail.startsWith('content:')) {
+      try {
+        if (await File(thumbnail).exists()) return current;
+      } catch (_) {
+        // Let the catalog inspection try to recover the local frame.
+      }
+    }
+    try {
+      return await widget.app.mediaLibrary.inspect(widget.task.id);
+    } catch (_) {
+      return current;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<MediaCandidate?>(
+    future: _candidate,
+    builder: (context, candidateSnapshot) => FutureBuilder<MediaArtifact?>(
+      future: _artifact,
+      builder: (context, artifactSnapshot) {
+        final candidate = candidateSnapshot.data;
+        final artifact =
+            artifactSnapshot.data ??
+            widget.app.mediaLibrary.item(widget.task.id);
+        final busy = widget.busy;
+        final menu = SiteLensGlassMenuButton<String>(
+          tooltip: '媒体任务操作',
+          icon: Icons.more_horiz,
+          actions: mediaBrowserFileMenuActions(
+            enabled: !busy,
+            extraActions: [
+              SiteLensGlassMenuAction(
+                value: 'refresh',
+                label: '刷新后台状态',
+                icon: Icons.refresh,
+                enabled: !busy,
+              ),
+              const SiteLensGlassMenuAction(
+                value: 'details',
+                label: '查看详情',
+                icon: Icons.info_outline,
+              ),
+              if (widget.task.state == MediaTaskState.playable)
+                SiteLensGlassMenuAction(
+                  value: 'play',
+                  label: '原生播放',
+                  icon: Icons.play_circle_outline,
+                  enabled: !busy,
+                ),
+              if (widget.app.allowStreamingWhileDownloading &&
+                  candidate?.isHls == true &&
+                  (widget.task.state == MediaTaskState.downloading ||
+                      widget.task.state == MediaTaskState.paused))
+                SiteLensGlassMenuAction(
+                  value: 'play',
+                  label: '边下边播',
+                  icon: Icons.play_arrow,
+                  enabled: !busy,
+                ),
+              if (widget.task.state == MediaTaskState.playable)
+                SiteLensGlassMenuAction(
+                  value: 'cast',
+                  label: 'DLNA 投屏',
+                  icon: Icons.cast_outlined,
+                  enabled: !busy,
+                ),
+              if (widget.isBatchExportable(widget.task))
+                SiteLensGlassMenuAction(
+                  value: 'export',
+                  label: '导出 MP4',
+                  icon: Icons.file_download_outlined,
+                  enabled: !busy,
+                ),
+              if (widget.task.state == MediaTaskState.downloading)
+                SiteLensGlassMenuAction(
+                  value: 'pause',
+                  label: '暂停下载',
+                  icon: Icons.pause_circle_outline,
+                  enabled: !busy,
+                ),
+              if (widget.task.state == MediaTaskState.paused)
+                SiteLensGlassMenuAction(
+                  value: 'pause',
+                  label: '继续下载',
+                  icon: Icons.play_circle_outline,
+                  enabled: !busy,
+                ),
+              if (widget.task.state == MediaTaskState.failed ||
+                  widget.task.state == MediaTaskState.cancelled ||
+                  widget.task.state == MediaTaskState.reauthorize)
+                SiteLensGlassMenuAction(
+                  value: 'retry',
+                  label: widget.task.state == MediaTaskState.reauthorize
+                      ? '刷新授权后重试'
+                      : '重试下载',
+                  icon: Icons.replay,
+                  enabled: !busy,
+                ),
+              if (widget.task.state == MediaTaskState.downloading ||
+                  widget.task.state == MediaTaskState.paused)
+                SiteLensGlassMenuAction(
+                  value: 'cancel',
+                  label: '取消下载',
+                  icon: Icons.cancel_outlined,
+                  enabled: !busy,
+                ),
+            ],
+          ),
+          onSelected: (value) {
+            switch (value) {
+              case 'refresh':
+                unawaited(widget.onRefresh(widget.task));
+              case 'details':
+                unawaited(widget.onDetails(widget.task, candidate));
+              case 'play':
+                unawaited(widget.onPlay(widget.task));
+              case 'cast':
+                unawaited(widget.onCast(widget.task));
+              case 'export':
+                unawaited(widget.onExport(widget.task));
+              case 'cancel':
+                unawaited(widget.onCancel(widget.task));
+              case 'pause':
+                unawaited(widget.onPause(widget.task));
+              case 'retry':
+                unawaited(widget.onRetry(widget.task));
+              case 'rename':
+              case 'move':
+              case 'copy':
+              case 'delete':
+                unawaited(widget.onFileManagement(value, widget.task));
+            }
+          },
+        );
+        final leading = widget.browser.selectionMode
+            ? Checkbox(
+                value: widget.browser.selectedItemIds.contains(widget.task.id),
+                onChanged: widget.isBatchSelectable(widget.task)
+                    ? (_) => widget.browser.toggleItem(widget.task.id)
+                    : null,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              )
+            : _TaskThumbnail(
+                task: widget.task,
+                candidate: candidate,
+                candidateLoading:
+                    candidateSnapshot.connectionState ==
+                    ConnectionState.waiting,
+                localThumbnailPath: artifact?.thumbnailPath,
+              );
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SiteLensCompactRow(
+              leading: leading,
+              title: Text(
+                widget.organization.nameFor(
+                  widget.task.id,
+                  widget.taskTitle(widget.task, candidate),
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                '${_mediaTaskStateLabel(widget.task.state)} · ${widget.taskProgressLabel(widget.task)}${widget.taskErrorLabel(widget.task).isEmpty ? '' : ' · ${widget.taskErrorLabel(widget.task)}'}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              onTap: widget.browser.selectionMode
+                  ? (widget.isBatchSelectable(widget.task)
+                        ? () => widget.browser.toggleItem(widget.task.id)
+                        : null)
+                  : widget.task.state == MediaTaskState.playable ||
+                        (widget.app.allowStreamingWhileDownloading &&
+                            candidate?.isHls == true &&
+                            (widget.task.state == MediaTaskState.downloading ||
+                                widget.task.state == MediaTaskState.paused))
+                  ? () => unawaited(widget.onPlay(widget.task))
+                  : null,
+              trailing: widget.browser.selectionMode
+                  ? Text(
+                      widget.isBatchSelectable(widget.task) ? '可处理' : '执行中',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    )
+                  : SizedBox(
+                      width: kMinInteractiveDimension,
+                      height: kMinInteractiveDimension,
+                      child: menu,
+                    ),
+            ),
+            if (widget.task.state == MediaTaskState.downloading ||
+                widget.task.state == MediaTaskState.paused)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 0, 18, 10),
+                child: LinearProgressIndicator(
+                  value: widget.taskProgress(widget.task),
+                  minHeight: 4,
+                ),
+              ),
+          ],
+        );
+      },
+    ),
+  );
 }
 
 class _ActiveMediaPlaybackRow extends StatelessWidget {
@@ -3186,14 +3374,11 @@ class _TaskThumbnail extends StatelessWidget {
     final networkImage = thumbnail == null
         ? null
         : NetworkImage(thumbnail.toString());
-    final ImageProvider? image = candidateLoading
+    final ImageProvider? image =
+        localImage ?? (candidateLoading ? null : networkImage);
+    final ImageProvider? fallback = localImage == null || candidateLoading
         ? null
-        : networkImage ?? localImage;
-    final ImageProvider? fallback = candidateLoading
-        ? null
-        : networkImage == null
-        ? null
-        : localImage;
+        : networkImage;
     return MediaThumbnail(
       image: image,
       fallbackImage: fallback,

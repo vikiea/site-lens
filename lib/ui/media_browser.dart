@@ -121,6 +121,7 @@ class MediaBrowserFolderRow extends StatelessWidget {
     this.selected = false,
     this.onSelected,
     this.parent = false,
+    this.extraActions = const [],
   });
 
   final MediaOrganizationFolder folder;
@@ -131,6 +132,7 @@ class MediaBrowserFolderRow extends StatelessWidget {
   final bool selected;
   final ValueChanged<bool?>? onSelected;
   final bool parent;
+  final List<SiteLensGlassMenuAction<String>> extraActions;
 
   @override
   Widget build(BuildContext context) {
@@ -158,15 +160,33 @@ class MediaBrowserFolderRow extends StatelessWidget {
               Icons.chevron_right,
               size: SiteLensMetrics.compactIconSize,
             )
-          : PopupMenuButton<String>(
+          : SiteLensGlassMenuButton<String>(
               tooltip: '文件夹操作',
-              onSelected: onAction,
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: 'rename', child: Text('重命名文件夹')),
-                PopupMenuItem(value: 'move', child: Text('移动到文件夹')),
-                PopupMenuItem(value: 'copy', child: Text('复制文件夹内容')),
-                PopupMenuItem(value: 'delete', child: Text('删除文件夹内容')),
+              icon: Icons.more_horiz,
+              actions: [
+                const SiteLensGlassMenuAction(
+                  value: 'rename',
+                  label: '重命名文件夹',
+                  icon: Icons.drive_file_rename_outline,
+                ),
+                const SiteLensGlassMenuAction(
+                  value: 'move',
+                  label: '移动到文件夹',
+                  icon: Icons.drive_file_move_outlined,
+                ),
+                const SiteLensGlassMenuAction(
+                  value: 'copy',
+                  label: '复制文件夹内容',
+                  icon: Icons.copy_all_outlined,
+                ),
+                const SiteLensGlassMenuAction(
+                  value: 'delete',
+                  label: '删除文件夹内容',
+                  icon: Icons.delete_outline,
+                ),
+                ...extraActions,
               ],
+              onSelected: onAction,
             ),
       onTap: selectionMode ? () => onSelected?.call(!selected) : onOpen,
     );
@@ -180,7 +200,7 @@ class MediaBrowserSelectionActions extends StatelessWidget {
     required this.visibleItemIds,
     required this.visibleFolderIds,
     required this.onAction,
-    this.extraItems = const [],
+    this.extraActions = const [],
     this.onExtraAction,
   });
 
@@ -188,7 +208,7 @@ class MediaBrowserSelectionActions extends StatelessWidget {
   final Iterable<String> visibleItemIds;
   final Iterable<String> visibleFolderIds;
   final ValueChanged<String> onAction;
-  final List<PopupMenuEntry<String>> extraItems;
+  final List<SiteLensGlassMenuAction<String>> extraActions;
   final ValueChanged<String>? onExtraAction;
 
   @override
@@ -207,16 +227,44 @@ class MediaBrowserSelectionActions extends StatelessWidget {
                   folderIds: visibleFolderIds,
                 ),
         ),
-        PopupMenuButton<String>(
+        SiteLensGlassMenuButton<String>(
           tooltip: '批量操作',
-          enabled: !controller.busy && hasSelection,
-          icon: controller.busy
+          icon: Icons.more_horiz,
+          iconWidget: controller.busy
               ? const SizedBox(
                   width: 20,
                   height: 20,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const Icon(Icons.more_vert),
+              : null,
+          actions: [
+            SiteLensGlassMenuAction(
+              value: 'move',
+              label: '移动到文件夹',
+              icon: Icons.drive_file_move_outlined,
+              enabled: !controller.busy && hasSelection,
+            ),
+            SiteLensGlassMenuAction(
+              value: 'copy',
+              label: '复制',
+              icon: Icons.copy_outlined,
+              enabled: !controller.busy && hasSelection,
+            ),
+            SiteLensGlassMenuAction(
+              value: 'delete',
+              label: '删除',
+              icon: Icons.delete_outline,
+              enabled: !controller.busy && hasSelection,
+            ),
+            ...extraActions.map(
+              (action) => SiteLensGlassMenuAction<String>(
+                value: 'extra:${action.value}',
+                label: action.label,
+                icon: action.icon,
+                enabled: !controller.busy && hasSelection && action.enabled,
+              ),
+            ),
+          ],
           onSelected: (value) {
             if (value.startsWith('extra:')) {
               onExtraAction?.call(value.substring(6));
@@ -224,12 +272,6 @@ class MediaBrowserSelectionActions extends StatelessWidget {
               onAction(value);
             }
           },
-          itemBuilder: (_) => [
-            const PopupMenuItem(value: 'move', child: Text('移动到文件夹')),
-            const PopupMenuItem(value: 'copy', child: Text('复制')),
-            const PopupMenuItem(value: 'delete', child: Text('删除')),
-            ...extraItems.map((item) => _prefixPopupMenuItem(item, 'extra:')),
-          ],
         ),
         IconButton(
           tooltip: '清除选择',
@@ -244,37 +286,43 @@ class MediaBrowserSelectionActions extends StatelessWidget {
       ],
     );
   }
-
-  static PopupMenuItem<String> _prefixPopupMenuItem(
-    PopupMenuEntry<String> entry,
-    String prefix,
-  ) {
-    if (entry is PopupMenuItem<String>) {
-      return PopupMenuItem<String>(
-        value: '$prefix${entry.value}',
-        enabled: entry.enabled,
-        child: entry.child,
-      );
-    }
-    return PopupMenuItem<String>(value: prefix, child: const Text('其他操作'));
-  }
 }
 
-List<PopupMenuEntry<String>> mediaBrowserFileMenu({
+List<SiteLensGlassMenuAction<String>> mediaBrowserFileMenuActions({
   bool canRename = true,
   bool canCopy = true,
   bool canDelete = true,
   bool enabled = true,
-  List<PopupMenuEntry<String>> extra = const [],
+  List<SiteLensGlassMenuAction<String>> extraActions = const [],
 }) => [
   if (canRename)
-    PopupMenuItem(value: 'rename', enabled: enabled, child: const Text('重命名')),
-  PopupMenuItem(value: 'move', enabled: enabled, child: const Text('移动到文件夹')),
+    SiteLensGlassMenuAction(
+      value: 'rename',
+      label: '重命名',
+      icon: Icons.drive_file_rename_outline,
+      enabled: enabled,
+    ),
+  SiteLensGlassMenuAction(
+    value: 'move',
+    label: '移动到文件夹',
+    icon: Icons.drive_file_move_outlined,
+    enabled: enabled,
+  ),
   if (canCopy)
-    PopupMenuItem(value: 'copy', enabled: enabled, child: const Text('复制')),
+    SiteLensGlassMenuAction(
+      value: 'copy',
+      label: '复制',
+      icon: Icons.copy_outlined,
+      enabled: enabled,
+    ),
   if (canDelete)
-    PopupMenuItem(value: 'delete', enabled: enabled, child: const Text('删除')),
-  ...extra,
+    SiteLensGlassMenuAction(
+      value: 'delete',
+      label: '删除',
+      icon: Icons.delete_outline,
+      enabled: enabled,
+    ),
+  ...extraActions,
 ];
 
 Future<String?> showMediaBrowserNameDialog(

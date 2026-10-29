@@ -320,18 +320,9 @@ void main() {
               find.descendant(of: thumbnail, matching: find.byType(Image)),
             )
             .image;
-        if (library) {
-          expect(provider, isA<FileImage>());
-          expect((provider as FileImage).file.path, thumbnailPath);
-          expect(networkRequests, 0);
-        } else {
-          expect(provider, isA<NetworkImage>());
-          expect(
-            (provider as NetworkImage).url,
-            candidate.thumbnailUrl.toString(),
-          );
-          expect(networkRequests, greaterThan(0));
-        }
+        expect(provider, isA<FileImage>());
+        expect((provider as FileImage).file.path, thumbnailPath);
+        expect(networkRequests, 0);
         final decoded = tester.widget<RawImage>(rawImage).image!;
         // The MP4 fixture is 160x96, not 16:9. This also catches distortion
         // introduced before Flutter receives the generated JPEG.
@@ -346,12 +337,22 @@ void main() {
         expect(displayed.height, lessThanOrEqualTo(slot.height));
         expect((displayed.center - slot.center).distance, lessThan(0.01));
         expect(tester.takeException(), isNull);
+        app.notifyMediaChanged();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        final refreshedProvider = tester
+            .widget<Image>(
+              find.descendant(of: thumbnail, matching: find.byType(Image)),
+            )
+            .image;
+        expect(refreshedProvider, isA<FileImage>());
+        expect((refreshedProvider as FileImage).file.path, thumbnailPath);
         debugPrint(
-          'MEDIA_THUMBNAIL_ROW_PASS source=${library ? "file" : "network"} '
+          'MEDIA_THUMBNAIL_ROW_PASS source=file '
           'decoded=${decoded.width}x${decoded.height} displayed=${displayed.size}',
         );
       }
-      expect(networkRequests, greaterThan(0));
+      expect(networkRequests, 0);
     } finally {
       await tester.pumpWidget(const SizedBox());
       await server?.close(force: true);

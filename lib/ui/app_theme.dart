@@ -68,6 +68,11 @@ abstract final class SiteLensMetrics {
   static const panelRadius = 22.0;
   static const panelPadding = 18.0;
   static const inputRadius = 14.0;
+  static const menuRadius = 16.0;
+  static const menuItemMinHeight = 48.0;
+  static const menuHorizontalPadding = 12.0;
+  static const menuItemGap = 10.0;
+  static const menuIconSize = 18.0;
   static const compactRowHorizontalPadding = 12.0;
 
   /// Shared settings/action row height. Keeping this value stable prevents
@@ -822,7 +827,7 @@ ThemeData buildSiteLensTheme(
       surfaceTintColor: Colors.transparent,
       textStyle: text.bodyMedium,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(SiteLensMetrics.inputRadius + 2),
+        borderRadius: BorderRadius.circular(SiteLensMetrics.menuRadius),
         side: BorderSide(color: colors.panelBorder),
       ),
     ),

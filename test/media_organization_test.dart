@@ -43,6 +43,19 @@ void main() {
     expect(restored.nameFor('item-1', '原始标题'), '虚拟标题');
   });
 
+  test('folder item expansion includes all descendant folders', () async {
+    final root = await organization.createFolder('根目录');
+    final child = await organization.createFolder('子目录', parentId: root.id);
+    await organization.moveItems(['root-item'], root.id);
+    await organization.moveItems(['child-item'], child.id);
+
+    expect(organization.itemIdsInFolder(root.id).toSet(), {
+      'root-item',
+      'child-item',
+    });
+    expect(organization.itemIdsInFolder(child.id), ['child-item']);
+  });
+
   test('rejects moving a folder into itself or a descendant', () async {
     final parent = await organization.createFolder('父目录');
     final child = await organization.createFolder('子目录', parentId: parent.id);
