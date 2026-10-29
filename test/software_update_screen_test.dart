@@ -141,6 +141,7 @@ void main() {
     await runReal(tester, controller.loadLocalState);
     await tester.pumpWidget(screenApp(controller));
     await tester.pumpAndSettle();
+    expect(find.text('GitHub API Token'), findsOneWidget);
     final selector = find.byType(SiteLensMenuSelector<UpdateChannel>);
     expect(
       tester.getCenter(find.text('更新渠道')).dy,

@@ -431,10 +431,8 @@ class _UpdatePreferencesRows extends StatelessWidget {
           onSelected: busy ? null : onChannelChanged,
         ),
       ),
-      if (channel == UpdateChannel.beta) ...[
-        const SiteLensSettingsDivider(),
-        const _UpdateGitHubTokenEntry(),
-      ],
+      const SiteLensSettingsDivider(),
+      const _UpdateGitHubTokenEntry(),
     ],
   );
 }
@@ -507,8 +505,8 @@ class _UpdateGitHubTokenEntryState extends State<_UpdateGitHubTokenEntry> {
       _configured == null
           ? '读取安全存储中…'
           : _configured == true
-          ? '已配置，用于提高测试渠道查询额度'
-          : '未配置，测试渠道可能受 GitHub 匿名限流影响',
+          ? '已配置，稳定版和测试版优先使用 API'
+          : '未配置，将优先尝试匿名 API，失败后解析发布页',
     ),
     trailing: _busy
         ? const SizedBox(
