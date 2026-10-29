@@ -1414,11 +1414,6 @@ class SiteLensPageScaffold extends StatelessWidget {
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
       title: Text(title),
-      flexibleSpace: const SiteLensGlassSurface(
-        role: SiteLensSurfaceRole.chrome,
-        radius: 0,
-        child: SizedBox.shrink(),
-      ),
       actions: actions == null
           ? null
           : [SiteLensTopBarActionGroup(actions: actions!)],
@@ -1431,9 +1426,9 @@ class SiteLensPageScaffold extends StatelessWidget {
   );
 }
 
-/// One grouped action surface used inside ordinary app bars. The app bar owns
-/// the liquid-glass backdrop; this control adds only the local tint and rim so
-/// it does not create a second glass sampling boundary.
+/// One grouped action surface used inside ordinary app bars. The app bar stays
+/// transparent; this is the single glass boundary for its actions, so premium
+/// refraction and rim treatment remain visible on solid and gradient backdrops.
 class SiteLensTopBarActionGroup extends StatelessWidget {
   const SiteLensTopBarActionGroup({super.key, required this.actions});
 
@@ -1448,30 +1443,15 @@ class SiteLensTopBarActionGroup extends StatelessWidget {
         top: SiteLensMetrics.topBarActionGroupVerticalInset,
         bottom: SiteLensMetrics.topBarActionGroupVerticalInset,
       ),
-      child: DecoratedBox(
-        decoration: ShapeDecoration(
-          color: _siteLensControlSurface(context).fill,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(
-              SiteLensMetrics.topBarActionGroupRadius,
-            ),
-            side: BorderSide(color: SiteLensColors.of(context).panelBorder),
-          ),
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(
-            SiteLensMetrics.topBarActionGroupRadius,
-          ),
-          child: Material(
-            type: MaterialType.transparency,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final action in actions)
-                  SiteLensTopBarAction(child: action),
-              ],
-            ),
-          ),
+      child: SiteLensGlassSurface(
+        role: SiteLensSurfaceRole.chrome,
+        radius: SiteLensMetrics.topBarActionGroupRadius,
+        padding: EdgeInsets.zero,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final action in actions) SiteLensTopBarAction(child: action),
+          ],
         ),
       ),
     );
@@ -1526,8 +1506,11 @@ class SiteLensTopBarAction extends StatelessWidget {
       ),
       child: child,
     );
-    return SizedBox.square(
-      dimension: SiteLensMetrics.topBarActionMinSize,
+    return ConstrainedBox(
+      constraints: const BoxConstraints(
+        minWidth: SiteLensMetrics.topBarActionMinSize,
+        minHeight: SiteLensMetrics.topBarActionMinSize,
+      ),
       child: action,
     );
   }

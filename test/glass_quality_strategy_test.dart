@@ -153,6 +153,42 @@ void main() {
     },
   );
 
+  testWidgets('menu glass protects controls beneath its transparent surface', (
+    tester,
+  ) async {
+    late BuildContext context;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: Builder(
+          builder: (value) {
+            context = value;
+            return const SizedBox();
+          },
+        ),
+      ),
+    );
+
+    for (final mode in BackgroundMode.values) {
+      final strategy = SiteLensGlassQualityStrategy(
+        mode: SiteLensGlassQualityMode.high,
+        backgroundMode: mode,
+        lightweightShaderSupported: true,
+      );
+      final menu = strategy.resolve(context, role: SiteLensSurfaceRole.menu);
+      final chrome = strategy.resolve(
+        context,
+        role: SiteLensSurfaceRole.chrome,
+      );
+      expect(menu.settings.effectiveBackerColor, isNotNull);
+      expect(
+        menu.settings.effectiveBackerColor!.a,
+        closeTo(SiteLensGlassTokens.menuBackdropProtectionAlpha, 0.001),
+      );
+      expect(chrome.settings.effectiveBackerColor, isNull);
+    }
+  });
+
   testWidgets('automatic follows adaptive quality for eligible chrome', (
     tester,
   ) async {

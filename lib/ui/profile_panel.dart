@@ -438,11 +438,6 @@ class ProfileDetailScreen extends StatelessWidget {
             label: live.name,
             child: const SizedBox.shrink(),
           ),
-          flexibleSpace: const SiteLensGlassSurface(
-            role: SiteLensSurfaceRole.chrome,
-            radius: 0,
-            child: SizedBox.shrink(),
-          ),
           actions: siteLensTopBarActions([
             PopupMenuButton<String>(
               tooltip: '档案操作',

@@ -210,6 +210,20 @@ class SiteLensGlassQualityStrategy {
         isAndroid &&
         role != SiteLensSurfaceRole.platformView &&
         quality == GlassQuality.premium;
+    // Menus are often positioned over switches and compact controls. A
+    // theme-tinted backer keeps those control shapes out of the menu's
+    // refraction sample while preserving a translucent glass layer above it.
+    final menuBacker = role == SiteLensSurfaceRole.menu
+        ? SiteLensColors.of(context)
+              .controlSurface(
+                backgroundMode,
+                accent: Theme.of(context).colorScheme.primary,
+              )
+              .fill
+              .withValues(
+                alpha: SiteLensGlassTokens.menuBackdropProtectionAlpha,
+              )
+        : null;
     final adjusted = role == SiteLensSurfaceRole.platformView
         ? base
         : base.copyWith(
@@ -238,6 +252,7 @@ class SiteLensGlassQualityStrategy {
             shadow: isAndroid && !premiumSurface
                 ? const <BoxShadow>[]
                 : base.shadow,
+            backerColor: menuBacker,
           );
     if (role != SiteLensSurfaceRole.platformView) return adjusted;
     return adjusted.copyWith(

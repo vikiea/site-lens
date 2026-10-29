@@ -248,13 +248,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       title: destination == AppDestination.sites
                           ? const Text('Site Lens')
                           : null,
-                      // The top bar is the same glass layer as the bottom one: both sit
-                      // above the content on the app backdrop.
-                      flexibleSpace: const SiteLensGlassSurface(
-                        role: SiteLensSurfaceRole.chrome,
-                        radius: 0,
-                        child: SizedBox.shrink(),
-                      ),
                       actions: siteLensTopBarActions(switch (destination) {
                         AppDestination.sites => [
                           IconButton(
@@ -513,11 +506,6 @@ class ScriptManagementScreen extends StatelessWidget {
     builder: (context, _) => Scaffold(
       appBar: AppBar(
         title: const Text('脚本管理'),
-        flexibleSpace: const SiteLensGlassSurface(
-          role: SiteLensSurfaceRole.chrome,
-          radius: 0,
-          child: SizedBox.shrink(),
-        ),
         actions: siteLensTopBarActions([
           IconButton(
             tooltip: '导入 .user.js',
@@ -1255,11 +1243,6 @@ class _ScriptEditorState extends State<ScriptEditor> {
           namesRoute: true,
           label: widget.script == null ? '新建脚本' : '脚本编辑',
           child: const SizedBox.shrink(),
-        ),
-        flexibleSpace: const SiteLensGlassSurface(
-          role: SiteLensSurfaceRole.chrome,
-          radius: 0,
-          child: SizedBox.shrink(),
         ),
         actions: siteLensTopBarActions([
           IconButton(

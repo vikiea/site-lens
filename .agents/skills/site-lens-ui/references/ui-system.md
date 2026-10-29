@@ -47,8 +47,8 @@ Use `SiteLensMetrics`, `SiteLensColors`, `Theme.of(context).colorScheme`, and `T
 | Segmented controls | `segmentedHeight=40`, `segmentedInset=2` |
 | Browser chrome | `toolbarHeight=48`, `toolbarIconSize=18`, `toolbarInset=12`, `toolbarRadius=26` |
 | Browser dock | `browserDockWidth=toolbarHeight/3=16`, `browserDockIconSize=16`; the six-dot mark stays inside the 16 dp strip, outer edge straight and inward edge rounded |
-| Top-bar actions | `topBarActionGroupRadius=28`, `topBarActionGroupRightInset=8`, `topBarActionGroupVerticalInset=5`, `topBarActionMinSize=44`; all actions in one group share one continuous glass surface |
-| Glass controls | `controlFillAlpha=0.62`, `themeBuiltInControlFillAlpha=0.56`, `customImageControlFillAlpha=0.70`, `transparentControlFillAlpha=0.78`, `controlThemeTintAlpha=0.16`, `themeBuiltInControlTintAlpha=0.24`, `customImageControlTintAlpha=0.18`, `transparentControlTintAlpha=0.14`, `controlInteractionAlpha=0.14` |
+| Top-bar actions | `topBarActionGroupRadius=28`, `topBarActionGroupRightInset=8`, `topBarActionGroupVerticalInset=5`, `topBarActionMinSize=44`; the app bar is transparent, all actions share one continuous chrome glass surface, and the group has no local fill or theme tint |
+| Glass controls | `controlFillAlpha=0.62`, `themeBuiltInControlFillAlpha=0.56`, `customImageControlFillAlpha=0.70`, `transparentControlFillAlpha=0.78`, `controlThemeTintAlpha=0.16`, `themeBuiltInControlTintAlpha=0.24`, `customImageControlTintAlpha=0.18`, `transparentControlTintAlpha=0.14`, `controlInteractionAlpha=0.14`, `menuBackdropProtectionAlpha=0.78` |
 | Opacity layout | default `55`, value format `n / 100`, `opacityLabelGap=6`, `opacitySliderGap=8`; the slider is trailing-aligned |
 | Typography | page `20/w600`, section `16/w600`, row `15/w500`, body `14/w400`, description `12.5/w400`, caption `12/w400`, line height `1.35` |
 

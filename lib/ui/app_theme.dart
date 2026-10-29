@@ -146,6 +146,7 @@ abstract final class SiteLensGlassTokens {
   static const customImageControlTintAlpha = 0.18;
   static const transparentControlTintAlpha = 0.14;
   static const controlInteractionAlpha = 0.14;
+  static const menuBackdropProtectionAlpha = 0.78;
 }
 
 /// One type scale for page headings, sections, rows and secondary facts.

@@ -24,6 +24,56 @@ void main() {
     await db.close();
   });
 
+  testWidgets('media library selection keeps every top-bar action visible', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: MediaLibraryScreen(app: app),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('选择媒体'));
+    await tester.pumpAndSettle();
+
+    expect(find.byTooltip('全选'), findsOneWidget);
+    expect(find.byTooltip('批量操作'), findsOneWidget);
+    expect(find.byTooltip('清除选择'), findsOneWidget);
+    expect(find.byTooltip('退出选择'), findsOneWidget);
+    expect(
+      tester.getSize(find.byType(SiteLensTopBarActionGroup)).width,
+      greaterThan(150),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('media task selection keeps every top-bar action visible', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: MediaTasksScreen(app: app),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('选择任务'));
+    await tester.pumpAndSettle();
+
+    expect(find.byTooltip('全选'), findsOneWidget);
+    expect(find.byTooltip('批量操作'), findsOneWidget);
+    expect(find.byTooltip('清除选择'), findsOneWidget);
+    expect(find.byTooltip('退出选择'), findsOneWidget);
+    expect(
+      tester.getSize(find.byType(SiteLensTopBarActionGroup)).width,
+      greaterThan(150),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   for (final brightness in Brightness.values) {
     testWidgets(
       'media details keep compact headers and readable full paths in ${brightness.name}',

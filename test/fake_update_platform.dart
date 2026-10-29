@@ -74,6 +74,11 @@ class FakeAssetServer {
 
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
     paths.add(request.url.path);
+    if (request.url.host == 'api.github.com' &&
+        (request.url.path == '/repos/vikiea/site-lens/releases' ||
+            request.url.path == '/repos/vikiea/site-lens/releases/latest')) {
+      return _plain(http.Response('', 404), request);
+    }
     if (request.url.path.endsWith('/releases/latest')) {
       return _plain(
         http.Response.bytes(

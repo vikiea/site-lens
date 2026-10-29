@@ -374,11 +374,18 @@ class GitHubReleaseClient {
   }) : _client = client ?? _createUpdateClient(resolve),
        _latestUri =
            latestUri ??
-           Uri.https('github.com', '/$siteLensRepository/releases/latest');
+           Uri.https('github.com', '/$siteLensRepository/releases/latest'),
+       _latestApiUri = Uri.https(
+         'api.github.com',
+         '/repos/$siteLensRepository/releases/latest',
+       ),
+       _releasesUri = Uri.https('github.com', '/$siteLensRepository/releases');
 
   final http.Client _client;
   final Future<String?> Function()? tokenLoader;
   final Uri _latestUri;
+  final Uri _latestApiUri;
+  final Uri _releasesUri;
   Uri get _betaUri => Uri.https(
     'api.github.com',
     '/repos/$siteLensRepository/releases',
@@ -391,6 +398,8 @@ class GitHubReleaseClient {
     Uri uri, {
     String method = 'GET',
     Map<String, String> headers = const {},
+    String? tokenOverride,
+    bool tokenLoaded = false,
   }) async {
     for (var hop = 0; hop <= 5; hop++) {
       _trustedUri(uri.toString());
@@ -404,7 +413,7 @@ class GitHubReleaseClient {
           : '*/*';
       request.headers.addAll(headers);
       if (isApi) {
-        final token = await tokenLoader?.call();
+        final token = tokenLoaded ? tokenOverride : await tokenLoader?.call();
         if (token != null && token.isNotEmpty) {
           request.headers['Authorization'] = 'Bearer $token';
         }
@@ -440,10 +449,21 @@ class GitHubReleaseClient {
 
   Future<ReleaseInfo> fetchLatest({
     UpdateChannel channel = UpdateChannel.stable,
-  }) => _fetchLatest(channel).timeout(_timeout);
+  }) async {
+    String? token;
+    try {
+      token = await tokenLoader?.call();
+    } catch (_) {
+      token = null;
+    }
+    return _fetchLatest(channel, token: token).timeout(_timeout);
+  }
 
-  Future<ReleaseInfo> _fetchLatest(UpdateChannel channel) async {
-    if (channel == UpdateChannel.stable) return _fetchStable();
+  Future<ReleaseInfo> _fetchLatest(
+    UpdateChannel channel, {
+    required String? token,
+  }) async {
+    if (channel == UpdateChannel.stable) return _fetchStable(token: token);
 
     // The beta channel is a superset of stable: once a prerelease user has
     // moved past the stable baseline, the next stable release must still be
@@ -452,7 +472,10 @@ class GitHubReleaseClient {
     final candidates = <ReleaseInfo>[];
     Object? firstError;
     StackTrace? firstStack;
-    for (final fetch in [_fetchBeta, _fetchStable]) {
+    for (final fetch in [
+      () => _fetchBeta(token: token),
+      () => _fetchStable(token: token),
+    ]) {
       try {
         candidates.add(await fetch());
       } catch (error, stack) {
@@ -475,7 +498,82 @@ class GitHubReleaseClient {
     return candidates.first;
   }
 
-  Future<ReleaseInfo> _fetchStable() async {
+  Future<ReleaseInfo> _fetchStable({required String? token}) async {
+    try {
+      return await _fetchStableFromApi(token: token);
+    } catch (apiError, apiStack) {
+      try {
+        return await _fetchStableFromPage();
+      } catch (_) {
+        if (apiError is GitHubApiException &&
+            (apiError.statusCode == 401 || apiError.statusCode == 403)) {
+          Error.throwWithStackTrace(apiError, apiStack);
+        }
+        rethrow;
+      }
+    }
+  }
+
+  Future<ReleaseInfo> _fetchStableFromApi({required String? token}) async {
+    final response = await _request(
+      _latestApiUri,
+      tokenOverride: token,
+      tokenLoaded: true,
+    );
+    if (response.statusCode != 200) {
+      await response.stream.listen((_) {}).cancel();
+      throw GitHubApiException(
+        response.statusCode,
+        '正式版更新服务返回 HTTP ${response.statusCode}',
+      );
+    }
+    final bytes = <int>[];
+    await for (final chunk in response.stream.timeout(_timeout)) {
+      bytes.addAll(chunk);
+      if (bytes.length > 1024 * 1024) {
+        throw const FormatException('正式版发布信息超过大小限制');
+      }
+    }
+    final decoded = jsonDecode(utf8.decode(bytes));
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException('正式版发布信息格式错误');
+    }
+    final tag = decoded['tag_name'];
+    if (tag is! String ||
+        !RegExp(r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$').hasMatch(tag) ||
+        decoded['draft'] == true ||
+        decoded['prerelease'] == true) {
+      throw const FormatException('正式版发布标签格式错误');
+    }
+    return _releaseFromApiItem(tag, decoded);
+  }
+
+  Future<ReleaseInfo> _releaseFromApiItem(
+    String tag,
+    Map<String, dynamic> item,
+  ) async {
+    final html = item['html_url'] as String?;
+    final page = html == null
+        ? null
+        : _repositoryUri(html, '/releases/tag/$tag');
+    final assets = item['assets'];
+    final apkName = 'site-lens-$tag.apk';
+    final size = assets is List
+        ? assets
+              .whereType<Map<String, dynamic>>()
+              .where((asset) => asset['name'] == apkName)
+              .map((asset) => (asset['size'] as num?)?.toInt())
+              .firstOrNull
+        : null;
+    return _releaseForTag(
+      tag,
+      body: item['body'] as String? ?? '',
+      htmlUrl: page,
+      apkSize: size,
+    );
+  }
+
+  Future<ReleaseInfo> _fetchStableFromPage() async {
     final tag = await _resolveLatestTag();
     return _releaseForTag(tag);
   }
@@ -515,12 +613,30 @@ class GitHubReleaseClient {
     );
   }
 
-  Future<ReleaseInfo> _fetchBeta() async {
+  Future<ReleaseInfo> _fetchBeta({required String? token}) async {
+    try {
+      return await _fetchBetaFromApi(token: token);
+    } catch (apiError, apiStack) {
+      try {
+        return await _fetchBetaFromPage();
+      } catch (_) {
+        if (apiError is GitHubApiException &&
+            (apiError.statusCode == 401 || apiError.statusCode == 403)) {
+          Error.throwWithStackTrace(apiError, apiStack);
+        }
+        rethrow;
+      }
+    }
+  }
+
+  Future<ReleaseInfo> _fetchBetaFromApi({required String? token}) async {
     final candidates =
         <({String tag, Map<String, dynamic> item, AppVersion version})>[];
     for (var page = 1; page <= 10; page++) {
       final response = await _request(
         _betaUri.replace(queryParameters: {'per_page': '30', 'page': '$page'}),
+        tokenOverride: token,
+        tokenLoaded: true,
       );
       if (response.statusCode != 200) {
         await response.stream.listen((_) {}).cancel();
@@ -574,6 +690,40 @@ class GitHubReleaseClient {
           body: item['body'] as String? ?? '',
           htmlUrl: page,
           apkSize: size,
+        );
+      } on FormatException {
+        // A newer prerelease without a valid checksum must not hide an older
+        // usable release from the update channel.
+        continue;
+      }
+    }
+    throw const FormatException('尚无可用的测试版发布版本');
+  }
+
+  Future<ReleaseInfo> _fetchBetaFromPage() async {
+    final html = utf8.decode(await _read(_releasesUri, 2 * 1024 * 1024));
+    final tags = <String>{};
+    final tagPattern = RegExp(
+      r'(?:https://github\.com)?/vikiea/site-lens/releases/tag/'
+      r'(v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\.'
+      r'(?:alpha|beta|rc)(0|[1-9]\d*))',
+    );
+    for (final match in tagPattern.allMatches(html)) {
+      tags.add(match.group(1)!);
+    }
+    final candidates = tags.toList()
+      ..sort(
+        (left, right) =>
+            AppVersion.parse(right).compareTo(AppVersion.parse(left)),
+      );
+    for (final tag in candidates) {
+      try {
+        return await _releaseForTag(
+          tag,
+          htmlUrl: _repositoryUri(
+            'https://github.com/$siteLensRepository/releases/tag/$tag',
+            '/releases/tag/$tag',
+          ),
         );
       } on FormatException {
         // A newer prerelease without a valid checksum must not hide an older

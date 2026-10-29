@@ -57,6 +57,55 @@ void main() {
     expect(httpClient.checksumAuthorization, isNull);
   });
 
+  test('stable channel prefers the token-authenticated GitHub API', () async {
+    final httpClient = _StableApiClient();
+    var tokenReads = 0;
+    final client = GitHubReleaseClient(
+      client: httpClient,
+      tokenLoader: () async {
+        tokenReads++;
+        return 'github_pat_test_token';
+      },
+    );
+
+    final release = await client.fetchLatest();
+
+    expect(release.tagName, 'v0.2.0');
+    expect(httpClient.apiAuthorization, 'Bearer github_pat_test_token');
+    expect(httpClient.pageRequested, isFalse);
+    expect(tokenReads, 1);
+  });
+
+  test(
+    'stable and beta channels fall back to release pages after API failure',
+    () async {
+      final stableClient = _ReleasePageFallbackClient(
+        betaTags: const [],
+        stableTag: 'v0.2.0',
+      );
+      final stable = GitHubReleaseClient(
+        client: stableClient,
+        tokenLoader: () async => 'github_pat_test_token',
+      );
+      expect((await stable.fetchLatest()).tagName, 'v0.2.0');
+      expect(stableClient.pageRequested, isTrue);
+
+      final betaClient = _ReleasePageFallbackClient(
+        betaTags: const ['v0.2.0.alpha1', 'v0.3.0.alpha1'],
+        stableTag: 'v0.2.0',
+      );
+      final beta = GitHubReleaseClient(
+        client: betaClient,
+        tokenLoader: () async => 'github_pat_test_token',
+      );
+      expect(
+        (await beta.fetchLatest(channel: UpdateChannel.beta)).tagName,
+        'v0.3.0.alpha1',
+      );
+      expect(betaClient.pageRequested, isTrue);
+    },
+  );
+
   test('surfaces GitHub API authorization failures', () async {
     final client = GitHubReleaseClient(
       client: _TokenCaptureClient(status: 403),
@@ -89,6 +138,7 @@ void main() {
           'v0.2.0.alpha1',
           'v0.2.0.beta10',
         ]),
+        tokenLoader: () async => 'github_pat_test_token',
       );
 
       final release = await client.fetchLatest(channel: UpdateChannel.beta);
@@ -99,6 +149,7 @@ void main() {
   test('beta channel also discovers a newer stable release', () async {
     final client = GitHubReleaseClient(
       client: _BetaReleaseClient(['v0.2.0.beta2'], stableTag: 'v0.2.0'),
+      tokenLoader: () async => 'github_pat_test_token',
     );
 
     final release = await client.fetchLatest(channel: UpdateChannel.beta);
@@ -110,6 +161,7 @@ void main() {
     () async {
       final client = GitHubReleaseClient(
         client: _BetaReleaseClient(const [], stableTag: 'v0.2.0'),
+        tokenLoader: () async => 'github_pat_test_token',
       );
 
       final release = await client.fetchLatest(channel: UpdateChannel.beta);
@@ -122,6 +174,7 @@ void main() {
     () async {
       final client = GitHubReleaseClient(
         client: _BetaReleaseClient(['v0.3.0.alpha1'], stableTag: 'v0.2.0'),
+        tokenLoader: () async => 'github_pat_test_token',
       );
 
       final release = await client.fetchLatest(channel: UpdateChannel.beta);
@@ -137,6 +190,7 @@ void main() {
           List<String>.filled(30, 'v0.1.0'),
           pageTwoTags: ['v0.2.0.alpha1'],
         ),
+        tokenLoader: () async => 'github_pat_test_token',
       );
 
       final release = await client.fetchLatest(channel: UpdateChannel.beta);
@@ -150,6 +204,7 @@ void main() {
         ['v0.2.0.beta2', 'v0.2.0.beta10'],
         badChecksumTags: {'v0.2.0.beta10'},
       ),
+      tokenLoader: () async => 'github_pat_test_token',
     );
 
     final release = await client.fetchLatest(channel: UpdateChannel.beta);
@@ -215,10 +270,10 @@ void main() {
 
     expect((await service.checkForUpdate()).fromCache, isFalse);
     expect((await service.checkForUpdate()).fromCache, isTrue);
-    expect(server.paths, hasLength(2));
+    expect(server.paths, hasLength(3));
     now = now.add(const Duration(minutes: 1));
     expect((await service.checkForUpdate()).fromCache, isFalse);
-    expect(server.paths, hasLength(4));
+    expect(server.paths, hasLength(6));
     await service.close();
   });
 
@@ -691,13 +746,141 @@ class _TokenCaptureClient extends http.BaseClient {
       ]);
       return _response(http.Response(body, 200), request);
     }
-    if (request.url.path.endsWith('/releases/latest')) {
+    if (request.url.host == 'github.com' &&
+        request.url.path == '/vikiea/site-lens/releases/latest') {
       return _response(http.Response('', 404), request);
     }
     if (request.url.path.endsWith('.sha256')) {
       checksumAuthorization = request.headers['authorization'];
       return _response(
         http.Response('${'a' * 64}  site-lens-v0.2.0.beta2.apk\n', 200),
+        request,
+      );
+    }
+    return _response(http.Response('', 404), request);
+  }
+
+  static http.StreamedResponse _response(
+    http.Response response,
+    http.BaseRequest request,
+  ) => http.StreamedResponse(
+    Stream<List<int>>.value(response.bodyBytes),
+    response.statusCode,
+    contentLength: response.contentLength,
+    headers: response.headers,
+    request: request,
+  );
+}
+
+class _StableApiClient extends http.BaseClient {
+  String? apiAuthorization;
+  bool pageRequested = false;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    if (request.url.host == 'api.github.com' &&
+        request.url.path == '/repos/vikiea/site-lens/releases/latest') {
+      apiAuthorization = request.headers['authorization'];
+      return _response(
+        http.Response.bytes(
+          utf8.encode(
+            jsonEncode({
+              'tag_name': 'v0.2.0',
+              'draft': false,
+              'prerelease': false,
+              'body': '稳定版更新',
+              'html_url':
+                  'https://github.com/vikiea/site-lens/releases/tag/v0.2.0',
+              'assets': [
+                {'name': 'site-lens-v0.2.0.apk', 'size': 123},
+              ],
+            }),
+          ),
+          200,
+        ),
+        request,
+      );
+    }
+    if (request.url.host == 'github.com' &&
+        request.url.path == '/vikiea/site-lens/releases/latest') {
+      pageRequested = true;
+      return _response(
+        http.Response.bytes(
+          const [],
+          302,
+          headers: {
+            'location':
+                'https://github.com/vikiea/site-lens/releases/tag/v0.2.0',
+          },
+        ),
+        request,
+      );
+    }
+    if (request.url.path.endsWith('.sha256')) {
+      return _response(
+        http.Response('${'a' * 64}  site-lens-v0.2.0.apk\n', 200),
+        request,
+      );
+    }
+    return _response(http.Response('', 404), request);
+  }
+
+  static http.StreamedResponse _response(
+    http.Response response,
+    http.BaseRequest request,
+  ) => http.StreamedResponse(
+    Stream<List<int>>.value(response.bodyBytes),
+    response.statusCode,
+    contentLength: response.contentLength,
+    headers: response.headers,
+    request: request,
+  );
+}
+
+class _ReleasePageFallbackClient extends http.BaseClient {
+  _ReleasePageFallbackClient({required this.betaTags, required this.stableTag});
+
+  final List<String> betaTags;
+  final String stableTag;
+  bool pageRequested = false;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    if (request.url.host == 'api.github.com' &&
+        (request.url.path == '/repos/vikiea/site-lens/releases' ||
+            request.url.path == '/repos/vikiea/site-lens/releases/latest')) {
+      return _response(http.Response('', 403), request);
+    }
+    if (request.url.host == 'github.com' &&
+        request.url.path == '/vikiea/site-lens/releases') {
+      pageRequested = true;
+      final links = [
+        ...betaTags,
+        stableTag,
+      ].map((tag) => '<a href="/vikiea/site-lens/releases/tag/$tag">$tag</a>');
+      return _response(http.Response(links.join('\n'), 200), request);
+    }
+    if (request.url.host == 'github.com' &&
+        request.url.path == '/vikiea/site-lens/releases/latest') {
+      pageRequested = true;
+      return _response(
+        http.Response.bytes(
+          const [],
+          302,
+          headers: {
+            'location':
+                'https://github.com/vikiea/site-lens/releases/tag/$stableTag',
+          },
+        ),
+        request,
+      );
+    }
+    final checksum = RegExp(r'/releases/download/(v[^/]+)/site-lens-.*\.sha256')
+        .firstMatch(request.url.path);
+    if (checksum != null) {
+      final tag = checksum.group(1)!;
+      return _response(
+        http.Response('${'a' * 64}  site-lens-$tag.apk\n', 200),
         request,
       );
     }

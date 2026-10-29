@@ -45,20 +45,20 @@ void main() {
           of: find.byType(SiteLensTopBarActionGroup),
           matching: find.byType(SiteLensGlassSurface),
         ),
-        findsNothing,
+        findsOneWidget,
       );
       expect(
         find.descendant(
           of: find.byType(SiteLensTopBarActionGroup),
           matching: find.byType(DecoratedBox),
         ),
-        findsOneWidget,
+        findsNothing,
       );
       expect(tester.takeException(), isNull);
     }
   });
 
-  testWidgets('top-bar action glass follows the selected theme seed', (
+  testWidgets('top-bar action glass keeps the neutral material across themes', (
     tester,
   ) async {
     Future<Color> pumpPreset(ThemePresetId preset) async {
@@ -83,9 +83,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      return SiteLensColors.of(
-        tester.element(find.byType(SiteLensTopBarActionGroup)),
-      ).glassSurface;
+      final context = tester.element(find.byType(SiteLensTopBarActionGroup));
+      return SiteLensColors.of(context).glassSurface;
     }
 
     final ocean = await pumpPreset(ThemePresetId.oceanBlue);
@@ -114,15 +113,72 @@ void main() {
     expect(group, findsOneWidget);
     expect(
       find.descendant(of: group, matching: find.byType(SiteLensGlassSurface)),
-      findsNothing,
+      findsOneWidget,
     );
     expect(
       find.descendant(of: group, matching: find.byType(DecoratedBox)),
-      findsOneWidget,
+      findsNothing,
     );
     expect(
       find.descendant(of: group, matching: find.byType(SiteLensGlassControl)),
       findsNothing,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('top-bar action group expands composite actions', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: Scaffold(
+          appBar: AppBar(
+            actions: [
+              SiteLensTopBarActionGroup(
+                actions: [
+                  Row(
+                    key: const ValueKey<String>('selection-actions'),
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: '全选',
+                        onPressed: () {},
+                        icon: const Icon(Icons.select_all),
+                      ),
+                      IconButton(
+                        tooltip: '批量操作',
+                        onPressed: () {},
+                        icon: const Icon(Icons.more_vert),
+                      ),
+                      IconButton(
+                        tooltip: '清除选择',
+                        onPressed: () {},
+                        icon: const Icon(Icons.remove_done),
+                      ),
+                      IconButton(
+                        tooltip: '退出选择',
+                        onPressed: () {},
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ],
+          ),
+          body: const SizedBox(),
+        ),
+      ),
+    );
+
+    expect(find.byTooltip('全选'), findsOneWidget);
+    expect(find.byTooltip('批量操作'), findsOneWidget);
+    expect(find.byTooltip('清除选择'), findsOneWidget);
+    expect(find.byTooltip('退出选择'), findsOneWidget);
+    expect(
+      tester
+          .getSize(find.byKey(const ValueKey<String>('selection-actions')))
+          .width,
+      greaterThan(SiteLensMetrics.topBarActionMinSize),
     );
     expect(tester.takeException(), isNull);
   });
@@ -252,7 +308,7 @@ void main() {
       SiteLensSurfaceRole.menu,
     );
     expect(find.byType(ListTile), findsNothing);
-    expect(find.byType(ColoredBox), findsNothing);
+    expect(find.byType(ColoredBox), findsOneWidget);
     expect(tester.getSize(panel).height, lessThan(80));
     await tester.tap(find.text('全部关闭'));
     await tester.pumpAndSettle();
