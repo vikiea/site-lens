@@ -84,6 +84,11 @@ class MediaOrganizationService extends ChangeNotifier {
 
   List<MediaOrganizationFolder> get folders => _sorted(_folders.values);
 
+  bool get hasStoredOrganization =>
+      _folders.isNotEmpty || _itemFolders.isNotEmpty || _itemNames.isNotEmpty;
+
+  List<MediaOrganizationFolder> get allFolders => _sorted(_folders.values);
+
   MediaOrganizationFolder? folder(String id) => _folders[id];
 
   List<MediaOrganizationFolder> children(String? parentId) =>
@@ -93,6 +98,11 @@ class MediaOrganizationService extends ChangeNotifier {
 
   String nameFor(String itemId, String fallback) =>
       _itemNames[itemId] ?? fallback;
+
+  Iterable<String> get placedItemIds => {
+    ..._itemFolders.keys,
+    ..._itemNames.keys,
+  };
 
   bool hasFolder(String? id) => id == null || _folders.containsKey(id);
 
@@ -393,6 +403,17 @@ class MediaOrganizationService extends ChangeNotifier {
     _folders.removeWhere((id, _) => removed.contains(id));
     _legacyFolders.removeWhere((_, id) => removed.contains(id));
     _itemFolders.removeWhere((_, folderId) => removed.contains(folderId));
+    await _persist();
+    notifyListeners();
+  }
+
+  Future<void> clearAll() async {
+    await restore();
+    _folders.clear();
+    _itemFolders.clear();
+    _itemNames.clear();
+    _imported.clear();
+    _legacyFolders.clear();
     await _persist();
     notifyListeners();
   }

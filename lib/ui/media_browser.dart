@@ -33,16 +33,47 @@ class MediaBrowserController extends ChangeNotifier {
   bool busy = false;
   final selectedItemIds = <String>{};
   final selectedFolderIds = <String>{};
+  List<MediaOrganizationFolder>? _physicalFolders;
 
-  List<MediaOrganizationFolder> get folders => organization.children(folderId);
+  bool get physicalMode => _physicalFolders != null;
+
+  void setPhysicalFolders(Iterable<MediaOrganizationFolder> folders) {
+    _physicalFolders = folders.toList(growable: false);
+    if (folderId != null && !hasFolder(folderId)) folderId = null;
+    pruneSelection(
+      itemIds: selectedItemIds,
+      folderIds: _physicalFolders!.map((folder) => folder.id),
+    );
+    notifyListeners();
+  }
+
+  void clearPhysicalFolders() {
+    _physicalFolders = null;
+    notifyListeners();
+  }
+
+  List<MediaOrganizationFolder> get folders => physicalMode
+      ? _physicalFolders!
+            .where((folder) => folder.parentId == folderId)
+            .toList()
+      : organization.children(folderId);
 
   bool get atRoot => folderId == null;
 
-  MediaOrganizationFolder? get currentFolder =>
-      folderId == null ? null : organization.folder(folderId!);
+  MediaOrganizationFolder? get currentFolder => folderId == null
+      ? null
+      : physicalMode
+      ? _physicalFolders!.where((folder) => folder.id == folderId).firstOrNull
+      : organization.folder(folderId!);
+
+  bool hasFolder(String? id) =>
+      id == null ||
+      (physicalMode
+          ? _physicalFolders!.any((folder) => folder.id == id)
+          : organization.hasFolder(id));
 
   void openFolder(String id) {
-    if (!organization.hasFolder(id)) return;
+    if (!hasFolder(id)) return;
     folderId = id;
     clearSelection();
     notifyListeners();
@@ -121,6 +152,9 @@ class MediaBrowserFolderRow extends StatelessWidget {
     this.selected = false,
     this.onSelected,
     this.parent = false,
+    this.physical = false,
+    this.taskGroup = false,
+    this.actionsEnabled = true,
     this.extraActions = const [],
   });
 
@@ -132,6 +166,9 @@ class MediaBrowserFolderRow extends StatelessWidget {
   final bool selected;
   final ValueChanged<bool?>? onSelected;
   final bool parent;
+  final bool physical;
+  final bool taskGroup;
+  final bool actionsEnabled;
   final List<SiteLensGlassMenuAction<String>> extraActions;
 
   @override
@@ -164,25 +201,39 @@ class MediaBrowserFolderRow extends StatelessWidget {
               tooltip: '文件夹操作',
               icon: Icons.more_horiz,
               actions: [
-                const SiteLensGlassMenuAction(
+                SiteLensGlassMenuAction(
                   value: 'rename',
-                  label: '重命名文件夹',
+                  label: physical
+                      ? '重命名目录'
+                      : taskGroup
+                      ? '重命名任务分组'
+                      : '重命名文件夹',
                   icon: Icons.drive_file_rename_outline,
+                  enabled: actionsEnabled,
                 ),
-                const SiteLensGlassMenuAction(
-                  value: 'move',
-                  label: '移动到文件夹',
-                  icon: Icons.drive_file_move_outlined,
-                ),
-                const SiteLensGlassMenuAction(
-                  value: 'copy',
-                  label: '复制文件夹内容',
-                  icon: Icons.copy_all_outlined,
-                ),
-                const SiteLensGlassMenuAction(
+                if (!physical)
+                  SiteLensGlassMenuAction(
+                    value: 'move',
+                    label: taskGroup ? '移动到任务分组' : '移动到文件夹',
+                    icon: Icons.drive_file_move_outlined,
+                    enabled: actionsEnabled,
+                  ),
+                if (!physical)
+                  SiteLensGlassMenuAction(
+                    value: 'copy',
+                    label: taskGroup ? '复制任务分组内容' : '复制文件夹内容',
+                    icon: Icons.copy_all_outlined,
+                    enabled: actionsEnabled,
+                  ),
+                SiteLensGlassMenuAction(
                   value: 'delete',
-                  label: '删除文件夹内容',
+                  label: physical
+                      ? '删除目录'
+                      : taskGroup
+                      ? '删除任务分组内容'
+                      : '删除文件夹内容',
                   icon: Icons.delete_outline,
+                  enabled: actionsEnabled,
                 ),
                 ...extraActions,
               ],
@@ -202,6 +253,7 @@ class MediaBrowserSelectionActions extends StatelessWidget {
     required this.onAction,
     this.extraActions = const [],
     this.onExtraAction,
+    this.writesEnabled = true,
   });
 
   final MediaBrowserController controller;
@@ -210,6 +262,7 @@ class MediaBrowserSelectionActions extends StatelessWidget {
   final ValueChanged<String> onAction;
   final List<SiteLensGlassMenuAction<String>> extraActions;
   final ValueChanged<String>? onExtraAction;
+  final bool writesEnabled;
 
   @override
   Widget build(BuildContext context) {
@@ -242,19 +295,19 @@ class MediaBrowserSelectionActions extends StatelessWidget {
               value: 'move',
               label: '移动到文件夹',
               icon: Icons.drive_file_move_outlined,
-              enabled: !controller.busy && hasSelection,
+              enabled: !controller.busy && hasSelection && writesEnabled,
             ),
             SiteLensGlassMenuAction(
               value: 'copy',
               label: '复制',
               icon: Icons.copy_outlined,
-              enabled: !controller.busy && hasSelection,
+              enabled: !controller.busy && hasSelection && writesEnabled,
             ),
             SiteLensGlassMenuAction(
               value: 'delete',
               label: '删除',
               icon: Icons.delete_outline,
-              enabled: !controller.busy && hasSelection,
+              enabled: !controller.busy && hasSelection && writesEnabled,
             ),
             ...extraActions.map(
               (action) => SiteLensGlassMenuAction<String>(
@@ -293,25 +346,28 @@ List<SiteLensGlassMenuAction<String>> mediaBrowserFileMenuActions({
   bool canCopy = true,
   bool canDelete = true,
   bool enabled = true,
+  String renameLabel = '重命名',
+  String moveLabel = '移动到目录',
+  String copyLabel = '复制到目录',
   List<SiteLensGlassMenuAction<String>> extraActions = const [],
 }) => [
   if (canRename)
     SiteLensGlassMenuAction(
       value: 'rename',
-      label: '重命名',
+      label: renameLabel,
       icon: Icons.drive_file_rename_outline,
       enabled: enabled,
     ),
   SiteLensGlassMenuAction(
     value: 'move',
-    label: '移动到文件夹',
+    label: moveLabel,
     icon: Icons.drive_file_move_outlined,
     enabled: enabled,
   ),
   if (canCopy)
     SiteLensGlassMenuAction(
       value: 'copy',
-      label: '复制',
+      label: copyLabel,
       icon: Icons.copy_outlined,
       enabled: enabled,
     ),

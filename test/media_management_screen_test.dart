@@ -85,7 +85,7 @@ void main() {
         addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
         const directory = '/storage/emulated/0/Movies/系统带我攻略弟弟（漫剧版）/完整媒体导出保存目录';
         const readable = '内部存储/Movies/系统带我攻略弟弟（漫剧版）/完整媒体导出保存目录';
-        const explanation = '清除目录配置后，后续 MP4 只保存在应用媒体库。已导出的文件不会被删除。';
+        const explanation = '迁移会保留媒体身份并校验文件内容；权限失效或同名冲突时不会删除源文件。';
         app.mp4ExportDirectory = directory;
         addTearDown(() async {
           await tester.pumpWidget(const SizedBox());
@@ -112,18 +112,18 @@ void main() {
           of: find.text(title),
           matching: find.byType(SiteLensCompactRow),
         );
-        final directoryRow = row('MP4 保存目录');
-        final restoreRow = row('恢复应用媒体库');
+        final directoryRow = row('媒体库目录');
+        final restoreRow = row('迁移应用媒体库');
         final directoryHeight = tester.getSize(directoryRow).height;
         final restoreHeight = tester.getSize(restoreRow).height;
         expect(find.byType(SiteLensPanel), findsNWidgets(2));
         expect(find.byType(Scrollable), findsOneWidget);
         expect(find.text(readable), findsNothing);
 
-        await tester.tap(find.text('MP4 保存目录'));
+        await tester.tap(find.text('媒体库目录'));
         await tester.pumpAndSettle();
         expect(find.text(readable), findsOneWidget);
-        expect(find.text('更换保存目录'), findsOneWidget);
+        expect(find.text('更换媒体目录'), findsOneWidget);
         expect(tester.getSize(directoryRow).height, directoryHeight);
         final fullPath = tester.widget<SelectableText>(
           find.byType(SelectableText),
@@ -132,13 +132,13 @@ void main() {
         expect(fullPath.maxLines, isNull);
 
         await tester.ensureVisible(restoreRow);
-        await tester.tap(find.text('恢复应用媒体库'));
+        await tester.tap(find.text('迁移应用媒体库'));
         await tester.pumpAndSettle();
         expect(find.text(readable), findsNothing);
         expect(find.text(explanation), findsOneWidget);
         expect(tester.getSize(restoreRow).height, restoreHeight);
         expect(tester.getSize(directoryRow).height, directoryHeight);
-        expect(find.text('清除目录配置'), findsOneWidget);
+        expect(find.text('清除媒体目录配置'), findsOneWidget);
         expect(tester.takeException(), isNull);
       },
     );

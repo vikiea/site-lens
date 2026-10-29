@@ -91,7 +91,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             try { pickDirectory(result) } catch (error: Exception) { fail(call, result, error) }
             return
         }
-        val supported = setOf("validateLocalInput", "muxHls", "validateOutput", "deliver", "deliverToDirectory", "stat", "inspect", "inspectSamples", "scanMedia", "materialize", "rename", "move", "delete", "deleteOwnedSources", "copyVerified")
+        val supported = setOf("validateLocalInput", "muxHls", "validateOutput", "deliver", "deliverToDirectory", "checkDirectory", "listDirectory", "createDirectory", "stat", "inspect", "inspectSamples", "scanMedia", "materialize", "rename", "move", "delete", "deleteOwnedSources", "copyVerified")
         if (call.method !in supported) { result.notImplemented(); return }
         val jobId = call.argument<String>("jobId") ?: "job-${System.nanoTime()}"
         val cancellation = AtomicBoolean(false)
@@ -253,6 +253,9 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             "validateOutput" -> validateOutput(argument("path"))
             "deliver" -> { deliver(argument("source"), Uri.parse(argument("destination"))); null }
             "deliverToDirectory" -> deliverToDirectory(argument("source"), Uri.parse(argument("directory")), argument("fileName"), call.argument<String>("subdirectory"))
+            "checkDirectory" -> checkDirectory(Uri.parse(argument("directory")))
+            "listDirectory" -> listDirectory(Uri.parse(argument("directory")))
+            "createDirectory" -> createDirectory(Uri.parse(argument("directory")), argument("name"))
             "stat" -> stat(argument("source"))
             "inspect" -> inspect(argument("source"))
             "inspectSamples" -> inspectSamples(argument("source"))
@@ -271,7 +274,9 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                     require(directory.scheme == null || directory.scheme == "file") { "移动目录无效" }
                     validateName(argument("fileName"))
                     val base = File(if (directory.scheme == "file") directory.path!! else argument("directory"))
-                    copyVerified(source, File(base, argument("fileName")).path, sourceMutationHeld = true)
+                    copyVerified(source, File(base, argument("fileName")).path,
+                        sourceMutationHeld = true,
+                        reuseExistingVerified = call.argument<Boolean>("reuseExistingVerified") == true)
                 }
                 completeMediaMove(target, { delete(source) }, { delete(target, allowMissing = true) })
                 target
@@ -1160,17 +1165,12 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         sourceStream(sourcePath).close()
         require(directory.scheme == "content") { "系统目录无效" }
         validateName(fileName)
-        if (!context.contentResolver.persistedUriPermissions.any { it.uri == directory && it.isWritePermission && it.isReadPermission }) {
-            throw SecurityException("保存目录权限已失效，请在媒体管理中重新选择 MP4 保存目录")
-        }
-        var treeDocument = DocumentsContract.buildDocumentUriUsingTree(
-            directory,
-            DocumentsContract.getTreeDocumentId(directory),
-        )
+        val (tree, parentId) = treeParentDocument(directory)
+        var treeDocument = DocumentsContract.buildDocumentUriUsingTree(tree, parentId)
         if (!subdirectory.isNullOrBlank()) {
             validateName(subdirectory)
             val children = DocumentsContract.buildChildDocumentsUriUsingTree(
-                directory, DocumentsContract.getDocumentId(treeDocument),
+                tree, parentId,
             )
             var folder: Uri? = null
             context.contentResolver.query(children, arrayOf(
@@ -1181,7 +1181,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 while (cursor.moveToNext()) {
                     if (cursor.getString(1) != subdirectory) continue
                     require(cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR) { "批次目录名称已被文件占用" }
-                    folder = DocumentsContract.buildDocumentUriUsingTree(directory, cursor.getString(0))
+                    folder = DocumentsContract.buildDocumentUriUsingTree(tree, cursor.getString(0))
                     break
                 }
             }
@@ -1232,6 +1232,76 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             runCatching { DocumentsContract.deleteDocument(context.contentResolver, target) }
             throw error
         }
+    }
+
+    private fun checkDirectory(directory: Uri): Boolean {
+        if (directory.scheme != "content" || !DocumentsContract.isTreeUri(directory)) {
+            return false
+        }
+        return context.contentResolver.persistedUriPermissions.any {
+            it.uri == directory && it.isReadPermission && it.isWritePermission
+        }
+    }
+
+    private fun treeParentDocument(directory: Uri): Pair<Uri, String> {
+        require(directory.scheme == "content") { "系统目录无效" }
+        val segments = directory.pathSegments
+        val treeIndex = segments.indexOf("tree")
+        require(treeIndex >= 0 && treeIndex + 1 < segments.size) { "系统目录无效" }
+        val documentIndex = segments.indexOf("document")
+        val treeEnd = if (documentIndex > treeIndex) documentIndex else segments.size
+        val treeId = segments.subList(treeIndex + 1, treeEnd).joinToString("/")
+        val tree = DocumentsContract.buildTreeDocumentUri(directory.authority, treeId)
+        require(context.contentResolver.persistedUriPermissions.any {
+            it.uri == tree && it.isReadPermission && it.isWritePermission
+        }) { "媒体目录访问权限已失效，请重新授权媒体目录" }
+        val documentId = if (documentIndex > treeIndex && documentIndex + 1 < segments.size) {
+            segments.subList(documentIndex + 1, segments.size).joinToString("/")
+        } else {
+            treeId
+        }
+        return tree to documentId
+    }
+
+    private fun listDirectory(directory: Uri): List<Map<String, Any?>> {
+        val (tree, parentId) = treeParentDocument(directory)
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
+        val values = mutableListOf<Map<String, Any?>>()
+        context.contentResolver.query(children, arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+        ), null, null, null)?.use { cursor ->
+            while (cursor.moveToNext()) {
+                val id = cursor.getString(0) ?: continue
+                val name = cursor.getString(1) ?: continue
+                val mime = cursor.getString(2)
+                val child = DocumentsContract.buildDocumentUriUsingTree(tree, id)
+                values += mapOf(
+                    "uri" to child.toString(),
+                    "name" to name,
+                    "directory" to (mime == DocumentsContract.Document.MIME_TYPE_DIR),
+                    "size" to if (cursor.isNull(3)) 0L else cursor.getLong(3),
+                    "modifiedMs" to if (cursor.isNull(4)) 0L else cursor.getLong(4),
+                )
+            }
+        }
+        return values.sortedWith(compareBy<Map<String, Any?>> { !(it["directory"] as Boolean) }
+            .thenBy { it["name"] as String })
+    }
+
+    private fun createDirectory(directory: Uri, name: String): String {
+        validateName(name)
+        val (tree, parentId) = treeParentDocument(directory)
+        val parent = DocumentsContract.buildDocumentUriUsingTree(tree, parentId)
+        return (DocumentsContract.createDocument(
+            context.contentResolver,
+            parent,
+            DocumentsContract.Document.MIME_TYPE_DIR,
+            name,
+        ) ?: error("无法创建媒体目录")).toString()
     }
 
     private fun sourceStream(source: String): java.io.InputStream {

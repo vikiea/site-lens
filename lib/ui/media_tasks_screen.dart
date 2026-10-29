@@ -5,12 +5,15 @@ import 'dart:math' as math;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as p;
 
 import '../diagnostics/error_log.dart';
 import '../domain/models.dart';
+import '../domain/media_artifact_identity.dart';
 import '../media/media_service.dart';
 import '../media/media_library.dart';
 import '../media/media_organization.dart';
+import '../media/media_storage.dart';
 import '../settings/app_settings.dart';
 import 'app_controller.dart';
 import 'dlna_cast_screen.dart';
@@ -1067,6 +1070,13 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
   );
   String? _error;
   bool _scanning = false;
+  MediaStorageRoot? _storageRoot;
+  final _migrationCandidates = <String>{};
+  final _physicalFolders = <String, MediaOrganizationFolder>{};
+  List<MediaStorageEntry> _storageEntries = const [];
+  String? _physicalRootLocation;
+  Future<void>? _storageRefresh;
+  Future<void>? _physicalRefresh;
 
   @override
   void initState() {
@@ -1075,6 +1085,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
     _browser.addListener(_changed);
     app.addListener(_changed);
     app.mediaLibrary.addListener(_libraryChanged);
+    unawaited(_refreshStorageState());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_load());
     });
@@ -1087,45 +1098,62 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
     app.removeListener(_changed);
     app.mediaLibrary.removeListener(_libraryChanged);
     _browser.dispose();
+    _organization.dispose();
     super.dispose();
   }
 
   void _changed() {
     if (mounted) setState(() {});
+    unawaited(_refreshStorageState());
   }
 
   void _libraryChanged() {
     _changed();
-    if (mounted) unawaited(_syncLibraryOrganization());
+    if (mounted) unawaited(_loadPhysicalDirectory());
   }
 
-  Future<void> _syncLibraryOrganization() async {
-    try {
-      await _organization.restoreAndSync(
-        app.mediaLibrary.items.map(
-          (item) => MediaOrganizationSeed(
-            itemId: item.taskId,
-            legacyFolder: app.mediaLibrary.folderFor(item),
-          ),
-        ),
-      );
-      _changed();
-    } catch (error) {
-      if (mounted) setState(() => _error = friendlyError(error));
-    }
+  Future<void> _refreshStorageState() {
+    return _storageRefresh ??= () async {
+      try {
+        final root = await app.mediaStorage.resolve();
+        final candidates = <String>{};
+        if (root.configured && root.available) {
+          for (final item in app.mediaLibrary.items) {
+            if (await app.mediaStorage.needsMigration(item)) {
+              candidates.add(item.taskId);
+            }
+          }
+        }
+        if (!mounted) return;
+        setState(() {
+          _storageRoot = root;
+          _migrationCandidates
+            ..clear()
+            ..addAll(candidates);
+        });
+      } catch (error) {
+        if (mounted) setState(() => _error = friendlyError(error));
+      } finally {
+        _storageRefresh = null;
+      }
+    }();
   }
 
   Future<void> _load() async {
     try {
       await app.mediaLibrary.restore();
-      await _organization.restoreAndSync(
-        app.mediaLibrary.items.map(
-          (item) => MediaOrganizationSeed(
-            itemId: item.taskId,
-            legacyFolder: app.mediaLibrary.folderFor(item),
+      await _organization.restore();
+      if (await app.db.setting('mediaLibraryOrganizationMigratedV2') != '1') {
+        await _organization.restoreAndSync(
+          app.mediaLibrary.items.map(
+            (item) => MediaOrganizationSeed(
+              itemId: item.taskId,
+              legacyFolder: app.mediaLibrary.folderFor(item),
+            ),
           ),
-        ),
-      );
+        );
+      }
+      await _loadPhysicalDirectory();
     } catch (error) {
       if (mounted) setState(() => _error = friendlyError(error));
     }
@@ -1138,14 +1166,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
       final result = await app.mediaLibrary.rescan(
         directory: app.mp4ExportDirectory,
       );
-      await _organization.restoreAndSync(
-        app.mediaLibrary.items.map(
-          (item) => MediaOrganizationSeed(
-            itemId: item.taskId,
-            legacyFolder: app.mediaLibrary.folderFor(item),
-          ),
-        ),
-      );
+      await _loadPhysicalDirectory();
       if (!mounted) return;
       showShortToast(
         context,
@@ -1161,6 +1182,115 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
     } finally {
       if (mounted) setState(() => _scanning = false);
     }
+  }
+
+  Future<void> _loadPhysicalDirectory({String? directory}) {
+    return _physicalRefresh ??= () async {
+      try {
+        final root = await app.mediaStorage.resolve();
+        final target = directory ?? root.location;
+        if (_physicalRootLocation != root.location) {
+          _physicalFolders.clear();
+          _physicalRootLocation = root.location;
+          if (_browser.folderId != null) _browser.goUp();
+        }
+        final entries = await app.mediaStorage.listDirectory(directory: target);
+        final parentId = target == root.location ? null : target;
+        for (final entry in entries.where((entry) => entry.directory)) {
+          _physicalFolders[entry.location] = MediaOrganizationFolder(
+            id: entry.location,
+            name: entry.name,
+            parentId: parentId,
+          );
+        }
+        if (parentId != null && !_physicalFolders.containsKey(parentId)) {
+          _physicalFolders[parentId] = MediaOrganizationFolder(
+            id: parentId,
+            name: _physicalName(parentId),
+          );
+        }
+        _browser.setPhysicalFolders(_physicalFolders.values);
+        if (mounted) {
+          setState(() {
+            _storageEntries = entries;
+            _storageRoot = root;
+          });
+        }
+      } catch (error) {
+        if (mounted) setState(() => _error = friendlyError(error));
+      } finally {
+        _physicalRefresh = null;
+      }
+    }();
+  }
+
+  String _physicalName(String location) {
+    final uri = Uri.tryParse(location);
+    if (uri?.scheme == 'content') {
+      return uri!.pathSegments.lastOrNull ?? '媒体目录';
+    }
+    return File(location).uri.pathSegments.lastOrNull ?? '媒体目录';
+  }
+
+  Future<Map<String, String>> _collectPhysicalFiles(
+    String location, {
+    String prefix = '',
+  }) async {
+    final result = <String, String>{};
+    final entries = await app.mediaStorage.listDirectory(directory: location);
+    for (final entry in entries) {
+      final relative = prefix.isEmpty ? entry.name : '$prefix/${entry.name}';
+      if (entry.directory) {
+        result.addAll(
+          await _collectPhysicalFiles(entry.location, prefix: relative),
+        );
+      } else {
+        result[relative] = entry.location;
+      }
+    }
+    return result;
+  }
+
+  List<MediaArtifact> _visiblePhysicalItems() {
+    final bySource = <String, MediaArtifact>{
+      for (final item in app.mediaLibrary.items)
+        mediaArtifactSourceKey(item.location): item,
+    };
+    final result = <MediaArtifact>[];
+    for (final entry in _storageEntries.where((entry) => !entry.directory)) {
+      final item = bySource[mediaArtifactSourceKey(entry.location)];
+      if (item != null) result.add(item);
+    }
+    if (_browser.folderId == null && _migrationCandidates.isNotEmpty) {
+      final present = result.map((item) => item.taskId).toSet();
+      result.addAll(
+        app.mediaLibrary.items.where(
+          (item) =>
+              _migrationCandidates.contains(item.taskId) &&
+              !present.contains(item.taskId),
+        ),
+      );
+    }
+    return result;
+  }
+
+  int _physicalFolderItemCount(String folder) {
+    final uri = Uri.tryParse(folder);
+    if (uri?.scheme == 'content') {
+      return app.mediaLibrary.items
+          .where((item) => item.location.contains('/document/'))
+          .where((item) => item.folder == _physicalName(folder))
+          .length;
+    }
+    final root = p.normalize(folder);
+    return app.mediaLibrary.items.where((item) {
+      final itemUri = Uri.tryParse(item.location);
+      if (itemUri?.scheme == 'content') return false;
+      final path = itemUri?.scheme == 'file'
+          ? itemUri!.toFilePath()
+          : item.location;
+      return p.isWithin(root, p.normalize(path));
+    }).length;
   }
 
   MediaBrowserOperations get _operations => MediaBrowserOperations(
@@ -1182,10 +1312,23 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
       label: '文件夹名称',
     );
     if (name == null || name.trim().isEmpty || !mounted) return;
-    await safely(
-      context,
-      () => _organization.createFolder(name, parentId: _browser.folderId),
-    );
+    await safely(context, () async {
+      final root = await app.mediaStorage.resolve();
+      final parent = _browser.folderId ?? root.location;
+      await app.mediaStorage.createDirectory(parent: parent, name: name);
+      await _loadPhysicalDirectory(directory: parent);
+    });
+  }
+
+  Future<void> _openPhysicalFolder(String location) async {
+    _browser.openFolder(location);
+    await _loadPhysicalDirectory(directory: location);
+  }
+
+  Future<void> _goUpPhysicalFolder() async {
+    final parent = _browser.currentFolder?.parentId;
+    _browser.goUp();
+    await _loadPhysicalDirectory(directory: parent);
   }
 
   Future<void> _fileAction(String action, MediaArtifact item) async {
@@ -1224,33 +1367,25 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
           await app.mediaLibrary.rename(item.taskId, name);
         }
       case 'move':
-        final choice = await showMediaBrowserFolderPicker(
-          context,
-          _organization,
-        );
-        if (choice.confirmed) {
-          await _organization.moveItems([item.taskId], choice.folderId);
-        }
       case 'movePhysical':
-        final directory = Platform.isAndroid && app.nativeExports != null
-            ? await app.nativeExports!.pickDirectory()
-            : await FilePicker.getDirectoryPath(dialogTitle: '移动媒体文件到目录');
-        if (directory != null && directory.isNotEmpty) {
-          await app.mediaLibrary.move(item.taskId, directory);
+        final directory = await _pickStorageDestination(title: '移动媒体文件到目录');
+        if (directory != null) {
+          await app.mediaStorage.moveArtifact(item.taskId, directory);
         }
+      case 'migrate':
+        await app.mediaStorage.migrateArtifact(item.taskId);
+        await _refreshStorageState();
       case 'copy':
-        final choice = await showMediaBrowserFolderPicker(
-          context,
-          _organization,
-        );
-        if (choice.confirmed) {
-          final copied = await app.mediaLibrary.copy(item.taskId);
-          await _organization.clonePlacement(
-            item.taskId,
-            copied.taskId,
-            folderId: choice.folderId,
-          );
+        final directory = await _pickStorageDestination(title: '复制媒体文件到目录');
+        if (directory != null) {
+          await app.mediaStorage.copyArtifact(item.taskId, directory);
         }
+      case 'reauthorize':
+        await Navigator.of(context).push<void>(
+          MaterialPageRoute<void>(
+            builder: (_) => MediaManagementScreen(app: app),
+          ),
+        );
       case 'delete':
         final linkedTask = app.mediaTasks.task(item.taskId);
         var deleteTaskCache = false;
@@ -1300,10 +1435,123 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
     }
   }
 
+  Future<String?> _pickStorageDestination({required String title}) async {
+    final root = await app.mediaStorage.resolve();
+    if (!root.available) {
+      throw StateError('媒体目录访问权限已失效，请重新授权媒体目录');
+    }
+    final directories = <MediaStorageEntry>[];
+    Future<void> collect(String parent, int depth) async {
+      if (depth >= 16) return;
+      final entries = await app.mediaStorage.listDirectory(directory: parent);
+      for (final entry in entries.where((entry) => entry.directory)) {
+        directories.add(entry);
+        await collect(entry.location, depth + 1);
+      }
+    }
+
+    await collect(root.location, 0);
+    if (!mounted) return null;
+    return showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            SiteLensCompactRow(
+              leading: const Icon(Icons.folder_open_outlined),
+              title: Text(title),
+              subtitle: const Text('媒体库根目录'),
+              onTap: () => Navigator.pop(sheetContext, root.location),
+            ),
+            for (final entry in directories)
+              SiteLensCompactRow(
+                leading: const Icon(Icons.folder_outlined),
+                title: Text(entry.name),
+                subtitle: Text(readableMediaLocation(entry.location)),
+                onTap: () => Navigator.pop(sheetContext, entry.location),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _folderAction(
     MediaOrganizationFolder folder,
     String action,
   ) async {
+    if (_browser.physicalMode) {
+      switch (action) {
+        case 'rename':
+          final name = await showMediaBrowserNameDialog(
+            context,
+            title: '重命名目录',
+            initial: folder.name,
+            label: '目录名称',
+          );
+          if (name != null && name.trim().isNotEmpty) {
+            final before = Uri.tryParse(folder.id)?.scheme == 'content'
+                ? await _collectPhysicalFiles(folder.id)
+                : const <String, String>{};
+            final next = await app.mediaStorage.renameEntry(
+              location: folder.id,
+              name: name.trim(),
+            );
+            if (Uri.tryParse(folder.id)?.scheme != 'content') {
+              await app.mediaLibrary.rewriteLocalPrefix(folder.id, next);
+            } else {
+              final after = await _collectPhysicalFiles(next);
+              final rewrites = <String, String>{};
+              for (final entry in before.entries) {
+                final replacement = after[entry.key];
+                if (replacement != null) rewrites[entry.value] = replacement;
+              }
+              await app.mediaLibrary.rewriteLocations(rewrites);
+            }
+            await _loadPhysicalDirectory(directory: folder.parentId);
+          }
+        case 'delete':
+          final confirmed = await confirmMediaBrowserDelete(
+            context,
+            title: '删除目录',
+            message: '删除“${folder.name}”及其全部媒体文件？',
+          );
+          if (confirmed) {
+            Future<List<MediaStorageEntry>> collectFiles(
+              String location,
+            ) async {
+              final entries = await app.mediaStorage.listDirectory(
+                directory: location,
+              );
+              final files = <MediaStorageEntry>[];
+              for (final entry in entries) {
+                if (entry.directory) {
+                  files.addAll(await collectFiles(entry.location));
+                } else {
+                  files.add(entry);
+                }
+              }
+              return files;
+            }
+
+            for (final child in await collectFiles(folder.id)) {
+              final item = app.mediaLibrary.items
+                  .where(
+                    (candidate) =>
+                        mediaArtifactSourceKey(candidate.location) ==
+                        mediaArtifactSourceKey(child.location),
+                  )
+                  .firstOrNull;
+              if (item != null) await app.deleteMediaArtifact(item.taskId);
+            }
+            await app.mediaStorage.deleteEntry(folder.id);
+            await _loadPhysicalDirectory(directory: folder.parentId);
+          }
+      }
+      return;
+    }
     switch (action) {
       case 'rename':
         final name = await showMediaBrowserNameDialog(
@@ -1365,6 +1613,35 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
     final itemIds = _browser.selectedItemIds.toList();
     final folderIds = _browser.selectedFolderIds.toList();
     try {
+      if (_browser.physicalMode) {
+        final directory = switch (action) {
+          'move' => await _pickStorageDestination(title: '移动媒体文件到目录'),
+          'copy' => await _pickStorageDestination(title: '复制媒体文件到目录'),
+          _ => null,
+        };
+        if (action == 'move' && directory != null) {
+          for (final id in itemIds) {
+            await app.mediaStorage.moveArtifact(id, directory);
+          }
+        } else if (action == 'copy' && directory != null) {
+          for (final id in itemIds) {
+            await app.mediaStorage.copyArtifact(id, directory);
+          }
+        } else if (action == 'delete' && itemIds.isNotEmpty) {
+          if (!mounted) return;
+          final confirmed = await confirmMediaBrowserDelete(
+            context,
+            title: '删除选中的媒体',
+            message: '删除选中的 ${itemIds.length} 个媒体文件？关联任务缓存会保留。',
+          );
+          if (confirmed) {
+            for (final id in itemIds) {
+              await app.deleteMediaArtifact(id);
+            }
+          }
+        }
+        return;
+      }
       switch (action) {
         case 'move':
           await runMediaBrowserMove(
@@ -1423,12 +1700,17 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
   @override
   Widget build(BuildContext context) {
     final allExports = app.mediaLibrary.items;
-    final visible = allExports
-        .where(
-          (item) => _organization.folderFor(item.taskId) == _browser.folderId,
-        )
-        .toList();
+    final visible = _browser.physicalMode
+        ? _visiblePhysicalItems()
+        : allExports
+              .where(
+                (item) =>
+                    _organization.folderFor(item.taskId) == _browser.folderId,
+              )
+              .toList();
     final folders = _browser.folders;
+    final writesEnabled =
+        _storageRoot?.permission != MediaStoragePermission.revoked;
     _browser.pruneSelection(
       itemIds: visible.map((item) => item.taskId),
       folderIds: folders.map((folder) => folder.id),
@@ -1441,7 +1723,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
           IconButton(
             tooltip: '新建文件夹',
             icon: const Icon(Icons.create_new_folder_outlined),
-            onPressed: _createFolder,
+            onPressed: writesEnabled ? _createFolder : null,
           ),
           SiteLensRefreshButton(
             tooltip: '重新扫描媒体文件',
@@ -1474,6 +1756,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
             visibleItemIds: visible.map((item) => item.taskId),
             visibleFolderIds: folders.map((folder) => folder.id),
             onAction: (action) => unawaited(_batchAction(action)),
+            writesEnabled: writesEnabled,
           ),
       ],
       body: Column(
@@ -1504,6 +1787,25 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
               text: '这里是已导出的 MP4。下载和批量操作请打开“媒体任务”。',
             ),
           ),
+          if (_organization.hasStoredOrganization)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                SiteLensMetrics.pagePadding,
+                8,
+                SiteLensMetrics.pagePadding,
+                0,
+              ),
+              child: SiteLensCompactRow(
+                leading: const Icon(Icons.auto_fix_high_outlined),
+                title: const Text('发现旧媒体分类'),
+                subtitle: const Text('打开媒体管理，可将分类迁移为真实目录'),
+                onTap: () => Navigator.of(context).push<void>(
+                  MaterialPageRoute<void>(
+                    builder: (_) => MediaManagementScreen(app: app),
+                  ),
+                ),
+              ),
+            ),
           Expanded(
             child: SiteLensListPanel(
               scrollKey: const PageStorageKey('media-library-scroll'),
@@ -1514,7 +1816,10 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
                       folder: current,
                       itemCount: visible.length,
                       parent: true,
-                      onOpen: _browser.goUp,
+                      physical: _browser.physicalMode,
+                      onOpen: _browser.physicalMode
+                          ? _goUpPhysicalFolder
+                          : _browser.goUp,
                       onAction: (_) {},
                     ),
                   ),
@@ -1526,15 +1831,19 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
                       final folder = folders[index ~/ 2];
                       return MediaBrowserFolderRow(
                         folder: folder,
-                        itemCount: _organization
-                            .itemIdsInFolder(folder.id)
-                            .length,
+                        itemCount: _browser.physicalMode
+                            ? _physicalFolderItemCount(folder.id)
+                            : _organization.itemIdsInFolder(folder.id).length,
+                        physical: _browser.physicalMode,
+                        actionsEnabled: writesEnabled,
                         selectionMode: _browser.selectionMode,
                         selected: _browser.selectedFolderIds.contains(
                           folder.id,
                         ),
                         onSelected: (_) => _browser.toggleFolder(folder.id),
-                        onOpen: () => _browser.openFolder(folder.id),
+                        onOpen: () => _browser.physicalMode
+                            ? _openPhysicalFolder(folder.id)
+                            : _browser.openFolder(folder.id),
                         onAction: (action) => safely(
                           context,
                           () => _folderAction(folder, action),
@@ -1574,6 +1883,12 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
                           task: app.mediaLibrary.presentationTask(
                             visible[index],
                           ),
+                          showMigration: _migrationCandidates.contains(
+                            visible[index].taskId,
+                          ),
+                          showReauthorize:
+                              _storageRoot?.permission ==
+                              MediaStoragePermission.revoked,
                           onAction: (action) => safely(
                             context,
                             () => _fileAction(action, visible[index]),
@@ -1606,6 +1921,8 @@ class _MediaLibraryTile extends StatefulWidget {
     required this.item,
     required this.task,
     required this.onAction,
+    this.showMigration = false,
+    this.showReauthorize = false,
     this.selectionMode = false,
     this.selected = false,
     this.onSelected,
@@ -1614,6 +1931,8 @@ class _MediaLibraryTile extends StatefulWidget {
   final MediaArtifact item;
   final MediaTask task;
   final Future<void> Function(String) onAction;
+  final bool showMigration;
+  final bool showReauthorize;
   final bool selectionMode;
   final bool selected;
   final ValueChanged<bool?>? onSelected;
@@ -1710,6 +2029,12 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
                 tooltip: '媒体文件操作',
                 icon: Icons.more_horiz,
                 actions: mediaBrowserFileMenuActions(
+                  canRename: !widget.showReauthorize,
+                  canCopy: !widget.showReauthorize,
+                  canDelete: !widget.showReauthorize,
+                  enabled: !widget.showReauthorize,
+                  moveLabel: '移动到目录',
+                  copyLabel: '复制到目录',
                   extraActions: [
                     const SiteLensGlassMenuAction(
                       value: 'details',
@@ -1728,16 +2053,24 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
                         icon: Icons.cast_outlined,
                       ),
                     if (widget.app.mediaTasks.task(item.taskId) != null)
-                      const SiteLensGlassMenuAction(
+                      SiteLensGlassMenuAction(
                         value: 'regenerate',
                         label: '重新导出 MP4',
                         icon: Icons.file_download_outlined,
+                        enabled: !widget.showReauthorize,
                       ),
-                    const SiteLensGlassMenuAction(
-                      value: 'movePhysical',
-                      label: '移动文件到系统目录',
-                      icon: Icons.folder_copy_outlined,
-                    ),
+                    if (widget.showMigration)
+                      const SiteLensGlassMenuAction(
+                        value: 'migrate',
+                        label: '迁移到已配置媒体目录',
+                        icon: Icons.drive_file_move_outlined,
+                      ),
+                    if (widget.showReauthorize)
+                      const SiteLensGlassMenuAction(
+                        value: 'reauthorize',
+                        label: '重新授权媒体目录',
+                        icon: Icons.lock_reset_outlined,
+                      ),
                   ],
                 ),
                 onSelected: widget.onAction,
@@ -1867,19 +2200,144 @@ class MediaManagementScreen extends StatefulWidget {
 class _MediaManagementScreenState extends State<MediaManagementScreen> {
   AppController get app => widget.app;
   String? _expandedDetail;
+  late final MediaOrganizationService _libraryOrganization =
+      MediaOrganizationService(db: app.db, collection: 'library');
+  bool _hasLegacyOrganization = false;
+  bool _hasPendingMigration = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadLegacyOrganization());
+  }
+
+  @override
+  void dispose() {
+    _libraryOrganization.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadLegacyOrganization() async {
+    await _libraryOrganization.restore();
+    await app.mediaLibrary.restore();
+    if (await app.db.setting('mediaLibraryOrganizationMigratedV2') != '1') {
+      await _libraryOrganization.restoreAndSync(
+        app.mediaLibrary.items.map(
+          (item) => MediaOrganizationSeed(
+            itemId: item.taskId,
+            legacyFolder: app.mediaLibrary.folderFor(item),
+          ),
+        ),
+      );
+    }
+    var pending = 0;
+    try {
+      await app.mediaStorage.reconcileMigrationJournal();
+      pending = await app.mediaStorage.pendingMigrationCount();
+    } catch (_) {
+      // Storage migration is optional for rendering this settings page.
+    }
+    if (mounted) {
+      setState(() {
+        _hasLegacyOrganization = _libraryOrganization.hasStoredOrganization;
+      });
+    }
+    if (mounted && pending > 0) {
+      setState(() => _hasPendingMigration = true);
+    }
+  }
 
   Future<void> _pickMp4Directory() async {
     final selected = Platform.isAndroid && app.nativeExports != null
         ? await app.nativeExports!.pickDirectory()
-        : await FilePicker.getDirectoryPath(dialogTitle: '选择 MP4 保存目录');
+        : await FilePicker.getDirectoryPath(dialogTitle: '选择媒体库目录');
     if (selected == null || selected.trim().isEmpty) return;
     await app.setMp4ExportDirectory(selected);
-    if (mounted) showShortToast(context, 'MP4 保存目录已更新');
+    await app.mediaStorage.resolve();
+    if (mounted) showShortToast(context, '媒体库目录已更新');
+  }
+
+  Future<void> _migrateLibrary() async {
+    await app.mediaLibrary.restore();
+    final root = await app.mediaStorage.resolve();
+    if (!root.available) throw StateError('请先选择并授权媒体库目录');
+    await _libraryOrganization.restore();
+    final folderLocations = <String, String>{};
+
+    Future<String> ensureDirectory(String parent, String name) async {
+      final existing = await app.mediaStorage.listDirectory(directory: parent);
+      final match = existing
+          .where((entry) => entry.directory && entry.name == name)
+          .firstOrNull;
+      if (match != null) return match.location;
+      return app.mediaStorage.createDirectory(parent: parent, name: name);
+    }
+
+    Future<void> createFolderTree(
+      MediaOrganizationFolder folder,
+      String parent,
+    ) async {
+      final location = await ensureDirectory(parent, folder.name);
+      folderLocations[folder.id] = location;
+      for (final child in _libraryOrganization.children(folder.id)) {
+        await createFolderTree(child, location);
+      }
+    }
+
+    for (final folder in _libraryOrganization.children(null)) {
+      await createFolderTree(folder, root.location);
+    }
+    var migrated = 0;
+    for (final item in [...app.mediaLibrary.items]) {
+      final folderId = _libraryOrganization.folderFor(item.taskId);
+      final destination = folderId == null
+          ? root.location
+          : folderLocations[folderId];
+      if (destination != null &&
+          !await app.mediaStorage.isArtifactInDirectory(item, destination)) {
+        await app.mediaStorage.recordMigration(
+          taskId: item.taskId,
+          source: item.location,
+          target: destination,
+          fileName: item.name,
+          phase: 'planned',
+        );
+        await app.mediaStorage.moveArtifact(item.taskId, destination);
+        await app.mediaStorage.recordMigration(
+          taskId: item.taskId,
+          source: item.location,
+          target: destination,
+          fileName: item.name,
+          phase: 'moved',
+        );
+        migrated++;
+      }
+      final name = _libraryOrganization.nameFor(item.taskId, item.name);
+      if (name != item.name) {
+        await app.mediaLibrary.rename(item.taskId, name);
+      }
+      await app.mediaStorage.clearMigration(item.taskId);
+    }
+    if (_libraryOrganization.hasStoredOrganization) {
+      await _libraryOrganization.clearAll();
+      await app.db.setSetting('mediaLibraryOrganizationMigratedV2', '1');
+      if (mounted) setState(() => _hasLegacyOrganization = false);
+    }
+    if (mounted) setState(() => _hasPendingMigration = false);
+    if (mounted) {
+      await app.mediaStorage.resolve();
+      if (mounted) {
+        showShortToast(
+          context,
+          migrated == 0 ? '媒体库已是最新位置' : '已迁移 $migrated 个媒体文件',
+        );
+      }
+    }
   }
 
   String _directoryLabel() {
     final value = app.mp4ExportDirectory?.trim();
-    if (value == null || value.isEmpty) return '未配置，保存在应用媒体库';
+    if (value == null || value.isEmpty) return '未配置，使用应用私有媒体库';
     return readableMediaLocation(value);
   }
 
@@ -2073,9 +2531,11 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
                 const SiteLensPanelDivider(),
                 SiteLensDisclosure(
                   leading: const Icon(Icons.folder_outlined),
-                  title: const Text('MP4 保存目录'),
+                  title: const Text('媒体库目录'),
                   subtitle: Text(
-                    app.mp4ExportDirectory == null ? '使用应用媒体库' : '点击查看完整保存路径',
+                    app.mp4ExportDirectory == null
+                        ? '未配置，使用应用私有媒体库'
+                        : '点击查看完整保存路径',
                   ),
                   expanded: _expandedDetail == 'mp4Directory',
                   onToggle: () => setState(() {
@@ -2097,20 +2557,22 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
                           icon: const Icon(Icons.folder_open_outlined),
                           label: Text(
                             app.mp4ExportDirectory == null
-                                ? '选择保存目录'
-                                : '更换保存目录',
+                                ? '选择媒体目录'
+                                : '更换媒体目录',
                           ),
                         ),
                       ),
                     ],
                   ),
                 ),
-                if (app.mp4ExportDirectory != null) ...[
+                if (app.mp4ExportDirectory != null ||
+                    _hasLegacyOrganization ||
+                    _hasPendingMigration) ...[
                   const SiteLensPanelDivider(),
                   SiteLensDisclosure(
                     leading: const Icon(Icons.library_music_outlined),
-                    title: const Text('恢复应用媒体库'),
-                    subtitle: const Text('点击查看并清除当前目录配置'),
+                    title: const Text('迁移应用媒体库'),
+                    subtitle: const Text('将应用私有文件迁移到当前媒体目录'),
                     expanded: _expandedDetail == 'mediaLibrary',
                     onToggle: () => setState(() {
                       _expandedDetail = _expandedDetail == 'mediaLibrary'
@@ -2120,7 +2582,17 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
                     details: (context) => Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _detailText('清除目录配置后，后续 MP4 只保存在应用媒体库。已导出的文件不会被删除。'),
+                        _detailText('迁移会保留媒体身份并校验文件内容；权限失效或同名冲突时不会删除源文件。'),
+                        Padding(
+                          padding: const EdgeInsets.only(
+                            left: SiteLensMetrics.accordionContentIndent,
+                            bottom: SiteLensMetrics.compactRowVerticalPadding,
+                          ),
+                          child: TextButton(
+                            onPressed: () => safely(context, _migrateLibrary),
+                            child: const Text('开始迁移'),
+                          ),
+                        ),
                         Padding(
                           padding: const EdgeInsets.only(
                             left: SiteLensMetrics.accordionContentIndent,
@@ -2132,7 +2604,7 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
                               context,
                               () => app.setMp4ExportDirectory(null),
                             ),
-                            child: const Text('清除目录配置'),
+                            child: const Text('清除媒体目录配置'),
                           ),
                         ),
                       ],
@@ -2831,6 +3303,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                           folder: current,
                           itemCount: visibleTasks.length,
                           parent: true,
+                          taskGroup: true,
                           onOpen: _browser.goUp,
                           onAction: (_) {},
                         ),
@@ -2846,6 +3319,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                             itemCount: _organization
                                 .itemIdsInFolder(folder.id)
                                 .length,
+                            taskGroup: true,
                             selectionMode: _browser.selectionMode,
                             selected: _browser.selectedFolderIds.contains(
                               folder.id,
@@ -3094,6 +3568,9 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
           icon: Icons.more_horiz,
           actions: mediaBrowserFileMenuActions(
             enabled: !busy,
+            renameLabel: '重命名任务',
+            moveLabel: '移动到任务分组',
+            copyLabel: '复制任务',
             extraActions: [
               SiteLensGlassMenuAction(
                 value: 'refresh',

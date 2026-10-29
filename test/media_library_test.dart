@@ -113,6 +113,7 @@ class _DoubleFailureMoveRuntime extends _CleanupRuntime {
     required String source,
     required Uri directory,
     required String fileName,
+    bool reuseExistingVerified = false,
   }) async {
     await File(source).copy(target);
     throw PlatformException(

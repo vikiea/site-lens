@@ -40,6 +40,7 @@ import '../settings/app_settings.dart';
 import '../filter/filter_service.dart';
 import '../media/media_service.dart';
 import '../media/media_library.dart';
+import '../media/media_storage.dart';
 import '../media/dlna_service.dart';
 import '../media/native_download_runtime.dart';
 import '../media/native_export_runtime.dart';
@@ -221,6 +222,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       tasks: mediaTasks,
       native: nativeExports,
     );
+    mediaStorage = MediaStorageService(
+      tasks: mediaTasks,
+      library: mediaLibrary,
+      native: nativeExports,
+      configuredRoot: () async => mp4ExportDirectory,
+    );
+    mediaLibrary.mutationGuard = mediaStorage.ensureWritable;
     mediaLibrary.addListener(notifyMediaChanged);
     mediaDownloads.onCompleted = _autoConvertCompletedMedia;
     castSessions = CastSessionController(tasks: mediaTasks);
@@ -502,6 +510,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   late final MediaDownloadService mediaDownloads;
   late final Mp4ExportService mediaExports;
   late final MediaLibrary mediaLibrary;
+  late final MediaStorageService mediaStorage;
   final _exportingMedia = <String, Future<MediaArtifact>>{};
   late final CastSessionController castSessions;
   late final DlnaCastController mediaCast;
@@ -692,6 +701,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
             StartupPhase.mediaLibraryRestore,
             mediaLibrary.restore,
           );
+          if (_disposed) return;
+          await mediaStorage.reconcileMigrationJournal();
           if (_disposed) return;
           await _restoreNativePlaybackIfAvailable();
           if (_disposed) return;
@@ -2972,6 +2983,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       _shutdownFuture!.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
     );
     mediaLibrary.removeListener(notifyMediaChanged);
+    mediaStorage.dispose();
     mediaLibrary.dispose();
     watchSaves.dispose();
     AppErrorLogger.detach(errorLogger);

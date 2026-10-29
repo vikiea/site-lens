@@ -473,7 +473,7 @@ class AppSettings {
         }
       } else if (entry.key == 'mp4ExportDirectory') {
         if (entry.value != null && entry.value is! String) {
-          throw const FormatException('MP4 保存目录必须是文本路径');
+          throw const FormatException('媒体库目录必须是文本路径');
         }
       } else if (entry.key == 'backgroundAssetId') {
         if (entry.value != null &&

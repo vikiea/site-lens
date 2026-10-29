@@ -23,6 +23,31 @@ class NativeExportRuntime {
   Future<String?> pickDirectory() =>
       _channel.invokeMethod<String>('pickDirectory');
 
+  Future<bool> checkDirectory(Uri directory) async =>
+      await _channel.invokeMethod<bool>('checkDirectory', {
+        'directory': directory.toString(),
+      }) ??
+      false;
+
+  Future<List<Map<String, Object?>>> listDirectory(Uri directory) async {
+    final raw = await _channel.invokeMethod<List<Object?>>('listDirectory', {
+      'directory': directory.toString(),
+    });
+    return [
+      for (final value in raw ?? const <Object?>[])
+        if (value is Map)
+          Map<String, Object?>.from(value.cast<String, Object?>()),
+    ];
+  }
+
+  Future<String> createDirectory({
+    required Uri directory,
+    required String name,
+  }) async => (await _channel.invokeMethod<String>('createDirectory', {
+    'directory': directory.toString(),
+    'name': name,
+  }))!;
+
   Future<String> muxHls({
     required String playlist,
     required String output,
@@ -128,10 +153,12 @@ class NativeExportRuntime {
     required String source,
     required Uri directory,
     required String fileName,
+    bool reuseExistingVerified = false,
   }) async => (await _channel.invokeMethod<String>('move', {
     'source': source,
     'directory': directory.toString(),
     'fileName': fileName,
+    'reuseExistingVerified': reuseExistingVerified,
   }))!;
 
   Future<void> delete(String source, {bool allowMissing = false}) =>
