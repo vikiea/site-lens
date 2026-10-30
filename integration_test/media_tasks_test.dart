@@ -242,17 +242,18 @@ void main() {
   testWidgets('media list thumbnails preserve native frame aspect ratio', (
     tester,
   ) async {
-    final support = await getApplicationSupportDirectory();
-    final root = await Directory(
-      '${support.path}/thumbnail-ui-${DateTime.now().microsecondsSinceEpoch}',
-    ).create();
     final db = AppDatabase(NativeDatabase.memory());
     final app = AppController(db);
+    final cacheRoot = await app.mediaTasks.cacheRootDirectory();
+    final mediaRoot = await Directory('${cacheRoot.parent.path}/media_exports')
+        .create(recursive: true);
+    final video = File(
+      '${mediaRoot.path}/thumbnail-ui-${DateTime.now().microsecondsSinceEpoch}.mp4',
+    );
     HttpServer? server;
     String? thumbnailPath;
     try {
-      final video = await File('${root.path}/thumbnail.mp4')
-          .writeAsBytes(base64Decode(videoFixtureBase64));
+      await video.writeAsBytes(base64Decode(videoFixtureBase64));
       final metadata = await app.nativeExports!.inspect(video.path);
       expect(metadata['width'], 160);
       expect(metadata['height'], 96);
@@ -358,7 +359,7 @@ void main() {
       await server?.close(force: true);
       await app.shutdown();
       await db.close();
-      if (await root.exists()) await root.delete(recursive: true);
+      if (await video.exists()) await video.delete();
       if (thumbnailPath != null) {
         final thumbnail = File(thumbnailPath);
         if (await thumbnail.exists()) await thumbnail.delete();
