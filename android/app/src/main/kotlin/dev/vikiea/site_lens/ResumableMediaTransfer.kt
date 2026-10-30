@@ -251,7 +251,13 @@ class ResumableMediaTransfer(
     }
 
     private fun stableIdentity(uri: URI): String {
-        val volatile = setOf("auth", "auth_key", "expires", "expire", "exp", "hmac", "sig", "sign", "signature", "token")
+        // Keep this list aligned with MediaDownloadService._resumeContentIdentity.
+        // Rotating authorization parameters must not discard flushed bytes.
+        val volatile = setOf(
+            "auth", "auth_key", "expires", "expire", "exp", "hmac",
+            "sig", "sign", "signature", "t", "time", "timestamp",
+            "via", "via_bm", "token",
+        )
         val query = uri.rawQuery?.split('&')?.filter {
             it.substringBefore('=').lowercase() !in volatile
         }?.joinToString("&")

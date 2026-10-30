@@ -223,6 +223,10 @@ class MediaLibrary extends ChangeNotifier {
   MediaArtifact? item(String taskId) => _items[taskId];
   bool busy(String taskId) => _busy.contains(taskId);
 
+  /// A migration or directory operation must pass the same guard as a single
+  /// file mutation before it starts creating destination state.
+  bool canMutate(String taskId) => !busy(taskId) && tasks.canDelete(taskId);
+
   Future<bool> isReadableArtifact(String taskId) async {
     await restore();
     final value = _items[taskId];

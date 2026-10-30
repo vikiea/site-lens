@@ -164,6 +164,9 @@ class MediaStorageService extends ChangeNotifier {
     final artifact = library.item(taskId);
     if (artifact == null) throw StateError('媒体文件不存在');
     if (await isInRoot(artifact)) return;
+    if (!library.canMutate(taskId)) {
+      throw StateError('媒体正在播放、导出、投屏或管理中，请先停止后再迁移');
+    }
     await recordMigration(
       taskId: taskId,
       source: artifact.location,

@@ -278,7 +278,9 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                         sourceMutationHeld = true,
                         reuseExistingVerified = call.argument<Boolean>("reuseExistingVerified") == true)
                 }
-                completeMediaMove(target, { delete(source) }, { delete(target, allowMissing = true) })
+                if (!sameLogicalDocument(source, target)) {
+                    completeMediaMove(target, { delete(source) }, { delete(target, allowMissing = true) })
+                }
                 target
             }
             "delete" -> { delete(argument("source"), call.argument<Boolean>("allowMissing") == true); null }
@@ -1189,17 +1191,43 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 context.contentResolver, treeDocument, DocumentsContract.Document.MIME_TYPE_DIR, subdirectory,
             ) ?: error("无法创建批次目录")
         }
-        val target = DocumentsContract.createDocument(
-            context.contentResolver,
-            treeDocument,
-            "video/mp4",
-            fileName,
-        ) ?: error("系统目录不可写，请重新选择目录")
+        val targetParentId = DocumentsContract.getDocumentId(treeDocument)
+        val existing = findChildDocument(tree, targetParentId, fileName)
+        if (existing != null) {
+            require(!existing.directory) { "目标名称已被目录占用" }
+            if (sameDocument(sourcePath, existing.uri)) return existing.uri.toString()
+        }
+        var targetName = fileName
+        var target = existing?.uri
+            ?.takeIf { sameDocument(sourcePath, it) }
+        if (target == null) {
+            if (existing != null) targetName = uniqueDocumentName(tree, targetParentId, fileName)
+            target = try {
+                DocumentsContract.createDocument(
+                    context.contentResolver,
+                    treeDocument,
+                    "video/mp4",
+                    targetName,
+                )
+            } catch (_: IllegalArgumentException) {
+                // A provider can race with an external file manager between
+                // the child query and createDocument. Choose a deterministic
+                // suffix and retry instead of surfacing a raw provider error.
+                val retryName = uniqueDocumentName(tree, targetParentId, fileName)
+                DocumentsContract.createDocument(
+                    context.contentResolver,
+                    treeDocument,
+                    "video/mp4",
+                    retryName,
+                )
+            }
+        }
+        val outputTarget = target ?: error("系统目录不可写，请重新选择目录")
         try {
             val digest = MessageDigest.getInstance("SHA-256")
             var count = 0L
             sourceStream(sourcePath).use { input ->
-                val output = context.contentResolver.openOutputStream(target, "wt") ?: error("无法打开系统目录")
+                val output = context.contentResolver.openOutputStream(outputTarget, "wt") ?: error("无法打开系统目录")
                 output.use {
                     val buffer = ByteArray(128 * 1024)
                     while (true) {
@@ -1216,7 +1244,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             require(count > 0L) { "导出文件为空" }
             val written = MessageDigest.getInstance("SHA-256")
             var actualSize = 0L
-            context.contentResolver.openInputStream(target)!!.use { input ->
+            context.contentResolver.openInputStream(outputTarget)!!.use { input ->
                 val buffer = ByteArray(128 * 1024)
                 while (true) {
                     check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
@@ -1227,9 +1255,9 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 }
             }
             require(actualSize == count && written.digest().contentEquals(digest.digest())) { "导出文件校验失败" }
-            return target.toString()
+            return outputTarget.toString()
         } catch (error: Exception) {
-            runCatching { DocumentsContract.deleteDocument(context.contentResolver, target) }
+            runCatching { DocumentsContract.deleteDocument(context.contentResolver, outputTarget) }
             throw error
         }
     }
@@ -1245,21 +1273,16 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
 
     private fun treeParentDocument(directory: Uri): Pair<Uri, String> {
         require(directory.scheme == "content") { "系统目录无效" }
-        val segments = directory.pathSegments
-        val treeIndex = segments.indexOf("tree")
-        require(treeIndex >= 0 && treeIndex + 1 < segments.size) { "系统目录无效" }
-        val documentIndex = segments.indexOf("document")
-        val treeEnd = if (documentIndex > treeIndex) documentIndex else segments.size
-        val treeId = segments.subList(treeIndex + 1, treeEnd).joinToString("/")
+        val treeId = runCatching { DocumentsContract.getTreeDocumentId(directory) }
+            .getOrElse { throw IllegalArgumentException("系统目录无效") }
         val tree = DocumentsContract.buildTreeDocumentUri(directory.authority, treeId)
         require(context.contentResolver.persistedUriPermissions.any {
             it.uri == tree && it.isReadPermission && it.isWritePermission
         }) { "媒体目录访问权限已失效，请重新授权媒体目录" }
-        val documentId = if (documentIndex > treeIndex && documentIndex + 1 < segments.size) {
-            segments.subList(documentIndex + 1, segments.size).joinToString("/")
-        } else {
-            treeId
-        }
+        val documentId = if (DocumentsContract.isDocumentUri(context, directory)) {
+            runCatching { DocumentsContract.getDocumentId(directory) }
+                .getOrElse { throw IllegalArgumentException("系统目录无效") }
+        } else treeId
         return tree to documentId
     }
 
@@ -1267,13 +1290,14 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         val (tree, parentId) = treeParentDocument(directory)
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
         val values = mutableListOf<Map<String, Any?>>()
-        context.contentResolver.query(children, arrayOf(
+        val cursor = context.contentResolver.query(children, arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
             DocumentsContract.Document.COLUMN_MIME_TYPE,
             DocumentsContract.Document.COLUMN_SIZE,
             DocumentsContract.Document.COLUMN_LAST_MODIFIED,
-        ), null, null, null)?.use { cursor ->
+        ), null, null, null) ?: throw IllegalArgumentException("无法读取系统目录")
+        cursor.use {
             while (cursor.moveToNext()) {
                 val id = cursor.getString(0) ?: continue
                 val name = cursor.getString(1) ?: continue
@@ -1290,6 +1314,83 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         }
         return values.sortedWith(compareBy<Map<String, Any?>> { !(it["directory"] as Boolean) }
             .thenBy { it["name"] as String })
+    }
+
+    private data class ChildDocument(val uri: Uri, val directory: Boolean)
+
+    private fun findChildDocument(tree: Uri, parentId: String, name: String): ChildDocument? {
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
+        val cursor = context.contentResolver.query(children, arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+        ), null, null, null) ?: throw IllegalArgumentException("无法读取系统目录")
+        cursor.use {
+            while (cursor.moveToNext()) {
+                if (cursor.getString(1) != name) continue
+                val id = cursor.getString(0) ?: continue
+                return ChildDocument(
+                    DocumentsContract.buildDocumentUriUsingTree(tree, id),
+                    cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR,
+                )
+            }
+        }
+        return null
+    }
+
+    private fun uniqueDocumentName(tree: Uri, parentId: String, original: String): String {
+        val extension = original.substringAfterLast('.', "").takeIf { it.isNotEmpty() }
+            ?.let { ".${it}" } ?: ""
+        val base = if (extension.isEmpty()) original else original.dropLast(extension.length)
+        for (suffix in 2..10000) {
+            val candidate = "$base ($suffix)$extension"
+            if (findChildDocument(tree, parentId, candidate) == null) return candidate
+        }
+        error("无法为系统目录生成唯一文件名")
+    }
+
+    private fun sameDocument(sourcePath: String, target: Uri): Boolean = runCatching {
+        val sourceDigest = MessageDigest.getInstance("SHA-256")
+        var sourceSize = 0L
+        sourceStream(sourcePath).use { input ->
+            val buffer = ByteArray(128 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                sourceDigest.update(buffer, 0, read)
+                sourceSize += read
+            }
+        }
+        val targetDigest = MessageDigest.getInstance("SHA-256")
+        var targetSize = 0L
+        context.contentResolver.openInputStream(target)?.use { input ->
+            val buffer = ByteArray(128 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                targetDigest.update(buffer, 0, read)
+                targetSize += read
+            }
+        } ?: return@runCatching false
+        sourceSize == targetSize && sourceDigest.digest().contentEquals(targetDigest.digest())
+    }.getOrDefault(false)
+
+    private fun sameLogicalDocument(source: String, target: String): Boolean {
+        val sourceUri = Uri.parse(source)
+        val targetUri = Uri.parse(target)
+        if (sourceUri.scheme == "content" && targetUri.scheme == "content") {
+            return runCatching {
+                sourceUri.authority == targetUri.authority &&
+                    DocumentsContract.getDocumentId(sourceUri) ==
+                    DocumentsContract.getDocumentId(targetUri)
+            }.getOrDefault(source == target)
+        }
+        if (sourceUri.scheme == "content" || targetUri.scheme == "content") return false
+        val sourcePath = if (sourceUri.scheme == "file") sourceUri.path!! else source
+        val targetPath = if (targetUri.scheme == "file") targetUri.path!! else target
+        return runCatching {
+            File(sourcePath).canonicalFile == File(targetPath).canonicalFile
+        }.getOrDefault(sourcePath == targetPath)
     }
 
     private fun createDirectory(directory: Uri, name: String): String {

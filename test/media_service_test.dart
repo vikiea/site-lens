@@ -1302,6 +1302,48 @@ void main() {
     },
   );
 
+  test(
+    'native TLS fallback receives the Dart partial and validator sidecar',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-native-resume-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final media = candidate(url: 'https://cdn.example/native-resume.mp4');
+      final task = store.create(media);
+      final http = _NativeFallbackHttp();
+      final result = await MediaDownloadService(
+        tasks: store,
+        http: http,
+        tlsTransfer:
+            (url, document, destination, maxBytes, cancel, {onProgress}) async {
+              expect(await destination.length(), 3);
+              final state = await File('${destination.path}.resume')
+                  .readAsString();
+              expect(state, contains('validator="v1"'));
+              await destination.writeAsBytes(
+                [4, 5, 6],
+                mode: FileMode.append,
+                flush: true,
+              );
+              onProgress?.call(6);
+            },
+      ).start(task, media);
+
+      expect(result.state, MediaTaskState.playable);
+      expect(await (await store.cachedFile(task.id))!.readAsBytes(), [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+      ]);
+      expect(http.calls, 4);
+    },
+  );
+
   test('native task reconciliation restores progress, local URI and playable state', () async {
     final root = await Directory.systemTemp.createTemp(
       'site-lens-native-task-',
@@ -1866,7 +1908,9 @@ void main() {
   });
 
   test('native HLS export receives shared resource graph paths', () async {
-    final root = await Directory.systemTemp.createTemp('site-lens-native-graph-');
+    final root = await Directory.systemTemp.createTemp(
+      'site-lens-native-graph-',
+    );
     addTearDown(() => root.delete(recursive: true));
     final taskRoot = await Directory('${root.path}/media_cache/task.hls')
         .create(recursive: true);
@@ -1877,7 +1921,8 @@ void main() {
       ..writeAsBytesSync(List.filled(16, 1));
     final linkedKey = Link('${taskRoot.path}/key.bin');
     await linkedKey.create(key.path);
-    final segment = File('${taskRoot.path}/seg.ts')..writeAsBytesSync([1, 2, 3]);
+    final segment = File('${taskRoot.path}/seg.ts')
+      ..writeAsBytesSync([1, 2, 3]);
     final playlist = File('${taskRoot.path}/index.m3u8')
       ..writeAsStringSync(
         '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\n'
@@ -2455,5 +2500,33 @@ class _InterruptingHttp extends ControlledHttp {
       totalBytes: 6,
       appended: true,
     );
+  }
+}
+
+class _NativeFallbackHttp extends ControlledHttp {
+  var calls = 0;
+
+  @override
+  Future<FetchFileResponse> fetchToFile(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    required File destination,
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    int resumeOffset = 0,
+    int maxBytes = 2 * 1024 * 1024 * 1024,
+    Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    void Function(int bytesWritten)? onProgress,
+    Duration timeout = const Duration(seconds: 15),
+    int routeAttempt = 0,
+  }) async {
+    calls++;
+    if (calls == 1) {
+      await onHeaders?.call(200, const {'etag': '"v1"'});
+      await destination.writeAsBytes([1, 2, 3], flush: true);
+    }
+    throw const SocketException('connection reset by peer');
   }
 }

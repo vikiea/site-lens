@@ -2893,13 +2893,11 @@ class MediaDownloadService {
         remote.userInfo.isNotEmpty) {
       throw const FormatException('HLS 分片地址无效');
     }
-    // A completed HLS resource is content, not a UI candidate. Preserve the
-    // full signed resource URL so a new version/signature cannot reuse an old
-    // key or segment merely because its path is the same. The partial file
-    // below keeps a stable resume name, so an interrupted transfer can still
-    // continue across a refreshed signature after validator checks.
+    // A completed HLS resource is content, not a UI candidate. Keep content
+    // selectors while dropping rotating authorization parameters so a refreshed
+    // signed URL can reuse a verified segment and its resumable partial.
     final key = sha256
-        .convert(utf8.encode(remote.removeFragment().toString()))
+        .convert(utf8.encode(_resumeContentIdentity(remote)))
         .toString();
     final coordinator = resourceCoordinator;
     Future<void> registerOwner() async {
@@ -3327,15 +3325,10 @@ class MediaDownloadService {
       } else {
         if ((lastError is TlsException || lastError is SocketException) &&
             tlsTransfer != null) {
-          // Dart and Android keep different validator sidecars. Transfer
-          // ownership to Android before its first write so a later retry
-          // cannot join native bytes using an older Dart validator.
-          // Android can also recover CDN connections that reset before Dart
-          // reports a TLS error, using the same verified system route.
-          for (final suffix in ['.resume.json', '.resume.json.tmp']) {
-            final state = File('${partial.path}$suffix');
-            if (await state.exists()) await state.delete();
-          }
+          // Android can recover CDN connections that reset before Dart reports
+          // a TLS error. Bridge the Dart sidecar into Android's format before
+          // handing over the same flushed prefix.
+          await _prepareNativeResumeState(url, partial);
           await tlsTransfer!(
             url,
             document,
@@ -3350,6 +3343,20 @@ class MediaDownloadService {
         throw lastError;
       }
     }
+  }
+
+  Future<void> _prepareNativeResumeState(Uri url, File partial) async {
+    if (!await partial.exists() || await partial.length() <= 0) return;
+    final state = await _resumeState(partial);
+    final validator = state['validator'] as String?;
+    final identity = state['identity'] as String?;
+    final expected = sha256
+        .convert(utf8.encode(_resumeContentIdentity(url)))
+        .toString();
+    if (identity != expected || validator == null || validator.isEmpty) return;
+    await File(
+      '${partial.path}.resume',
+    ).writeAsString('identity=$identity\nvalidator=$validator\n', flush: true);
   }
 
   /// CDN edges can reset an otherwise valid request while rotating a signed
