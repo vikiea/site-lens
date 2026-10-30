@@ -185,15 +185,59 @@ class _OversizedMetadataRuntime extends NativeExportRuntime {
 }
 
 class _ScanRuntime extends NativeExportRuntime {
-  _ScanRuntime(this.files);
+  _ScanRuntime(
+    this.files, {
+    this.scanWarnings = const [],
+    this.scanRoots = const [],
+  });
 
   final List<Map<String, Object?>> files;
+  final List<String> scanWarnings;
+  final List<String> scanRoots;
 
   @override
   Future<Map<String, Object?>> scanMedia({String? directory}) async => {
     'files': files,
-    'warnings': const <String>[],
+    'warnings': scanWarnings,
+    'roots': scanRoots,
   };
+
+  @override
+  Future<bool> isDocumentWithinTree({
+    required Uri directory,
+    required Uri document,
+  }) async {
+    if (directory.authority != document.authority) return false;
+    final treeSegments = directory.pathSegments;
+    final documentSegments = document.pathSegments;
+    final treeIndex = treeSegments.indexOf('tree');
+    final treeDocumentIndex = treeSegments.indexOf('document');
+    final documentTreeIndex = documentSegments.indexOf('tree');
+    final documentIndex = documentSegments.indexOf('document');
+    if (treeIndex < 0 ||
+        documentTreeIndex < 0 ||
+        documentIndex <= documentTreeIndex) {
+      return false;
+    }
+    final treeId = treeSegments
+        .sublist(
+          treeIndex + 1,
+          treeDocumentIndex > treeIndex
+              ? treeDocumentIndex
+              : treeSegments.length,
+        )
+        .join('/');
+    final documentTreeId = documentSegments
+        .sublist(documentTreeIndex + 1, documentIndex)
+        .join('/');
+    final rootDocumentId = treeDocumentIndex > treeIndex
+        ? treeSegments.sublist(treeDocumentIndex + 1).join('/')
+        : treeId;
+    final documentId = documentSegments.sublist(documentIndex + 1).join('/');
+    return treeId == documentTreeId &&
+        (documentId == rootDocumentId ||
+            documentId.startsWith('$rootDocumentId/'));
+  }
 
   @override
   Future<Map<String, Object?>> inspect(String source) async => {'size': 6};
@@ -807,7 +851,7 @@ void main() {
       library = MediaLibrary(db: db, tasks: tasks, native: runtime);
       final value = MediaArtifact(
         taskId: task.id,
-        location: 'content://provider/tree/root/document/video',
+        location: 'content://provider/tree/root/document/root/video',
         name: mediaExportFileName(task),
         size: 600,
         durationMs: 227000,
@@ -845,7 +889,7 @@ void main() {
       library = MediaLibrary(db: db, tasks: tasks, native: runtime);
       final value = MediaArtifact(
         taskId: task.id,
-        location: 'content://provider/tree/root/document/revoked',
+        location: 'content://provider/tree/root/document/root/revoked',
         name: mediaExportFileName(task),
         size: 600,
         createdAt: DateTime.now().toUtc(),
@@ -875,7 +919,7 @@ void main() {
       library = MediaLibrary(db: db, tasks: tasks, native: runtime);
       final value = MediaArtifact(
         taskId: task.id,
-        location: 'content://provider/tree/root/document/large',
+        location: 'content://provider/tree/root/document/root/large',
         name: mediaExportFileName(task),
         size: 600,
         createdAt: DateTime.now().toUtc(),
@@ -1028,7 +1072,7 @@ void main() {
     await output.delete();
     final runtime = _ScanRuntime([
       {
-        'uri': 'content://provider/tree/root/document/video',
+        'uri': 'content://provider/tree/root/document/root/video',
         'name': '扫描恢复.mp4',
         'size': 600,
         'modifiedMs': 1,
@@ -1042,10 +1086,142 @@ void main() {
     );
     expect(result.added, 1);
     final item = library.items.single;
-    expect(item.location, 'content://provider/tree/root/document/video');
+    expect(item.location, 'content://provider/tree/root/document/root/video');
     expect(item.folder, '批次');
     expect(item.libraryCopy, isNull);
     expect(item.materializedCopy, isNull);
+  });
+
+  test(
+    'rescan without a configured directory reconciles every native SAF root',
+    () async {
+      await output.delete();
+      await db.saveMediaArtifact(
+        'unconfigured-system-file',
+        MediaArtifact(
+          taskId: 'unconfigured-system-file',
+          location: 'content://provider/tree/root/document/root/video',
+          name: '旧系统文件.mp4',
+          size: 6,
+          createdAt: DateTime.now().toUtc(),
+        ).toJson(),
+      );
+      library.dispose();
+      library = MediaLibrary(
+        db: db,
+        tasks: tasks,
+        native: _ScanRuntime(
+          const [],
+          scanRoots: ['content://provider/tree/root'],
+        ),
+      );
+
+      final result = await library.rescan();
+
+      expect(result.removed, 1);
+      expect(library.item('unconfigured-system-file'), isNull);
+    },
+  );
+
+  test(
+    'system rescan removes deleted documents from the catalog and SQLite',
+    () async {
+      await output.delete();
+      await db.saveMediaArtifact(
+        'deleted-system-file',
+        MediaArtifact(
+          taskId: 'deleted-system-file',
+          location: 'content://provider/tree/root/document/root/video',
+          name: '已删除.mp4',
+          size: 600,
+          createdAt: DateTime.now().toUtc(),
+          folder: '旧目录',
+        ).toJson(),
+      );
+      library.dispose();
+      library = MediaLibrary(
+        db: db,
+        tasks: tasks,
+        native: _ScanRuntime(const []),
+      );
+
+      final result = await library.rescan(
+        directory: 'content://provider/tree/root',
+      );
+
+      expect(result.removed, 1);
+      expect(library.item('deleted-system-file'), isNull);
+      expect(await db.mediaArtifacts(), isEmpty);
+    },
+  );
+
+  test('system rescan updates the existing identity after an external rename or move', () async {
+    await output.delete();
+    await db.saveMediaArtifact(
+      'moved-system-file',
+      MediaArtifact(
+        taskId: 'moved-system-file',
+        location: 'content://provider/tree/root/document/root/video',
+        name: '旧名称.mp4',
+        size: 6,
+        createdAt: DateTime.now().toUtc(),
+        folder: '旧目录',
+      ).toJson(),
+    );
+    library.dispose();
+    library = MediaLibrary(
+      db: db,
+      tasks: tasks,
+      native: _ScanRuntime([
+        {
+          'uri': 'content://provider/tree/root/document/root/video',
+          'name': '新名称.mp4',
+          'size': 9,
+          'modifiedMs': 2,
+          'folder': '新目录',
+        },
+      ]),
+    );
+
+    final result = await library.rescan(
+      directory: 'content://provider/tree/root',
+    );
+
+    final item = library.item('moved-system-file')!;
+    expect(result.updated, 1);
+    expect(item.taskId, 'moved-system-file');
+    expect(item.name, '新名称.mp4');
+    expect(item.size, 9);
+    expect(item.folder, '新目录');
+    expect((await db.mediaArtifacts()).single['taskId'], 'moved-system-file');
+  });
+
+  test('system rescan keeps stale indexes when the provider reports a partial read', () async {
+    await output.delete();
+    await db.saveMediaArtifact(
+      'temporarily-unreadable',
+      MediaArtifact(
+        taskId: 'temporarily-unreadable',
+        location: 'content://provider/tree/root/document/root/video',
+        name: '暂不可读.mp4',
+        size: 6,
+        createdAt: DateTime.now().toUtc(),
+      ).toJson(),
+    );
+    library.dispose();
+    library = MediaLibrary(
+      db: db,
+      tasks: tasks,
+      native: _ScanRuntime(const [], scanWarnings: ['部分目录暂不可读，已保留现有索引']),
+    );
+
+    final result = await library.rescan(
+      directory: 'content://provider/tree/root',
+    );
+
+    expect(result.removed, 0);
+    expect(library.item('temporarily-unreadable'), isNotNull);
+    expect(result.warnings, isNotEmpty);
   });
 
   test('media artifact index survives deletion of its download task', () async {

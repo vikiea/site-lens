@@ -122,6 +122,36 @@ void main() {
     );
   });
 
+  test('keeps SAF child directories within the selected tree and rejects other documents', () async {
+    final storage = MediaStorageService(
+      tasks: tasks,
+      library: library,
+      configuredRoot: () async => 'content://provider/tree/root',
+    );
+    final item = MediaArtifact(
+      taskId: 'saf-child',
+      location: 'content://provider/tree/root/document/root/child/video',
+      name: 'child.mp4',
+      size: 1,
+      createdAt: DateTime.now().toUtc(),
+    );
+
+    expect(
+      await storage.isArtifactInDirectory(
+        item,
+        'content://provider/tree/root/document/root/child',
+      ),
+      isTrue,
+    );
+    await expectLater(
+      storage.isArtifactInDirectory(
+        item,
+        'content://provider/tree/root/document/other',
+      ),
+      throwsA(isA<StateError>()),
+    );
+  });
+
   test('artifact storage metadata survives a real rename', () async {
     final storageRoot = Directory('${root.path}/media_exports')
       ..createSync(recursive: true);

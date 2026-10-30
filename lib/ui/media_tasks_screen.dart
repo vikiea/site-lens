@@ -1073,6 +1073,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
   MediaStorageRoot? _storageRoot;
   final _migrationCandidates = <String>{};
   final _physicalFolders = <String, MediaOrganizationFolder>{};
+  final _physicalFolderPaths = <String, String>{};
   List<MediaStorageEntry> _storageEntries = const [];
   String? _physicalRootLocation;
   Future<void>? _storageRefresh;
@@ -1175,9 +1176,9 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
       if (!mounted) return;
       showShortToast(
         context,
-        result.added == 0
-            ? '已扫描 ${result.found} 个 MP4，索引没有新增'
-            : '已恢复 ${result.added} 个媒体文件索引',
+        result.added == 0 && result.removed == 0 && result.updated == 0
+            ? '已扫描 ${result.found} 个 MP4，目录和索引没有变化'
+            : '已同步 ${result.found} 个 MP4（新增 ${result.added}，更新 ${result.updated}，移除 ${result.removed}）',
       );
       if (result.warnings.isNotEmpty) {
         setState(() => _error = result.warnings.join('；'));
@@ -1205,12 +1206,53 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
           if (!mounted) return;
           if (_physicalRootLocation != root.location) {
             _physicalFolders.clear();
+            _physicalFolderPaths.clear();
             _physicalRootLocation = root.location;
             _physicalRequestedLocation = null;
             if (_browser.folderId != null) _browser.goUp();
           }
+          if (!root.available) {
+            _physicalFolders.clear();
+            _physicalFolderPaths.clear();
+            _browser.setPhysicalFolders(const []);
+            setState(() {
+              _storageEntries = const [];
+              _storageRoot = root;
+            });
+            break;
+          }
           final target =
               _physicalRequestedLocation ?? _browser.folderId ?? root.location;
+          if (target != root.location) {
+            final current = _physicalFolders[target];
+            final parentLocation = current?.parentId ?? root.location;
+            final parentEntries = await app.mediaStorage.listDirectory(
+              directory: parentLocation,
+            );
+            final currentEntry = parentEntries
+                .where((entry) => entry.directory && entry.location == target)
+                .firstOrNull;
+            if (currentEntry == null) {
+              _removePhysicalFolderBranch(target);
+              _browser.goUp();
+              _physicalRequestedLocation = current?.parentId;
+              _physicalRequestEpoch++;
+              continue;
+            }
+            final parentPath = current?.parentId == null
+                ? ''
+                : _physicalFolderPaths[current!.parentId!] ?? '';
+            _physicalFolders[target] =
+                (current ??
+                        MediaOrganizationFolder(
+                          id: target,
+                          name: currentEntry.name,
+                        ))
+                    .copyWith(name: currentEntry.name);
+            _physicalFolderPaths[target] = parentPath.isEmpty
+                ? currentEntry.name
+                : '$parentPath/${currentEntry.name}';
+          }
           final entries = await app.mediaStorage.listDirectory(
             directory: target,
           );
@@ -1228,26 +1270,62 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
           }
 
           final parentId = target == root.location ? null : target;
+          final targetPath = target == root.location
+              ? ''
+              : _physicalFolderPaths[target] ?? '';
+          final nextFolders = <String, MediaOrganizationFolder>{};
+          final nextFolderPaths = <String, String>{};
+          if (parentId != null) {
+            final current = _physicalFolders[parentId];
+            nextFolders[parentId] =
+                current ??
+                MediaOrganizationFolder(
+                  id: parentId,
+                  name: _physicalName(parentId),
+                );
+            if (targetPath.isNotEmpty) nextFolderPaths[parentId] = targetPath;
+          }
           for (final entry in entries.where((entry) => entry.directory)) {
-            _physicalFolders[entry.location] = MediaOrganizationFolder(
+            nextFolders[entry.location] = MediaOrganizationFolder(
               id: entry.location,
               name: entry.name,
               parentId: parentId,
             );
+            nextFolderPaths[entry.location] = targetPath.isEmpty
+                ? entry.name
+                : '$targetPath/${entry.name}';
           }
-          if (parentId != null && !_physicalFolders.containsKey(parentId)) {
-            _physicalFolders[parentId] = MediaOrganizationFolder(
-              id: parentId,
-              name: _physicalName(parentId),
-            );
-          }
-          _browser.setPhysicalFolders(_physicalFolders.values);
+          _physicalFolders
+            ..clear()
+            ..addAll(nextFolders);
+          _physicalFolderPaths
+            ..clear()
+            ..addAll(nextFolderPaths);
+          _browser.setPhysicalFolders(nextFolders.values);
           setState(() {
             _storageEntries = entries;
             _storageRoot = root;
           });
         } catch (error) {
           if (mounted && requestEpoch == _physicalRequestEpoch) {
+            final root = _storageRoot;
+            final target =
+                _physicalRequestedLocation ??
+                _browser.folderId ??
+                root?.location;
+            final current = target == null ? null : _physicalFolders[target];
+            if (root != null &&
+                root.available &&
+                target != null &&
+                target != root.location &&
+                current != null &&
+                _isMissingPhysicalDirectoryError(error)) {
+              _removePhysicalFolderBranch(target);
+              _browser.goUp();
+              _physicalRequestedLocation = current.parentId;
+              _physicalRequestEpoch++;
+              continue;
+            }
             setState(() => _error = friendlyError(error));
           }
         }
@@ -1269,6 +1347,33 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
       return uri!.pathSegments.lastOrNull ?? '媒体目录';
     }
     return File(location).uri.pathSegments.lastOrNull ?? '媒体目录';
+  }
+
+  bool _isMissingPhysicalDirectoryError(Object error) {
+    if (error is PlatformException) {
+      return error.code == 'media_file_missing' ||
+          error.message == '媒体文件不存在' ||
+          error.message == '系统目录不存在';
+    }
+    return error is FileSystemException &&
+        {2, 20}.contains(error.osError?.errorCode);
+  }
+
+  void _removePhysicalFolderBranch(String location) {
+    final removed = <String>{location};
+    var changed = true;
+    while (changed) {
+      changed = false;
+      for (final entry in _physicalFolders.entries.toList()) {
+        if (entry.value.parentId != null &&
+            removed.contains(entry.value.parentId) &&
+            removed.add(entry.key)) {
+          changed = true;
+        }
+      }
+    }
+    _physicalFolders.removeWhere((id, _) => removed.contains(id));
+    _physicalFolderPaths.removeWhere((id, _) => removed.contains(id));
   }
 
   Future<Map<String, String>> _collectPhysicalFiles(
@@ -1314,22 +1419,88 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
   }
 
   int _physicalFolderItemCount(String folder) {
-    final uri = Uri.tryParse(folder);
-    if (uri?.scheme == 'content') {
-      return app.mediaLibrary.items
-          .where((item) => item.location.contains('/document/'))
-          .where((item) => item.folder == _physicalName(folder))
-          .length;
-    }
-    final root = p.normalize(folder);
+    final relative = _physicalFolderPaths[folder];
+    if (relative == null || relative.isEmpty) return 0;
+    final normalized = relative.replaceAll('\\', '/');
     return app.mediaLibrary.items.where((item) {
-      final itemUri = Uri.tryParse(item.location);
-      if (itemUri?.scheme == 'content') return false;
-      final path = itemUri?.scheme == 'file'
-          ? itemUri!.toFilePath()
-          : item.location;
-      return p.isWithin(root, p.normalize(path));
+      final itemFolder = _physicalItemFolder(item);
+      return itemFolder == normalized || itemFolder.startsWith('$normalized/');
     }).length;
+  }
+
+  String _physicalItemFolder(MediaArtifact item) {
+    final root = _storageRoot;
+    if (root == null || !_isPhysicalLocationInCurrentRoot(item.location)) {
+      return '';
+    }
+    if (item.storageRootId != null && item.storageRootId != root.location) {
+      return '';
+    }
+    final recorded = item.folder?.trim();
+    if (recorded != null && recorded.isNotEmpty) {
+      return recorded.replaceAll('\\', '/');
+    }
+    final itemUri = Uri.tryParse(item.location);
+    if (root.kind == MediaStorageKind.system && itemUri?.scheme == 'content') {
+      return '';
+    }
+    final rootPath = root.kind == MediaStorageKind.system
+        ? (Uri.tryParse(root.location)?.scheme == 'file'
+              ? Uri.parse(root.location).toFilePath()
+              : root.location)
+        : root.location;
+    final itemPath = itemUri?.scheme == 'file'
+        ? itemUri!.toFilePath()
+        : item.location;
+    if (p.normalize(itemPath) == p.normalize(rootPath) ||
+        !p.isWithin(p.normalize(rootPath), p.normalize(itemPath))) {
+      return '';
+    }
+    final relative = p.relative(p.dirname(itemPath), from: rootPath);
+    return relative == '.' ? '' : relative.replaceAll('\\', '/');
+  }
+
+  bool _isPhysicalLocationInCurrentRoot(String location) {
+    final root = _storageRoot;
+    if (root == null) return false;
+    final rootUri = Uri.tryParse(root.location);
+    final locationUri = Uri.tryParse(location);
+    if (rootUri?.scheme == 'content' || locationUri?.scheme == 'content') {
+      if (rootUri?.scheme != 'content' || locationUri?.scheme != 'content') {
+        return false;
+      }
+      if (rootUri!.authority != locationUri!.authority) return false;
+      final rootSegments = rootUri.pathSegments;
+      final locationSegments = locationUri.pathSegments;
+      final rootTreeIndex = rootSegments.indexOf('tree');
+      final locationTreeIndex = locationSegments.indexOf('tree');
+      final locationDocumentIndex = locationSegments.indexOf('document');
+      if (rootTreeIndex < 0 ||
+          rootTreeIndex + 1 >= rootSegments.length ||
+          locationTreeIndex < 0 ||
+          locationDocumentIndex <= locationTreeIndex) {
+        return false;
+      }
+      final rootTreeId = rootSegments.sublist(rootTreeIndex + 1).join('/');
+      final locationTreeId = locationSegments
+          .sublist(locationTreeIndex + 1, locationDocumentIndex)
+          .join('/');
+      final documentId = locationSegments
+          .sublist(locationDocumentIndex + 1)
+          .join('/');
+      return rootTreeId == locationTreeId &&
+          (documentId == rootTreeId || documentId.startsWith('$rootTreeId/'));
+    }
+    final rootPath = root.kind == MediaStorageKind.system
+        ? (rootUri?.scheme == 'file' ? rootUri!.toFilePath() : root.location)
+        : root.location;
+    final itemPath = locationUri?.scheme == 'file'
+        ? locationUri!.toFilePath()
+        : location;
+    final normalizedRoot = p.normalize(rootPath);
+    final normalizedItem = p.normalize(itemPath);
+    return normalizedItem == normalizedRoot ||
+        p.isWithin(normalizedRoot, normalizedItem);
   }
 
   MediaBrowserOperations get _operations => MediaBrowserOperations(

@@ -29,6 +29,16 @@ class NativeExportRuntime {
       }) ??
       false;
 
+  Future<bool> isDocumentWithinTree({
+    required Uri directory,
+    required Uri document,
+  }) async =>
+      await _channel.invokeMethod<bool>('isDocumentWithinTree', {
+        'directory': directory.toString(),
+        'document': document.toString(),
+      }) ??
+      false;
+
   Future<List<Map<String, Object?>>> listDirectory(Uri directory) async {
     final raw = await _channel.invokeMethod<List<Object?>>('listDirectory', {
       'directory': directory.toString(),

@@ -62,6 +62,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
     @Volatile private var activeCancellation: AtomicBoolean? = null
     private val cancellations = ConcurrentHashMap<String, AtomicBoolean>()
     private val cancelledJobs = ConcurrentHashMap.newKeySet<String>()
+    private val verifiedTreeDocuments = ConcurrentHashMap<String, MutableSet<String>>()
     private var pendingDirectoryResult: MethodChannel.Result? = null
 
     companion object {
@@ -91,7 +92,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             try { pickDirectory(result) } catch (error: Exception) { fail(call, result, error) }
             return
         }
-        val supported = setOf("validateLocalInput", "muxHls", "validateOutput", "deliver", "deliverToDirectory", "checkDirectory", "listDirectory", "createDirectory", "stat", "inspect", "inspectSamples", "scanMedia", "materialize", "rename", "move", "delete", "deleteOwnedSources", "copyVerified")
+        val supported = setOf("validateLocalInput", "muxHls", "validateOutput", "deliver", "deliverToDirectory", "checkDirectory", "isDocumentWithinTree", "listDirectory", "createDirectory", "stat", "inspect", "inspectSamples", "scanMedia", "materialize", "rename", "move", "delete", "deleteOwnedSources", "copyVerified")
         if (call.method !in supported) { result.notImplemented(); return }
         val jobId = call.argument<String>("jobId") ?: "job-${System.nanoTime()}"
         val cancellation = AtomicBoolean(false)
@@ -254,6 +255,10 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             "deliver" -> { deliver(argument("source"), Uri.parse(argument("destination"))); null }
             "deliverToDirectory" -> deliverToDirectory(argument("source"), Uri.parse(argument("directory")), argument("fileName"), call.argument<String>("subdirectory"))
             "checkDirectory" -> checkDirectory(Uri.parse(argument("directory")))
+            "isDocumentWithinTree" -> isDocumentWithinTree(
+                Uri.parse(argument("directory")),
+                Uri.parse(argument("document")),
+            )
             "listDirectory" -> listDirectory(Uri.parse(argument("directory")))
             "createDirectory" -> createDirectory(Uri.parse(argument("directory")), argument("name"))
             "stat" -> stat(argument("source"))
@@ -1266,9 +1271,25 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         if (directory.scheme != "content" || !DocumentsContract.isTreeUri(directory)) {
             return false
         }
-        return context.contentResolver.persistedUriPermissions.any {
+        val granted = context.contentResolver.persistedUriPermissions.any {
             it.uri == directory && it.isReadPermission && it.isWritePermission
         }
+        if (!granted) return false
+        val rootDocument = runCatching {
+            DocumentsContract.buildDocumentUriUsingTree(
+                directory,
+                DocumentsContract.getTreeDocumentId(directory),
+            )
+        }.getOrNull() ?: return false
+        return runCatching {
+            context.contentResolver.query(
+                rootDocument,
+                arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                null,
+                null,
+                null,
+            )?.use { it.moveToFirst() } == true
+        }.getOrDefault(false)
     }
 
     private fun treeParentDocument(directory: Uri): Pair<Uri, String> {
@@ -1283,7 +1304,71 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             runCatching { DocumentsContract.getDocumentId(directory) }
                 .getOrElse { throw IllegalArgumentException("系统目录无效") }
         } else treeId
+        require(documentIdWithinTree(tree, treeId, documentId)) { "系统目录无效" }
         return tree to documentId
+    }
+
+    private fun isDocumentWithinTree(directory: Uri, document: Uri): Boolean {
+        if (directory.scheme != "content" || document.scheme != "content") return false
+        if (directory.authority != document.authority) return false
+        val treeId = runCatching { DocumentsContract.getTreeDocumentId(directory) }
+            .getOrNull() ?: return false
+        val tree = DocumentsContract.buildTreeDocumentUri(directory.authority, treeId)
+        val documentTreeId = runCatching {
+            DocumentsContract.getTreeDocumentId(document)
+        }.getOrNull() ?: return false
+        if (documentTreeId != treeId) return false
+        if (!context.contentResolver.persistedUriPermissions.any {
+                it.uri == tree && it.isReadPermission
+            }) return false
+        val documentId = runCatching {
+            if (DocumentsContract.isDocumentUri(context, document)) {
+                DocumentsContract.getDocumentId(document)
+            } else {
+                treeId
+            }
+        }.getOrNull() ?: return false
+        return documentIdWithinTree(tree, treeId, documentId)
+    }
+
+    private fun documentIdWithinTree(tree: Uri, treeId: String, documentId: String): Boolean {
+        if (documentId == treeId) return true
+        val cache = verifiedTreeDocuments.getOrPut(tree.toString()) {
+            ConcurrentHashMap.newKeySet<String>()
+        }
+        if (cache.contains(documentId)) return true
+        val pending = java.util.ArrayDeque<Pair<String, Int>>()
+        val visited = mutableSetOf<String>()
+        pending.add(treeId to 0)
+        while (pending.isNotEmpty()) {
+            val (parentId, depth) = pending.removeFirst()
+            if (!visited.add(parentId)) continue
+            if (visited.size > 10_000) return false
+            val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
+            val cursor = context.contentResolver.query(
+                children,
+                arrayOf(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE,
+                ),
+                null,
+                null,
+                null,
+            ) ?: return false
+            cursor.use {
+                while (cursor.moveToNext()) {
+                    val id = cursor.getString(0) ?: continue
+                    cache.add(id)
+                    if (id == documentId) return true
+                    if (depth < 16 &&
+                        cursor.getString(1) == DocumentsContract.Document.MIME_TYPE_DIR
+                    ) {
+                        pending.add(id to depth + 1)
+                    }
+                }
+            }
+        }
+        return false
     }
 
     private fun listDirectory(directory: Uri): List<Map<String, Any?>> {
@@ -1296,7 +1381,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             DocumentsContract.Document.COLUMN_MIME_TYPE,
             DocumentsContract.Document.COLUMN_SIZE,
             DocumentsContract.Document.COLUMN_LAST_MODIFIED,
-        ), null, null, null) ?: throw IllegalArgumentException("无法读取系统目录")
+        ), null, null, null) ?: throw FileNotFoundException("系统目录不存在")
         cursor.use {
             while (cursor.moveToNext()) {
                 val id = cursor.getString(0) ?: continue
@@ -1324,7 +1409,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
             DocumentsContract.Document.COLUMN_MIME_TYPE,
-        ), null, null, null) ?: throw IllegalArgumentException("无法读取系统目录")
+        ), null, null, null) ?: throw FileNotFoundException("系统目录不存在")
         cursor.use {
             while (cursor.moveToNext()) {
                 if (cursor.getString(1) != name) continue
@@ -1580,7 +1665,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                                 warnings += "部分 MP4 暂不可读，已保留现有索引"
                             } finally { extractor.release() }
                         }
-                    }
+                    } ?: throw FileNotFoundException("系统目录不存在")
                 } catch (error: SecurityException) {
                     throw error
                 } catch (error: Exception) {
@@ -1589,7 +1674,11 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 }
             }
         }
-        return mapOf("files" to files, "warnings" to warnings.distinct())
+        return mapOf(
+            "files" to files,
+            "warnings" to warnings.distinct(),
+            "roots" to roots.map(Uri::toString),
+        )
     }
 
     private fun <T> awaitInspection(future: com.google.common.util.concurrent.ListenableFuture<T>): T {

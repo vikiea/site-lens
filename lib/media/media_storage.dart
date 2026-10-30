@@ -129,6 +129,14 @@ class MediaStorageService extends ChangeNotifier {
     final locationUri = Uri.tryParse(artifact.location);
     final rootUri = Uri.tryParse(root.location);
     if (locationUri?.scheme == 'content' || rootUri?.scheme == 'content') {
+      if (native != null &&
+          locationUri?.scheme == 'content' &&
+          rootUri?.scheme == 'content') {
+        return native!.isDocumentWithinTree(
+          directory: rootUri!,
+          document: locationUri!,
+        );
+      }
       return _contentLocationInTree(root.location, artifact.location);
     }
     final rootPath = _localPath(root.location);
@@ -148,6 +156,16 @@ class MediaStorageService extends ChangeNotifier {
     String directory,
   ) async {
     await _assertWithinRoot(directory);
+    final directoryUri = Uri.tryParse(directory);
+    final locationUri = Uri.tryParse(artifact.location);
+    if (native != null &&
+        directoryUri?.scheme == 'content' &&
+        locationUri?.scheme == 'content') {
+      return native!.isDocumentWithinTree(
+        directory: directoryUri!,
+        document: locationUri!,
+      );
+    }
     return _locationWithinDirectory(artifact.location, directory);
   }
 
@@ -505,16 +523,36 @@ class MediaStorageService extends ChangeNotifier {
     final treeSegments = tree.pathSegments;
     final documentSegments = document.pathSegments;
     final treeIndex = treeSegments.indexOf('tree');
+    final treeDocumentIndex = treeSegments.indexOf('document');
+    final locationTreeIndex = documentSegments.indexOf('tree');
     final documentIndex = documentSegments.indexOf('document');
     if (treeIndex < 0 ||
         treeIndex + 1 >= treeSegments.length ||
+        treeDocumentIndex == treeIndex + 1 ||
+        locationTreeIndex < 0 ||
+        locationTreeIndex + 1 >= documentSegments.length ||
         documentIndex < 0 ||
         documentIndex + 1 >= documentSegments.length) {
       return false;
     }
-    final treeId = treeSegments.sublist(treeIndex + 1).join('/');
+    final treeId = treeSegments
+        .sublist(
+          treeIndex + 1,
+          treeDocumentIndex > treeIndex
+              ? treeDocumentIndex
+              : treeSegments.length,
+        )
+        .join('/');
+    final locationTreeId = documentSegments
+        .sublist(locationTreeIndex + 1, documentIndex)
+        .join('/');
+    final rootDocumentId = treeDocumentIndex > treeIndex
+        ? treeSegments.sublist(treeDocumentIndex + 1).join('/')
+        : treeId;
     final documentId = documentSegments.sublist(documentIndex + 1).join('/');
-    return documentId == treeId || documentId.startsWith('$treeId/');
+    return locationTreeId == treeId &&
+        (documentId == rootDocumentId ||
+            documentId.startsWith('$rootDocumentId/'));
   }
 
   Future<void> _assertWithinRoot(String location) async {
@@ -526,6 +564,17 @@ class MediaStorageService extends ChangeNotifier {
     final rootUri = Uri.tryParse(root.location);
     if (target?.scheme == 'content' || rootUri?.scheme == 'content') {
       if (location == root.location) return;
+      if (native != null &&
+          target?.scheme == 'content' &&
+          rootUri?.scheme == 'content') {
+        if (await native!.isDocumentWithinTree(
+          directory: rootUri!,
+          document: target!,
+        )) {
+          return;
+        }
+        throw StateError('媒体目录操作超出已授权根目录');
+      }
       if (!_contentLocationInTree(root.location, location)) {
         throw StateError('媒体目录操作超出已授权根目录');
       }

@@ -121,6 +121,35 @@ class MediaArtifact {
     migrationState: migrationState ?? this.migrationState,
   );
 
+  MediaArtifact withFileObservation({
+    required String location,
+    required String name,
+    required int size,
+    String? folder,
+    String? storageRootId,
+    String? relativePath,
+    String? storageKind,
+    String? migrationState,
+  }) => MediaArtifact(
+    taskId: taskId,
+    location: location,
+    libraryCopy: libraryCopy,
+    materializedCopy: materializedCopy,
+    name: name,
+    size: size,
+    mime: mime,
+    durationMs: durationMs,
+    width: width,
+    height: height,
+    thumbnailPath: thumbnailPath,
+    folder: folder,
+    createdAt: createdAt,
+    storageRootId: storageRootId ?? this.storageRootId,
+    relativePath: relativePath ?? this.relativePath,
+    storageKind: storageKind ?? this.storageKind,
+    migrationState: migrationState ?? this.migrationState,
+  );
+
   Map<String, Object?> toJson() => {
     'taskId': taskId,
     'location': location,
@@ -183,7 +212,10 @@ class MediaLibrary extends ChangeNotifier {
   bool _restored = false;
   Future<void>? _restoring;
   bool _disposed = false;
-  Future<({int added, int found, List<String> warnings})>? _scanning;
+  Future<
+    ({int added, int found, int removed, int updated, List<String> warnings})
+  >?
+  _scanning;
   bool get scanning => _scanning != null;
   int _catalogEpoch = 0;
   Future<void> _catalogTail = Future<void>.value();
@@ -351,23 +383,40 @@ class MediaLibrary extends ChangeNotifier {
       before.folder != after.folder ||
       before.thumbnailPath != after.thumbnailPath;
 
-  Future<({int added, int found, List<String> warnings})> rescan({
-    String? directory,
-  }) => _scanning ??= _rescan(directory).whenComplete(() => _scanning = null);
+  Future<
+    ({int added, int found, int removed, int updated, List<String> warnings})
+  >
+  rescan({String? directory}) =>
+      _scanning ??= _rescan(directory).whenComplete(() => _scanning = null);
 
-  Future<({int added, int found, List<String> warnings})> _rescan(
-    String? directory,
-  ) async {
+  Future<
+    ({int added, int found, int removed, int updated, List<String> warnings})
+  >
+  _rescan(String? directory) async {
     await restore();
     if (_busy.isNotEmpty) {
-      return (added: 0, found: 0, warnings: ['媒体文件操作进行中，请完成后重新扫描']);
+      return (
+        added: 0,
+        found: 0,
+        removed: 0,
+        updated: 0,
+        warnings: ['媒体文件操作进行中，请完成后重新扫描'],
+      );
     }
     final epoch = ++_catalogEpoch;
     final entries = <_ScannedMedia>[];
+    final scopes = <_ScanScope>[];
     final warnings = <String>[];
     final root = await tasks.cacheRootDirectory();
     final exports = Directory('${root.parent.path}/media_exports');
     await _scanLocal(exports, entries);
+    scopes.add(
+      _ScanScope(
+        root: exports.absolute.path,
+        content: false,
+        storageKind: 'appPrivate',
+      ),
+    );
     final configured = directory?.trim();
     if (native != null || configured != null && configured.isNotEmpty) {
       final uri = Uri.tryParse(configured ?? '');
@@ -375,9 +424,28 @@ class MediaLibrary extends ChangeNotifier {
         if (uri?.scheme == 'content' ||
             configured == null ||
             configured.isEmpty) {
+          if (native == null) {
+            throw const FormatException('当前平台不支持系统目录扫描');
+          }
           final response = native == null
               ? null
               : await native!.scanMedia(directory: configured);
+          for (final rawRoot in (response?['roots'] as List?) ?? const []) {
+            if (rawRoot is String && rawRoot.trim().isNotEmpty) {
+              scopes.add(
+                _ScanScope(root: rawRoot, content: true, storageKind: 'system'),
+              );
+            }
+          }
+          if (uri?.scheme == 'content' && configured != null) {
+            scopes.add(
+              _ScanScope(
+                root: configured,
+                content: true,
+                storageKind: 'system',
+              ),
+            );
+          }
           for (final raw in (response?['files'] as List?) ?? const []) {
             if (raw is! Map) continue;
             final source = raw['uri'] as String?;
@@ -403,12 +471,17 @@ class MediaLibrary extends ChangeNotifier {
           if (native != null) {
             throw const FormatException('请通过系统选择器重新授权媒体库目录');
           }
-          await _scanLocal(
-            uri?.scheme == 'file'
-                ? Directory.fromUri(uri!)
-                : Directory(configured),
-            entries,
+          final localRoot = uri?.scheme == 'file'
+              ? Directory.fromUri(uri!)
+              : Directory(configured);
+          scopes.add(
+            _ScanScope(
+              root: localRoot.absolute.path,
+              content: false,
+              storageKind: 'system',
+            ),
           );
+          await _scanLocal(localRoot, entries);
         }
       } catch (error) {
         warnings.add(readableError(error));
@@ -419,22 +492,55 @@ class MediaLibrary extends ChangeNotifier {
       unique[_sourceKey(entry.source)] = entry;
     }
     var added = 0;
+    var updated = 0;
     for (final entry in unique.values) {
       final key = _sourceKey(entry.source);
-      // Source identity, never the filename, determines whether a document
-      // is already in the catalog. Copies and in-flight file operations also
-      // invalidate this scan before it can resurrect a removed record.
-      final known = _items.values.any(
+      final existing = _items.values
+          .where((item) => _sourceKey(item.location) == key)
+          .firstOrNull;
+      if (existing != null) {
+        final scope = scopes
+            .where(
+              (scope) =>
+                  scope.contains(entry.source) ||
+                  scope.sameContentTree(entry.source),
+            )
+            .firstOrNull;
+        final next = existing.withFileObservation(
+          location: entry.source,
+          name: entry.name,
+          size: entry.size > 0 ? entry.size : existing.size,
+          folder: entry.folder,
+          storageRootId: scope?.root,
+          relativePath: _relativeScanPath(entry, scope),
+          storageKind: scope?.storageKind,
+          migrationState: scope == null ? null : 'complete',
+        );
+        if (!_sameObservedFile(existing, next) &&
+            await _save(next, structural: false, expectedEpoch: epoch)) {
+          updated++;
+        }
+        continue;
+      }
+      // Copies and in-flight file operations also invalidate this scan before
+      // it can resurrect a removed record.
+      final isKnownCopy = _items.values.any(
         (item) =>
-            _sourceKey(item.location) == key ||
             item.libraryCopy != null && _sourceKey(item.libraryCopy!) == key ||
             item.materializedCopy != null &&
                 _sourceKey(item.materializedCopy!) == key,
       );
-      if (known || entry.size <= 0) continue;
+      if (isKnownCopy || entry.size <= 0) continue;
       if (epoch != _catalogEpoch) break;
       // The document may later move while keeping this catalog identity. A
       // new file at its old path must receive a different identity.
+      final scope = scopes
+          .where(
+            (scope) =>
+                scope.contains(entry.source) ||
+                scope.sameContentTree(entry.source),
+          )
+          .firstOrNull;
       final id =
           'library_${sha256.convert(utf8.encode(key))}_${DateTime.now().microsecondsSinceEpoch}';
       final value = MediaArtifact(
@@ -450,10 +556,128 @@ class MediaLibrary extends ChangeNotifier {
           isUtc: true,
         ),
         folder: entry.folder,
+        storageRootId: scope?.root,
+        relativePath: _relativeScanPath(entry, scope),
+        storageKind: scope?.storageKind,
+        migrationState: scope == null ? null : 'complete',
       );
       if (await _save(value, structural: false, expectedEpoch: epoch)) added++;
     }
-    return (added: added, found: unique.length, warnings: warnings);
+    var removed = 0;
+    if (warnings.isEmpty && scopes.isNotEmpty) {
+      final scannedKeys = unique.keys.toSet();
+      for (final item in [..._items.values]) {
+        if (scannedKeys.contains(_sourceKey(item.location)) ||
+            !await _locationInScanScopes(item.location, scopes)) {
+          continue;
+        }
+        if (await _forgetMissingIndex(item, expectedEpoch: epoch)) removed++;
+      }
+    }
+    return (
+      added: added,
+      found: unique.length,
+      removed: removed,
+      updated: updated,
+      warnings: warnings,
+    );
+  }
+
+  static String? _relativeScanPath(_ScannedMedia entry, _ScanScope? scope) {
+    if (scope == null) return null;
+    final folder = entry.folder?.trim();
+    return folder == null || folder.isEmpty
+        ? entry.name
+        : p.posix.join(folder.replaceAll('\\', '/'), entry.name);
+  }
+
+  static bool _sameObservedFile(MediaArtifact before, MediaArtifact after) =>
+      before.location == after.location &&
+      before.name == after.name &&
+      before.size == after.size &&
+      before.folder == after.folder &&
+      before.storageRootId == after.storageRootId &&
+      before.relativePath == after.relativePath &&
+      before.storageKind == after.storageKind &&
+      before.migrationState == after.migrationState;
+
+  Future<bool> _locationInScanScopes(
+    String location,
+    Iterable<_ScanScope> scopes,
+  ) async {
+    for (final scope in scopes) {
+      if (!scope.content && scope.contains(location)) return true;
+      if (!scope.content || !scope.sameContentTree(location)) continue;
+      final root = Uri.tryParse(scope.root);
+      final document = Uri.tryParse(location);
+      if (native != null && root?.scheme == 'content' && document != null) {
+        if (await native!.isDocumentWithinTree(
+          directory: root!,
+          document: document,
+        )) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  Future<bool> _forgetMissingIndex(
+    MediaArtifact value, {
+    required int expectedEpoch,
+  }) => _catalogOperation(() async {
+    if (expectedEpoch != _catalogEpoch ||
+        _busy.isNotEmpty ||
+        !identical(_items[value.taskId], value)) {
+      return false;
+    }
+    await db.deleteMediaArtifact(value.taskId);
+    _items.remove(value.taskId);
+    tasks.unregisterLocalMediaReference(value.taskId);
+    _notify();
+    return true;
+  });
+
+  static bool _contentLocationWithinRoot(String root, String location) {
+    final tree = Uri.tryParse(root);
+    final document = Uri.tryParse(location);
+    if (tree?.scheme != 'content' || document?.scheme != 'content') {
+      return false;
+    }
+    if (tree!.authority != document!.authority) return false;
+    final treeSegments = tree.pathSegments;
+    final documentSegments = document.pathSegments;
+    final treeIndex = treeSegments.indexOf('tree');
+    final treeDocumentIndex = treeSegments.indexOf('document');
+    final locationTreeIndex = documentSegments.indexOf('tree');
+    final documentIndex = documentSegments.indexOf('document');
+    if (treeIndex < 0 ||
+        treeIndex + 1 >= treeSegments.length ||
+        treeDocumentIndex == treeIndex + 1 ||
+        locationTreeIndex < 0 ||
+        locationTreeIndex + 1 >= documentSegments.length ||
+        documentIndex < 0 ||
+        documentIndex + 1 >= documentSegments.length) {
+      return false;
+    }
+    final treeId = treeSegments
+        .sublist(
+          treeIndex + 1,
+          treeDocumentIndex > treeIndex
+              ? treeDocumentIndex
+              : treeSegments.length,
+        )
+        .join('/');
+    final locationTreeId = documentSegments
+        .sublist(locationTreeIndex + 1, documentIndex)
+        .join('/');
+    final rootDocumentId = treeDocumentIndex > treeIndex
+        ? treeSegments.sublist(treeDocumentIndex + 1).join('/')
+        : treeId;
+    final documentId = documentSegments.sublist(documentIndex + 1).join('/');
+    return locationTreeId == treeId &&
+        (documentId == rootDocumentId ||
+            documentId.startsWith('$rootDocumentId/'));
   }
 
   Future<void> _scanLocal(Directory root, List<_ScannedMedia> output) async {
@@ -1548,4 +1772,61 @@ class _ScannedMedia {
   final int size;
   final int modifiedMs;
   final String? folder;
+}
+
+class _ScanScope {
+  const _ScanScope({
+    required this.root,
+    required this.content,
+    required this.storageKind,
+  });
+
+  final String root;
+  final bool content;
+  final String storageKind;
+
+  bool sameContentTree(String location) {
+    if (!content) return false;
+    final tree = Uri.tryParse(root);
+    final document = Uri.tryParse(location);
+    if (tree?.scheme != 'content' || document?.scheme != 'content') {
+      return false;
+    }
+    if (tree!.authority != document!.authority) return false;
+    final treeSegments = tree.pathSegments;
+    final documentSegments = document.pathSegments;
+    final treeIndex = treeSegments.indexOf('tree');
+    final treeDocumentIndex = treeSegments.indexOf('document');
+    final documentTreeIndex = documentSegments.indexOf('tree');
+    final documentIndex = documentSegments.indexOf('document');
+    if (treeIndex < 0 ||
+        documentTreeIndex < 0 ||
+        documentIndex <= documentTreeIndex) {
+      return false;
+    }
+    final treeId = treeSegments
+        .sublist(
+          treeIndex + 1,
+          treeDocumentIndex > treeIndex
+              ? treeDocumentIndex
+              : treeSegments.length,
+        )
+        .join('/');
+    final documentTreeId = documentSegments
+        .sublist(documentTreeIndex + 1, documentIndex)
+        .join('/');
+    return treeId == documentTreeId;
+  }
+
+  bool contains(String location) {
+    final locationUri = Uri.tryParse(location);
+    if (content || locationUri?.scheme == 'content') {
+      return MediaLibrary._contentLocationWithinRoot(root, location);
+    }
+    final rootPath = p.normalize(p.absolute(root));
+    final locationPath = locationUri?.scheme == 'file'
+        ? p.normalize(locationUri!.toFilePath())
+        : p.normalize(p.absolute(location));
+    return locationPath == rootPath || p.isWithin(rootPath, locationPath);
+  }
 }
