@@ -49,6 +49,28 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('media organization survives media page replacement', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: MediaLibraryScreen(app: app),
+      ),
+    );
+    await tester.pump();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: MediaManagementScreen(app: app),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('media task selection keeps every top-bar action visible', (
     tester,
   ) async {

@@ -52,21 +52,28 @@ class MediaOrganizationFolder {
 /// Persists the user-visible media organization separately from download and
 /// export storage. Folder moves and names never rewrite native task paths.
 class MediaOrganizationService extends ChangeNotifier {
-  MediaOrganizationService._(this.db, this.collection);
+  MediaOrganizationService._(this.db, this.collection) : _readOnly = false;
 
   static final Expando<Map<String, MediaOrganizationService>> _instances =
       Expando<Map<String, MediaOrganizationService>>('media-organization');
+  static final Expando<Map<String, Future<void>>> _writeQueues =
+      Expando<Map<String, Future<void>>>('media-organization-writes');
 
   factory MediaOrganizationService({
     required AppDatabase db,
     required String collection,
-  }) => (_instances[db] ??= {})[collection] ??= MediaOrganizationService._(
-    db,
-    collection,
-  );
+  }) {
+    final instances = _instances[db] ??= {};
+    final existing = instances[collection];
+    if (existing != null && !existing._disposed) return existing;
+    final created = MediaOrganizationService._(db, collection);
+    instances[collection] = created;
+    return created;
+  }
 
-  /// Creates a separate reader for restart and persistence verification.
-  MediaOrganizationService.reader({required this.db, required this.collection});
+  /// Creates a read-only reader for restart and persistence verification.
+  MediaOrganizationService.reader({required this.db, required this.collection})
+    : _readOnly = true;
 
   String get settingKey => 'mediaOrganizationV1.$collection';
   final String collection;
@@ -77,8 +84,18 @@ class MediaOrganizationService extends ChangeNotifier {
   final _imported = <String>{};
   final _legacyFolders = <String, String>{};
   Future<void>? _restoring;
-  Future<void> _writes = Future<void>.value();
   bool _restored = false;
+  bool _disposed = false;
+  final bool _readOnly;
+
+  @override
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    final instances = _instances[db];
+    if (identical(instances?[collection], this)) instances?.remove(collection);
+    super.dispose();
+  }
 
   bool get restored => _restored;
 
@@ -106,10 +123,12 @@ class MediaOrganizationService extends ChangeNotifier {
 
   bool hasFolder(String? id) => id == null || _folders.containsKey(id);
 
-  Future<void> restore() =>
-      _restoring ??= _restore().whenComplete(() => _restoring = null);
+  Future<void> restore() => _restoring ??= _awaitSharedWrites()
+      .then((_) => _restore())
+      .whenComplete(() => _restoring = null);
 
   Future<void> restoreAndSync(Iterable<MediaOrganizationSeed> seeds) async {
+    _ensureWritable();
     await restore();
     final seedList = seeds.toList();
     final currentIds = seedList.map((seed) => seed.itemId).toSet();
@@ -149,7 +168,7 @@ class MediaOrganizationService extends ChangeNotifier {
     }
     if (changed) {
       await _persist();
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
@@ -198,27 +217,30 @@ class MediaOrganizationService extends ChangeNotifier {
     String name, {
     String? parentId,
   }) async {
+    _ensureWritable();
     await restore();
     final safe = _validateFolderName(name);
     _checkParent(parentId);
     _checkSiblingName(safe, parentId: parentId);
     final folder = _createInMemory(safe, parentId: parentId);
     await _persist();
-    notifyListeners();
+    _notifyIfAlive();
     return folder;
   }
 
   Future<void> renameFolder(String folderId, String name) async {
+    _ensureWritable();
     await restore();
     final current = _folders[folderId] ?? (throw StateError('文件夹不存在'));
     final safe = _validateFolderName(name);
     _checkSiblingName(safe, parentId: current.parentId, excluding: folderId);
     _folders[folderId] = current.copyWith(name: safe);
     await _persist();
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<void> moveFolder(String folderId, String? parentId) async {
+    _ensureWritable();
     await restore();
     final current = _folders[folderId] ?? (throw StateError('文件夹不存在'));
     _checkParent(parentId);
@@ -228,7 +250,7 @@ class MediaOrganizationService extends ChangeNotifier {
     _checkSiblingName(current.name, parentId: parentId, excluding: folderId);
     _folders[folderId] = current.copyWith(parentId: parentId);
     await _persist();
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   /// Preflights the whole selection before changing any folder relationship.
@@ -237,6 +259,7 @@ class MediaOrganizationService extends ChangeNotifier {
     required Iterable<String> itemIds,
     required String? destination,
   }) async {
+    _ensureWritable();
     await restore();
     _checkParent(destination);
     final ids = folderIds.toSet();
@@ -270,13 +293,14 @@ class MediaOrganizationService extends ChangeNotifier {
       }
     }
     await _persist();
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<Map<String, String>> copyFolderTrees(
     Iterable<String> folderIds,
     String? destination,
   ) async {
+    _ensureWritable();
     await restore();
     _checkParent(destination);
     final ids = folderIds.toSet();
@@ -317,11 +341,12 @@ class MediaOrganizationService extends ChangeNotifier {
       clone(id, destination);
     }
     await _persist();
-    notifyListeners();
+    _notifyIfAlive();
     return mapping;
   }
 
   Future<void> moveItems(Iterable<String> itemIds, String? folderId) async {
+    _ensureWritable();
     await restore();
     _checkParent(folderId);
     final ids = itemIds.toSet();
@@ -338,16 +363,17 @@ class MediaOrganizationService extends ChangeNotifier {
     }
     if (ids.isNotEmpty) {
       await _persist();
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
   Future<void> renameItem(String itemId, String name) async {
+    _ensureWritable();
     await restore();
     final safe = _validateItemName(name);
     _itemNames[itemId] = safe;
     await _persist();
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<void> clonePlacement(
@@ -355,6 +381,7 @@ class MediaOrganizationService extends ChangeNotifier {
     String copiedItemId, {
     String? folderId,
   }) async {
+    _ensureWritable();
     await restore();
     final destination = folderId;
     _imported.add(copiedItemId);
@@ -367,10 +394,11 @@ class MediaOrganizationService extends ChangeNotifier {
     final sourceName = _itemNames[sourceItemId];
     if (sourceName != null) _itemNames[copiedItemId] = _copyName(sourceName);
     await _persist();
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<void> removeItems(Iterable<String> itemIds) async {
+    _ensureWritable();
     await restore();
     final ids = itemIds.toSet();
     for (final id in ids) {
@@ -379,7 +407,7 @@ class MediaOrganizationService extends ChangeNotifier {
     }
     if (ids.isNotEmpty) {
       await _persist();
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
@@ -395,6 +423,7 @@ class MediaOrganizationService extends ChangeNotifier {
   }
 
   Future<void> removeFolderTree(String folderId) async {
+    _ensureWritable();
     await restore();
     final removed = {folderId, ..._descendantsOf(folderId)};
     if (removed.any((id) => !_folders.containsKey(id))) {
@@ -404,10 +433,11 @@ class MediaOrganizationService extends ChangeNotifier {
     _legacyFolders.removeWhere((_, id) => removed.contains(id));
     _itemFolders.removeWhere((_, folderId) => removed.contains(folderId));
     await _persist();
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<void> clearAll() async {
+    _ensureWritable();
     await restore();
     _folders.clear();
     _itemFolders.clear();
@@ -415,7 +445,7 @@ class MediaOrganizationService extends ChangeNotifier {
     _imported.clear();
     _legacyFolders.clear();
     await _persist();
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<void> _restore() async {
@@ -499,12 +529,26 @@ class MediaOrganizationService extends ChangeNotifier {
       'imported': _imported.toList(),
       'legacyFolders': _legacyFolders,
     });
-    final previous = _writes;
+    final queues = _writeQueues[db] ??= {};
+    final previous = queues[collection] ?? Future<void>.value();
     final next = previous
         .catchError((_) {})
         .then((_) => db.setSetting(settingKey, payload));
-    _writes = next;
+    queues[collection] = next;
     await next;
+  }
+
+  Future<void> _awaitSharedWrites() =>
+      (_writeQueues[db]?[collection] ?? Future<void>.value()).catchError(
+        (_) {},
+      );
+
+  void _ensureWritable() {
+    if (_readOnly) throw StateError('媒体组织读取实例不可写');
+  }
+
+  void _notifyIfAlive() {
+    if (!_disposed) notifyListeners();
   }
 
   List<MediaOrganizationFolder> _sorted(

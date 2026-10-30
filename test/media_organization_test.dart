@@ -43,6 +43,26 @@ void main() {
     expect(restored.nameFor('item-1', '原始标题'), '虚拟标题');
   });
 
+  test('organization instances have independent lifecycles', () async {
+    final first = organization;
+    final second = MediaOrganizationService(
+      db: db,
+      collection: 'media-organization-test',
+    );
+
+    expect(identical(first, second), isTrue);
+    first.dispose();
+    final replacement = MediaOrganizationService(
+      db: db,
+      collection: 'media-organization-test',
+    );
+    addTearDown(replacement.dispose);
+    organization = replacement;
+
+    await replacement.createFolder('仍可用');
+    expect(replacement.folders.single.name, '仍可用');
+  });
+
   test('folder item expansion includes all descendant folders', () async {
     final root = await organization.createFolder('根目录');
     final child = await organization.createFolder('子目录', parentId: root.id);
@@ -193,8 +213,19 @@ void main() {
       collection: organization.collection,
     );
     addTearDown(restored.dispose);
-    await restored.restoreAndSync(seeds);
+    await restored.restore();
     expect(restored.folderFor('one'), 'series');
     expect(restored.folder('manual')?.name, '手动系列 - 批次1792686431921372');
+  });
+
+  test('reader rejects writes before changing its in-memory state', () async {
+    final reader = MediaOrganizationService.reader(
+      db: db,
+      collection: organization.collection,
+    );
+    addTearDown(reader.dispose);
+
+    await expectLater(reader.createFolder('不应写入'), throwsA(isA<StateError>()));
+    expect(reader.folders, isEmpty);
   });
 }

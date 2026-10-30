@@ -1100,7 +1100,6 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
     app.removeListener(_changed);
     app.mediaLibrary.removeListener(_libraryChanged);
     _browser.dispose();
-    _organization.dispose();
     super.dispose();
   }
 
@@ -1144,8 +1143,11 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
   Future<void> _load() async {
     try {
       await app.mediaLibrary.restore();
+      if (!mounted) return;
       await _organization.restore();
+      if (!mounted) return;
       if (await app.db.setting('mediaLibraryOrganizationMigratedV2') != '1') {
+        if (!mounted) return;
         await _organization.restoreAndSync(
           app.mediaLibrary.items.map(
             (item) => MediaOrganizationSeed(
@@ -1154,6 +1156,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
             ),
           ),
         );
+        if (!mounted) return;
       }
       await _loadPhysicalDirectory();
     } catch (error) {
@@ -1199,6 +1202,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
         final requestEpoch = _physicalRequestEpoch;
         try {
           final root = await app.mediaStorage.resolve();
+          if (!mounted) return;
           if (_physicalRootLocation != root.location) {
             _physicalFolders.clear();
             _physicalRootLocation = root.location;
@@ -1210,6 +1214,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
           final entries = await app.mediaStorage.listDirectory(
             directory: target,
           );
+          if (!mounted) return;
 
           // A refresh started before navigation or root replacement must never
           // publish its result over the directory that is currently visible.
@@ -1461,14 +1466,13 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
             ),
           ),
         );
-        if (confirmed == true) {
-          await app.deleteMediaArtifact(
-            item.taskId,
-            deleteTaskCache: linkedTask != null && deleteTaskCache,
-            deleteTask: linkedTask != null && deleteTaskCache,
-          );
-          await _organization.removeItems([item.taskId]);
-        }
+        if (confirmed != true) return;
+        await app.deleteMediaArtifact(
+          item.taskId,
+          deleteTaskCache: linkedTask != null && deleteTaskCache,
+          deleteTask: linkedTask != null && deleteTaskCache,
+        );
+        await _organization.removeItems([item.taskId]);
     }
   }
 
@@ -1528,7 +1532,8 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
             initial: folder.name,
             label: '目录名称',
           );
-          if (name != null && name.trim().isNotEmpty) {
+          if (name == null || name.trim().isEmpty) return;
+          {
             final before = Uri.tryParse(folder.id)?.scheme == 'content'
                 ? await _collectPhysicalFiles(folder.id)
                 : const <String, String>{};
@@ -1547,6 +1552,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
               }
               await app.mediaLibrary.rewriteLocations(rewrites);
             }
+            if (!mounted) return;
             await _loadPhysicalDirectory(directory: folder.parentId);
           }
         case 'delete':
@@ -1555,7 +1561,8 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
             title: '删除目录',
             message: '删除“${folder.name}”及其全部媒体文件？',
           );
-          if (confirmed) {
+          if (!confirmed) return;
+          {
             Future<List<MediaStorageEntry>> collectFiles(
               String location,
             ) async {
@@ -1584,6 +1591,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
               if (item != null) await app.deleteMediaArtifact(item.taskId);
             }
             await app.mediaStorage.deleteEntry(folder.id);
+            if (!mounted) return;
             await _loadPhysicalDirectory(directory: folder.parentId);
           }
       }
@@ -2255,14 +2263,16 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
 
   @override
   void dispose() {
-    _libraryOrganization.dispose();
     super.dispose();
   }
 
   Future<void> _loadLegacyOrganization() async {
     await _libraryOrganization.restore();
+    if (!mounted) return;
     await app.mediaLibrary.restore();
+    if (!mounted) return;
     if (await app.db.setting('mediaLibraryOrganizationMigratedV2') != '1') {
+      if (!mounted) return;
       await _libraryOrganization.restoreAndSync(
         app.mediaLibrary.items.map(
           (item) => MediaOrganizationSeed(
@@ -2271,6 +2281,7 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
           ),
         ),
       );
+      if (!mounted) return;
     }
     var pending = 0;
     try {
@@ -2302,9 +2313,12 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
   Future<void> _migrateLibrary() async {
     if (_migrationRunning) return;
     await app.mediaLibrary.restore();
+    if (!mounted) return;
     final root = await app.mediaStorage.resolve();
+    if (!mounted) return;
     if (!root.available) throw StateError('请先选择并授权媒体库目录');
     await _libraryOrganization.restore();
+    if (!mounted) return;
     final items = [...app.mediaLibrary.items];
     final blocked = items
         .where((item) => !app.mediaLibrary.canMutate(item.taskId))
@@ -2325,6 +2339,7 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
 
     Future<String> ensureDirectory(String parent, String name) async {
       final existing = await app.mediaStorage.listDirectory(directory: parent);
+      if (!mounted) throw StateError('媒体管理页面已关闭');
       final match = existing
           .where((entry) => entry.directory && entry.name == name)
           .firstOrNull;
@@ -2336,7 +2351,9 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
       MediaOrganizationFolder folder,
       String parent,
     ) async {
+      if (!mounted) throw StateError('媒体管理页面已关闭');
       final location = await ensureDirectory(parent, folder.name);
+      if (!mounted) throw StateError('媒体管理页面已关闭');
       folderLocations[folder.id] = location;
       for (final child in _libraryOrganization.children(folder.id)) {
         await createFolderTree(child, location);
@@ -2347,8 +2364,10 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
     try {
       for (final folder in _libraryOrganization.children(null)) {
         await createFolderTree(folder, root.location);
+        if (!mounted) throw StateError('媒体管理页面已关闭');
       }
       for (final item in items) {
+        if (!mounted) throw StateError('媒体管理页面已关闭');
         if (mounted) {
           setState(() {
             _migrationCurrent = item.name;
@@ -2369,7 +2388,9 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
             fileName: item.name,
             phase: 'planned',
           );
+          if (!mounted) throw StateError('媒体管理页面已关闭');
           await app.mediaStorage.moveArtifact(item.taskId, destination);
+          if (!mounted) throw StateError('媒体管理页面已关闭');
           await app.mediaStorage.recordMigration(
             taskId: item.taskId,
             source: item.location,
@@ -2377,17 +2398,23 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
             fileName: item.name,
             phase: 'moved',
           );
+          if (!mounted) throw StateError('媒体管理页面已关闭');
           migrated++;
         }
+        if (!mounted) throw StateError('媒体管理页面已关闭');
         final name = _libraryOrganization.nameFor(item.taskId, item.name);
         if (name != item.name) {
           await app.mediaLibrary.rename(item.taskId, name);
+          if (!mounted) throw StateError('媒体管理页面已关闭');
         }
         await app.mediaStorage.clearMigration(item.taskId);
+        if (!mounted) throw StateError('媒体管理页面已关闭');
         if (mounted) setState(() => _migrationCompleted++);
       }
       if (_libraryOrganization.hasStoredOrganization) {
+        if (!mounted) throw StateError('媒体管理页面已关闭');
         await _libraryOrganization.clearAll();
+        if (!mounted) throw StateError('媒体管理页面已关闭');
         await app.db.setSetting('mediaLibraryOrganizationMigratedV2', '1');
         if (mounted) setState(() => _hasLegacyOrganization = false);
       }
@@ -2948,6 +2975,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           initial: _organization.nameFor(task.id, task.displayName),
           label: '显示名称',
         );
+        if (!mounted) return;
         if (name != null && name.trim().isNotEmpty) {
           await _organization.renameItem(task.id, name);
         }
@@ -2956,6 +2984,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           context,
           _organization,
         );
+        if (!mounted) return;
         if (choice.confirmed) {
           await _organization.moveItems([task.id], choice.folderId);
         }

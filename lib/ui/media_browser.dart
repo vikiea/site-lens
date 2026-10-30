@@ -529,6 +529,7 @@ Future<MediaBrowserBatchResult> runMediaBrowserDelete(
   final blocked = <String, String>{};
   for (final id in ids) {
     final reason = await operations.preflightDelete(id);
+    if (!context.mounted) return const MediaBrowserBatchResult.empty();
     if (reason != null) blocked[id] = reason;
   }
   if (blocked.isNotEmpty) {
@@ -542,6 +543,8 @@ Future<MediaBrowserBatchResult> runMediaBrowserDelete(
   )) {
     return const MediaBrowserBatchResult.empty();
   }
+  // The organization service is app-scoped. Once the user confirms, finish
+  // the file and catalog cleanup even if the originating page is removed.
   final succeeded = <String>[];
   final failed = <String, String>{};
   for (final id in ids) {
@@ -568,6 +571,7 @@ Future<MediaBrowserBatchResult> runMediaBrowserCopy(
   final blocked = <String, String>{};
   for (final id in ids) {
     final reason = await operations.preflightCopy(id);
+    if (!context.mounted) return const MediaBrowserBatchResult.empty();
     if (reason != null) blocked[id] = reason;
   }
   if (blocked.isNotEmpty) {
@@ -625,6 +629,7 @@ Future<MediaBrowserBatchResult> runMediaBrowserCopySelection(
   }
   for (final id in selected) {
     final reason = await operations.preflightCopy(id);
+    if (!context.mounted) return const MediaBrowserBatchResult.empty();
     if (reason != null) throw StateError(reason);
   }
   final mapping = roots.isEmpty
@@ -732,7 +737,7 @@ Future<void> runMediaBrowserMove({
     organization,
     excludedFolderIds: excluded,
   );
-  if (!context.mounted || !choice.confirmed) return;
+  if (!choice.confirmed) return;
   await organization.moveSelection(
     folderIds: selectedFolders,
     itemIds: selectedItems,
@@ -750,6 +755,7 @@ Future<MediaBrowserBatchResult> runMediaBrowserFolderCopy(
   final blocked = <String, String>{};
   for (final id in itemIds) {
     final reason = await operations.preflightCopy(id);
+    if (!context.mounted) return const MediaBrowserBatchResult.empty();
     if (reason != null) blocked[id] = reason;
   }
   if (blocked.isNotEmpty) {
@@ -762,7 +768,7 @@ Future<MediaBrowserBatchResult> runMediaBrowserFolderCopy(
     organization,
     excludedFolderIds: excluded,
   );
-  if (!context.mounted || !choice.confirmed) {
+  if (!choice.confirmed) {
     return const MediaBrowserBatchResult.empty();
   }
   final mapping = await organization.copyFolderTrees([
