@@ -191,7 +191,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 17);
+      expect(raw.userVersion, 18);
       expect(
         raw.select(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='watch_saves'",
@@ -455,7 +455,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 17);
+      expect(raw.userVersion, 18);
       expect(
         raw.select(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='filter_snapshots'",
@@ -516,7 +516,7 @@ void main() {
 
     final raw = sqlite3.open(file.path);
     addTearDown(raw.close);
-    expect(raw.userVersion, 17);
+    expect(raw.userVersion, 18);
     expect(
       raw.select('PRAGMA table_info(media_tasks)').map((row) => row['name']),
       contains('batch_directory'),
@@ -552,7 +552,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 17);
+      expect(raw.userVersion, 18);
       expect(
         raw
             .select('PRAGMA table_info(media_tasks)')
@@ -657,6 +657,76 @@ void main() {
           columns.where((row) => row.read<String>('name') == 'enabled'),
           hasLength(1),
         );
+      } finally {
+        await db.close();
+      }
+    },
+  );
+
+  test(
+    'v18 media identity columns upgrade without changing legacy rows',
+    () async {
+      final file = File('${dir.path}/v18-media-identity.sqlite');
+      final seed = AppDatabase(NativeDatabase(file));
+      final candidate = MediaCandidate(
+        id: 'legacy-episode-candidate',
+        hostId: 1,
+        generation: 1,
+        sourceUrl: Uri.parse('https://example.com/watch'),
+        mediaUrl: Uri.parse('https://cdn.example/episode-1.mp4'),
+        title: '旧媒体 - 第1集',
+        mime: 'video/mp4',
+        source: MediaCandidateSource.dom,
+      );
+      await seed.saveMediaCandidate(candidate);
+      final tasks = MediaTaskStore(db: seed);
+      final task = tasks.create(candidate);
+      await tasks.flush(task.id);
+      await seed.close();
+
+      final legacy = sqlite3.open(file.path);
+      try {
+        legacy.execute('ALTER TABLE media_tasks DROP COLUMN series_key');
+        legacy.execute('ALTER TABLE media_tasks DROP COLUMN episode_number');
+        legacy.execute('ALTER TABLE media_candidates DROP COLUMN series_key');
+        legacy.execute(
+          'ALTER TABLE media_candidates DROP COLUMN episode_number',
+        );
+        legacy.execute(
+          'ALTER TABLE media_candidates DROP COLUMN representation_rank',
+        );
+        legacy.execute(
+          'ALTER TABLE media_candidates DROP COLUMN quality_label',
+        );
+        legacy.execute('ALTER TABLE media_candidates DROP COLUMN audio_label');
+        legacy.userVersion = 17;
+      } finally {
+        legacy.close();
+      }
+
+      final db = AppDatabase(NativeDatabase(file));
+      try {
+        final restoredCandidate = await db.mediaCandidate(candidate.id);
+        final restoredTask = (await db.mediaTasks()).single;
+        expect(restoredCandidate?.seriesKey, isNull);
+        expect(restoredCandidate?.episodeNumber, isNull);
+        expect(restoredTask.seriesKey, isNull);
+        expect(restoredTask.episodeNumber, isNull);
+
+        final typed = MediaCandidate(
+          id: 'typed-episode-candidate',
+          hostId: candidate.hostId,
+          generation: candidate.generation,
+          sourceUrl: candidate.sourceUrl,
+          mediaUrl: Uri.parse('https://cdn.example/episode-2.mp4'),
+          title: '新媒体 - 第2集',
+          mime: candidate.mime,
+          source: candidate.source,
+          seriesKey: 'series:42',
+          episodeNumber: 2,
+        );
+        await db.saveMediaCandidate(typed);
+        expect((await db.mediaCandidate(typed.id))?.episodeNumber, 2);
       } finally {
         await db.close();
       }

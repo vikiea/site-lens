@@ -54,19 +54,27 @@ HostSession _session(NativeHosts hosts) {
   return session;
 }
 
-HostEvent _event(HostSession session, int episode) => HostEvent(
+HostEvent _event(
+  HostSession session,
+  int episode, {
+  String? mediaUrl,
+  String? seriesKey,
+  int? episodeNumber,
+}) => HostEvent(
   hostId: session.id,
   generation: session.generation,
   kind: 'mediaCandidate',
   url: session.url,
   detail: jsonEncode({
-    'url': 'https://cdn.example/episode.m3u8?episode=$episode',
+    'url': mediaUrl ?? 'https://cdn.example/episode.m3u8?episode=$episode',
     'title': 'Episode $episode',
     'mime': 'application/vnd.apple.mpegurl',
     'pageUrl': 'https://player.example/embed/$episode',
     'frame': 'child-1',
     'document': 'document-1',
     'main': false,
+    ...?(seriesKey == null ? null : {'seriesKey': seriesKey}),
+    ...?(episodeNumber == null ? null : {'episodeNumber': episodeNumber}),
   }),
 );
 
@@ -119,6 +127,49 @@ void main() {
       }
     },
   );
+
+  test('same media URL keeps explicit episode identities separate', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final hosts = NativeHosts(
+      db,
+      ScriptService(db, ControlledHttp()),
+      ControlledHttp(),
+      api: FakeWebHostApi(),
+    );
+    final session = _session(hosts);
+    try {
+      await hosts.onEvent(
+        _event(
+          session,
+          1,
+          mediaUrl: 'https://cdn.example/same.m3u8',
+          seriesKey: 'series:42',
+          episodeNumber: 1,
+        ),
+      );
+      await hosts.onEvent(
+        _event(
+          session,
+          2,
+          mediaUrl: 'https://cdn.example/same.m3u8',
+          seriesKey: 'series:42',
+          episodeNumber: 2,
+        ),
+      );
+
+      expect(session.mediaCandidates, hasLength(2));
+      expect(
+        session.mediaCandidates.values.map((item) => item.episodeNumber),
+        containsAll(<int>[1, 2]),
+      );
+      expect(
+        session.mediaCandidates.values.map((item) => item.id).toSet(),
+        hasLength(2),
+      );
+    } finally {
+      await db.close();
+    }
+  });
 
   test(
     'candidate event completion includes persistence before database close',

@@ -617,16 +617,28 @@
         mime: resolvedMime.slice(0, 128),
         pageUrl: pageUrl(),
       };
+      if (Number.isFinite(priority) && priority > 0 && !force) {
+        candidate.representationRank = priority;
+      }
       const thumbnail = thumbnailUrl(poster);
       if (thumbnail) candidate.thumbnail = thumbnail;
       const number = episodeNumber(episode);
-      if (number != null) candidate.episodeNumber = number;
+      if (number != null) {
+        candidate.episodeNumber = number;
+        const series = routeSeriesContext()?.series || null;
+        if (series) candidate.seriesKey = series;
+      }
       if (Number.isFinite(durationMs)) candidate.durationMs = Math.round(durationMs);
       // An unsendable duplicate must not replace a valid playing URL and then
       // silently disappear at the bridge's message budget.
       if (!candidateFits(candidate)) return;
       candidatePriorities.set(candidate, priority);
-      const key = candidateKey(url) + identitySuffix;
+      const baseKey = candidateKey(url);
+      const key = baseKey + identitySuffix;
+      if (
+        identitySuffix === '' &&
+        [...seen.keys()].some(item => item.startsWith(`${baseKey}|episode=`))
+      ) return;
       const previous = seen.get(key);
       if (previous == null) {
         seen.set(key, output.length);
@@ -683,7 +695,30 @@
     }
     for (const item of mapped) {
       if (awaitingSeriesData) continue;
-      addCandidate(candidates, seen, item.url, '', undefined, false, item.title, item.poster, item.number, '', item.priority || 1);
+      let mappedKey = '';
+      try { mappedKey = candidateKey(new URL(item.url, document.baseURI)); }
+      catch (_) { mappedKey = ''; }
+      // An active media element already owns this URL in the current
+      // snapshot. Keep that candidate and let the episode reconciliation below
+      // attach a unique explicit episode label; otherwise the same stream
+      // would appear twice in the picker.
+      const hasExisting = mappedKey && [...seen.keys()].some(key =>
+        key === mappedKey || key.startsWith(`${mappedKey}|episode=`));
+      if (!mappedKey || !hasExisting) {
+        addCandidate(
+          candidates,
+          seen,
+          item.url,
+          '',
+          undefined,
+          false,
+          item.title,
+          item.poster,
+          item.number,
+          item.number == null ? '' : `|episode=${item.number}`,
+          item.priority || 1,
+        );
+      }
       addCandidate(episodes, episodeSeen, item.url, '', undefined, false, item.title, item.poster,
         item.number, `|episode=${item.number}`, item.priority || 1);
     }
@@ -706,7 +741,17 @@
         const raw = element.getAttribute(name);
         // Changing one attribute never refreshes the other retired URLs.
         if (retired?.has(mediaSourceIdentity(raw))) continue;
-        addCandidate(candidates, seen, raw, mime, undefined, false, undefined, poster, episode);
+        addCandidate(
+          candidates,
+          seen,
+          raw,
+          mime,
+          undefined,
+          false,
+          undefined,
+          poster,
+          episode,
+        );
         addCandidate(
           episodes,
           episodeSeen,
@@ -809,9 +854,11 @@
           const episode = matches[0];
           item.title = episode.title;
           item.episodeNumber = episode.episodeNumber;
+          item.seriesKey = routeSeriesContext()?.series || null;
           if (!item.thumbnail && episode.thumbnail) item.thumbnail = episode.thumbnail;
         } else if (matches.length > 1) {
           delete item.episodeNumber;
+          delete item.seriesKey;
           item.title = item.title.replace(/\s*[-–—|]?\s*(?:第\s*\d+\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*\d+\b)\s*$/gi, '').trim();
           item.title = `${item.title || '媒体'} · 集数未确认`;
         }
@@ -821,6 +868,7 @@
           Object.assign(item, original);
           if (matches.length > 1) {
             delete item.episodeNumber;
+            delete item.seriesKey;
             item.title = '媒体 · 集数未确认';
             if (!candidateFits(item)) {
               item.title = '';

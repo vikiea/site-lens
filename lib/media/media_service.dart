@@ -117,6 +117,7 @@ List<MediaTask> mediaPlaylistForTasks(
     items.add(current);
   }
   int? episode(MediaTask task) {
+    if (task.episodeNumber != null) return task.episodeNumber;
     final match = RegExp(r'(\d+)').firstMatch(task.episodeLabel ?? '');
     return match == null ? null : int.tryParse(match.group(1)!);
   }
@@ -136,6 +137,8 @@ List<MediaTask> mediaPlaylistForTasks(
 }
 
 String _mediaPlaylistGroupKey(MediaTask task) {
+  final seriesKey = task.seriesKey?.trim() ?? '';
+  if (seriesKey.isNotEmpty) return 'series-key|$seriesKey';
   final batch = task.batchDirectory?.trim() ?? '';
   final series = _mediaPlaylistSourceKey(task.sourceUrl);
   if (batch.isNotEmpty) {
@@ -412,6 +415,12 @@ class MediaCandidateCollector {
         title: title.length > 512 ? title.substring(0, 512) : title,
         mime: mime.length > 128 ? mime.substring(0, 128) : mime,
         source: MediaCandidateSource.dom,
+        seriesKey: element['seriesKey'] as String?,
+        episodeNumber: (element['episodeNumber'] as num?)?.toInt(),
+        representationRank:
+            (element['representationRank'] as num?)?.toInt() ?? 0,
+        qualityLabel: element['qualityLabel'] as String?,
+        audioLabel: element['audioLabel'] as String?,
         thumbnailUrl: thumbnail,
         durationMs: (element['durationMs'] as num?)?.toInt(),
         createdAt: DateTime.now().toUtc(),
@@ -821,6 +830,8 @@ class MediaTaskStore extends ChangeNotifier {
       displayTitle: candidate.title.trim(),
       batchDirectory: _normalizeBatchDirectory(batchDirectory),
       episodeLabel: _candidateEpisodeLabel(candidate),
+      seriesKey: candidate.seriesKey,
+      episodeNumber: candidate.episodeNumber,
     );
     _tasks[id] = task;
     _authorizationKeys[id] = mediaCandidateAuthorizationKey(candidate.mediaUrl);
@@ -838,6 +849,8 @@ class MediaTaskStore extends ChangeNotifier {
   }
 
   static String? _candidateEpisodeLabel(MediaCandidate candidate) {
+    final episode = candidate.episodeNumber;
+    if (episode != null && episode > 0) return '第$episode集';
     // Prefer explicit page/resource metadata, then the current document URL,
     // and use the media URL only as a fallback. CDN paths can retain a stale
     // episode marker after a page changes its selected episode.
@@ -1479,6 +1492,8 @@ class MediaTaskStore extends ChangeNotifier {
         updatedAt: DateTime.now().toUtc(),
         displayTitle: '${original.displayTitle} 副本',
         episodeLabel: original.episodeLabel,
+        seriesKey: original.seriesKey,
+        episodeNumber: original.episodeNumber,
         batchDirectory: '媒体副本',
         bytesDownloaded: original.bytesDownloaded,
         totalBytes: original.totalBytes,
@@ -1869,6 +1884,50 @@ typedef NativeTlsTransfer = Future<void> Function(
   void Function(int bytesWritten)? onProgress,
 });
 
+class MediaBatchDownloadRequest {
+  const MediaBatchDownloadRequest({
+    required this.task,
+    required this.candidate,
+  });
+
+  final MediaTask task;
+  final MediaCandidate candidate;
+}
+
+enum MediaBatchDownloadOutcome { started, failed, reauthorize }
+
+class MediaBatchDownloadItemResult {
+  const MediaBatchDownloadItemResult({
+    required this.request,
+    required this.outcome,
+    this.task,
+    this.error,
+  });
+
+  final MediaBatchDownloadRequest request;
+  final MediaBatchDownloadOutcome outcome;
+  final MediaTask? task;
+  final Object? error;
+}
+
+class MediaBatchDownloadResult {
+  const MediaBatchDownloadResult(this.items);
+
+  final List<MediaBatchDownloadItemResult> items;
+
+  int get started => items
+      .where((item) => item.outcome == MediaBatchDownloadOutcome.started)
+      .length;
+
+  int get failed => items
+      .where((item) => item.outcome == MediaBatchDownloadOutcome.failed)
+      .length;
+
+  int get reauthorize => items
+      .where((item) => item.outcome == MediaBatchDownloadOutcome.reauthorize)
+      .length;
+}
+
 class MediaDownloadService {
   MediaDownloadService({
     required this.tasks,
@@ -1902,6 +1961,59 @@ class MediaDownloadService {
   final _transferScheduler = MediaTransferScheduler();
   final _taskPriorities = <String, int>{};
   final _hlsSeekTargets = <String, int>{};
+
+  /// Starts a user-selected batch through the same per-task lifecycle as a
+  /// single download. The UI may disappear while these futures run; durable
+  /// task state remains the source of truth.
+  Future<MediaBatchDownloadResult> startNativeBatch(
+    Iterable<MediaBatchDownloadRequest> requests,
+  ) async {
+    final items = requests.toList(growable: false);
+    final results = List<MediaBatchDownloadItemResult?>.filled(
+      items.length,
+      null,
+    );
+    var cursor = 0;
+
+    Future<void> worker() async {
+      while (true) {
+        final index = cursor++;
+        if (index >= items.length) return;
+        final request = items[index];
+        try {
+          final task = await startNative(request.task, request.candidate);
+          results[index] = MediaBatchDownloadItemResult(
+            request: request,
+            task: task,
+            outcome: task.state == MediaTaskState.reauthorize
+                ? MediaBatchDownloadOutcome.reauthorize
+                : task.state == MediaTaskState.failed
+                ? MediaBatchDownloadOutcome.failed
+                : MediaBatchDownloadOutcome.started,
+          );
+        } catch (error, stack) {
+          AppErrorLogger.capture(
+            error,
+            module: 'media.download.batch',
+            context: request.task.id,
+            stack: stack,
+          );
+          results[index] = MediaBatchDownloadItemResult(
+            request: request,
+            outcome: MediaBatchDownloadOutcome.failed,
+            error: error,
+          );
+        }
+      }
+    }
+
+    if (items.isNotEmpty) {
+      await Future.wait(List.generate(min(2, items.length), (_) => worker()));
+    }
+    return MediaBatchDownloadResult(
+      List.unmodifiable(results.whereType<MediaBatchDownloadItemResult>()),
+    );
+  }
 
   void setTaskPriority(String taskId, int priority) {
     _taskPriorities[tasks.resolveTaskId(taskId)] = priority.clamp(0, 1000);

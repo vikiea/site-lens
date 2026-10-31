@@ -162,7 +162,11 @@
       url: details.url,
       title: details.title == null ? '' : String(details.title),
       thumbnail: details.thumbnail == null ? undefined : String(details.thumbnail),
+      seriesKey: details.seriesKey == null ? undefined : String(details.seriesKey),
       episodeNumber: Number.isInteger(Number(details.episodeNumber)) && Number(details.episodeNumber) > 0 ? Number(details.episodeNumber) : undefined,
+      representationRank: Number.isFinite(Number(details.representationRank)) ? Number(details.representationRank) : undefined,
+      qualityLabel: details.qualityLabel == null ? undefined : String(details.qualityLabel),
+      audioLabel: details.audioLabel == null ? undefined : String(details.audioLabel),
       mime: details.mime == null ? '' : String(details.mime),
       durationMs: Number.isFinite(Number(details.durationMs)) ? Number(details.durationMs) : undefined,
     });

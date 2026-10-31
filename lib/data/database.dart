@@ -89,12 +89,15 @@ const _v5Tables = <String>[
   'CREATE TABLE IF NOT EXISTS media_candidates ('
       'id TEXT PRIMARY KEY, host_id INTEGER NOT NULL, generation INTEGER NOT NULL, '
       'source_url TEXT NOT NULL, media_url TEXT NOT NULL, title TEXT NOT NULL, '
-      'mime TEXT NOT NULL, source TEXT NOT NULL, thumbnail_url TEXT, duration_ms INTEGER, created_at TEXT NOT NULL)',
+      'mime TEXT NOT NULL, source TEXT NOT NULL, series_key TEXT, episode_number INTEGER, '
+      'representation_rank INTEGER NOT NULL DEFAULT 0, quality_label TEXT, audio_label TEXT, '
+      'thumbnail_url TEXT, duration_ms INTEGER, created_at TEXT NOT NULL)',
   'CREATE TABLE IF NOT EXISTS media_tasks ('
       'id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL REFERENCES media_candidates(id) ON DELETE CASCADE, '
       'host_id INTEGER NOT NULL, generation INTEGER NOT NULL, source_url TEXT NOT NULL, '
       'cache_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL, updated_at TEXT NOT NULL, '
       'display_title TEXT NOT NULL DEFAULT \'\', batch_directory TEXT, episode_label TEXT, '
+      'series_key TEXT, episode_number INTEGER, '
       'bytes_downloaded INTEGER NOT NULL DEFAULT 0, total_bytes INTEGER, error_code TEXT, error_reason TEXT, local_ref TEXT)',
   'CREATE TABLE IF NOT EXISTS script_approvals ('
       'script_id TEXT PRIMARY KEY REFERENCES scripts(id) ON DELETE CASCADE, '
@@ -140,6 +143,31 @@ const _v17MediaResourceOwnersTable =
     'owner_id TEXT NOT NULL, owner_kind TEXT NOT NULL, created_at TEXT NOT NULL, '
     'PRIMARY KEY(resource_key, owner_id))';
 
+const _v18MediaCandidateColumns = <(String, String)>[
+  ('ALTER TABLE media_candidates ADD COLUMN series_key TEXT', 'series_key'),
+  (
+    'ALTER TABLE media_candidates ADD COLUMN episode_number INTEGER',
+    'episode_number',
+  ),
+  (
+    'ALTER TABLE media_candidates ADD COLUMN representation_rank INTEGER NOT NULL DEFAULT 0',
+    'representation_rank',
+  ),
+  (
+    'ALTER TABLE media_candidates ADD COLUMN quality_label TEXT',
+    'quality_label',
+  ),
+  ('ALTER TABLE media_candidates ADD COLUMN audio_label TEXT', 'audio_label'),
+];
+
+const _v18MediaTaskColumns = <(String, String)>[
+  ('ALTER TABLE media_tasks ADD COLUMN series_key TEXT', 'series_key'),
+  (
+    'ALTER TABLE media_tasks ADD COLUMN episode_number INTEGER',
+    'episode_number',
+  ),
+];
+
 const _v13WatchSavesTable =
     'CREATE TABLE IF NOT EXISTS watch_saves('
     'owner_id TEXT PRIMARY KEY, source_key TEXT NOT NULL, source_url TEXT NOT NULL, '
@@ -183,7 +211,7 @@ class AppDatabase extends GeneratedDatabase {
   static void Function(String step)? migrationDebugHook;
 
   @override
-  int get schemaVersion => 17;
+  int get schemaVersion => 18;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -293,6 +321,18 @@ class AppDatabase extends GeneratedDatabase {
           'SELECT resource_key,\'task:\' || id,\'task\',updated_at FROM media_tasks '
           'WHERE resource_key IS NOT NULL AND resource_key <> \'\'',
         );
+      }
+      if (from < 18) {
+        for (final (sql, column) in _v18MediaCandidateColumns) {
+          if (!await _columnExists('media_candidates', column)) {
+            await customStatement(sql);
+          }
+        }
+        for (final (sql, column) in _v18MediaTaskColumns) {
+          if (!await _columnExists('media_tasks', column)) {
+            await customStatement(sql);
+          }
+        }
       }
     },
     beforeOpen: (_) async {
@@ -1437,8 +1477,8 @@ class AppDatabase extends GeneratedDatabase {
         return;
       }
       await customStatement(
-        'INSERT INTO media_candidates(id,host_id,generation,source_url,media_url,title,mime,source,thumbnail_url,duration_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) '
-        'ON CONFLICT(id) DO UPDATE SET media_url=excluded.media_url,title=excluded.title,mime=excluded.mime,thumbnail_url=excluded.thumbnail_url,duration_ms=excluded.duration_ms,created_at=excluded.created_at',
+        'INSERT INTO media_candidates(id,host_id,generation,source_url,media_url,title,mime,source,series_key,episode_number,representation_rank,quality_label,audio_label,thumbnail_url,duration_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
+        'ON CONFLICT(id) DO UPDATE SET media_url=excluded.media_url,title=excluded.title,mime=excluded.mime,series_key=excluded.series_key,episode_number=excluded.episode_number,representation_rank=excluded.representation_rank,quality_label=excluded.quality_label,audio_label=excluded.audio_label,thumbnail_url=excluded.thumbnail_url,duration_ms=excluded.duration_ms,created_at=excluded.created_at',
         [
           candidate.id,
           candidate.hostId,
@@ -1448,6 +1488,11 @@ class AppDatabase extends GeneratedDatabase {
           candidate.title,
           candidate.mime,
           candidate.source.name,
+          candidate.seriesKey,
+          candidate.episodeNumber,
+          candidate.representationRank,
+          candidate.qualityLabel,
+          candidate.audioLabel,
           candidate.thumbnailUrl?.toString(),
           candidate.durationMs,
           (candidate.createdAt ?? DateTime.now()).toUtc().toIso8601String(),
@@ -1471,6 +1516,11 @@ class AppDatabase extends GeneratedDatabase {
       title: row.read<String>('title'),
       mime: row.read<String>('mime'),
       source: MediaCandidateSource.values.byName(row.read<String>('source')),
+      seriesKey: row.readNullable<String>('series_key'),
+      episodeNumber: row.readNullable<int>('episode_number'),
+      representationRank: row.read<int>('representation_rank'),
+      qualityLabel: row.readNullable<String>('quality_label'),
+      audioLabel: row.readNullable<String>('audio_label'),
       thumbnailUrl: optionalMediaUri(row.readNullable<String>('thumbnail_url')),
       durationMs: row.readNullable<int>('duration_ms'),
       createdAt: DateTime.parse(row.read<String>('created_at')),
@@ -1479,10 +1529,10 @@ class AppDatabase extends GeneratedDatabase {
 
   Future<String> saveMediaTask(MediaTask task) => transaction(() async {
     const update =
-        'candidate_id=excluded.candidate_id,state=excluded.state,updated_at=excluded.updated_at,display_title=excluded.display_title,batch_directory=excluded.batch_directory,episode_label=excluded.episode_label,bytes_downloaded=excluded.bytes_downloaded,total_bytes=excluded.total_bytes,error_code=excluded.error_code,error_reason=excluded.error_reason,local_ref=excluded.local_ref';
+        'candidate_id=excluded.candidate_id,state=excluded.state,updated_at=excluded.updated_at,display_title=excluded.display_title,batch_directory=excluded.batch_directory,episode_label=excluded.episode_label,series_key=excluded.series_key,episode_number=excluded.episode_number,bytes_downloaded=excluded.bytes_downloaded,total_bytes=excluded.total_bytes,error_code=excluded.error_code,error_reason=excluded.error_reason,local_ref=excluded.local_ref';
     try {
       await customStatement(
-        'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,resource_key,state,updated_at,display_title,batch_directory,episode_label,bytes_downloaded,total_bytes,error_code,error_reason,local_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
+        'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,resource_key,state,updated_at,display_title,batch_directory,episode_label,series_key,episode_number,bytes_downloaded,total_bytes,error_code,error_reason,local_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
         'ON CONFLICT(id) DO UPDATE SET resource_key=excluded.resource_key,$update '
         'WHERE NOT ('
         // Dart emits three or six fractional digits. Pad UTC timestamps
@@ -1512,6 +1562,8 @@ class AppDatabase extends GeneratedDatabase {
           task.displayTitle,
           task.batchDirectory,
           task.episodeLabel,
+          task.seriesKey,
+          task.episodeNumber,
           task.bytesDownloaded,
           task.totalBytes,
           task.errorCode,
@@ -1575,6 +1627,8 @@ class AppDatabase extends GeneratedDatabase {
               displayTitle: row.read<String>('display_title'),
               batchDirectory: row.readNullable<String>('batch_directory'),
               episodeLabel: row.readNullable<String>('episode_label'),
+              seriesKey: row.readNullable<String>('series_key'),
+              episodeNumber: row.readNullable<int>('episode_number'),
               bytesDownloaded: row.read<int>('bytes_downloaded'),
               totalBytes: row.readNullable<int>('total_bytes'),
               errorCode: row.readNullable<String>('error_code'),

@@ -121,6 +121,11 @@ MediaCandidate candidate({
   String sourceUrl = 'https://example.com/watch',
   int hostId = 7,
   int generation = 3,
+  String? seriesKey,
+  int? episodeNumber,
+  int representationRank = 0,
+  String? qualityLabel,
+  String? audioLabel,
 }) => MediaCandidate(
   id: id,
   hostId: hostId,
@@ -130,6 +135,11 @@ MediaCandidate candidate({
   title: title,
   mime: mime,
   source: MediaCandidateSource.dom,
+  seriesKey: seriesKey,
+  episodeNumber: episodeNumber,
+  representationRank: representationRank,
+  qualityLabel: qualityLabel,
+  audioLabel: audioLabel,
 );
 
 void main() {
@@ -146,6 +156,70 @@ void main() {
     expect(task.episodeLabel, '第3集');
     expect(task.displayName, '母衣半暖默许春朝 - 第3集');
     expect(task.resourceKey, hasLength(64));
+  });
+
+  test('typed episode identity survives task creation and JSON roundtrip', () {
+    final source = candidate(
+      id: 'typed-episode',
+      title: '系列 - 第4集',
+      seriesKey: 'https://example.com/video/42',
+      episodeNumber: 4,
+      representationRank: 2,
+      qualityLabel: '1080p',
+      audioLabel: '国语',
+    );
+    final task = MediaTaskStore().create(source);
+    final restoredCandidate = MediaCandidate.fromJson(source.toJson());
+    final restoredTask = MediaTask.fromJson(task.toJson());
+
+    expect(restoredCandidate.seriesKey, source.seriesKey);
+    expect(restoredCandidate.episodeNumber, 4);
+    expect(restoredCandidate.representationRank, 2);
+    expect(restoredCandidate.qualityLabel, '1080p');
+    expect(restoredCandidate.audioLabel, '国语');
+    expect(restoredTask.seriesKey, source.seriesKey);
+    expect(restoredTask.episodeNumber, 4);
+  });
+
+  test('typed playlist groups by series identity instead of display title', () {
+    final store = MediaTaskStore();
+    final first = store.create(
+      candidate(
+        id: 'typed-1',
+        title: '同名显示 - 第1集',
+        url: 'https://cdn.example/typed-1.mp4',
+        seriesKey: 'series:42',
+        episodeNumber: 1,
+      ),
+    );
+    final second = store.create(
+      candidate(
+        id: 'typed-2',
+        title: '完全不同的标题',
+        url: 'https://cdn.example/typed-2.mp4',
+        seriesKey: 'series:42',
+        episodeNumber: 2,
+      ),
+    );
+    final foreign = store.create(
+      candidate(
+        id: 'typed-foreign',
+        title: '同名显示 - 第3集',
+        url: 'https://cdn.example/typed-3.mp4',
+        seriesKey: 'series:77',
+        episodeNumber: 3,
+      ),
+    );
+    for (final task in [first, second, foreign]) {
+      store.transition(task.id, MediaTaskState.downloading);
+      store.transition(task.id, MediaTaskState.completed);
+      store.transition(task.id, MediaTaskState.playable);
+    }
+
+    expect(mediaPlaylistForTasks(store.tasks, first).map((task) => task.id), [
+      first.id,
+      second.id,
+    ]);
   });
 
   test('resource identity survives host and generation changes', () {
@@ -1273,6 +1347,44 @@ void main() {
       expect(await store.cachedFile(task.id), isNull);
     },
   );
+
+  test('native batch download keeps per-episode authorization failures independent', () async {
+    final store = MediaTaskStore();
+    final firstCandidate = candidate(
+      id: 'batch-1',
+      url: 'https://cdn.example/batch-1.mp4',
+      title: '系列 - 第1集',
+      seriesKey: 'series:batch',
+      episodeNumber: 1,
+    );
+    final secondCandidate = candidate(
+      id: 'batch-2',
+      url: 'https://cdn.example/batch-2.mp4',
+      title: '系列 - 第2集',
+      seriesKey: 'series:batch',
+      episodeNumber: 2,
+    );
+    final first = store.create(firstCandidate, batchDirectory: '系列');
+    final second = store.create(secondCandidate, batchDirectory: '系列');
+    final native = FakeNativeDownloads();
+    native.statuses[second.id] = {
+      'state': 'reauthorize',
+      'errorCode': MediaErrorCode.authorizationRequired,
+    };
+
+    final result = await MediaDownloadService(tasks: store, native: native)
+        .startNativeBatch([
+          MediaBatchDownloadRequest(task: first, candidate: firstCandidate),
+          MediaBatchDownloadRequest(task: second, candidate: secondCandidate),
+        ]);
+
+    expect(result.started, 1);
+    expect(result.reauthorize, 1);
+    expect(result.failed, 0);
+    expect(native.calls, contains('start:${first.id}'));
+    expect(native.calls, contains('start:${second.id}'));
+    expect(store.task(second.id)?.state, MediaTaskState.reauthorize);
+  });
 
   test(
     'direct media download resumes from bytes flushed before a reset',

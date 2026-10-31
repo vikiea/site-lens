@@ -16,6 +16,7 @@ import '../cache/transient_cache_service.dart';
 import '../domain/models.dart';
 import '../network/transport.dart';
 import '../network/secure_dns_resolver.dart';
+import '../media/media_service.dart';
 import '../scripts/metadata.dart';
 import '../update/update_controller.dart';
 import '../update/github_token_store.dart';
@@ -2491,6 +2492,228 @@ class BrowserScreen extends StatefulWidget {
   State<BrowserScreen> createState() => _BrowserScreenState();
 }
 
+class EpisodeDownloadSheet extends StatefulWidget {
+  const EpisodeDownloadSheet({
+    super.key,
+    required this.candidates,
+    required this.onDownload,
+    required this.onPlay,
+    required this.onResniff,
+  });
+
+  final List<MediaCandidate> candidates;
+  final Future<void> Function(List<MediaCandidate>) onDownload;
+  final Future<void> Function(MediaCandidate) onPlay;
+  final VoidCallback onResniff;
+
+  @override
+  State<EpisodeDownloadSheet> createState() => _EpisodeDownloadSheetState();
+}
+
+class _EpisodeDownloadSheetState extends State<EpisodeDownloadSheet> {
+  late final List<MapEntry<String, List<MediaCandidate>>> _episodes;
+  late final Map<String, MediaCandidate> _selected;
+
+  @override
+  void initState() {
+    super.initState();
+    final grouped = <String, List<MediaCandidate>>{};
+    for (final candidate in widget.candidates) {
+      if (!candidate.hasEpisodeIdentity) continue;
+      grouped
+          .putIfAbsent(candidate.episodeIdentityKey, () => [])
+          .add(candidate);
+    }
+    for (final values in grouped.values) {
+      values.sort((left, right) {
+        final rank = right.representationRank.compareTo(
+          left.representationRank,
+        );
+        if (rank != 0) return rank;
+        final title = left.title.compareTo(right.title);
+        return title == 0
+            ? left.mediaUrl.toString().compareTo(right.mediaUrl.toString())
+            : title;
+      });
+    }
+    _episodes = grouped.entries.toList()
+      ..sort((left, right) {
+        final a = left.value.first.episodeNumber ?? 0;
+        final b = right.value.first.episodeNumber ?? 0;
+        return a == b ? left.key.compareTo(right.key) : a.compareTo(b);
+      });
+    _selected = {
+      for (final entry in _episodes)
+        if (entry.value.isNotEmpty) entry.key: entry.value.first,
+    };
+  }
+
+  String _seriesTitle(MediaCandidate candidate) {
+    final title = candidate.title.trim();
+    return title
+        .replaceAll(
+          RegExp(
+            r'\s*[-–—|]?\s*(?:第\s*\d+\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*\d+\b)\s*$',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .trim();
+  }
+
+  String _representationLabel(MediaCandidate candidate) {
+    final labels = <String>[];
+    if (candidate.qualityLabel?.trim().isNotEmpty == true) {
+      labels.add(candidate.qualityLabel!.trim());
+    }
+    if (candidate.audioLabel?.trim().isNotEmpty == true) {
+      labels.add(candidate.audioLabel!.trim());
+    }
+    if (labels.isEmpty) {
+      labels.add(candidate.effectiveMime.contains('mpegurl') ? 'HLS' : '媒体');
+    }
+    return labels.join(' · ');
+  }
+
+  void _selectAll() {
+    setState(() {
+      for (final entry in _episodes) {
+        if (entry.value.isNotEmpty) _selected[entry.key] = entry.value.first;
+      }
+    });
+  }
+
+  void _clearAll() => setState(_selected.clear);
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = _selected.values.toList();
+    final title = _episodes.isEmpty
+        ? '按选集下载'
+        : _seriesTitle(_episodes.first.value.first);
+    return SafeArea(
+      child: SiteLensPanel(
+        padding: EdgeInsets.zero,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * 0.78,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                title: SiteLensLeadingEllipsisText(
+                  title.isEmpty ? '按选集下载' : title,
+                ),
+                subtitle: Text('已选 ${selected.length} / ${_episodes.length} 集'),
+                leading: const Icon(Icons.download_for_offline_outlined),
+                trailing: TextButton(
+                  onPressed: widget.onResniff,
+                  child: const Text('重新嗅探'),
+                ),
+              ),
+              if (_episodes.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(SiteLensMetrics.panelPadding),
+                  child: Text('当前页面没有可确认集数的媒体'),
+                )
+              else
+                Expanded(
+                  child: ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                    itemCount: _episodes.length,
+                    separatorBuilder: (_, _) => const SiteLensPanelDivider(),
+                    itemBuilder: (context, index) {
+                      final entry = _episodes[index];
+                      final options = entry.value;
+                      final current = _selected[entry.key];
+                      final number = options.first.episodeNumber;
+                      return Theme(
+                        data: siteLensQuietInteractionTheme(context),
+                        child: ListTile(
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                          ),
+                          leading: Checkbox(
+                            value: current != null,
+                            onChanged: (checked) {
+                              setState(() {
+                                if (checked == true) {
+                                  _selected[entry.key] = options.first;
+                                } else {
+                                  _selected.remove(entry.key);
+                                }
+                              });
+                            },
+                          ),
+                          title: SiteLensLeadingEllipsisText(
+                            number == null ? options.first.title : '第$number集',
+                          ),
+                          subtitle: Text(
+                            current == null
+                                ? '未选择'
+                                : '${_representationLabel(current)}${options.length > 1 ? ' · ${options.length} 个版本' : ''}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (options.length > 1)
+                                PopupMenuButton<MediaCandidate>(
+                                  tooltip: '选择媒体版本',
+                                  initialValue: current,
+                                  onSelected: (value) => setState(
+                                    () => _selected[entry.key] = value,
+                                  ),
+                                  itemBuilder: (_) => [
+                                    for (final option in options)
+                                      PopupMenuItem(
+                                        value: option,
+                                        child: Text(
+                                          _representationLabel(option),
+                                        ),
+                                      ),
+                                  ],
+                                  icon: const Icon(Icons.tune),
+                                ),
+                              IconButton(
+                                tooltip: '播放本集',
+                                icon: const Icon(Icons.play_circle_outline),
+                                onPressed: () => widget.onPlay(options.first),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                child: Row(
+                  children: [
+                    TextButton(onPressed: _selectAll, child: const Text('全选')),
+                    TextButton(onPressed: _clearAll, child: const Text('清空')),
+                    const Spacer(),
+                    FilledButton.icon(
+                      onPressed: selected.isEmpty
+                          ? null
+                          : () => widget.onDownload(selected),
+                      icon: const Icon(Icons.download),
+                      label: Text('下载 ${selected.length} 集'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   bool _covered = false;
   @override
@@ -3533,6 +3756,34 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   Future<void> _showMediaCandidatesSheet() async {
     final current = host;
     if (current == null || current.disposed) return;
+    final candidates = widget.app.hosts.mediaCandidates(current);
+    final episodeCandidates = candidates
+        .where((candidate) => candidate.hasEpisodeIdentity)
+        .toList();
+    if (episodeCandidates.isNotEmpty) {
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        showDragHandle: true,
+        backgroundColor: Colors.transparent,
+        builder: (sheetContext) => EpisodeDownloadSheet(
+          candidates: episodeCandidates,
+          onDownload: (selected) async {
+            Navigator.of(sheetContext).pop();
+            await _downloadMediaCandidates(current, selected);
+          },
+          onPlay: (candidate) async {
+            Navigator.of(sheetContext).pop();
+            await _playMediaCandidate(current, candidate);
+          },
+          onResniff: () {
+            Navigator.of(sheetContext).pop();
+            unawaited(_resniff());
+          },
+        ),
+      );
+      return;
+    }
     await showModalBottomSheet<void>(
       context: context,
       builder: (c) => ListenableBuilder(
@@ -3640,6 +3891,43 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     );
   }
 
+  Future<void> _playMediaCandidate(
+    HostSession current,
+    MediaCandidate candidate,
+  ) async {
+    try {
+      final authorized = widget.app.hosts.authorizeMediaCandidate(
+        current.id,
+        candidate.id,
+      );
+      final session = await widget.app.nativeMedia.open(
+        authorized,
+        hostId: current.id,
+        generation: current.generation,
+        sourceUrl: authorized.sourceUrl,
+        sessionId: 'candidate_${candidate.id}',
+        secureDnsProvider: widget.app.secureDnsResolver.provider.wireId,
+      );
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          settings: const RouteSettings(name: siteLensPlayerRouteName),
+          builder: (_) => NativeMediaPlayerScreen(
+            app: widget.app,
+            session: session,
+            candidate: authorized,
+          ),
+        ),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('媒体任务未完成：${friendlyError(error)}')),
+        );
+      }
+    }
+  }
+
   Future<void> _downloadMediaCandidates(
     HostSession current,
     List<MediaCandidate> candidates,
@@ -3651,7 +3939,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     final batchDirectory = candidates.length > 1
         ? mediaBatchDirectoryName(candidates) ?? '批量媒体'
         : null;
-    final pending = <({MediaTask task, MediaCandidate candidate})>[];
+    final pending = <MediaBatchDownloadRequest>[];
     for (final candidate in candidates) {
       try {
         final authorized = widget.app.hosts.authorizeMediaCandidate(
@@ -3672,35 +3960,25 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
           batchDirectory: batchDirectory,
         );
         added++;
-        pending.add((task: task, candidate: authorized));
+        pending.add(
+          MediaBatchDownloadRequest(task: task, candidate: authorized),
+        );
       } catch (_) {
         failed++;
       }
     }
-    // HLS downloads open a manifest, key, and many segment connections. Keep
-    // the batch bounded so a system proxy or CDN edge is not overwhelmed by
-    // every episode starting its handshake at the same time.
-    var cursor = 0;
-    Future<void> runWorker() async {
-      while (true) {
-        final index = cursor++;
-        if (index >= pending.length) return;
-        final item = pending[index];
-        try {
-          await widget.app.mediaDownloads.startNative(
-            item.task,
-            item.candidate,
-          );
-        } catch (_) {
-          failed++;
-        }
-      }
-    }
-
     if (pending.isNotEmpty) {
-      await Future.wait(
-        List.generate(math.min(2, pending.length), (_) => runWorker()),
-      );
+      final result = await widget.app.mediaDownloads.startNativeBatch(pending);
+      failed += result.failed;
+      final reauthorize = result.reauthorize;
+      if (!mounted) return;
+      final parts = <String>[];
+      if (added > 0) parts.add('已加入 $added 个');
+      if (skipped > 0) parts.add('跳过 $skipped 个');
+      if (failed > 0) parts.add('$failed 个失败');
+      if (reauthorize > 0) parts.add('$reauthorize 个需重新授权');
+      showShortToast(context, parts.isEmpty ? '没有可下载媒体' : parts.join('，'));
+      return;
     }
     if (!mounted) return;
     final parts = <String>[];

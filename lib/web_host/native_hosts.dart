@@ -250,7 +250,8 @@ class NativeHosts extends WebHostEvents {
       // repeated DOM/player callbacks before they reach the bottom sheet,
       // while preserving the full URL that the user can authorize.
       final source = candidate.sourceUrl.removeFragment().toString();
-      grouped['$source\u0000${mediaCandidateDisplayGroupKey(candidate)}'] =
+      grouped['$source\u0000${mediaCandidateDisplayGroupKey(candidate)}\u0000'
+              '${candidate.episodeIdentityKey}'] =
           candidate;
     }
     return List.unmodifiable(grouped.values);
@@ -477,7 +478,18 @@ class NativeHosts extends WebHostEvents {
         final frameKey = frame.isEmpty ? 'host:${session.id}' : frame;
         final rawMime = (raw['mime'] as String? ?? '').trim();
         final thumbnailUrl = optionalMediaUri(raw['thumbnail'] as String?);
-        final episodeNumber = (raw['episodeNumber'] as num?)?.toInt();
+        final rawSeriesKey = (raw['seriesKey'] as String? ?? '').trim();
+        final rawEpisodeNumber = (raw['episodeNumber'] as num?)?.toInt();
+        final episodeNumber =
+            rawEpisodeNumber != null &&
+                rawEpisodeNumber > 0 &&
+                rawEpisodeNumber < 100000
+            ? rawEpisodeNumber
+            : null;
+        final representationRank =
+            (raw['representationRank'] as num?)?.toInt() ?? 0;
+        final qualityLabel = (raw['qualityLabel'] as String?)?.trim();
+        final audioLabel = (raw['audioLabel'] as String?)?.trim();
         final observedTitle = (raw['title'] as String? ?? '').trim();
         final rawTitle = observedTitle.isEmpty
             ? session.title.trim()
@@ -486,7 +498,9 @@ class NativeHosts extends WebHostEvents {
             ? mediaTitleForEpisode(rawTitle, episodeNumber)
             : rawTitle;
         final candidate = MediaCandidate(
-          id: 'dom:${session.id}:${session.generation}:$frameKey:${source.toString()}:$key',
+          id:
+              'dom:${session.id}:${session.generation}:$frameKey:'
+              '$source:$key:$rawSeriesKey:$episodeNumber',
           hostId: session.id,
           generation: session.generation,
           sourceUrl: source,
@@ -500,6 +514,11 @@ class NativeHosts extends WebHostEvents {
             ),
           ),
           source: MediaCandidateSource.dom,
+          seriesKey: rawSeriesKey.isEmpty ? null : rawSeriesKey,
+          episodeNumber: episodeNumber,
+          representationRank: representationRank,
+          qualityLabel: qualityLabel?.isEmpty == true ? null : qualityLabel,
+          audioLabel: audioLabel?.isEmpty == true ? null : audioLabel,
           thumbnailUrl: thumbnailUrl,
           durationMs: (raw['durationMs'] as num?)?.toInt(),
           createdAt: DateTime.now().toUtc(),
@@ -540,7 +559,8 @@ class NativeHosts extends WebHostEvents {
             (_, value) =>
                 value.id != candidate.id &&
                 session.mediaCandidateFrames[value.id]?.frame == frameKey &&
-                mediaCandidateDisplayGroupKey(value) == groupKey,
+                mediaCandidateDisplayGroupKey(value) == groupKey &&
+                value.episodeIdentityKey == candidate.episodeIdentityKey,
           );
           session.mediaCandidateFrames.removeWhere(
             (id, _) => !session.mediaCandidates.containsKey(id),
@@ -854,7 +874,18 @@ class NativeHosts extends WebHostEvents {
         final sourceUrl = webUri(request.documentUrl);
         final mediaUrl = webUri(args['url'] as String? ?? '');
         final rawTitle = args['title'] as String? ?? '';
-        final episodeNumber = (args['episodeNumber'] as num?)?.toInt();
+        final rawEpisodeNumber = (args['episodeNumber'] as num?)?.toInt();
+        final episodeNumber =
+            rawEpisodeNumber != null &&
+                rawEpisodeNumber > 0 &&
+                rawEpisodeNumber < 100000
+            ? rawEpisodeNumber
+            : null;
+        final rawSeriesKey = (args['seriesKey'] as String? ?? '').trim();
+        final representationRank =
+            (args['representationRank'] as num?)?.toInt() ?? 0;
+        final qualityLabel = (args['qualityLabel'] as String?)?.trim();
+        final audioLabel = (args['audioLabel'] as String?)?.trim();
         final title =
             episodeNumber != null && episodeNumber > 0 && episodeNumber < 100000
             ? mediaTitleForEpisode(rawTitle, episodeNumber)
@@ -865,7 +896,8 @@ class NativeHosts extends WebHostEvents {
         final candidate = MediaCandidate(
           id:
               args['candidateId'] as String? ??
-              '${request.scriptId}:${request.generation}:${mediaCandidateKey(mediaUrl)}',
+              '${request.scriptId}:${request.generation}:'
+                  '${mediaCandidateKey(mediaUrl)}:$rawSeriesKey:$episodeNumber',
           hostId: request.hostId,
           generation: request.generation,
           sourceUrl: sourceUrl,
@@ -873,6 +905,11 @@ class NativeHosts extends WebHostEvents {
           title: title.substring(0, title.length.clamp(0, 512)),
           mime: mime.substring(0, mime.length.clamp(0, 128)),
           source: MediaCandidateSource.registered,
+          seriesKey: rawSeriesKey.isEmpty ? null : rawSeriesKey,
+          episodeNumber: episodeNumber,
+          representationRank: representationRank,
+          qualityLabel: qualityLabel?.isEmpty == true ? null : qualityLabel,
+          audioLabel: audioLabel?.isEmpty == true ? null : audioLabel,
           thumbnailUrl: thumbnailUrl,
           durationMs: (args['durationMs'] as num?)?.toInt(),
           createdAt: DateTime.now().toUtc(),
@@ -910,7 +947,8 @@ class NativeHosts extends WebHostEvents {
                 value.id != candidate.id &&
                 value.sourceUrl.removeFragment() ==
                     sourceUrl.removeFragment() &&
-                mediaCandidateDisplayGroupKey(value) == groupKey,
+                mediaCandidateDisplayGroupKey(value) == groupKey &&
+                value.episodeIdentityKey == candidate.episodeIdentityKey,
           );
           session.mediaCandidates[candidate.id] = candidate;
           session.mediaCandidateFrames[candidate.id] = (

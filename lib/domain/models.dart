@@ -1043,6 +1043,11 @@ class MediaCandidate {
     required this.title,
     required this.mime,
     required this.source,
+    this.seriesKey,
+    this.episodeNumber,
+    this.representationRank = 0,
+    this.qualityLabel,
+    this.audioLabel,
     this.thumbnailUrl,
     this.durationMs,
     this.createdAt,
@@ -1056,6 +1061,11 @@ class MediaCandidate {
   final String title;
   final String mime;
   final MediaCandidateSource source;
+  final String? seriesKey;
+  final int? episodeNumber;
+  final int representationRank;
+  final String? qualityLabel;
+  final String? audioLabel;
   final Uri? thumbnailUrl;
   final int? durationMs;
   final DateTime? createdAt;
@@ -1084,6 +1094,14 @@ class MediaCandidate {
       mediaUrl.userInfo.isEmpty &&
       !mediaUrl.toString().startsWith('blob:');
 
+  bool get hasEpisodeIdentity =>
+      seriesKey != null &&
+      seriesKey!.trim().isNotEmpty &&
+      episodeNumber != null;
+
+  String get episodeIdentityKey =>
+      '${seriesKey?.trim() ?? ''}\u0000${episodeNumber ?? ''}';
+
   Map<String, Object?> toJson() => {
     'id': id,
     'hostId': hostId,
@@ -1093,6 +1111,11 @@ class MediaCandidate {
     'title': title,
     'mime': mime,
     'source': source.name,
+    'seriesKey': seriesKey,
+    'episodeNumber': episodeNumber,
+    'representationRank': representationRank,
+    'qualityLabel': qualityLabel,
+    'audioLabel': audioLabel,
     'thumbnailUrl': thumbnailUrl?.toString(),
     'durationMs': durationMs,
     'createdAt': createdAt?.toIso8601String(),
@@ -1116,6 +1139,13 @@ class MediaCandidate {
         (json['mime'] as String? ?? '').length.clamp(0, 128),
       ),
       source: MediaCandidateSource.values.byName(json['source'] as String),
+      seriesKey: (json['seriesKey'] as String?)?.trim().isEmpty == true
+          ? null
+          : json['seriesKey'] as String?,
+      episodeNumber: (json['episodeNumber'] as num?)?.toInt(),
+      representationRank: (json['representationRank'] as num?)?.toInt() ?? 0,
+      qualityLabel: json['qualityLabel'] as String?,
+      audioLabel: json['audioLabel'] as String?,
       thumbnailUrl: optionalMediaUri(json['thumbnailUrl'] as String?),
       durationMs: (json['durationMs'] as num?)?.toInt(),
       createdAt: json['createdAt'] == null
@@ -1227,6 +1257,8 @@ class MediaTask {
     this.displayTitle = '',
     this.batchDirectory,
     this.episodeLabel,
+    this.seriesKey,
+    this.episodeNumber,
     this.bytesDownloaded = 0,
     this.totalBytes,
     this.errorCode,
@@ -1250,6 +1282,8 @@ class MediaTask {
   /// Older rows omit this field and continue to use the series directory.
   final String? batchDirectory;
   final String? episodeLabel;
+  final String? seriesKey;
+  final int? episodeNumber;
   final int bytesDownloaded;
   final int? totalBytes;
   final String? errorCode;
@@ -1301,6 +1335,8 @@ class MediaTask {
     String? displayTitle,
     Object? batchDirectory = _unset,
     Object? episodeLabel = _unset,
+    Object? seriesKey = _unset,
+    Object? episodeNumber = _unset,
     int? bytesDownloaded,
     Object? totalBytes = _unset,
     Object? errorCode = _unset,
@@ -1323,6 +1359,12 @@ class MediaTask {
     episodeLabel: identical(episodeLabel, _unset)
         ? this.episodeLabel
         : episodeLabel as String?,
+    seriesKey: identical(seriesKey, _unset)
+        ? this.seriesKey
+        : seriesKey as String?,
+    episodeNumber: identical(episodeNumber, _unset)
+        ? this.episodeNumber
+        : episodeNumber as int?,
     bytesDownloaded: bytesDownloaded ?? this.bytesDownloaded,
     totalBytes: identical(totalBytes, _unset)
         ? this.totalBytes
@@ -1351,6 +1393,8 @@ class MediaTask {
     'displayTitle': displayTitle,
     'batchDirectory': batchDirectory,
     'episodeLabel': episodeLabel,
+    'seriesKey': seriesKey,
+    'episodeNumber': episodeNumber,
     'bytesDownloaded': bytesDownloaded,
     'totalBytes': totalBytes,
     'errorCode': errorCode,
@@ -1371,6 +1415,8 @@ class MediaTask {
     displayTitle: json['displayTitle'] as String? ?? '',
     batchDirectory: json['batchDirectory'] as String?,
     episodeLabel: json['episodeLabel'] as String?,
+    seriesKey: json['seriesKey'] as String?,
+    episodeNumber: (json['episodeNumber'] as num?)?.toInt(),
     bytesDownloaded: (json['bytesDownloaded'] as num?)?.toInt() ?? 0,
     totalBytes: (json['totalBytes'] as num?)?.toInt(),
     errorCode: json['errorCode'] as String?,
