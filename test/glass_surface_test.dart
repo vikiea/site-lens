@@ -43,6 +43,7 @@ void main() {
         home: SiteLensGlassPolicyScope(
           strategy: const SiteLensGlassQualityStrategy(
             mode: SiteLensGlassQualityMode.high,
+            allSurfacesHighQuality: true,
             backgroundMode: BackgroundMode.transparent,
           ),
           child: const SiteLensGlassGroup(

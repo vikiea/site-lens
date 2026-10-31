@@ -74,7 +74,7 @@ void main() {
       debugDefaultTargetPlatformOverride = previous;
     }
   });
-  testWidgets('role and mode policy applies premium to Flutter panels', (
+  testWidgets('coverage preference controls premium Flutter panels', (
     tester,
   ) async {
     late BuildContext context;
@@ -93,6 +93,7 @@ void main() {
     for (final mode in SiteLensGlassQualityMode.values) {
       final strategy = SiteLensGlassQualityStrategy(
         mode: mode,
+        allSurfacesHighQuality: false,
         adaptiveQualityOverride: GlassQuality.premium,
         lightweightShaderSupported: true,
       );
@@ -105,12 +106,7 @@ void main() {
         context,
         role: SiteLensSurfaceRole.platformView,
       );
-      expect(
-        panel.quality,
-        mode == SiteLensGlassQualityMode.high
-            ? GlassQuality.premium
-            : GlassQuality.standard,
-      );
+      expect(panel.quality, GlassQuality.standard);
       expect(platformView.quality, GlassQuality.standard);
       expect(platformView.platformViewBackdrop, isTrue);
       expect(

@@ -157,9 +157,7 @@ class SiteLensGlassQualityStrategy {
     };
     final quality = switch (role) {
       SiteLensSurfaceRole.panel =>
-        mode == SiteLensGlassQualityMode.high || allSurfacesHighQuality
-            ? selectedQuality
-            : GlassQuality.standard,
+        allSurfacesHighQuality ? selectedQuality : GlassQuality.standard,
       SiteLensSurfaceRole.menu => selectedQuality,
       SiteLensSurfaceRole.platformView => GlassQuality.standard,
       SiteLensSurfaceRole.chrome => selectedQuality,
