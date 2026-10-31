@@ -72,6 +72,29 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+    'media task route pops back to the media page instead of exiting the app',
+    (tester) async {
+      var rootBacks = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+          home: MediaLibraryScreen(app: app, onRootBack: () => rootBacks++),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('媒体任务'));
+      await tester.pumpAndSettle();
+      expect(find.text('媒体任务'), findsOneWidget);
+
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(rootBacks, 0);
+      expect(find.byTooltip('媒体任务'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('media task selection keeps every top-bar action visible', (
     tester,
   ) async {

@@ -2047,7 +2047,17 @@ class MediaDownloadService {
     final last = _progressAtMs[taskId];
     if (!force && last != null && now - last < 250) return;
     _progressAtMs[taskId] = now;
-    tasks.updateProgress(taskId, bytes, totalBytes: totalBytes);
+    final current = tasks.task(taskId);
+    final effectiveBytes = max(bytes, current?.bytesDownloaded ?? 0);
+    final currentTotal = current?.totalBytes;
+    final effectiveTotal = totalBytes == null && currentTotal == null
+        ? null
+        : max(max(totalBytes ?? 0, currentTotal ?? 0), effectiveBytes);
+    tasks.updateProgress(
+      taskId,
+      effectiveBytes,
+      totalBytes: effectiveTotal == 0 ? null : effectiveTotal,
+    );
   }
 
   /// Resume identity keeps content selectors while dropping only credentials
@@ -2735,7 +2745,11 @@ class MediaDownloadService {
         if (await file.exists()) downloadedBytes += await file.length();
       }
       var totalBytes = utf8.encode(playlistText).length + downloadedBytes;
-      current = tasks.updateProgress(task.id, downloadedBytes);
+      final previousBytes = tasks.task(task.id)?.bytesDownloaded ?? 0;
+      current = tasks.updateProgress(
+        task.id,
+        max(downloadedBytes, previousBytes),
+      );
       var segmentCount = 0;
       var hasSegment = false;
       final output = <String>[];

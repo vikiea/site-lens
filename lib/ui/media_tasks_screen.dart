@@ -1618,8 +1618,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
       case 'reauthorize':
         await Navigator.of(context).push<void>(
           MaterialPageRoute<void>(
-            builder: (_) =>
-                MediaManagementScreen(app: app, onRootBack: widget.onRootBack),
+            builder: (_) => MediaManagementScreen(app: app),
           ),
         );
       case 'delete':
@@ -1989,8 +1988,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
             icon: const Icon(Icons.download_for_offline_outlined),
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
-                builder: (_) =>
-                    MediaTasksScreen(app: app, onRootBack: widget.onRootBack),
+                builder: (_) => MediaTasksScreen(app: app),
               ),
             ),
           ),
@@ -2791,10 +2789,7 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
                   subtitle: '查看后台下载、播放和导出状态',
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
-                      builder: (_) => MediaTasksScreen(
-                        app: app,
-                        onRootBack: widget.onRootBack,
-                      ),
+                      builder: (_) => MediaTasksScreen(app: app),
                     ),
                   ),
                 ),

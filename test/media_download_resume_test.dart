@@ -460,6 +460,8 @@ void main() {
     final segmentUrl = Uri.parse('https://cdn.example/live/segment.ts');
     final http = _HlsResumeHttp(playlistUrl, segmentUrl);
     final store = MediaTaskStore(directoryProvider: () async => root);
+    var progressClock = 0;
+    final progress = <int>[];
     final candidate = MediaCandidate(
       id: 'hls-resume',
       hostId: 7,
@@ -471,13 +473,24 @@ void main() {
       source: MediaCandidateSource.dom,
     );
     final task = store.create(candidate);
+    store.addListener(() {
+      final current = store.task(task.id);
+      if (current?.state == MediaTaskState.downloading) {
+        progress.add(current!.bytesDownloaded);
+      }
+    });
     final result = await MediaDownloadService(
       tasks: store,
       http: http,
+      progressElapsed: () => Duration(milliseconds: ++progressClock),
     ).start(task, candidate);
 
     expect(result.state, MediaTaskState.playable);
     expect(http.segmentCalls, 2);
+    expect(progress, isNotEmpty);
+    for (var index = 1; index < progress.length; index++) {
+      expect(progress[index], greaterThanOrEqualTo(progress[index - 1]));
+    }
     final cached = await store.cachedFile(task.id);
     expect(cached, isNotNull);
     final resource = cached!.parent.listSync().whereType<File>().singleWhere(

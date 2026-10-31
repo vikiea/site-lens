@@ -33,7 +33,6 @@ import '../settings/app_settings.dart'
         BackgroundModeLabel,
         PlayerVerticalGestureModeLabel,
         SecureDnsProvider,
-        SecureDnsProviderWireId,
         SecureDnsProviderLabel,
         SiteLensGlassQualityMode;
 import 'glass_surface.dart';
@@ -2680,7 +2679,9 @@ class _EpisodeDownloadSheetState extends State<EpisodeDownloadSheet> {
                               IconButton(
                                 tooltip: '播放本集',
                                 icon: const Icon(Icons.play_circle_outline),
-                                onPressed: () => widget.onPlay(options.first),
+                                onPressed: () => widget.onPlay(
+                                  _selected[entry.key] ?? options.first,
+                                ),
                               ),
                             ],
                           ),
@@ -3846,41 +3847,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
                     ),
                     onTap: () async {
                       Navigator.pop(c);
-                      try {
-                        final authorized = widget.app.hosts
-                            .authorizeMediaCandidate(current.id, candidate.id);
-                        final session = await widget.app.nativeMedia.open(
-                          authorized,
-                          hostId: current.id,
-                          generation: current.generation,
-                          sourceUrl: authorized.sourceUrl,
-                          sessionId: 'candidate_${candidate.id}',
-                          secureDnsProvider:
-                              widget.app.secureDnsResolver.provider.wireId,
-                        );
-                        if (mounted) {
-                          await Navigator.of(context).push(
-                            MaterialPageRoute<void>(
-                              settings: const RouteSettings(
-                                name: siteLensPlayerRouteName,
-                              ),
-                              builder: (_) => NativeMediaPlayerScreen(
-                                app: widget.app,
-                                session: session,
-                                candidate: authorized,
-                              ),
-                            ),
-                          );
-                        }
-                      } catch (error) {
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text('媒体任务未完成：${friendlyError(error)}'),
-                            ),
-                          );
-                        }
-                      }
+                      await _playMediaCandidate(current, candidate);
                     },
                   ),
               ],
@@ -3900,25 +3867,12 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
         current.id,
         candidate.id,
       );
-      final session = await widget.app.nativeMedia.open(
-        authorized,
-        hostId: current.id,
-        generation: current.generation,
-        sourceUrl: authorized.sourceUrl,
-        sessionId: 'candidate_${candidate.id}',
-        secureDnsProvider: widget.app.secureDnsResolver.provider.wireId,
-      );
+      await widget.app.mediaTasks.ready;
+      final task = widget.app.mediaTasks.create(authorized);
+      final run = widget.app.mediaDownloads.start(task, authorized);
+      final ready = await _waitForTaskPlayback(task.id, run);
       if (!mounted) return;
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          settings: const RouteSettings(name: siteLensPlayerRouteName),
-          builder: (_) => NativeMediaPlayerScreen(
-            app: widget.app,
-            session: session,
-            candidate: authorized,
-          ),
-        ),
-      );
+      await openMediaTaskPlayer(context, widget.app, ready);
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3926,6 +3880,41 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
         );
       }
     }
+  }
+
+  Future<MediaTask> _waitForTaskPlayback(
+    String taskId,
+    Future<MediaTask> run,
+  ) async {
+    Object? runError;
+    unawaited(
+      run.then<void>(
+        (_) {},
+        onError: (Object error, StackTrace _) {
+          runError = error;
+        },
+      ),
+    );
+    final deadline = DateTime.now().add(const Duration(seconds: 30));
+    while (DateTime.now().isBefore(deadline)) {
+      final current = widget.app.mediaTasks.task(taskId);
+      if (current == null) throw StateError('媒体任务不存在');
+      if (current.state == MediaTaskState.playable ||
+          current.state == MediaTaskState.completed) {
+        return current;
+      }
+      if (current.state == MediaTaskState.failed ||
+          current.state == MediaTaskState.reauthorize) {
+        if (runError != null) throw runError!;
+        throw StateError(current.errorReason ?? '媒体任务下载失败');
+      }
+      if (await widget.app.mediaTasks.partialPlaybackFile(taskId) != null) {
+        return current;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    if (runError != null) throw runError!;
+    throw StateError('媒体正在准备首个可播放分片，请稍后在媒体任务中继续');
   }
 
   Future<void> _downloadMediaCandidates(
