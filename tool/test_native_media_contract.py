@@ -243,6 +243,30 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn("retired", CONTROLLER)
         self.assertIn("existing.proxy !== proxy", CONTROLLER)
 
+    def test_media_candidate_bridge_preserves_episode_representation_identity(self):
+        for token in (
+            '"seriesKey" to if (candidate.has("seriesKey")) candidate.optString("seriesKey") else null',
+            '"episodeNumber" to if (candidate.has("episodeNumber")) candidate.optInt("episodeNumber") else null',
+            '"representationRank" to if (candidate.has("representationRank")) candidate.optInt("representationRank") else null',
+            '"qualityLabel" to if (candidate.has("qualityLabel")) candidate.optString("qualityLabel") else null',
+            '"audioLabel" to if (candidate.has("audioLabel")) candidate.optString("audioLabel") else null',
+        ):
+            self.assertIn(token, CONTROLLER)
+
+    def test_page_owned_episode_resolution_is_same_origin_and_bounded(self):
+        for token in (
+            'function readEpisodeLinks()',
+            'function episodePageSource(',
+            "credentials: 'same-origin'",
+            'finalUrl.origin !== current.origin',
+            'AbortController',
+            'episodePageActive < 2',
+            'request.visit !== seriesVisit',
+            'episodePageQueue = []',
+        ):
+            self.assertIn(token, LIFECYCLE)
+        self.assertNotIn('http.request2', LIFECYCLE)
+
     def test_controller_publishes_foreground_owner_before_background(self):
         self.assertIn("if (!allowed) { stopService(); return }", CONTROLLER)
         self.assertIn("BrowserMediaService.update(", CONTROLLER)

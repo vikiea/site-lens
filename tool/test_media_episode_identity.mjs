@@ -116,6 +116,12 @@ async function fixture(series = 42) {
       timer.callback();
     }
   }
+  async function settle() {
+    for (let turn = 0; turn < 20; turn++) {
+      await Promise.resolve();
+      flush();
+    }
+  }
   async function native(action) {
     await bridge.onmessage({data: JSON.stringify({
       action, token: 'identity-token', frame: 'identity-main',
@@ -135,7 +141,7 @@ async function fixture(series = 42) {
     initialData.text = JSON.stringify({id: seriesId, title: 'Mapped fixture', epPlaySrcs: sources});
   }
   await native('unblock');
-  return {window, document, initialData, nodes, elements, resources, Element, Media, snapshot, update, native, messages, flush,
+  return {window, document, initialData, nodes, elements, resources, Element, Media, snapshot, update, native, messages, flush, settle,
     windowEvents,
     resourceEvent(entries) { resourceObserver({getEntries: () => entries}); flush(); },
     setFetch(implementation) { fetchImpl = implementation; }};
@@ -671,6 +677,41 @@ test('an explicit fetch body finishing after BFCache restoration keeps its old l
     read() { if (reads++ === 0) { started(); return chunk; } return Promise.resolve({done: true}); },
     cancel() { return Promise.resolve(); },
   };
+
+test('explicit same-origin episode links resolve missing page-owned sources', async () => {
+  const f = await fixture();
+  f.initialData.text = JSON.stringify({id: 42, title: 'Resolved fixture', epPlaySrcs: {
+    1: urlFor(42, 1), 2: urlFor(42, 2),
+  }});
+  for (let episode = 1; episode <= 7; episode++) {
+    f.elements.push(new f.Element({
+      href: episode === 1 ? '/video/42/' : `/video/42/ep-${episode}/`,
+      'data-ep-id': String(episode),
+    }, `0${episode}`));
+  }
+  f.setFetch(async input => {
+    const page = new URL(input, f.window.location.href);
+    const match = /\/ep-(\d+)\/?$/.exec(page.pathname);
+    const episode = Number(match?.[1] || 1);
+    return {
+      ok: true,
+      url: page.href,
+      headers: {get: () => 'text/html'},
+      text: async () => `<script id="videoInitialData" type="application/json">${JSON.stringify({
+        id: 42,
+        ep: episode,
+        title: 'Resolved fixture',
+        epPlaySrcs: {[episode]: urlFor(42, episode, 9)},
+      })}</script>`,
+    };
+  });
+
+  assert.equal(f.snapshot().filter(item => item.episodeNumber != null).length, 2);
+  await f.settle();
+  const result = f.snapshot().filter(item => item.episodeNumber != null);
+  assert.deepEqual(result.map(item => item.episodeNumber), [1, 2, 3, 4, 5, 6, 7]);
+  assert.equal(result.find(item => item.episodeNumber === 7).url, urlFor(42, 7, 9));
+});
   const response = {ok: true, url: 'https://page.example/api/videos/42/play?ep=4',
     headers: {get: () => 'application/json'}, body: {}, clone: () => ({body: {getReader: () => reader}})};
   f.setFetch(async () => response);

@@ -18,6 +18,12 @@
   const playbackBindings = new WeakMap();
   const networkResources = new Map();
   const latestEpisodeRequests = new Map();
+  const episodePageRequests = new Map();
+  const episodePageControllers = new Map();
+  const episodePageAttempts = new Set();
+  let episodePageQueue = [];
+  let episodePageActive = 0;
+  let episodePageSequence = 0;
   const knownForeignSources = new Map();
   // Ownership survives SPA visits: a partially updated page map or reused
   // player cannot relabel a previously observed series' bytes. Bound this
@@ -255,6 +261,157 @@
       }));
     } catch (_) { return []; }
   }
+
+  function readEpisodeLinks() {
+    const context = episodeContext();
+    if (!context || typeof document.querySelectorAll !== 'function') return [];
+    const found = new Map();
+    let elements = [];
+    try {
+      elements = Array.from(document.querySelectorAll(
+        '[data-ep-id],[data-episode],[data-episode-index],[data-num],a[href*="/ep-"]',
+      ));
+    } catch (_) { return []; }
+    for (const element of elements) {
+      if (!element || typeof element.getAttribute !== 'function') continue;
+      const rawHref = element.getAttribute('href') || element.href || '';
+      let url;
+      try { url = new URL(rawHref, document.baseURI); } catch (_) { continue; }
+      if (url.origin !== context.origin || url.username || url.password) continue;
+      const route = /^\/video\/([1-9]\d{0,11})(?:\/ep-([1-9]\d{0,4}))?\/?$/.exec(url.pathname);
+      if (!route || route[1] !== context.id) continue;
+      const explicit = element.getAttribute('data-ep-id') ||
+        element.getAttribute('data-episode') ||
+        element.getAttribute('data-episode-index') || element.getAttribute('data-num');
+      const number = episodeNumber(explicit || route[2]);
+      if (number == null) continue;
+      const title = String(
+        element.getAttribute('aria-label') || element.getAttribute('data-title') ||
+        element.textContent || `第${number}集`,
+      ).trim().slice(0, 512);
+      if (!found.has(number)) found.set(number, {
+        number,
+        url: url.href,
+        title: title || `第${number}集`,
+      });
+    }
+    return [...found.values()].sort((left, right) => left.number - right.number);
+  }
+
+  function decodeEpisodePageJson(raw) {
+    return String(raw)
+      .replace(/&quot;/g, '"')
+      .replace(/&#34;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&#x27;/g, "'")
+      .replace(/&amp;/g, '&');
+  }
+
+  function episodePageSource(text, request, context) {
+    if (typeof text !== 'string' || text.length > 256 * 1024) return null;
+    const match = text.match(
+      /<script[^>]*id=["']videoInitialData["'][^>]*>([\s\S]*?)<\/script>/i,
+    );
+    if (!match || !match[1]) return null;
+    try {
+      const data = JSON.parse(decodeEpisodePageJson(match[1]));
+      if (!data || typeof data !== 'object' || Array.isArray(data) ||
+          String(data.id) !== context.id) return null;
+      const sources = data.epPlaySrcs && typeof data.epPlaySrcs === 'object'
+        ? data.epPlaySrcs : {};
+      let raw = sources[String(request.number)];
+      if (!raw && Number(data.ep) === request.number) raw = data.videoSrc;
+      const url = explicitMediaUrl(raw);
+      if (!url || !acceptSeriesSource(url.href, context)) return null;
+      return {
+        number: request.number,
+        url: url.href,
+        title: typeof data.title === 'string' && data.title.trim()
+          ? `${data.title.trim()} - 第${request.number}集`
+          : request.title,
+        poster: typeof data.posterSrc === 'string' ? data.posterSrc : '',
+        priority: 2,
+      };
+    } catch (_) { return null; }
+  }
+
+  async function resolveEpisodePage(request) {
+    const context = episodeContext();
+    if (!alive || !context || context.series !== request.series ||
+        request.visit !== seriesVisit || typeof window.fetch !== 'function') return;
+    let controller = null;
+    let timer = null;
+    try {
+      if (typeof AbortController === 'function') controller = new AbortController();
+      if (controller) episodePageControllers.set(request.number, controller);
+      timer = typeof setTimeout === 'function'
+        ? setTimeout(() => controller?.abort(), 10000)
+        : null;
+      const response = await window.fetch(request.url, {
+        method: 'GET',
+        credentials: 'same-origin',
+        redirect: 'follow',
+        ...(controller ? {signal: controller.signal} : {}),
+      });
+      const current = episodeContext();
+      const finalUrl = new URL(response.url || request.url, request.url);
+      if (!response?.ok || !current || current.series !== request.series ||
+          request.visit !== seriesVisit || finalUrl.origin !== current.origin ||
+          typeof response.text !== 'function') return;
+      const item = episodePageSource(await response.text(), request, current);
+      if (!item || episodePageRequests.get(request.number)?.sequence !== request.sequence) return;
+      episodeResponses.delete(request.number);
+      episodeResponses.set(request.number, item);
+      scheduleReport();
+    } catch (_) {
+      // Page-owned discovery is best effort; the current media remains usable.
+    } finally {
+      if (timer != null) clearTimeout(timer);
+      if (episodePageControllers.get(request.number) === controller) {
+        episodePageControllers.delete(request.number);
+      }
+      if (episodePageRequests.get(request.number)?.sequence === request.sequence) {
+        episodePageRequests.delete(request.number);
+      }
+      episodePageActive = Math.max(0, episodePageActive - 1);
+      pumpEpisodePages();
+    }
+  }
+
+  function pumpEpisodePages() {
+    while (episodePageActive < 2 && episodePageQueue.length > 0) {
+      const context = episodeContext();
+      if (!alive || !context || blocked || !connected) {
+        episodePageQueue = [];
+        return;
+      }
+      const link = episodePageQueue.shift();
+      if (!link || episodePageRequests.has(link.number)) continue;
+      const request = {
+        ...link,
+        series: context.series,
+        visit: seriesVisit,
+        sequence: ++episodePageSequence,
+      };
+      episodePageRequests.set(request.number, request);
+      episodePageActive += 1;
+      void resolveEpisodePage(request);
+    }
+  }
+
+  function scheduleEpisodePageResolution() {
+    const context = episodeContext();
+    if (!alive || blocked || !connected || !context) return;
+    const explicit = new Set([...explicitEpisodeIdentities.keys(), ...episodeResponses.keys()]);
+    for (const link of readEpisodeLinks()) {
+      if (explicit.has(link.number)) continue;
+      const attempt = `${link.number}\u0000${link.url}`;
+      if (episodePageAttempts.has(attempt) || episodePageRequests.has(link.number)) continue;
+      episodePageAttempts.add(attempt);
+      episodePageQueue.push(link);
+    }
+    pumpEpisodePages();
+  }
   function routeSeriesContext(raw = pageUrl()) {
     try {
       const page = new URL(raw);
@@ -379,6 +536,12 @@
       episodeResponses.clear();
       latestEpisodeRequests.clear();
       explicitEpisodeIdentities.clear();
+      episodePageQueue = [];
+      episodePageAttempts.clear();
+      episodePageSequence++;
+      for (const controller of episodePageControllers.values()) controller.abort();
+      episodePageControllers.clear();
+      episodePageRequests.clear();
     }
     const explicit = readEpisodeSources();
     const next = new Map(explicit.map(item =>
@@ -885,6 +1048,10 @@
       return matches.length === 1 ? matches : [];
     }).sort((left, right) => (left.episodeNumber ?? Infinity) - (right.episodeNumber ?? Infinity));
     if (!connected) { connect(); return; }
+    // Resolve missing episode sources through explicit same-origin episode
+    // links. This keeps the page authoritative while allowing a batch picker
+    // to obtain short-lived HLS URLs before the WebView is closed.
+    scheduleEpisodePageResolution();
     let activeNode = null;
     if (lastActiveNode && nodes.has(lastActiveNode) &&
         isPlaybackControlNode(lastActiveNode)) {
@@ -1349,6 +1516,11 @@
     // already confirmed mappings, but invalidate every in-flight request.
     seriesVisit++;
     latestEpisodeRequests.clear();
+    episodePageQueue = [];
+    episodePageSequence++;
+    for (const controller of episodePageControllers.values()) controller.abort();
+    episodePageControllers.clear();
+    episodePageRequests.clear();
     networkResources.clear();
     if (window.parent !== window) {
       try {
@@ -1373,6 +1545,9 @@
       connected = false; alive = true; lastState = ''; lastCandidates = '';
       lastPageUrl = pageUrl();
       lastCandidateList = [];
+      episodePageQueue = [];
+      episodePageAttempts.clear();
+      episodePageSequence++;
       networkResources.clear();
       snapshotStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
         ? performance.now()

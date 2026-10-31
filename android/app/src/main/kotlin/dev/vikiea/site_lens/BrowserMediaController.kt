@@ -208,7 +208,11 @@ class BrowserMediaController(
                         "document" to document,
                         "main" to main,
                         "epoch" to data.optLong("epoch", -1),
+                        "seriesKey" to if (candidate.has("seriesKey")) candidate.optString("seriesKey") else null,
                         "episodeNumber" to if (candidate.has("episodeNumber")) candidate.optInt("episodeNumber") else null,
+                        "representationRank" to if (candidate.has("representationRank")) candidate.optInt("representationRank") else null,
+                        "qualityLabel" to if (candidate.has("qualityLabel")) candidate.optString("qualityLabel") else null,
+                        "audioLabel" to if (candidate.has("audioLabel")) candidate.optString("audioLabel") else null,
                         "durationMs" to if (candidate.has("durationMs")) candidate.optLong("durationMs") else null,
                     ))
                 }
