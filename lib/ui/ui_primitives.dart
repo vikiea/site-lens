@@ -1406,26 +1406,39 @@ class SiteLensPageScaffold extends StatelessWidget {
     required this.title,
     required this.body,
     this.actions,
+    this.canPop = true,
+    this.onBack,
   });
 
   final String title;
   final Widget body;
   final List<Widget>? actions;
+  final bool canPop;
+  final ValueChanged<bool>? onBack;
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: Text(title),
-      actions: actions == null
-          ? null
-          : [SiteLensTopBarActionGroup(actions: actions!)],
-    ),
-    body: Semantics(
-      namesRoute: true,
-      label: title,
-      child: SafeArea(child: body),
-    ),
-  );
+  Widget build(BuildContext context) {
+    final scaffold = Scaffold(
+      appBar: AppBar(
+        title: Text(title),
+        actions: actions == null
+            ? null
+            : [SiteLensTopBarActionGroup(actions: actions!)],
+      ),
+      body: Semantics(
+        namesRoute: true,
+        label: title,
+        child: SafeArea(child: body),
+      ),
+    );
+    final onBack = this.onBack;
+    if (onBack == null) return scaffold;
+    return PopScope(
+      canPop: canPop,
+      onPopInvokedWithResult: (didPop, _) => onBack(didPop),
+      child: scaffold,
+    );
+  }
 }
 
 /// One grouped action surface used inside ordinary app bars. The app bar stays

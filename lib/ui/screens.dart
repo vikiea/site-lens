@@ -223,18 +223,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           canPop: false,
           onPopInvokedWithResult: (didPop, _) {
             if (didPop) return;
+            if (destination == AppDestination.media) return;
             // MenuAnchor overlays use local history rather than a PopupRoute.
             // Consume their dismissal before arming the app-exit gesture.
             if (ModalRoute.of(context)?.willHandlePopInternally ?? false) {
               Navigator.of(context).pop();
               return;
             }
-            if (!Platform.isAndroid) return;
-            if (_doubleBackExit.handleBack(DateTime.now())) {
-              SystemNavigator.pop();
-            } else {
-              showShortToast(context, '再按一次退出应用');
-            }
+            _handleAppExitBack();
           },
           child: SiteLensGlassGroup(
             // One backdrop read for the whole screen: the top bar, the panels and
@@ -330,7 +326,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       onNewTab: () =>
                           safely(context, () => promptNewTab(context, app)),
                     ),
-                    AppDestination.media => MediaLibraryScreen(app: app),
+                    AppDestination.media => MediaLibraryScreen(
+                      app: app,
+                      onRootBack: _handleAppExitBack,
+                    ),
                     AppDestination.settings => SettingsPage(app: app),
                   },
                 ),
@@ -390,6 +389,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         );
       },
     );
+  }
+
+  void _handleAppExitBack() {
+    if (!Platform.isAndroid) return;
+    if (_doubleBackExit.handleBack(DateTime.now())) {
+      SystemNavigator.pop();
+    } else {
+      showShortToast(context, '再按一次退出应用');
+    }
   }
 
   void _open(AppController app, Candidate site) {

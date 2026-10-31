@@ -1052,8 +1052,9 @@ Future<void> openMediaTaskPlayer(
 }
 
 class MediaLibraryScreen extends StatefulWidget {
-  const MediaLibraryScreen({super.key, required this.app});
+  const MediaLibraryScreen({super.key, required this.app, this.onRootBack});
   final AppController app;
+  final VoidCallback? onRootBack;
 
   @override
   State<MediaLibraryScreen> createState() => _MediaLibraryScreenState();
@@ -1541,6 +1542,27 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
     await _loadPhysicalDirectory(directory: parent);
   }
 
+  void _handleBack() {
+    if (ModalRoute.of(context)?.willHandlePopInternally ?? false) {
+      Navigator.of(context).pop();
+      return;
+    }
+    if (!_browser.atRoot) {
+      if (_browser.physicalMode) {
+        unawaited(_goUpPhysicalFolder());
+      } else {
+        _browser.goUp();
+      }
+      return;
+    }
+    final onRootBack = widget.onRootBack;
+    if (onRootBack != null) {
+      onRootBack();
+    } else if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    }
+  }
+
   Future<void> _fileAction(String action, MediaArtifact item) async {
     switch (action) {
       case 'details':
@@ -1596,7 +1618,8 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
       case 'reauthorize':
         await Navigator.of(context).push<void>(
           MaterialPageRoute<void>(
-            builder: (_) => MediaManagementScreen(app: app),
+            builder: (_) =>
+                MediaManagementScreen(app: app, onRootBack: widget.onRootBack),
           ),
         );
       case 'delete':
@@ -1934,6 +1957,10 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
     final current = _browser.currentFolder;
     return SiteLensPageScaffold(
       title: _browser.selectionMode ? '已选 ${_browser.selectedCount} 项' : '媒体',
+      canPop: false,
+      onBack: (didPop) {
+        if (!didPop) _handleBack();
+      },
       actions: [
         if (!_browser.selectionMode) ...[
           IconButton(
@@ -1962,7 +1989,8 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
             icon: const Icon(Icons.download_for_offline_outlined),
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
-                builder: (_) => MediaTasksScreen(app: app),
+                builder: (_) =>
+                    MediaTasksScreen(app: app, onRootBack: widget.onRootBack),
               ),
             ),
           ),
@@ -2017,7 +2045,10 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
                 subtitle: const Text('打开媒体管理，可将分类迁移为真实目录'),
                 onTap: () => Navigator.of(context).push<void>(
                   MaterialPageRoute<void>(
-                    builder: (_) => MediaManagementScreen(app: app),
+                    builder: (_) => MediaManagementScreen(
+                      app: app,
+                      onRootBack: widget.onRootBack,
+                    ),
                   ),
                 ),
               ),
@@ -2405,9 +2436,10 @@ Future<void> castMediaTask(
 ) => showDlnaCastControls(context, app, task: task);
 
 class MediaManagementScreen extends StatefulWidget {
-  const MediaManagementScreen({super.key, required this.app});
+  const MediaManagementScreen({super.key, required this.app, this.onRootBack});
 
   final AppController app;
+  final VoidCallback? onRootBack;
 
   @override
   State<MediaManagementScreen> createState() => _MediaManagementScreenState();
@@ -2759,7 +2791,10 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
                   subtitle: '查看后台下载、播放和导出状态',
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
-                      builder: (_) => MediaTasksScreen(app: app),
+                      builder: (_) => MediaTasksScreen(
+                        app: app,
+                        onRootBack: widget.onRootBack,
+                      ),
                     ),
                   ),
                 ),
@@ -2962,8 +2997,9 @@ String _watchSaveTime(DateTime value) {
 /// Durable media task surface. The screen is deliberately independent from a
 /// browser tab: a task can be resumed after its source tab is gone.
 class MediaTasksScreen extends StatefulWidget {
-  const MediaTasksScreen({super.key, required this.app});
+  const MediaTasksScreen({super.key, required this.app, this.onRootBack});
   final AppController app;
+  final VoidCallback? onRootBack;
 
   @override
   State<MediaTasksScreen> createState() => _MediaTasksScreenState();
@@ -3071,6 +3107,23 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
       context,
       () => _organization.createFolder(name, parentId: _browser.folderId),
     );
+  }
+
+  void _handleBack() {
+    if (ModalRoute.of(context)?.willHandlePopInternally ?? false) {
+      Navigator.of(context).pop();
+      return;
+    }
+    if (!_browser.atRoot) {
+      _browser.goUp();
+      return;
+    }
+    final onRootBack = widget.onRootBack;
+    if (onRootBack != null) {
+      onRootBack();
+    } else if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    }
   }
 
   Future<void> _taskFolderAction(
@@ -3537,6 +3590,10 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     ];
     return SiteLensPageScaffold(
       title: _browser.selectionMode ? '已选 ${_browser.selectedCount} 项' : '媒体任务',
+      canPop: false,
+      onBack: (didPop) {
+        if (!didPop) _handleBack();
+      },
       actions: [
         if (!_browser.selectionMode) ...[
           IconButton(

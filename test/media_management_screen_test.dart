@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/domain/models.dart';
+import 'package:site_lens/media/media_organization.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/app_theme.dart';
 import 'package:site_lens/ui/glass_surface.dart';
@@ -95,6 +96,43 @@ void main() {
     );
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'media task back gesture folds the current folder before root back',
+    (tester) async {
+      final organization = MediaOrganizationService(
+        db: db,
+        collection: 'tasks',
+      );
+      await organization.restore();
+      await organization.createFolder('返回测试文件夹');
+      var rootBacks = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+          home: MediaTasksScreen(app: app, onRootBack: () => rootBacks++),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('返回测试文件夹'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('返回上一级'), findsOneWidget);
+
+      await tester.binding.handlePopRoute();
+      await tester.pump();
+      expect(find.textContaining('返回上一级'), findsNothing);
+      expect(find.text('返回测试文件夹'), findsOneWidget);
+      expect(rootBacks, 0);
+
+      await tester.binding.handlePopRoute();
+      await tester.pump();
+      expect(rootBacks, 1);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   for (final brightness in Brightness.values) {
     testWidgets(
