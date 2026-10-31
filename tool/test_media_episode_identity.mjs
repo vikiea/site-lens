@@ -678,6 +678,20 @@ test('an explicit fetch body finishing after BFCache restoration keeps its old l
     cancel() { return Promise.resolve(); },
   };
 
+  const response = {ok: true, url: 'https://page.example/api/videos/42/play?ep=4',
+    headers: {get: () => 'application/json'}, body: {}, clone: () => ({body: {getReader: () => reader}})};
+  f.setFetch(async () => response);
+  const pending = f.window.fetch(response.url);
+  await reading;
+  f.windowEvents.get('pagehide')();
+  f.windowEvents.get('pageshow')({persisted: true});
+  release({done: false, value: new TextEncoder().encode(JSON.stringify({status: 1,
+    data: {id: 42, ep_num: 4, video_url: urlFor(42, 4, 99)}}))});
+  assert.equal(await pending, response);
+  for (let turn = 0; turn < 8; turn++) await Promise.resolve();
+  assert.equal(f.snapshot().find(item => item.episodeNumber === 4).url, urlFor(42, 4, 1));
+});
+
 test('explicit same-origin episode links resolve missing page-owned sources', async () => {
   const f = await fixture();
   f.initialData.text = JSON.stringify({id: 42, title: 'Resolved fixture', epPlaySrcs: {
@@ -711,19 +725,6 @@ test('explicit same-origin episode links resolve missing page-owned sources', as
   const result = f.snapshot().filter(item => item.episodeNumber != null);
   assert.deepEqual(result.map(item => item.episodeNumber), [1, 2, 3, 4, 5, 6, 7]);
   assert.equal(result.find(item => item.episodeNumber === 7).url, urlFor(42, 7, 9));
-});
-  const response = {ok: true, url: 'https://page.example/api/videos/42/play?ep=4',
-    headers: {get: () => 'application/json'}, body: {}, clone: () => ({body: {getReader: () => reader}})};
-  f.setFetch(async () => response);
-  const pending = f.window.fetch(response.url);
-  await reading;
-  f.windowEvents.get('pagehide')();
-  f.windowEvents.get('pageshow')({persisted: true});
-  release({done: false, value: new TextEncoder().encode(JSON.stringify({status: 1,
-    data: {id: 42, ep_num: 4, video_url: urlFor(42, 4, 99)}}))});
-  assert.equal(await pending, response);
-  for (let turn = 0; turn < 8; turn++) await Promise.resolve();
-  assert.equal(f.snapshot().find(item => item.episodeNumber === 4).url, urlFor(42, 4, 1));
 });
 
 test('an unbound manifest does not inherit the visible episode title', async () => {
