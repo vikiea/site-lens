@@ -130,6 +130,12 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertNotIn('addJavascriptInterface', AUTH_REFRESH)
         self.assertIn('NativeMediaAuthRefreshService.refreshBlocking', (ANDROID / 'NativeMediaDownloadWorker.kt').read_text())
 
+    def test_media_transfer_diagnostics_expose_only_cookie_presence(self):
+        self.assertIn('val cookiePresent: Boolean', TRANSFER)
+        self.assertIn('"cookiePresent" to cookiePresent', TRANSFER)
+        self.assertIn('cookiePresent = cookiePresent', TRANSFER)
+        self.assertNotIn('"Cookie" to cookie', TRANSFER)
+
     def test_native_mutations_take_file_leases_before_cancellation_or_delete(self):
         download = (ANDROID / "NativeDownloadRuntime.kt").read_text()
         export = NATIVE_EXPORT

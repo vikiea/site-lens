@@ -484,6 +484,19 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           if (h.disposed || currentHost == null || !identical(currentHost, h)) {
             continue;
           }
+          // Native host destruction can race with this policy call before the
+          // hostInvalidated event reaches Dart. Retire the stale session and
+          // keep its tab metadata available for a later reload.
+          final wasActive = identical(activeBrowser?.loadedHost, h);
+          for (final tab in browserTabs.where(
+            (t) => identical(t.loadedHost, h),
+          )) {
+            tab.invalidate('网页进程已退出，选择标签可重新加载');
+          }
+          await hosts.destroy(h);
+          if (wasActive) mediaSupported = false;
+          notifyListeners();
+          continue;
         }
         AppErrorLogger.capture(e, module: 'media.policy');
         if (!h.disposed && !_disposed) {

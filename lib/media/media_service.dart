@@ -3304,17 +3304,54 @@ class MediaDownloadService {
   }) async {
     final nativeResume = File('${partial.path}.resume');
     if (tlsTransfer != null && await nativeResume.exists()) {
-      await tlsTransfer!(
-        url,
-        document,
-        partial,
-        maxBytes,
-        cancel,
-        onProgress: onProgress,
-      );
-      cancel.check();
-      return;
+      try {
+        await tlsTransfer!(
+          url,
+          document,
+          partial,
+          maxBytes,
+          cancel,
+          onProgress: onProgress,
+        );
+        cancel.check();
+        return;
+      } on PlatformException catch (error) {
+        if (!_isRetryableNativeHeaderFailure(error)) rethrow;
+        // The native transport has already exhausted its own bounded retry
+        // budget. A clean response-header failure with no flushed bytes can
+        // safely switch back to Dart, which resolves the media route again.
+        await _downloadFileDart(
+          url,
+          partial,
+          cancel,
+          document: document,
+          maxBytes: maxBytes,
+          onProgress: onProgress,
+          allowNativeFallback: false,
+        );
+        return;
+      }
     }
+    await _downloadFileDart(
+      url,
+      partial,
+      cancel,
+      document: document,
+      maxBytes: maxBytes,
+      onProgress: onProgress,
+      allowNativeFallback: true,
+    );
+  }
+
+  Future<void> _downloadFileDart(
+    Uri url,
+    File partial,
+    Cancellation cancel, {
+    required Uri document,
+    required int maxBytes,
+    void Function(int bytesWritten)? onProgress,
+    required bool allowNativeFallback,
+  }) async {
     final identity = sha256
         .convert(utf8.encode(_resumeContentIdentity(url)))
         .toString();
@@ -3435,26 +3472,62 @@ class MediaDownloadService {
         );
         attempt++;
       } else {
-        if ((lastError is TlsException || lastError is SocketException) &&
+        if (allowNativeFallback &&
+            (lastError is TlsException || lastError is SocketException) &&
             tlsTransfer != null) {
           // Android can recover CDN connections that reset before Dart reports
           // a TLS error. Bridge the Dart sidecar into Android's format before
           // handing over the same flushed prefix.
           await _prepareNativeResumeState(url, partial);
-          await tlsTransfer!(
-            url,
-            document,
-            partial,
-            maxBytes,
-            cancel,
-            onProgress: onProgress,
-          );
-          cancel.check();
-          return;
+          try {
+            await tlsTransfer!(
+              url,
+              document,
+              partial,
+              maxBytes,
+              cancel,
+              onProgress: onProgress,
+            );
+            cancel.check();
+            return;
+          } on PlatformException catch (error) {
+            if (!_isRetryableNativeHeaderFailure(error)) rethrow;
+            // The native response-header retry also failed without writing
+            // content. Re-enter the Dart path once, with native fallback
+            // disabled so the recovery remains finite.
+            await _downloadFileDart(
+              url,
+              partial,
+              cancel,
+              document: document,
+              maxBytes: maxBytes,
+              onProgress: onProgress,
+              allowNativeFallback: false,
+            );
+            return;
+          }
         }
         throw lastError;
       }
     }
+  }
+
+  bool _isRetryableNativeHeaderFailure(PlatformException error) {
+    if (error.code != 'media_transfer' || error.details is! Map) return false;
+    final details = error.details as Map;
+    final phase = details['phase']?.toString();
+    final reason = details['reason']?.toString();
+    final offset = _detailInt(details['offset']);
+    final bytesWritten = _detailInt(details['bytesWritten']);
+    return phase == 'response_headers' &&
+        offset == 0 &&
+        bytesWritten == 0 &&
+        (reason == 'connection_reset' || reason == 'connection_closed');
+  }
+
+  int? _detailInt(Object? value) {
+    if (value is int) return value;
+    return int.tryParse(value?.toString() ?? '');
   }
 
   Future<void> _prepareNativeResumeState(Uri url, File partial) async {

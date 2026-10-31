@@ -725,6 +725,7 @@ test('explicit same-origin episode links resolve missing page-owned sources', as
   const result = f.snapshot().filter(item => item.episodeNumber != null);
   assert.deepEqual(result.map(item => item.episodeNumber), [1, 2, 3, 4, 5, 6, 7]);
   assert.equal(result.find(item => item.episodeNumber === 7).url, urlFor(42, 7, 9));
+  assert.equal(result.find(item => item.episodeNumber === 7).pageUrl, 'https://page.example/video/42/ep-7/');
 });
 
 test('an unbound manifest does not inherit the visible episode title', async () => {

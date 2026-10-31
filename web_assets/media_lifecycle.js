@@ -307,7 +307,7 @@
       .replace(/&amp;/g, '&');
   }
 
-  function episodePageSource(text, request, context) {
+  function episodePageSource(text, request, context, ownerPage = request.url) {
     if (typeof text !== 'string' || text.length > 256 * 1024) return null;
     const match = text.match(
       /<script[^>]*id=["']videoInitialData["'][^>]*>([\s\S]*?)<\/script>/i,
@@ -326,6 +326,7 @@
       return {
         number: request.number,
         url: url.href,
+        pageUrl: ownerPage,
         title: typeof data.title === 'string' && data.title.trim()
           ? `${data.title.trim()} - 第${request.number}集`
           : request.title,
@@ -358,7 +359,7 @@
       if (!response?.ok || !current || current.series !== request.series ||
           request.visit !== seriesVisit || finalUrl.origin !== current.origin ||
           typeof response.text !== 'function') return;
-      const item = episodePageSource(await response.text(), request, current);
+      const item = episodePageSource(await response.text(), request, current, finalUrl.href);
       if (!item || episodePageRequests.get(request.number)?.sequence !== request.sequence) return;
       episodeResponses.delete(request.number);
       episodeResponses.set(request.number, item);
@@ -762,7 +763,7 @@
     return JSON.stringify({kind:'candidates', token:config.token, frame:frameId,
       document:documentId, epoch, candidates:[candidate]}).length <= 4096;
   }
-  function addCandidate(output, seen, raw, mime = '', durationMs, force = false, title, poster = '', episode = null, identitySuffix = '', priority = 0) {
+  function addCandidate(output, seen, raw, mime = '', durationMs, force = false, title, poster = '', episode = null, identitySuffix = '', priority = 0, ownerPage = '') {
     if (typeof raw !== 'string' || !raw.trim()) return;
     try {
       const url = new URL(raw, document.baseURI);
@@ -778,7 +779,7 @@
         url: url.href,
         title: String(title ?? document.title ?? '').slice(0, 512),
         mime: resolvedMime.slice(0, 128),
-        pageUrl: pageUrl(),
+        pageUrl: ownerPage || pageUrl(),
       };
       if (Number.isFinite(priority) && priority > 0 && !force) {
         candidate.representationRank = priority;
@@ -880,10 +881,11 @@
           item.number,
           item.number == null ? '' : `|episode=${item.number}`,
           item.priority || 1,
+          item.pageUrl || pageUrl(),
         );
       }
       addCandidate(episodes, episodeSeen, item.url, '', undefined, false, item.title, item.poster,
-        item.number, `|episode=${item.number}`, item.priority || 1);
+        item.number, `|episode=${item.number}`, item.priority || 1, item.pageUrl || pageUrl());
     }
     const selector = mediaAttributes.map(name => `[${name}]`).join(',');
     document.querySelectorAll(selector).forEach(element => {

@@ -116,6 +116,30 @@ void main() {
     },
   );
   test(
+    'host_destroyed before the session removal retires the stale tab quietly',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final api = DestroyedHostMediaApi();
+      final app = AppController(db, api: api);
+      addTearDown(() async {
+        await app.shutdown();
+        await db.close();
+      });
+      await app.load();
+      final tab = await app.openUrl(Uri.parse('https://stale.example/'));
+      final hostId = tab.host.id;
+      app.browserVisible = true;
+      final pending = app.syncMediaPolicy();
+      await api.entered.future;
+      api.release.complete();
+      await pending;
+      expect(app.error, isNull);
+      expect(tab.loadedHost, isNull);
+      expect(app.hosts.sessions, isEmpty);
+      expect(api.destroyed, contains(hostId));
+    },
+  );
+  test(
     'unsupported Android closes a hidden host and retains cold metadata',
     () async {
       final db = AppDatabase(NativeDatabase.memory());

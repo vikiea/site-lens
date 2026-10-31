@@ -333,6 +333,50 @@ void main() {
   }
 
   test(
+    'native response-header reset retries through Dart transport once',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-native-header-retry-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final playlist = Uri.parse('https://cdn.example/index.m3u8');
+      final candidate = _candidate(playlist);
+      final tasks = MediaTaskStore(directoryProvider: () async => root);
+      final http = _NativeHeaderRetryHttp(playlist);
+      var nativeCalls = 0;
+      final result = await MediaDownloadService(
+        tasks: tasks,
+        http: http,
+        tlsTransfer:
+            (
+              url,
+              document,
+              destination,
+              maxBytes,
+              cancel, {
+              void Function(int bytesWritten)? onProgress,
+            }) async {
+              nativeCalls++;
+              throw PlatformException(
+                code: 'media_transfer',
+                message: '媒体连接失败，已保留缓存，可重试',
+                details: const {
+                  'phase': 'response_headers',
+                  'offset': 0,
+                  'bytesWritten': 0,
+                  'reason': 'connection_reset',
+                },
+              );
+            },
+      ).start(tasks.create(candidate), candidate);
+
+      expect(result.state, MediaTaskState.playable);
+      expect(nativeCalls, 1);
+      expect(http.segmentAttempts, [0, 1, 2, 3, 0]);
+    },
+  );
+
+  test(
     'streamed transport safely handles 206, ignored Range 200 and 416',
     () async {
       final root = await Directory.systemTemp.createTemp('site-lens-range-');
@@ -729,6 +773,76 @@ class _FailingTlsHttp extends ControlledHttp {
   }) async {
     attempts.add(routeAttempt);
     throw failure;
+  }
+}
+
+class _NativeHeaderRetryHttp extends ControlledHttp {
+  _NativeHeaderRetryHttp(this.playlist);
+
+  final Uri playlist;
+  final segmentAttempts = <int>[];
+
+  @override
+  Future<FetchResponse> fetch(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    String method = 'GET',
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    String? body,
+    Duration timeout = const Duration(seconds: 15),
+    int maxBytes = 1024 * 1024,
+    int routeAttempt = 0,
+  }) async => FetchResponse(
+    url: url,
+    status: 200,
+    bytes: utf8.encode('#EXTM3U\n#EXTINF:1,\nsegment.ts\n'),
+    headers: const {},
+  );
+
+  @override
+  Future<FetchFileResponse> fetchToFile(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    required File destination,
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    int resumeOffset = 0,
+    int maxBytes = 2 * 1024 * 1024 * 1024,
+    Future<void> Function(int, Map<String, String>)? onHeaders,
+    void Function(int bytesWritten)? onProgress,
+    Duration timeout = const Duration(seconds: 15),
+    int routeAttempt = 0,
+  }) async {
+    if (url == playlist) {
+      return FetchFileResponse(
+        url: url,
+        status: 200,
+        headers: const {},
+        bytesWritten: 0,
+        totalBytes: 0,
+        appended: false,
+      );
+    }
+    segmentAttempts.add(routeAttempt);
+    if (segmentAttempts.length <= 4) {
+      throw const SocketException('Connection reset by peer');
+    }
+    await onHeaders?.call(200, const {'etag': '"v1"'});
+    await destination.writeAsBytes([4, 5, 6], flush: true);
+    onProgress?.call(3);
+    return FetchFileResponse(
+      url: url,
+      status: 200,
+      headers: {'etag': '"v1"'},
+      bytesWritten: 3,
+      totalBytes: 3,
+      appended: false,
+    );
   }
 }
 

@@ -29,6 +29,7 @@ class ResumableMediaTransferTest {
             assertEquals("cdn.example", failure.host)
             assertEquals(3, failure.attempt)
             assertEquals("direct", failure.route)
+            assertEquals(false, failure.cookiePresent)
             assertEquals(0L, failure.bytesWritten)
             val exposed = failure.toString() + failure.diagnostics().toString()
             assertFalse(exposed.contains("auth_key"))

@@ -17,13 +17,14 @@ class MediaTransferFailure(
     val offset: Long,
     val bytesWritten: Long,
     val route: String,
+    val cookiePresent: Boolean,
     val reason: String,
     cause: Throwable,
 ) : IOException("媒体连接失败，已保留缓存，可重试", cause) {
     fun diagnostics(): Map<String, Any> = mapOf(
         "phase" to phase, "host" to host, "attempt" to attempt,
         "offset" to offset, "bytesWritten" to bytesWritten,
-        "route" to route, "reason" to reason,
+        "route" to route, "cookiePresent" to cookiePresent, "reason" to reason,
     )
 }
 
@@ -68,6 +69,7 @@ class ResumableMediaTransfer(
             var failureOffset = 0L
             var failureBytes = 0L
             var failureRoute = "unknown"
+            var cookiePresent = false
             try {
                 while (true) {
                     checkActive()
@@ -101,6 +103,7 @@ class ResumableMediaTransfer(
                             current.setRequestProperty("Referer", source.toString())
                             current.setRequestProperty("Origin", "${source.scheme}://${source.rawAuthority}")
                             requestCookies(uri)?.takeIf { it.isNotBlank() }?.let {
+                                cookiePresent = true
                                 current.setRequestProperty("Cookie", it)
                             }
                             if (offset > 0) {
@@ -237,6 +240,7 @@ class ResumableMediaTransfer(
                     offset = failureOffset,
                     bytesWritten = failureBytes,
                     route = failureRoute,
+                    cookiePresent = cookiePresent,
                     reason = reason,
                     cause = error,
                 )
