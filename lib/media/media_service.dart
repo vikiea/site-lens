@@ -2710,6 +2710,7 @@ class MediaDownloadService {
         playlistUri,
         cancel,
         document: candidate.sourceUrl,
+        staging: staging,
       );
       playlistUri = fetched.url;
       var playlistText = fetched.text;
@@ -2720,6 +2721,7 @@ class MediaDownloadService {
           variant,
           cancel,
           document: candidate.sourceUrl,
+          staging: staging,
         );
         playlistUri = fetched.url;
         playlistText = fetched.text;
@@ -2934,24 +2936,53 @@ class MediaDownloadService {
     Uri url,
     Cancellation cancel, {
     required Uri document,
+    required Directory staging,
   }) async {
-    final response = await _fetchMediaWithRetry(
-      url,
-      connect: const {'*'},
-      document: document,
-      cancel: cancel,
-      maxBytes: 16 * 1024 * 1024,
-    );
-    if (response.status < 200 || response.status >= 300) {
-      if (response.status == 401 || response.status == 403) {
-        throw StateError(
-          'HLS 清单 HTTP ${response.status}：下载地址已失效或被服务器拒绝，请返回播放页刷新并重新选择媒体；如网页通过代理播放，请保持相同代理后重试',
-        );
+    try {
+      final response = await _fetchMediaWithRetry(
+        url,
+        connect: const {'*'},
+        document: document,
+        cancel: cancel,
+        maxBytes: 16 * 1024 * 1024,
+      );
+      if (response.status < 200 || response.status >= 300) {
+        if (response.status == 401 || response.status == 403) {
+          throw StateError(
+            'HLS 清单 HTTP ${response.status}：下载地址已失效或被服务器拒绝，请返回播放页刷新并重新选择媒体；如网页通过代理播放，请保持相同代理后重试',
+          );
+        }
+        throw StateError('HLS 清单 HTTP ${response.status}');
       }
-      throw StateError('HLS 清单 HTTP ${response.status}');
+      return (url: response.url, text: utf8.decode(response.bytes));
+    } catch (error) {
+      if (tlsTransfer == null || !_isMediaNetworkError(error)) rethrow;
+      final key = sha256
+          .convert(utf8.encode(_resumeContentIdentity(url)))
+          .toString();
+      final partial = File('${staging.path}/.playlist_$key.part');
+      try {
+        await tlsTransfer!(url, document, partial, 16 * 1024 * 1024, cancel);
+        cancel.check();
+        if (!await partial.exists() || await partial.length() == 0) {
+          throw StateError('HLS 清单响应为空');
+        }
+        return (url: url, text: await partial.readAsString());
+      } finally {
+        for (final suffix in ['', '.resume', '.resume.tmp']) {
+          final file = File('${partial.path}$suffix');
+          if (await file.exists()) await file.delete();
+        }
+      }
     }
-    return (url: response.url, text: utf8.decode(response.bytes));
   }
+
+  bool _isMediaNetworkError(Object error) =>
+      error is SocketException ||
+      error is HandshakeException ||
+      error is TlsException ||
+      error is TimeoutException ||
+      error is HttpException;
 
   Uri? _selectHlsVariant(Uri playlist, String text) {
     final variants = <({int bandwidth, Uri url})>[];

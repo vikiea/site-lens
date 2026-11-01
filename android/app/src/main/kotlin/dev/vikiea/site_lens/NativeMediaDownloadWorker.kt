@@ -68,6 +68,7 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
                         requestCookies = { uri ->
                             runCatching {
                                 AndroidCookieReader.get(uri.toString())
+                                    ?: AndroidCookieReader.get(sourceUrl.toString())
                             }.getOrNull()
                         },
                         onProgress = { bytes, total ->

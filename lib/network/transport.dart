@@ -457,12 +457,15 @@ class ControlledHttp {
     this.allowLocal = false,
     this.mediaRoute,
     this.mediaRouteForAttempt,
+    this.mediaRouteForAttemptWithDocument,
     this.routeForAttempt,
   });
   final bool allowLocal;
   final Future<List<InternetAddress>> Function(String) resolve;
   final Future<MediaNetworkRoute> Function(Uri)? mediaRoute;
   final Future<MediaNetworkRoute> Function(Uri, int)? mediaRouteForAttempt;
+  final Future<MediaNetworkRoute> Function(Uri, int, Uri)?
+  mediaRouteForAttemptWithDocument;
 
   /// Supplies the OS route for non-media requests such as site discovery.
   /// The route is deliberately resolved per redirect so PAC/proxy changes do
@@ -472,6 +475,7 @@ class ControlledHttp {
   Future<MediaNetworkRoute> _configureRoute(
     HttpClient client,
     Uri uri,
+    Uri document,
     bool mediaRequest,
     Cancellation cancel,
     int routeAttempt,
@@ -479,8 +483,17 @@ class ControlledHttp {
   ) async {
     final pendingRoute = routeForAttempt != null
         ? routeForAttempt!(uri, routeAttempt)
-        : mediaRequest && (mediaRouteForAttempt != null || mediaRoute != null)
-        ? (mediaRouteForAttempt?.call(uri, routeAttempt) ?? mediaRoute!(uri))
+        : mediaRequest &&
+              (mediaRouteForAttemptWithDocument != null ||
+                  mediaRouteForAttempt != null ||
+                  mediaRoute != null)
+        ? (mediaRouteForAttemptWithDocument?.call(
+                uri,
+                routeAttempt,
+                document,
+              ) ??
+              mediaRouteForAttempt?.call(uri, routeAttempt) ??
+              mediaRoute!(uri))
         : Future.value(const MediaNetworkRoute());
     final route = await cancel.waitFor(
       pendingRoute.timeout(
@@ -663,6 +676,7 @@ class ControlledHttp {
         final route = await _configureRoute(
           client,
           uri,
+          document,
           mediaRequest,
           cancel,
           currentRouteAttempt,
@@ -678,6 +692,10 @@ class ControlledHttp {
             // document; callers cannot inject arbitrary Referer/Origin headers.
             request.headers.set(HttpHeaders.userAgentHeader, route.userAgent);
             request.headers.set(HttpHeaders.acceptHeader, '*/*');
+            request.headers.set(
+              HttpHeaders.acceptLanguageHeader,
+              'zh-CN,zh;q=0.9,en;q=0.8',
+            );
             request.headers.set(HttpHeaders.refererHeader, document.toString());
             if (document.scheme == 'http' || document.scheme == 'https') {
               request.headers.set('origin', document.origin);
@@ -778,6 +796,7 @@ class ControlledHttp {
       final route = await _configureRoute(
         client,
         uri,
+        document,
         mediaRequest,
         cancel,
         routeAttempt,
@@ -790,6 +809,10 @@ class ControlledHttp {
       if (mediaRequest) {
         request.headers.set(HttpHeaders.userAgentHeader, route.userAgent);
         request.headers.set(HttpHeaders.acceptHeader, '*/*');
+        request.headers.set(
+          HttpHeaders.acceptLanguageHeader,
+          'zh-CN,zh;q=0.9,en;q=0.8',
+        );
         request.headers.set(HttpHeaders.refererHeader, document.toString());
         if (document.scheme == 'http' || document.scheme == 'https') {
           request.headers.set('origin', document.origin);
@@ -1024,6 +1047,7 @@ class HttpProbe {
               final client = clients.next();
               await transport._configureRoute(
                 client,
+                current,
                 current,
                 false,
                 requestCancel,

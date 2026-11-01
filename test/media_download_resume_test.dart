@@ -333,6 +333,49 @@ void main() {
   }
 
   test(
+    'HLS manifest reset uses native transport before segment download',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-manifest-native-fallback-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final playlist = Uri.parse('https://cdn.example/index.m3u8');
+      final segment = playlist.resolve('seg.ts');
+      final candidate = _candidate(playlist);
+      final tasks = MediaTaskStore(directoryProvider: () async => root);
+      final http = _FailingManifestHttp(playlist, segment);
+      var nativeCalls = 0;
+      final result = await MediaDownloadService(
+        tasks: tasks,
+        http: http,
+        tlsTransfer:
+            (
+              url,
+              document,
+              destination,
+              maxBytes,
+              cancel, {
+              void Function(int bytesWritten)? onProgress,
+            }) async {
+              nativeCalls++;
+              expect(url, playlist);
+              expect(document, candidate.sourceUrl);
+              await destination.writeAsString(
+                '#EXTM3U\n#EXTINF:1,\nseg.ts\n',
+                flush: true,
+              );
+              onProgress?.call(28);
+            },
+      ).start(tasks.create(candidate), candidate);
+
+      expect(result.state, MediaTaskState.playable);
+      expect(http.manifestAttempts, [0, 1, 2]);
+      expect(nativeCalls, 1);
+      expect(http.segmentCalls, 1);
+    },
+  );
+
+  test(
     'native response-header reset retries through Dart transport once',
     () async {
       final root = await Directory.systemTemp.createTemp(
@@ -786,6 +829,64 @@ class _FailingTlsHttp extends ControlledHttp {
   }) async {
     attempts.add(routeAttempt);
     throw failure;
+  }
+}
+
+class _FailingManifestHttp extends ControlledHttp {
+  _FailingManifestHttp(this.playlist, this.segment);
+
+  final Uri playlist;
+  final Uri segment;
+  final manifestAttempts = <int>[];
+  var segmentCalls = 0;
+
+  @override
+  Future<FetchResponse> fetch(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    String method = 'GET',
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    String? body,
+    Duration timeout = const Duration(seconds: 15),
+    int maxBytes = 1024 * 1024,
+    int routeAttempt = 0,
+  }) async {
+    expect(url, playlist);
+    manifestAttempts.add(routeAttempt);
+    throw const SocketException('Connection reset by peer');
+  }
+
+  @override
+  Future<FetchFileResponse> fetchToFile(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    required File destination,
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    int resumeOffset = 0,
+    int maxBytes = 2 * 1024 * 1024 * 1024,
+    Future<void> Function(int, Map<String, String>)? onHeaders,
+    void Function(int bytesWritten)? onProgress,
+    Duration timeout = const Duration(seconds: 15),
+    int routeAttempt = 0,
+  }) async {
+    expect(url, segment);
+    segmentCalls++;
+    await destination.writeAsBytes([1, 2, 3], flush: true);
+    onProgress?.call(3);
+    return FetchFileResponse(
+      url: Uri.parse('https://cdn.example/seg.ts'),
+      status: 200,
+      headers: {'content-length': '3'},
+      bytesWritten: 3,
+      totalBytes: 3,
+      appended: false,
+    );
   }
 }
 

@@ -90,8 +90,12 @@ class MediaNetwork {
     cancel.check();
   }
 
-  Future<MediaNetworkRoute> route(Uri uri, {int attempt = 0}) async {
-    return _route(uri, attempt: attempt, media: true);
+  Future<MediaNetworkRoute> route(
+    Uri uri, {
+    int attempt = 0,
+    Uri? document,
+  }) async {
+    return _route(uri, attempt: attempt, media: true, document: document);
   }
 
   /// Site probes share OS proxy/VPN policy without reading browser cookies.
@@ -120,11 +124,16 @@ class MediaNetwork {
     Uri uri, {
     required int attempt,
     required bool media,
+    Uri? document,
   }) async {
     if (!_nativeAvailable) return const MediaNetworkRoute();
     final value = await _channel.invokeMapMethod<String, Object?>(
       media ? 'route' : 'probeRoute',
-      {'url': uri.toString(), 'attempt': attempt},
+      {
+        'url': uri.toString(),
+        'attempt': attempt,
+        if (document != null) 'document': document.toString(),
+      },
     );
     if (value == null) throw StateError('无法读取系统代理设置，请重试');
     return MediaNetworkRoute(

@@ -209,6 +209,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       native: nativeDownloads,
       http: ControlledHttp(
         resolve: secureDnsResolver.resolve,
+        mediaRouteForAttemptWithDocument: (uri, attempt, document) =>
+            MediaNetwork().route(uri, attempt: attempt, document: document),
         mediaRouteForAttempt: (uri, attempt) =>
             MediaNetwork().route(uri, attempt: attempt),
       ),

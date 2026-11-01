@@ -175,6 +175,36 @@ void main() {
     expect(attempts, [3]);
   });
 
+  test('media route can derive credentials from the source document', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    String? cookie;
+    server.listen((request) async {
+      cookie = request.headers.value(HttpHeaders.cookieHeader);
+      request.response.write('ok');
+      await request.response.close();
+    });
+    final target = Uri.parse('http://127.0.0.1:${server.port}/segment.ts');
+    final document = Uri.parse('https://site.example/watch/42');
+    final client = ControlledHttp(
+      allowLocal: true,
+      mediaRouteForAttemptWithDocument: (uri, attempt, source) async {
+        expect(uri, target);
+        expect(attempt, 0);
+        expect(source, document);
+        return const MediaNetworkRoute(cookie: 'sid=page');
+      },
+    );
+    await client.fetch(
+      target,
+      connect: const {'*'},
+      document: document,
+      cancel: Cancellation(),
+      mediaRequest: true,
+    );
+    expect(cookie, 'sid=page');
+  });
+
   test(
     'proxy requests still block private literals and local redirects',
     () async {

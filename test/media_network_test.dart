@@ -123,4 +123,29 @@ void main() {
       ),
     );
   });
+
+  test('media route carries the source document for cookie fallback', () async {
+    const channel = MethodChannel('test/media_network_document');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final target = Uri.parse('https://cdn.example/segment.ts');
+    final document = Uri.parse('https://site.example/watch/42');
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'route');
+      final arguments = call.arguments as Map;
+      expect(arguments['url'], target.toString());
+      expect(arguments['document'], document.toString());
+      expect(arguments['attempt'], 2);
+      return const <String, Object?>{
+        'proxy': 'DIRECT',
+        'userAgent': 'WebView',
+        'cookie': 'sid=page',
+      };
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    final route = await MediaNetwork(channel: channel)
+        .route(target, attempt: 2, document: document);
+    expect(route.cookie, 'sid=page');
+  });
 }

@@ -58,8 +58,13 @@ class MediaNetworkRuntime(
                 // This is only a route hint. The connecting transport still
                 // validates DNS for the DIRECT entry actually being used.
                 val vpn = allowsProxyFakeIp(uri)
+                val document = call.argument<String>("document")
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.also { SystemMediaNetwork.validateTarget(URI(it)) }
                 val cookie = if (call.method == "route") {
                     AndroidCookieReader.get(uri.toString())
+                        ?: document?.let(AndroidCookieReader::get)
                 } else null
                 mapOf(
                     "proxy" to proxy,
@@ -131,7 +136,10 @@ class MediaNetworkRuntime(
             require(maxBytes in 1..(2L * 1024 * 1024 * 1024)) { "媒体大小上限无效" }
             var lastProgressAt: Long? = null
             transfer.transfer(url, document, output, userAgent, maxBytes = maxBytes,
-                requestCookies = { target -> AndroidCookieReader.get(target.toString()) },
+                requestCookies = { target ->
+                    AndroidCookieReader.get(target.toString())
+                        ?: AndroidCookieReader.get(document.toString())
+                },
                 onProgress = { bytes, _ ->
                     val now = SystemClock.elapsedRealtime()
                     if (lastProgressAt == null || now - lastProgressAt!! >= 250L) {
