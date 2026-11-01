@@ -4158,7 +4158,10 @@ class Mp4ExportService {
       await outputDirectory.create(recursive: true);
       output = File('${outputDirectory.path}/${mediaExportFileName(task)}');
       outputExisted = await output.exists();
-      if (!forceRegenerate && outputExisted && await output.length() > 0) {
+      final manifest = File('${output.path}.meta');
+      if (!forceRegenerate &&
+          outputExisted &&
+          await _isVerifiedExport(output, manifest, task.cacheKey)) {
         report(100);
         committed = true;
         return Mp4ExportTask(
@@ -4265,6 +4268,7 @@ class Mp4ExportService {
           rethrow;
         }
       }
+      await _writeExportManifest(manifest, output, task.cacheKey);
       cancel.check();
       committed = true;
       report(100);
@@ -4346,6 +4350,37 @@ class Mp4ExportService {
     final leftDigest = await sha256.bind(left.openRead()).first;
     final rightDigest = await sha256.bind(right.openRead()).first;
     return leftDigest == rightDigest;
+  }
+
+  Future<bool> _isVerifiedExport(
+    File output,
+    File manifest,
+    String cacheKey,
+  ) async {
+    try {
+      final lines = (await manifest.readAsString()).trim().split('\n');
+      if (lines.length != 3 || lines[0] != cacheKey) return false;
+      final size = int.parse(lines[1]);
+      if (size <= 0 || size != await output.length()) return false;
+      final digest = await sha256.bind(output.openRead()).first;
+      return digest.toString() == lines[2];
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _writeExportManifest(
+    File manifest,
+    File output,
+    String cacheKey,
+  ) async {
+    final digest = await sha256.bind(output.openRead()).first;
+    final temporary = File('${manifest.path}.part');
+    await temporary.writeAsString(
+      '$cacheKey\n${await output.length()}\n$digest\n',
+      flush: true,
+    );
+    await temporary.rename(manifest.path);
   }
 
   Future<Mp4ExportTask> deliver(Mp4ExportTask task, Uri destination) async {

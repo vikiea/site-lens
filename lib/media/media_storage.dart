@@ -416,25 +416,26 @@ class MediaStorageService extends ChangeNotifier {
       final value = entry.value;
       if (value is! Map || value['target'] is! String) continue;
       final artifact = library.item(entry.key);
-      if (artifact != null &&
-          _locationWithinDirectory(
-            artifact.location,
-            value['target'] as String,
-          ) &&
-          await library.isReadableArtifact(entry.key)) {
+      if (artifact == null) continue;
+      final target = value['target'] as String;
+      final fileName = value['fileName'] as String? ?? artifact.name;
+      List<MediaStorageEntry> candidates;
+      try {
+        candidates = await listDirectory(directory: target);
+      } catch (_) {
+        continue;
+      }
+      final direct = candidates
+          .where((item) => !item.directory)
+          .where((item) => item.name == fileName)
+          .where((item) => item.size == artifact.size)
+          .where((item) => _sameLocation(item.location, artifact.location))
+          .firstOrNull;
+      if (direct != null && await library.isReadableArtifact(entry.key)) {
         journal.remove(entry.key);
         continue;
       }
-      if (artifact != null && !await library.isReadableArtifact(entry.key)) {
-        final fileName = value['fileName'] as String? ?? artifact.name;
-        List<MediaStorageEntry> candidates = const [];
-        try {
-          candidates = await listDirectory(
-            directory: value['target'] as String,
-          );
-        } catch (_) {
-          continue;
-        }
+      if (!await library.isReadableArtifact(entry.key)) {
         final candidate = candidates
             .where((item) => !item.directory)
             .where((item) => item.name == fileName)

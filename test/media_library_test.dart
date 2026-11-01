@@ -420,6 +420,26 @@ void main() {
     expect(await File(delivered.location).readAsBytes(), [1, 2, 3, 4, 5, 6]);
   });
 
+  test('verified move rejects same-size different content without deleting the source', () async {
+    await library.register(task, output.path);
+    final directory = Directory('${root.path}/move-same-size-different');
+    final existing = File('${directory.path}/${mediaExportFileName(task)}');
+    await existing.parent.create(recursive: true);
+    await existing.writeAsBytes([9, 9, 9, 9, 9, 9]);
+
+    await expectLater(
+      library.move(
+        task.id,
+        directory.path,
+        fileName: mediaExportFileName(task),
+        reuseExistingVerified: true,
+      ),
+      throwsA(isA<StateError>()),
+    );
+    expect(await output.exists(), isTrue);
+    expect(await existing.readAsBytes(), [9, 9, 9, 9, 9, 9]);
+  });
+
   test('rename and move update actual file and durable location, delete removes it', () async {
     await library.register(task, output.path);
     await library.rename(task.id, '自定义名称');

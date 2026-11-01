@@ -1576,11 +1576,17 @@ class MediaLibrary extends ChangeNotifier {
       final destination = File(
         '$directory${Platform.pathSeparator}${fileName ?? value.name}',
       );
-      if (await destination.exists() && !reuseExistingVerified) {
-        throw StateError('目标目录存在同名文件');
+      final destinationExists = await destination.exists();
+      if (destinationExists) {
+        if (!reuseExistingVerified) {
+          throw StateError('目标目录存在同名文件');
+        }
+        if (!await _hasSameBytes(value.location, destination.path)) {
+          throw StateError('目标文件同名但内容不同');
+        }
       }
       await destination.parent.create(recursive: true);
-      if (!await destination.exists()) {
+      if (!destinationExists) {
         await copyMediaBytes(
           File(value.location),
           File('${destination.path}.part'),
