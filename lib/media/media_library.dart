@@ -272,6 +272,19 @@ class MediaLibrary extends ChangeNotifier {
     }
   }
 
+  Future<bool> isReadableLocation(String location) async {
+    try {
+      if (native != null) {
+        await native!.stat(location);
+        return true;
+      }
+      final file = File(location);
+      return await file.exists() && await file.length() > 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> restore() =>
       _restoring ??= _restore().whenComplete(() => _restoring = null);
 
@@ -829,7 +842,7 @@ class MediaLibrary extends ChangeNotifier {
       name: name ?? mediaExportFileName(task),
       size: stat.size,
       mime: mime,
-      folder: mediaSeriesDirectoryName(task.storageDirectoryName),
+      folder: task.seriesDirectoryName,
       libraryCopy: previous?.location != path
           ? previous?.location
           : previous?.libraryCopy,
@@ -1099,7 +1112,7 @@ class MediaLibrary extends ChangeNotifier {
     final task = tasks.task(taskId);
     final seriesDirectory = task == null
         ? value.folder
-        : mediaSeriesDirectoryName(task.storageDirectoryName);
+        : task.seriesDirectoryName;
     Directory? targetDirectory;
     if (uri.scheme != 'content') {
       targetDirectory = uri.scheme == 'file'
@@ -1149,33 +1162,45 @@ class MediaLibrary extends ChangeNotifier {
         subdirectory: seriesDirectory == null || seriesDirectory.trim().isEmpty
             ? null
             : mediaSeriesDirectoryName(mediaFolderDisplayName(seriesDirectory)),
+        reuseExistingIfSameSize: true,
       );
     } else {
       final dir = targetDirectory!;
       await dir.create(recursive: true);
       var file = File(p.join(dir.path, value.name));
-      var suffix = 2;
-      while (await file.exists()) {
-        file = File(
-          p.join(
-            dir.path,
-            '${value.name.replaceFirst(RegExp(r'\.mp4$', caseSensitive: false), '')} ($suffix).mp4',
-          ),
-        );
-        suffix++;
-      }
-      final temporary = File('${file.path}.part');
-      if (native != null) {
-        await native!.copyVerified(source: source, destination: file.path);
-      } else {
-        try {
-          await File(source).copy(temporary.path);
-          if (await temporary.length() != await File(source).length()) {
-            throw StateError('导出文件校验失败');
+      final sourceSize = await File(source).length();
+      var reuseExisting = false;
+      if (await file.exists()) {
+        reuseExisting =
+            await file.length() == sourceSize &&
+            await _hasSameBytes(source, file.path);
+        if (!reuseExisting) {
+          var suffix = 2;
+          while (await file.exists()) {
+            file = File(
+              p.join(
+                dir.path,
+                '${value.name.replaceFirst(RegExp(r'\.mp4$', caseSensitive: false), '')} ($suffix).mp4',
+              ),
+            );
+            suffix++;
           }
-          await temporary.rename(file.path);
-        } finally {
-          if (await temporary.exists()) await temporary.delete();
+        }
+      }
+      if (!reuseExisting) {
+        final temporary = File('${file.path}.part');
+        if (native != null) {
+          await native!.copyVerified(source: source, destination: file.path);
+        } else {
+          try {
+            await File(source).copy(temporary.path);
+            if (await temporary.length() != sourceSize) {
+              throw StateError('导出文件校验失败');
+            }
+            await temporary.rename(file.path);
+          } finally {
+            if (await temporary.exists()) await temporary.delete();
+          }
         }
       }
       target = file.path;
@@ -1267,6 +1292,17 @@ class MediaLibrary extends ChangeNotifier {
     if (current.libraryCopy != null || current.materializedCopy != null) {
       await _save(current.withCopies());
     }
+  }
+
+  Future<bool> _hasSameBytes(String source, String target) async {
+    final sourceFile = File(source);
+    final targetFile = File(target);
+    if (!await sourceFile.exists() || !await targetFile.exists()) return false;
+    final sourceSize = await sourceFile.length();
+    if (sourceSize != await targetFile.length()) return false;
+    final sourceDigest = await sha256.bind(sourceFile.openRead()).first;
+    final targetDigest = await sha256.bind(targetFile.openRead()).first;
+    return sourceDigest == targetDigest;
   }
 
   /// Removes the temporary filesystem copy created only to relay a SAF

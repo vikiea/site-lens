@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
+import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/media/media_library.dart';
 import 'package:site_lens/media/media_service.dart';
 import 'package:site_lens/media/media_storage.dart';
@@ -181,6 +182,56 @@ void main() {
     expect(item.relativePath, 'before.mp4');
     expect(item.storageKind, 'appPrivate');
     expect(item.migrationState, 'complete');
+  });
+
+  test('one-click naming migration moves legacy files to series and episode layout', () async {
+    final oldDirectory = Directory(
+      '${root.path}/media_exports/示例系列 - 批次1234567890123456',
+    )..createSync(recursive: true);
+    final oldFile = File('${oldDirectory.path}/示例系列 - 第1集.mp4')
+      ..writeAsBytesSync([1, 2, 3]);
+    final candidate = MediaCandidate(
+      id: 'migration-candidate',
+      hostId: 1,
+      generation: 1,
+      sourceUrl: Uri.parse('https://example.test/watch/1'),
+      mediaUrl: Uri.parse('https://cdn.example/episode-1.mp4'),
+      title: '示例系列 - 第1集',
+      mime: 'video/mp4',
+      source: MediaCandidateSource.dom,
+    );
+    await db.saveMediaCandidate(candidate);
+    var task = tasks.create(candidate);
+    task = tasks.transition(task.id, MediaTaskState.downloading);
+    task = tasks.transition(task.id, MediaTaskState.completed);
+    task = tasks.transition(task.id, MediaTaskState.playable);
+    await tasks.flush(task.id);
+    await db.saveMediaArtifact(
+      task.id,
+      MediaArtifact(
+        taskId: task.id,
+        location: oldFile.path,
+        name: '示例系列 - 第1集.mp4',
+        size: 3,
+        folder: oldDirectory.path,
+        createdAt: DateTime.now().toUtc(),
+      ).toJson(),
+    );
+    await library.restore();
+    final storage = MediaStorageService(
+      tasks: tasks,
+      library: library,
+      configuredRoot: () async => null,
+    );
+
+    final report = await storage.migrateLegacyMediaNaming();
+
+    final target = File('${root.path}/media_exports/示例系列/第1集.mp4');
+    expect(report.migrated, 1);
+    expect(await target.readAsBytes(), [1, 2, 3]);
+    expect(await oldFile.exists(), isFalse);
+    expect(library.item(task.id)!.name, '第1集.mp4');
+    expect(library.item(task.id)!.location, target.path);
   });
 
   test('reconciles a journaled local move after catalog persistence failure', () async {

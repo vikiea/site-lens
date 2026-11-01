@@ -78,6 +78,109 @@ class SiteLensRowText extends StatelessWidget {
   );
 }
 
+/// Displays a complete row description in one line and lets the user drag
+/// horizontally when the text is wider than the available row viewport.
+///
+/// This uses a clipped drag viewport instead of Flutter's [Scrollable]. Row
+/// descriptions are nested in many vertically scrollable pages, and adding a
+/// second scroll owner for every row makes gesture routing and page-level
+/// accessibility ambiguous.
+class SiteLensScrollableRowText extends StatefulWidget {
+  const SiteLensScrollableRowText(
+    this.text, {
+    super.key,
+    this.style,
+    this.semanticsLabel,
+  });
+
+  final String text;
+  final TextStyle? style;
+  final String? semanticsLabel;
+
+  @override
+  State<SiteLensScrollableRowText> createState() =>
+      _SiteLensScrollableRowTextState();
+}
+
+class _SiteLensScrollableRowTextState extends State<SiteLensScrollableRowText> {
+  double _offset = 0;
+
+  @override
+  void didUpdateWidget(covariant SiteLensScrollableRowText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.text != widget.text || oldWidget.style != widget.style) {
+      _offset = 0;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final effective = DefaultTextStyle.of(context).style.merge(widget.style);
+      final textScaler = MediaQuery.textScalerOf(context);
+      final painter = TextPainter(
+        text: TextSpan(text: widget.text, style: effective),
+        textDirection: Directionality.of(context),
+        textScaler: textScaler,
+        locale: Localizations.maybeLocaleOf(context),
+        maxLines: 1,
+      )..layout();
+      final contentWidth = painter.width;
+      painter.dispose();
+
+      final viewportWidth = constraints.hasBoundedWidth
+          ? constraints.maxWidth
+          : contentWidth;
+      final maxOffset = math.max(0, contentWidth - viewportWidth);
+      final offset = _offset.clamp(0, maxOffset).toDouble();
+      if (offset != _offset) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() => _offset = offset);
+        });
+      }
+
+      final text = SizedBox(
+        width: math.max(contentWidth, viewportWidth),
+        child: Text(
+          widget.text,
+          style: effective,
+          maxLines: 1,
+          softWrap: false,
+          overflow: TextOverflow.visible,
+        ),
+      );
+      final viewport = ClipRect(
+        child: SizedBox(
+          width: viewportWidth,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onHorizontalDragUpdate: maxOffset <= 0
+                ? null
+                : (details) => setState(() {
+                    _offset = (_offset - details.delta.dx)
+                        .clamp(0, maxOffset)
+                        .toDouble();
+                  }),
+            child: Transform.translate(
+              offset: Offset(-offset, 0),
+              child: Align(alignment: Alignment.centerLeft, child: text),
+            ),
+          ),
+        ),
+      );
+
+      return Tooltip(
+        message: widget.text,
+        excludeFromSemantics: true,
+        child: Semantics(
+          label: widget.semanticsLabel ?? widget.text,
+          child: viewport,
+        ),
+      );
+    },
+  );
+}
+
 /// A bounded glass viewport: one material and one lazy page scroll owner.
 /// Long lists must not size their glass layer to the full content extent.
 class SiteLensListPanel extends StatelessWidget {
@@ -149,34 +252,20 @@ class SiteLensCompactRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final subtitleText = subtitle is Text ? (subtitle as Text).data : null;
     final action = onTap;
-    final longSubtitle =
-        subtitleText != null &&
-        subtitleText.characters.length >
-            SiteLensMetrics.rowDescriptionFoldThreshold;
-    if (longSubtitle) {
-      if (action == null) {
-        return SiteLensExpandableRow(
-          title: title,
-          description: subtitleText,
-          leading: leading,
-          trailing: trailing,
-        );
-      }
-      return _SiteLensLongDescriptionActionRow(
-        title: title,
-        description: subtitleText,
-        leading: leading,
-        trailing: trailing,
-        onTap: action,
-        quiet: quiet,
-      );
-    }
     final interactionOverlay = SiteLensColors.of(context).rowInteractionOverlay;
-    Widget rowText(Widget child, TextStyle? style) =>
+    Widget rowTitle(Widget child, TextStyle? style) =>
         child is Text && child.data != null
         ? SiteLensRowText(
+            child.data!,
+            key: child.key,
+            style: style?.merge(child.style),
+            semanticsLabel: child.semanticsLabel,
+          )
+        : child;
+    Widget rowSubtitle(Widget child, TextStyle? style) =>
+        child is Text && child.data != null
+        ? SiteLensScrollableRowText(
             child.data!,
             key: child.key,
             style: style?.merge(child.style),
@@ -194,10 +283,10 @@ class SiteLensCompactRow extends StatelessWidget {
         vertical: SiteLensMetrics.compactRowVerticalPadding,
       ),
       leading: leading,
-      title: rowText(title, Theme.of(context).textTheme.titleSmall),
+      title: rowTitle(title, Theme.of(context).textTheme.titleSmall),
       subtitle: subtitle == null
           ? null
-          : rowText(subtitle!, Theme.of(context).textTheme.bodySmall),
+          : rowSubtitle(subtitle!, Theme.of(context).textTheme.bodySmall),
       trailing: trailing,
       onTap: action,
       enableFeedback: false,
@@ -268,76 +357,6 @@ class _SiteLensExpandableRowState extends State<SiteLensExpandableRow> {
   );
 }
 
-class _SiteLensLongDescriptionActionRow extends StatefulWidget {
-  const _SiteLensLongDescriptionActionRow({
-    required this.title,
-    required this.description,
-    required this.onTap,
-    this.leading,
-    this.trailing,
-    this.quiet = false,
-  });
-
-  final Widget title;
-  final String description;
-  final Widget? leading;
-  final Widget? trailing;
-  final VoidCallback onTap;
-  final bool quiet;
-
-  @override
-  State<_SiteLensLongDescriptionActionRow> createState() =>
-      _SiteLensLongDescriptionActionRowState();
-}
-
-class _SiteLensLongDescriptionActionRowState
-    extends State<_SiteLensLongDescriptionActionRow> {
-  bool _expanded = false;
-
-  @override
-  Widget build(BuildContext context) => Column(
-    mainAxisSize: MainAxisSize.min,
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      SiteLensCompactRow(
-        title: widget.title,
-        subtitle: const Text('查看详情'),
-        leading: widget.leading,
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (widget.trailing != null) widget.trailing!,
-            SiteLensCompactIconButton(
-              tooltip: _expanded ? '收起详情' : '查看详情',
-              onPressed: () => setState(() => _expanded = !_expanded),
-              icon: Icon(
-                _expanded ? Icons.expand_less : Icons.expand_more,
-                size: SiteLensMetrics.compactIconSize,
-              ),
-            ),
-          ],
-        ),
-        onTap: widget.onTap,
-        quiet: widget.quiet,
-      ),
-      if (_expanded)
-        Padding(
-          padding: const EdgeInsets.fromLTRB(
-            SiteLensMetrics.compactRowHorizontalPadding,
-            0,
-            SiteLensMetrics.compactRowHorizontalPadding,
-            SiteLensMetrics.formGap,
-          ),
-          child: Text(
-            widget.description,
-            style: Theme.of(context).textTheme.bodySmall,
-            softWrap: true,
-          ),
-        ),
-    ],
-  );
-}
-
 /// The complete row toggles silently; only the switch animates on touch.
 class SiteLensSwitchRow extends StatelessWidget {
   const SiteLensSwitchRow({
@@ -357,19 +376,6 @@ class SiteLensSwitchRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final longSubtitle =
-        subtitle != null &&
-        subtitle!.characters.length >
-            SiteLensMetrics.rowDescriptionFoldThreshold;
-    if (longSubtitle) {
-      return _SiteLensExpandableSwitchRow(
-        title: title,
-        description: subtitle!,
-        value: value,
-        onChanged: onChanged,
-        leading: leading,
-      );
-    }
     return SiteLensCompactRow(
       quiet: true,
       leading: leading,
@@ -383,59 +389,6 @@ class SiteLensSwitchRow extends StatelessWidget {
       ),
     );
   }
-}
-
-class _SiteLensExpandableSwitchRow extends StatefulWidget {
-  const _SiteLensExpandableSwitchRow({
-    required this.title,
-    required this.description,
-    required this.value,
-    required this.onChanged,
-    this.leading,
-  });
-
-  final String title;
-  final String description;
-  final bool value;
-  final ValueChanged<bool>? onChanged;
-  final Widget? leading;
-
-  @override
-  State<_SiteLensExpandableSwitchRow> createState() =>
-      _SiteLensExpandableSwitchRowState();
-}
-
-class _SiteLensExpandableSwitchRowState
-    extends State<_SiteLensExpandableSwitchRow> {
-  bool _expanded = false;
-
-  @override
-  Widget build(BuildContext context) => SiteLensDisclosure(
-    title: Text(widget.title),
-    subtitle: const Text('查看详情'),
-    leading: widget.leading,
-    expanded: _expanded,
-    onToggle: () => setState(() => _expanded = !_expanded),
-    trailingBuilder: (context, expanded) => Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        SiteLensCompactSwitch(
-          value: widget.value,
-          onChanged: widget.onChanged,
-          semanticLabel: widget.title,
-        ),
-        Icon(
-          expanded ? Icons.expand_less : Icons.expand_more,
-          size: SiteLensMetrics.compactIconSize,
-        ),
-      ],
-    ),
-    details: (context) => Text(
-      widget.description,
-      style: Theme.of(context).textTheme.bodySmall,
-      softWrap: true,
-    ),
-  );
 }
 
 /// Shared label/value columns for readable, aligned expanded facts.

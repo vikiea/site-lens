@@ -201,7 +201,7 @@ void main() {
         final directoryHeight = tester.getSize(directoryRow).height;
         final restoreHeight = tester.getSize(restoreRow).height;
         expect(find.byType(SiteLensPanel), findsNWidgets(2));
-        expect(find.byType(Scrollable), findsOneWidget);
+        expect(find.byType(ListView), findsOneWidget);
         expect(find.text(readable), findsNothing);
 
         await tester.tap(find.text('媒体库目录'));
@@ -256,17 +256,6 @@ void main() {
         home: MediaManagementScreen(app: app),
       ),
     );
-    await tester.pumpAndSettle();
-    final watchRow = find.ancestor(
-      of: find.text('示例剧集'),
-      matching: find.byType(SiteLensCompactRow),
-    );
-    final detailsButton = find.descendant(
-      of: watchRow,
-      matching: find.byType(SiteLensCompactIconButton),
-    );
-    expect(detailsButton, findsOneWidget);
-    await tester.tap(detailsButton);
     await tester.pumpAndSettle();
     expect(
       find.text('第 1 集 · 00:30 / 02:00 · 已暂停 · 10-24 20:30'),

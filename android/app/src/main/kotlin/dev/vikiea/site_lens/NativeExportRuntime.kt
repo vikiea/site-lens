@@ -253,7 +253,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             }
             "validateOutput" -> validateOutput(argument("path"))
             "deliver" -> { deliver(argument("source"), Uri.parse(argument("destination"))); null }
-            "deliverToDirectory" -> deliverToDirectory(argument("source"), Uri.parse(argument("directory")), argument("fileName"), call.argument<String>("subdirectory"))
+            "deliverToDirectory" -> deliverToDirectory(argument("source"), Uri.parse(argument("directory")), argument("fileName"), call.argument<String>("subdirectory"), call.argument<Boolean>("reuseExistingIfSameSize") == true)
             "checkDirectory" -> checkDirectory(Uri.parse(argument("directory")))
             "isDocumentWithinTree" -> isDocumentWithinTree(
                 Uri.parse(argument("directory")),
@@ -274,7 +274,15 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 val source = argument("source")
                 val directory = Uri.parse(argument("directory"))
                 val target = if (directory.scheme == "content") {
-                    deliverToDirectory(source, directory, argument("fileName"))
+                    deliverToDirectory(
+                        source,
+                        directory,
+                        argument("fileName"),
+                        reuseExistingIfSameSize =
+                            call.argument<Boolean>("reuseExistingVerified") == true,
+                        failOnConflict =
+                            call.argument<Boolean>("reuseExistingVerified") == true,
+                    )
                 } else {
                     require(directory.scheme == null || directory.scheme == "file") { "移动目录无效" }
                     validateName(argument("fileName"))
@@ -1168,7 +1176,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         }
     }
 
-    private fun deliverToDirectory(sourcePath: String, directory: Uri, fileName: String, subdirectory: String? = null): String {
+    private fun deliverToDirectory(sourcePath: String, directory: Uri, fileName: String, subdirectory: String? = null, reuseExistingIfSameSize: Boolean = false, failOnConflict: Boolean = false): String {
         sourceStream(sourcePath).close()
         require(directory.scheme == "content") { "系统目录无效" }
         validateName(fileName)
@@ -1200,7 +1208,14 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         val existing = findChildDocument(tree, targetParentId, fileName)
         if (existing != null) {
             require(!existing.directory) { "目标名称已被目录占用" }
-            if (sameDocument(sourcePath, existing.uri)) return existing.uri.toString()
+            val sameBytes = sameDocument(sourcePath, existing.uri)
+            if (sameBytes &&
+                (!reuseExistingIfSameSize ||
+                    existing.size == File(sourcePath).length())
+            ) {
+                return existing.uri.toString()
+            }
+            if (failOnConflict) error("目标文件同名但内容不同")
         }
         var targetName = fileName
         var target = existing?.uri
@@ -1401,7 +1416,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             .thenBy { it["name"] as String })
     }
 
-    private data class ChildDocument(val uri: Uri, val directory: Boolean)
+    private data class ChildDocument(val uri: Uri, val directory: Boolean, val size: Long?)
 
     private fun findChildDocument(tree: Uri, parentId: String, name: String): ChildDocument? {
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
@@ -1409,6 +1424,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
             DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
         ), null, null, null) ?: throw FileNotFoundException("系统目录不存在")
         cursor.use {
             while (cursor.moveToNext()) {
@@ -1417,6 +1433,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 return ChildDocument(
                     DocumentsContract.buildDocumentUriUsingTree(tree, id),
                     cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR,
+                    if (cursor.isNull(3)) null else cursor.getLong(3),
                 )
             }
         }

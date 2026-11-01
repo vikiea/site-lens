@@ -2138,6 +2138,7 @@ void main() {
       store.transition(task.id, MediaTaskState.completed);
       store.transition(task.id, MediaTaskState.playable);
       final progress = <int>[];
+      var muxCount = 0;
       final service = Mp4ExportService(
         tasks: store,
         directoryProvider: () async => root,
@@ -2148,6 +2149,7 @@ void main() {
               required void Function(int) onProgress,
               required Cancellation cancellation,
             }) async {
+              muxCount++;
               expect(input.segments.single.path, segment.path);
               onProgress(50);
               await File(outputPath).writeAsBytes([9, 8, 7]);
@@ -2162,8 +2164,17 @@ void main() {
       expect(await File(successful.outputPath!).exists(), isTrue);
       expect(successful.outputPath, contains('系统带我攻略弟弟（漫剧版）'));
       expect(successful.outputPath, isNot(contains('批次1792686431921372')));
+      expect(successful.outputPath, endsWith('/系统带我攻略弟弟（漫剧版）/第1集.mp4'));
       expect(store.task(task.id)?.localRef, isNull);
       expect(progress, containsAllInOrder([0, 50, 100]));
+
+      final reused = await service.export(
+        task.id,
+        HlsCacheInput(playlist: playlist.uri, segments: [segment.uri]),
+      );
+      expect(reused.outputPath, successful.outputPath);
+      expect(reused.state, ExportState.deliverable);
+      expect(muxCount, 1);
     },
   );
 

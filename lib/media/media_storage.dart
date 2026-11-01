@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 
+import '../diagnostics/error_log.dart';
+import '../network/transport.dart';
 import 'media_library.dart';
 import 'media_service.dart';
 import 'native_export_runtime.dart';
@@ -44,6 +46,22 @@ class MediaStorageEntry {
   final bool directory;
   final int size;
   final int modifiedMs;
+}
+
+class MediaNamingMigrationReport {
+  const MediaNamingMigrationReport({
+    required this.migrated,
+    required this.skipped,
+    required this.conflicts,
+    required this.failed,
+    this.failureReasons = const <String, String>{},
+  });
+
+  final int migrated;
+  final int skipped;
+  final int conflicts;
+  final int failed;
+  final Map<String, String> failureReasons;
 }
 
 /// Coordinates the configured media root with the existing media catalog.
@@ -196,11 +214,22 @@ class MediaStorageService extends ChangeNotifier {
     await clearMigration(taskId);
   }
 
-  Future<void> moveArtifact(String taskId, String directory) async {
+  Future<void> moveArtifact(
+    String taskId,
+    String directory, {
+    String? fileName,
+    bool reuseExistingVerified = false,
+  }) async {
     await _assertWithinRoot(directory);
     final artifact = library.item(taskId) ?? (throw StateError('媒体文件不存在'));
-    final fileName = await _uniqueFileName(directory, artifact.name);
-    await library.move(taskId, directory, fileName: fileName);
+    final targetName =
+        fileName ?? await _uniqueFileName(directory, artifact.name);
+    await library.move(
+      taskId,
+      directory,
+      fileName: targetName,
+      reuseExistingVerified: reuseExistingVerified,
+    );
     final root = await resolve();
     await library.updateStorageMetadata(
       taskId,
@@ -211,6 +240,108 @@ class MediaStorageService extends ChangeNotifier {
       ),
       storageKind: root.kind.name,
       migrationState: 'complete',
+    );
+  }
+
+  /// Reconciles old exported files into the canonical series-directory and
+  /// episode-only filename layout. Download caches remain untouched.
+  Future<MediaNamingMigrationReport> migrateLegacyMediaNaming({
+    void Function(int current, int total, String name)? onProgress,
+  }) async {
+    await library.restore();
+    final root = await resolve();
+    if (!root.available) {
+      throw StateError('媒体目录访问权限已失效，请重新授权媒体目录');
+    }
+    final items = [...library.items];
+    var migrated = 0;
+    var skipped = 0;
+    var conflicts = 0;
+    var failed = 0;
+    final failureReasons = <String, String>{};
+    final directories = <String, String>{};
+
+    Future<String> ensureSeriesDirectory(String name) async {
+      final existing = directories[name];
+      if (existing != null) return existing;
+      final entries = await listDirectory(directory: root.location);
+      final found = entries
+          .where((entry) => entry.directory && entry.name == name)
+          .firstOrNull;
+      final location =
+          found?.location ??
+          await createDirectory(parent: root.location, name: name);
+      directories[name] = location;
+      return location;
+    }
+
+    for (var index = 0; index < items.length; index++) {
+      final item = items[index];
+      onProgress?.call(index + 1, items.length, item.name);
+      final task =
+          tasks.referenceTask(item.taskId) ?? library.presentationTask(item);
+      final seriesName = task.seriesDirectoryName;
+      final fileName = mediaExportFileName(task);
+      try {
+        if (!library.canMutate(item.taskId)) {
+          failed++;
+          failureReasons[item.taskId] = '媒体正在播放、导出、投屏或管理中';
+          continue;
+        }
+        final directory = await ensureSeriesDirectory(seriesName);
+        final entries = await listDirectory(directory: directory);
+        final targetIsCurrent = entries.any(
+          (entry) =>
+              !entry.directory &&
+              entry.name == fileName &&
+              entry.size == item.size &&
+              _sameLocation(entry.location, item.location),
+        );
+        if (targetIsCurrent) {
+          skipped++;
+          continue;
+        }
+        final existing = entries
+            .where((entry) => !entry.directory && entry.name == fileName)
+            .firstOrNull;
+        if (existing != null && existing.size != item.size) {
+          conflicts++;
+          failureReasons[item.taskId] = '目标文件同名但大小不同';
+          continue;
+        }
+        await recordMigration(
+          taskId: item.taskId,
+          source: item.location,
+          target: directory,
+          fileName: fileName,
+          phase: 'planned',
+        );
+        await moveArtifact(
+          item.taskId,
+          directory,
+          fileName: fileName,
+          reuseExistingVerified: existing != null,
+        );
+        await clearMigration(item.taskId);
+        migrated++;
+      } catch (error, stack) {
+        failed++;
+        failureReasons[item.taskId] = readableError(error);
+        AppErrorLogger.capture(
+          error,
+          module: 'media.naming-migration',
+          context: item.taskId,
+          stack: stack,
+        );
+      }
+    }
+    await library.rescan();
+    return MediaNamingMigrationReport(
+      migrated: migrated,
+      skipped: skipped,
+      conflicts: conflicts,
+      failed: failed,
+      failureReasons: Map.unmodifiable(failureReasons),
     );
   }
 
@@ -289,7 +420,8 @@ class MediaStorageService extends ChangeNotifier {
           _locationWithinDirectory(
             artifact.location,
             value['target'] as String,
-          )) {
+          ) &&
+          await library.isReadableArtifact(entry.key)) {
         journal.remove(entry.key);
         continue;
       }
@@ -303,20 +435,13 @@ class MediaStorageService extends ChangeNotifier {
         } catch (_) {
           continue;
         }
-        final extension = p.extension(fileName);
-        final base = extension.isEmpty
-            ? fileName
-            : fileName.substring(0, fileName.length - extension.length);
         final candidate = candidates
             .where((item) => !item.directory)
-            .where(
-              (item) =>
-                  item.name == fileName ||
-                  item.name.startsWith('$base (') &&
-                      item.name.endsWith(extension),
-            )
+            .where((item) => item.name == fileName)
+            .where((item) => item.size == artifact.size)
             .firstOrNull;
-        if (candidate != null) {
+        if (candidate != null &&
+            await library.isReadableLocation(candidate.location)) {
           await library.repointArtifact(
             entry.key,
             location: candidate.location,
@@ -618,5 +743,16 @@ class MediaStorageService extends ChangeNotifier {
       return null;
     }
     return p.relative(file, from: rootPath);
+  }
+
+  bool _sameLocation(String left, String right) {
+    final leftUri = Uri.tryParse(left);
+    final rightUri = Uri.tryParse(right);
+    if (leftUri?.scheme == 'content' || rightUri?.scheme == 'content') {
+      return left == right;
+    }
+    final leftPath = _localPath(left);
+    final rightPath = _localPath(right);
+    return leftPath != null && rightPath != null && leftPath == rightPath;
   }
 }

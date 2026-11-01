@@ -445,9 +445,11 @@ void main() {
     expect(find.text(description), findsOneWidget);
   });
 
-  testWidgets('long tappable descriptions keep the row action', (tester) async {
+  testWidgets('long descriptions stay in a horizontally scrollable row', (
+    tester,
+  ) async {
     var tapped = false;
-    const description = '这是一个超过紧凑行阈值的可点击行完整说明文字';
+    const description = '这是一个超过原紧凑行阈值的可点击行完整说明文字';
     await tester.pumpWidget(
       MaterialApp(
         theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
@@ -459,16 +461,14 @@ void main() {
       ),
     );
 
-    expect(find.text(description), findsNothing);
-    expect(find.byType(SiteLensCompactIconButton), findsOneWidget);
-    await tester.tap(
-      find.descendant(
-        of: find.byType(SiteLensCompactIconButton),
-        matching: find.byType(IconButton),
-      ),
-    );
-    await tester.pumpAndSettle();
     expect(find.text(description), findsOneWidget);
+    expect(find.byType(SiteLensScrollableRowText), findsOneWidget);
+    expect(find.byType(SiteLensCompactIconButton), findsNothing);
+    expect(find.text(description), findsOneWidget);
+    await tester.drag(
+      find.byType(SiteLensScrollableRowText),
+      const Offset(-80, 0),
+    );
     await tester.tap(find.text('可点击行'));
     expect(tapped, isTrue);
   });
@@ -630,7 +630,7 @@ void main() {
     expect(find.text('第二项详情'), findsOneWidget);
   });
 
-  testWidgets('long switch descriptions fold without truncation', (
+  testWidgets('long switch descriptions stay complete and scrollable', (
     tester,
   ) async {
     var value = false;
@@ -650,11 +650,9 @@ void main() {
         ),
       ),
     );
-    expect(find.byType(SiteLensRowText), findsNWidgets(2));
+    expect(find.byType(SiteLensRowText), findsOneWidget);
+    expect(find.byType(SiteLensScrollableRowText), findsOneWidget);
     expect(find.byType(ListTile), findsOneWidget);
-    expect(find.text('查看详情'), findsOneWidget);
-    await tester.tap(find.text('查看详情'));
-    await tester.pumpAndSettle();
     expect(find.text('这是一个超过紧凑行阈值的完整说明文字应该放入可折叠详情'), findsOneWidget);
     await tester.tap(find.byType(Switch));
     await tester.pumpAndSettle();

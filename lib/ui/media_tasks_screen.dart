@@ -108,6 +108,54 @@ String _taskErrorLabel(MediaTask task) {
   return _mediaErrorLabel(task.errorCode);
 }
 
+bool _isMediaTaskErrorState(MediaTaskState state) =>
+    state == MediaTaskState.failed ||
+    state == MediaTaskState.cancelled ||
+    state == MediaTaskState.reauthorize;
+
+String _mediaTaskProgressDescription(
+  MediaTask task, {
+  required bool totalKnown,
+}) {
+  final bytes = formatBytes(task.bytesDownloaded);
+  final total = task.totalBytes;
+  if (!totalKnown || total == null || total <= 0) {
+    return '已下载 $bytes · 总大小未知';
+  }
+  final progress = (task.bytesDownloaded / total).clamp(0, 1).toDouble();
+  return '${(progress * 100).round()}% · $bytes/${formatBytes(total)}';
+}
+
+String _mediaPlayableDescription(MediaTask task, MediaArtifact? artifact) {
+  final parts = <String>['可播放'];
+  final size = artifact?.size ?? task.totalBytes;
+  if (size != null && size > 0) parts.add(formatBytes(size));
+  final duration = artifact?.durationMs;
+  if (duration != null && duration > 0) {
+    parts.add(formatMediaDuration(duration));
+  }
+  return parts.join(' · ');
+}
+
+String mediaTaskRowDescription(
+  MediaTask task, {
+  MediaCandidate? candidate,
+  MediaArtifact? artifact,
+}) {
+  if (_isMediaTaskErrorState(task.state)) return '点击重试';
+  return switch (task.state) {
+    MediaTaskState.completed || MediaTaskState.playable =>
+      _mediaPlayableDescription(task, artifact),
+    MediaTaskState.downloading =>
+      '下载中 · ${_mediaTaskProgressDescription(task, totalKnown: candidate?.isHls != true)}',
+    MediaTaskState.paused =>
+      '已暂停 · ${_mediaTaskProgressDescription(task, totalKnown: candidate?.isHls != true)}',
+    MediaTaskState.queued => '排队中',
+    MediaTaskState.cancelled => '点击重试',
+    MediaTaskState.failed || MediaTaskState.reauthorize => '点击重试',
+  };
+}
+
 String _shortMediaName(String value) {
   final runes = value.runes.toList();
   if (runes.length <= 13) return value;
@@ -1629,6 +1677,8 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
             app.mediaTasks.referenceTask(item.taskId) ??
             app.mediaLibrary.presentationTask(item);
         await openMediaTaskPlayer(context, app, task, preferExported: true);
+      case 'rescan':
+        await _rescan();
       case 'cast':
         final task = app.mediaTasks.task(item.taskId);
         if (task == null) throw StateError('该 MP4 没有对应媒体任务，暂不支持投屏');
@@ -2297,7 +2347,7 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
   late final Future<MediaCandidate?> _candidate = widget.app.db.mediaCandidate(
     widget.task.candidateId,
   );
-  var _expanded = true;
+  var _expanded = false;
 
   @override
   void didUpdateWidget(covariant _MediaLibraryTile oldWidget) {
@@ -2314,6 +2364,7 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
       final item =
           widget.app.mediaLibrary.item(widget.item.taskId) ?? widget.item;
       final thumbnail = item.thumbnailPath;
+      final hasError = snapshot.hasError;
       final preview = SizedBox(
         width: 68,
         height: 48,
@@ -2351,15 +2402,13 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
           item.name.replaceFirst(RegExp(r'\.mp4$', caseSensitive: false), ''),
         ),
         subtitle: Text(
-          snapshot.hasError ? '不可用' : '可播放',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+          hasError ? '点击重试' : _mediaPlayableDescription(widget.task, item),
           style: Theme.of(context).textTheme.labelSmall
               ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
         ),
         onTap: widget.selectionMode
             ? () => widget.onSelected?.call(!widget.selected)
-            : () => unawaited(widget.onAction('play')),
+            : () => unawaited(widget.onAction(hasError ? 'rescan' : 'play')),
         trailing: widget.selectionMode
             ? null
             : widget.app.mediaLibrary.busy(item.taskId)
@@ -2421,57 +2470,46 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
                     ),
                     onSelected: widget.onAction,
                   ),
-                  SiteLensCompactIconButton(
-                    tooltip: _expanded ? '收起详情' : '展开详情',
-                    onPressed: () => setState(() => _expanded = !_expanded),
-                    icon: Icon(
-                      _expanded ? Icons.expand_less : Icons.expand_more,
-                      size: SiteLensMetrics.compactIconSize,
+                  if (hasError)
+                    SiteLensCompactIconButton(
+                      tooltip: _expanded ? '收起错误' : '展开错误',
+                      onPressed: () => setState(() => _expanded = !_expanded),
+                      icon: Icon(
+                        _expanded ? Icons.expand_less : Icons.expand_more,
+                        size: SiteLensMetrics.compactIconSize,
+                      ),
                     ),
-                  ),
                 ],
               ),
       );
-      if (widget.selectionMode || !_expanded) return row;
+      if (widget.selectionMode || !hasError || !_expanded) return row;
       return Column(
         mainAxisSize: MainAxisSize.min,
-        children: [row, _mediaArtifactInlineDetails(context, item, snapshot)],
+        children: [
+          row,
+          _mediaErrorInlineDetails(
+            context,
+            snapshot.error == null ? '媒体文件不可用' : friendlyError(snapshot.error!),
+          ),
+        ],
       );
     },
   );
 }
 
-Widget _mediaArtifactInlineDetails(
-  BuildContext context,
-  MediaArtifact item,
-  AsyncSnapshot<MediaArtifact> snapshot,
-) => Padding(
-  padding: const EdgeInsets.fromLTRB(
-    SiteLensMetrics.accordionContentIndent,
-    0,
-    SiteLensMetrics.compactRowHorizontalPadding,
-    SiteLensMetrics.formGap,
-  ),
-  child: Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      _MediaDetailRow(label: '文件大小', value: formatBytes(item.size)),
-      _MediaDetailRow(label: '格式', value: item.mime),
-      _MediaDetailRow(
-        label: '时长',
-        value: formatMediaDuration(item.durationMs ?? 0),
+Widget _mediaErrorInlineDetails(BuildContext context, String message) =>
+    Padding(
+      padding: const EdgeInsets.fromLTRB(
+        SiteLensMetrics.accordionContentIndent,
+        0,
+        SiteLensMetrics.compactRowHorizontalPadding,
+        SiteLensMetrics.formGap,
       ),
-      if ((item.width ?? 0) > 0 && (item.height ?? 0) > 0)
-        _MediaDetailRow(label: '分辨率', value: '${item.width} × ${item.height}'),
-      _MediaDetailRow(
-        label: '保存位置',
-        value: readableMediaLocation(item.location),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [_MediaDetailRow(label: '错误原因', value: message)],
       ),
-      if (snapshot.hasError)
-        const _MediaDetailRow(label: '文件检查', value: '文件暂不可用'),
-    ],
-  ),
-);
+    );
 
 Future<void> showMediaTaskDetails(
   BuildContext context,
@@ -2603,6 +2641,8 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
   int _migrationTotal = 0;
   String? _migrationCurrent;
   String? _migrationStatus;
+  bool _namingMigrationRunning = false;
+  String? _namingMigrationStatus;
 
   @override
   void initState() {
@@ -2657,6 +2697,58 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
     await app.setMp4ExportDirectory(selected);
     await app.mediaStorage.resolve();
     if (mounted) showShortToast(context, '媒体库目录已更新');
+  }
+
+  Future<void> _migrateMediaNaming() async {
+    if (_namingMigrationRunning) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => SiteLensAlertDialog(
+        title: const Text('整理历史媒体文件'),
+        content: const Text(
+          '将已有 MP4 统一整理为“剧集文件夹/第N集.mp4”。下载缓存和任务身份保持不变；同名但大小不同的文件会保留并报告冲突。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('开始整理'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() {
+      _namingMigrationRunning = true;
+      _namingMigrationStatus = '正在扫描历史媒体…';
+    });
+    try {
+      final report = await app.mediaStorage.migrateLegacyMediaNaming(
+        onProgress: (current, total, name) {
+          if (!mounted) return;
+          setState(() {
+            _namingMigrationStatus = '正在整理 $current / $total · $name';
+          });
+        },
+      );
+      await app.mediaLibrary.rescan();
+      if (!mounted) return;
+      final suffix = <String>[
+        if (report.conflicts > 0) '冲突 ${report.conflicts}',
+        if (report.failed > 0) '失败 ${report.failed}',
+      ];
+      setState(() {
+        _namingMigrationStatus =
+            '已整理 ${report.migrated} 个，跳过 ${report.skipped} 个'
+            '${suffix.isEmpty ? '' : '，${suffix.join('，')}'}';
+      });
+      showShortToast(context, _namingMigrationStatus!);
+    } finally {
+      if (mounted) setState(() => _namingMigrationRunning = false);
+    }
   }
 
   Future<void> _migrateLibrary() async {
@@ -3048,6 +3140,27 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
                       () => app.setMediaDownloadConcurrency(value),
                     ),
                   ),
+                ),
+                const SiteLensPanelDivider(),
+                SiteLensCompactRow(
+                  leading: const Icon(Icons.drive_file_rename_outline),
+                  title: const Text('整理历史媒体文件'),
+                  subtitle: Text(
+                    _namingMigrationRunning
+                        ? _namingMigrationStatus ?? '正在整理历史媒体…'
+                        : _namingMigrationStatus ??
+                              '统一为剧集文件夹和集数文件名；已符合规则的文件会跳过',
+                  ),
+                  onTap: _namingMigrationRunning
+                      ? null
+                      : () => safely(context, _migrateMediaNaming),
+                  trailing: _namingMigrationRunning
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.chevron_right),
                 ),
                 const SiteLensPanelDivider(),
                 SiteLensDisclosure(
@@ -4128,8 +4241,6 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         isBatchSelectable: _isBatchSelectable,
         isBatchExportable: _isBatchExportable,
         taskTitle: (task, _) => _taskTitle(task),
-        taskProgressLabel: _taskProgressLabel,
-        taskErrorLabel: _taskErrorLabel,
         onRefresh: (value) =>
             _run(() => _refreshNative(value), taskId: value.id),
         onDetails: _showDetails,
@@ -4145,18 +4256,6 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         onFileManagement: (action, value) =>
             _run(() => _taskFileManagement(action, value), taskId: value.id),
       );
-
-  double? _taskProgress(MediaTask task) {
-    final total = task.totalBytes;
-    if (total == null || total <= 0) return null;
-    return (task.bytesDownloaded / total).clamp(0, 1).toDouble();
-  }
-
-  String _taskProgressLabel(MediaTask task) {
-    final progress = _taskProgress(task);
-    if (progress == null) return formatBytes(task.bytesDownloaded);
-    return '${(progress * 100).round()}% · ${formatBytes(task.bytesDownloaded)}/${formatBytes(task.totalBytes!)}';
-  }
 
   String _taskTitle(MediaTask task) {
     return _shortMediaName(task.episodeFileName.trim());
@@ -4174,8 +4273,6 @@ class _MediaTaskRow extends StatefulWidget {
     required this.isBatchSelectable,
     required this.isBatchExportable,
     required this.taskTitle,
-    required this.taskProgressLabel,
-    required this.taskErrorLabel,
     required this.onRefresh,
     required this.onDetails,
     required this.onPlay,
@@ -4195,8 +4292,6 @@ class _MediaTaskRow extends StatefulWidget {
   final bool Function(MediaTask) isBatchSelectable;
   final bool Function(MediaTask) isBatchExportable;
   final String Function(MediaTask, MediaCandidate?) taskTitle;
-  final String Function(MediaTask) taskProgressLabel;
-  final String Function(MediaTask) taskErrorLabel;
   final Future<void> Function(MediaTask) onRefresh;
   final Future<void> Function(MediaTask, MediaCandidate?) onDetails;
   final Future<void> Function(MediaTask) onPlay;
@@ -4214,7 +4309,7 @@ class _MediaTaskRow extends StatefulWidget {
 class _MediaTaskRowState extends State<_MediaTaskRow> {
   late Future<MediaCandidate?> _candidate;
   late Future<MediaArtifact?> _artifact;
-  var _expanded = true;
+  var _expanded = false;
 
   @override
   void initState() {
@@ -4283,6 +4378,12 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
             artifactSnapshot.data ??
             widget.app.mediaLibrary.item(widget.task.id);
         final busy = widget.busy;
+        final hasError = _isMediaTaskErrorState(widget.task.state);
+        final description = mediaTaskRowDescription(
+          widget.task,
+          candidate: candidate,
+          artifact: artifact,
+        );
         final menu = SiteLensGlassMenuButton<String>(
           tooltip: '媒体任务操作',
           icon: Icons.more_horiz,
@@ -4421,11 +4522,7 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          subtitle: Text(
-            _mediaTaskStateLabel(widget.task.state),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
+          subtitle: Text(description),
           onTap: widget.browser.selectionMode
               ? (widget.isBatchSelectable(widget.task)
                     ? () => widget.browser.toggleItem(widget.task.id)
@@ -4444,14 +4541,15 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
                       height: kMinInteractiveDimension,
                       child: menu,
                     ),
-                    SiteLensCompactIconButton(
-                      tooltip: _expanded ? '收起详情' : '展开详情',
-                      onPressed: () => setState(() => _expanded = !_expanded),
-                      icon: Icon(
-                        _expanded ? Icons.expand_less : Icons.expand_more,
-                        size: SiteLensMetrics.compactIconSize,
+                    if (hasError)
+                      SiteLensCompactIconButton(
+                        tooltip: _expanded ? '收起错误' : '展开错误',
+                        onPressed: () => setState(() => _expanded = !_expanded),
+                        icon: Icon(
+                          _expanded ? Icons.expand_less : Icons.expand_more,
+                          size: SiteLensMetrics.compactIconSize,
+                        ),
                       ),
-                    ),
                   ],
                 ),
         );
@@ -4459,13 +4557,12 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
           mainAxisSize: MainAxisSize.min,
           children: [
             row,
-            if (!widget.browser.selectionMode && _expanded)
-              _mediaTaskInlineDetails(
+            if (!widget.browser.selectionMode && hasError && _expanded)
+              _mediaErrorInlineDetails(
                 context,
-                widget.task,
-                candidate,
-                artifact,
-                progressLabel: widget.taskProgressLabel(widget.task),
+                _taskErrorLabel(widget.task).isEmpty
+                    ? '下载失败'
+                    : _taskErrorLabel(widget.task),
               ),
           ],
         );
@@ -4473,52 +4570,6 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
     ),
   );
 }
-
-Widget _mediaTaskInlineDetails(
-  BuildContext context,
-  MediaTask task,
-  MediaCandidate? candidate,
-  MediaArtifact? artifact, {
-  required String progressLabel,
-}) => Padding(
-  padding: const EdgeInsets.fromLTRB(
-    SiteLensMetrics.accordionContentIndent,
-    0,
-    SiteLensMetrics.compactRowHorizontalPadding,
-    SiteLensMetrics.formGap,
-  ),
-  child: Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      if (artifact == null)
-        _MediaDetailRow(label: '进度', value: progressLabel),
-      if (artifact != null) ...[
-        _MediaDetailRow(label: '文件大小', value: formatBytes(artifact.size)),
-        _MediaDetailRow(label: '格式', value: artifact.mime),
-        _MediaDetailRow(
-          label: '时长',
-          value: formatMediaDuration(artifact.durationMs ?? 0),
-        ),
-      ] else ...[
-        if (candidate != null)
-          _MediaDetailRow(label: '格式', value: candidate.effectiveMime),
-      ],
-      if (_taskErrorLabel(task).isNotEmpty)
-        _MediaDetailRow(label: '错误原因', value: _taskErrorLabel(task)),
-      if (task.state == MediaTaskState.downloading ||
-          task.state == MediaTaskState.paused)
-        Padding(
-          padding: const EdgeInsets.only(top: 4, bottom: 10),
-          child: LinearProgressIndicator(
-            value: task.totalBytes == null || task.totalBytes! <= 0
-                ? null
-                : (task.bytesDownloaded / task.totalBytes!).clamp(0, 1),
-            minHeight: 4,
-          ),
-        ),
-    ],
-  ),
-);
 
 class _ActiveMediaPlaybackRow extends StatelessWidget {
   const _ActiveMediaPlaybackRow({

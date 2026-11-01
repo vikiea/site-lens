@@ -354,33 +354,71 @@ void main() {
     },
   );
 
-  test(
-    'configured directory receives real bytes without overwriting a collision',
-    () async {
-      await library.register(task, output.path);
-      final directory = Directory('${root.path}/chosen');
-      await directory.create();
-      final previous = File(
-        '${directory.path}/${task.storageDirectoryName}/${mediaExportFileName(task)}',
-      );
-      await previous.parent.create(recursive: true);
-      await previous.writeAsBytes([9]);
-      await library.deliver(task.id, directory.path);
-      final delivered = library.item(task.id)!;
-      expect(await File(delivered.location).readAsBytes(), [1, 2, 3, 4, 5, 6]);
-      expect(await previous.readAsBytes(), [9]);
-      expect(delivered.location, endsWith('(2).mp4'));
-      expect(await output.exists(), isFalse);
-      expect(await (await library.localFile(task.id))!.readAsBytes(), [
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-      ]);
-    },
-  );
+  test('configured directory receives real bytes without overwriting a collision', () async {
+    await library.register(task, output.path);
+    final directory = Directory('${root.path}/chosen');
+    await directory.create();
+    final previous = File(
+      '${directory.path}/${task.storageDirectoryName}/${mediaExportFileName(task)}',
+    );
+    await previous.parent.create(recursive: true);
+    await previous.writeAsBytes([9]);
+    await library.deliver(task.id, directory.path);
+    final delivered = library.item(task.id)!;
+    expect(await File(delivered.location).readAsBytes(), [1, 2, 3, 4, 5, 6]);
+    expect(await previous.readAsBytes(), [9]);
+    expect(delivered.location, endsWith('(2).mp4'));
+    expect(await output.exists(), isFalse);
+    expect(await (await library.localFile(task.id))!.readAsBytes(), [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+    ]);
+  });
+
+  test('configured destination with same name and size reuses the existing file', () async {
+    await library.register(task, output.path);
+    final directory = Directory('${root.path}/chosen-same-size');
+    final existing = File(
+      '${directory.path}/${task.storageDirectoryName}/${mediaExportFileName(task)}',
+    );
+    await existing.parent.create(recursive: true);
+    await existing.writeAsBytes([1, 2, 3, 4, 5, 6]);
+
+    await library.deliver(task.id, directory.path);
+
+    final delivered = library.item(task.id)!;
+    expect(delivered.location, existing.path);
+    expect(await existing.readAsBytes(), [1, 2, 3, 4, 5, 6]);
+    expect(await output.exists(), isFalse);
+    expect(
+      await directory
+          .list(recursive: true)
+          .where((entity) => entity is File)
+          .length,
+      1,
+    );
+  });
+
+  test('same-size different content keeps the destination and creates a collision name', () async {
+    await library.register(task, output.path);
+    final directory = Directory('${root.path}/chosen-same-size-different');
+    final existing = File(
+      '${directory.path}/${task.storageDirectoryName}/${mediaExportFileName(task)}',
+    );
+    await existing.parent.create(recursive: true);
+    await existing.writeAsBytes([9, 9, 9, 9, 9, 9]);
+
+    await library.deliver(task.id, directory.path);
+
+    final delivered = library.item(task.id)!;
+    expect(delivered.location, endsWith('(2).mp4'));
+    expect(await existing.readAsBytes(), [9, 9, 9, 9, 9, 9]);
+    expect(await File(delivered.location).readAsBytes(), [1, 2, 3, 4, 5, 6]);
+  });
 
   test('rename and move update actual file and durable location, delete removes it', () async {
     await library.register(task, output.path);
@@ -663,9 +701,7 @@ void main() {
       expect(library.item(batched.id)!.location, first.location);
       expect(
         first.location,
-        contains(
-          '${Platform.pathSeparator}系统带我攻略弟弟（漫剧版）${Platform.pathSeparator}',
-        ),
+        contains('${Platform.pathSeparator}批量系列${Platform.pathSeparator}'),
       );
       expect(first.location, isNot(contains('批次1792686431921372')));
       expect(

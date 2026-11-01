@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../backup/backup_service.dart';
@@ -1437,7 +1438,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         var artifactName = mediaExportFileName(task);
         if (file.path.toLowerCase().endsWith('.m3u8')) {
           final input = await const HlsPlaylistParser().parseFile(file.uri);
-          final result = await mediaExports.export(task.id, input);
+          final result = await mediaExports.export(
+            task.id,
+            input,
+            forceRegenerate: forceRegenerate,
+          );
           if (result.state != ExportState.deliverable ||
               result.outputPath == null) {
             throw StateError(result.errorCode ?? '导出失败');
@@ -1454,24 +1459,43 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           artifactMime = mime;
           final baseName = mediaExportFileName(task)
               .replaceFirst(RegExp(r'\.mp4$', caseSensitive: false), '');
-          final folder = mediaSeriesDirectoryName(task.storageDirectoryName);
+          final folder = task.seriesDirectoryName;
           final directory = Directory(
-            '${(await mediaTasks.cacheRootDirectory()).parent.path}/media_exports/$folder/${task.cacheKey}',
+            '${(await mediaTasks.cacheRootDirectory()).parent.path}/media_exports/$folder',
           );
           await directory.create(recursive: true);
           final name = '$baseName.mp4';
           artifactName = name;
           final destination = File('${directory.path}/$name');
-          final temporary = File('${destination.path}.part');
-          try {
-            await file.copy(temporary.path);
-            if (await temporary.length() != await file.length()) {
-              throw StateError('MP4 副本校验失败');
-            }
-            await temporary.rename(destination.path);
+          final sourceSize = await file.length();
+          if (!forceRegenerate &&
+              await destination.exists() &&
+              await destination.length() == sourceSize &&
+              await _sameLocalFileBytes(file, destination)) {
             output = destination.path;
-          } finally {
-            if (await temporary.exists()) await temporary.delete();
+          } else {
+            final temporary = File('${destination.path}.part');
+            final previous = File('${destination.path}.previous');
+            try {
+              await file.copy(temporary.path);
+              if (await temporary.length() != sourceSize) {
+                throw StateError('MP4 副本校验失败');
+              }
+              if (await previous.exists()) await previous.delete();
+              if (await destination.exists()) {
+                await destination.rename(previous.path);
+              }
+              await temporary.rename(destination.path);
+              if (await previous.exists()) await previous.delete();
+              output = destination.path;
+            } catch (_) {
+              if (!await destination.exists() && await previous.exists()) {
+                await previous.rename(destination.path);
+              }
+              rethrow;
+            } finally {
+              if (await temporary.exists()) await temporary.delete();
+            }
           }
         }
         artifact = await mediaLibrary.register(
@@ -1487,6 +1511,14 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       _exportingMedia.remove(task.id);
       notifyMediaChanged();
     }
+  }
+
+  Future<bool> _sameLocalFileBytes(File left, File right) async {
+    if (!await left.exists() || !await right.exists()) return false;
+    if (await left.length() != await right.length()) return false;
+    final leftDigest = await sha256.bind(left.openRead()).first;
+    final rightDigest = await sha256.bind(right.openRead()).first;
+    return leftDigest == rightDigest;
   }
 
   Future<void> deleteMediaArtifact(

@@ -99,11 +99,13 @@ class NativeExportRuntime {
     required Uri directory,
     required String fileName,
     String? subdirectory,
+    bool reuseExistingIfSameSize = false,
   }) async => (await _channel.invokeMethod<String>('deliverToDirectory', {
     'source': source,
     'directory': directory.toString(),
     'fileName': fileName,
     'subdirectory': ?subdirectory,
+    'reuseExistingIfSameSize': reuseExistingIfSameSize,
   }))!;
 
   Future<Map<String, Object?>> inspect(String source) async => (await _channel

@@ -4127,6 +4127,7 @@ class Mp4ExportService {
     HlsCacheInput input, {
     Cancellation? cancellation,
     void Function(int progress)? onProgress,
+    bool forceRegenerate = false,
   }) async {
     final task = tasks.task(taskId);
     if (task == null) throw StateError('媒体任务不存在');
@@ -4140,6 +4141,8 @@ class Mp4ExportService {
     Directory? outputDirectory;
     File? temporary;
     File? output;
+    File? previous;
+    var outputExisted = false;
     var committed = false;
     // Validation itself reads the cache asynchronously, so it needs the same
     // lease as Transformer and the final output scan.
@@ -4149,11 +4152,23 @@ class Mp4ExportService {
       await validateHlsCacheInput(input);
       cancel.check();
       final root = await _directoryProvider();
-      final seriesFolder = mediaSeriesDirectoryName(task.storageDirectoryName);
-      final exportFolder = '$seriesFolder/$id';
+      final seriesFolder = task.seriesDirectoryName;
+      final exportFolder = seriesFolder;
       outputDirectory = Directory('${root.path}/media_exports/$exportFolder');
       await outputDirectory.create(recursive: true);
       output = File('${outputDirectory.path}/${mediaExportFileName(task)}');
+      outputExisted = await output.exists();
+      if (!forceRegenerate && outputExisted && await output.length() > 0) {
+        report(100);
+        committed = true;
+        return Mp4ExportTask(
+          id: id,
+          mediaTaskId: taskId,
+          state: ExportState.deliverable,
+          outputPath: output.path,
+          progress: 100,
+        );
+      }
       temporary = File('${output.path}.part');
       report(0);
       cancel.check();
@@ -4227,7 +4242,29 @@ class Mp4ExportService {
         }
       }
       cancel.check();
-      await temporary.rename(output.path);
+      if (await output.exists() &&
+          await _sameLocalFileBytes(temporary, output)) {
+        await temporary.delete();
+      } else {
+        if (await output.exists()) {
+          previous = File('${output.path}.previous');
+          if (await previous.exists()) await previous.delete();
+          await output.rename(previous.path);
+        }
+        try {
+          await temporary.rename(output.path);
+          if (previous != null && await previous.exists()) {
+            await previous.delete();
+          }
+        } catch (_) {
+          if (!await output.exists() &&
+              previous != null &&
+              await previous.exists()) {
+            await previous.rename(output.path);
+          }
+          rethrow;
+        }
+      }
       cancel.check();
       committed = true;
       report(100);
@@ -4246,10 +4283,18 @@ class Mp4ExportService {
       // cancelled export as a failure.
       final cancelled = error is Cancelled || cancel.cancelled;
       if (!committed) {
+        if (output != null &&
+            !await output.exists() &&
+            previous != null &&
+            await previous.exists()) {
+          await previous.rename(output.path);
+        }
         if (temporary != null && await temporary.exists()) {
           await temporary.delete();
         }
-        if (output != null && await output.exists()) await output.delete();
+        if (!outputExisted && output != null && await output.exists()) {
+          await output.delete();
+        }
         if (outputDirectory != null &&
             await outputDirectory.exists() &&
             await outputDirectory.list().isEmpty) {
@@ -4293,6 +4338,14 @@ class Mp4ExportService {
     } finally {
       tasks.release(taskId);
     }
+  }
+
+  Future<bool> _sameLocalFileBytes(File left, File right) async {
+    if (!await left.exists() || !await right.exists()) return false;
+    if (await left.length() != await right.length()) return false;
+    final leftDigest = await sha256.bind(left.openRead()).first;
+    final rightDigest = await sha256.bind(right.openRead()).first;
+    return leftDigest == rightDigest;
   }
 
   Future<Mp4ExportTask> deliver(Mp4ExportTask task, Uri destination) async {

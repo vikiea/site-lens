@@ -84,7 +84,6 @@ abstract final class SiteLensMetrics {
   static const compactSwitchScale = 0.84;
   static const rowTextMaxCharacters = 20;
   static const rowTextMinScale = 0.88;
-  static const rowDescriptionFoldThreshold = rowTextMaxCharacters;
   static const themeSwatchColumns = 6;
   static const themeSwatchSize = 46.0;
   static const themeSwatchGap = 10.0;

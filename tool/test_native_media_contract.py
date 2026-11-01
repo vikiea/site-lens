@@ -193,6 +193,27 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn('completeMediaMove(target, { delete(source) }, { delete(target, allowMissing = true) })', move)
         self.assertIn('"recoveryTarget" to error.target', NATIVE_EXPORT)
 
+    def test_directory_delivery_reuses_verified_same_size_documents(self):
+        delivery = NATIVE_EXPORT.split(
+            'private fun deliverToDirectory(', 1
+        )[1].split('private fun checkDirectory(', 1)[0]
+        for token in (
+            'reuseExistingIfSameSize: Boolean = false',
+            'val existing = findChildDocument(tree, targetParentId, fileName)',
+            'existing.size == File(sourcePath).length()',
+            'return existing.uri.toString()',
+            'DocumentsContract.createDocument',
+        ):
+            self.assertIn(token, delivery)
+        post_lookup = delivery.split(
+            'val existing = findChildDocument(tree, targetParentId, fileName)',
+            1,
+        )[1]
+        self.assertLess(
+            post_lookup.index('existing.size == File(sourcePath).length()'),
+            post_lookup.index('DocumentsContract.createDocument'),
+        )
+
     def test_navigation_preparation_retires_previous_completion_and_page(self):
         host = (ANDROID / "NativeWebHost.kt").read_text()
         # A can complete while B is awaiting Dart's script/filter reply.
