@@ -113,14 +113,11 @@ class MediaNetworkRuntime(
 
     /** Never resolve origin DNS while selecting a route, including PAC fallbacks. */
     private fun allowsProxyFakeIp(uri: URI): Boolean {
-        val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
         val directRoute = runCatching { SystemMediaNetwork.hasDirectRoute(uri) }
             .getOrDefault(false)
-        return SystemMediaNetwork.fakeIpRouteEligible(
-            vpnTransport = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true,
-            explicitlyNotVpn = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN),
-            directRoute = directRoute,
-        )
+        // This is only a capability hint. The selected DIRECT connection
+        // performs the real DNS-range check inside openConnection().
+        return directRoute
     }
 
     private fun transferFile(call: MethodCall, transfer: ResumableMediaTransfer, job: String) {

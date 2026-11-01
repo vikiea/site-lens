@@ -9,7 +9,6 @@ import androidx.work.WorkerParameters
 import java.io.File
 import java.io.IOException
 import java.io.InterruptedIOException
-import java.net.InetAddress
 import java.net.URI
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
@@ -139,21 +138,13 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
         Result.failure(Data.Builder().putString("errorCode", code).putString("errorReason", reason).build())
 
     private fun allowsProxyFakeIp(uri: URI): Boolean {
-        val connectivity = applicationContext.getSystemService(
-            android.net.ConnectivityManager::class.java,
-        )
-        val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
         val directRoute = runCatching { SystemMediaNetwork.hasDirectRoute(uri) }
             .getOrDefault(false)
-        val fakeIp = runCatching {
-            InetAddress.getAllByName(uri.host).any(SystemMediaNetwork::fakeIp)
-        }.getOrDefault(false)
-        return SystemMediaNetwork.fakeIpRouteAllowed(
-            vpnTransport = capabilities?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true,
-            explicitlyNotVpn = capabilities?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN),
-            directRoute = directRoute,
-            dnsContainsFakeIp = fakeIp,
-        )
+        if (!directRoute) return false
+        // The actual DIRECT candidate performs the DNS-range check inside
+        // openConnection(); do not resolve the origin while a proxy candidate
+        // may still be tried first.
+        return directRoute
     }
 
     companion object {

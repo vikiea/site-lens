@@ -112,6 +112,13 @@ class SystemMediaNetworkTest {
         assertEquals(false, SystemMediaNetwork.fakeIpRouteAllowed(false, false, true, false))
     }
 
+    @Test
+    fun routerFakeIpAllowsDirectFallbackOnlyAfterDirectRouteIsSelected() {
+        assertEquals(true, SystemMediaNetwork.routerFakeIpRouteAllowed(true, true))
+        assertEquals(false, SystemMediaNetwork.routerFakeIpRouteAllowed(false, true))
+        assertEquals(false, SystemMediaNetwork.routerFakeIpRouteAllowed(true, false))
+    }
+
     private fun selector(select: (URI) -> List<Proxy>) = object : ProxySelector() {
         override fun select(uri: URI) = select.invoke(uri)
         override fun connectFailed(uri: URI, address: SocketAddress, error: IOException) = Unit

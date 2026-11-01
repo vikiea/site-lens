@@ -78,6 +78,19 @@ object SystemMediaNetwork {
     ): Boolean =
         fakeIpRouteEligible(vpnTransport, explicitlyNotVpn, directRoute) && dnsContainsFakeIp
 
+    /**
+     * OpenClash/Mihomo may run on the LAN gateway instead of on Android.
+     * In that topology Android reports Wi-Fi with NOT_VPN=true, while the
+     * gateway's DNS intentionally returns a fake-IP and intercepts the
+     * subsequent DIRECT socket. Preserve the PAC order and allow that address
+     * only after DIRECT was selected and the DNS answer is in the known
+     * fake-IP range.
+     */
+    fun routerFakeIpRouteAllowed(
+        directRoute: Boolean,
+        dnsContainsFakeIp: Boolean,
+    ): Boolean = directRoute && dnsContainsFakeIp
+
     fun configuration(
         uri: URI,
         selector: ProxySelector? = ProxySelector.getDefault(),

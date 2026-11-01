@@ -1980,13 +1980,77 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
     final folders = _initializing
         ? const <MediaOrganizationFolder>[]
         : _browser.folders;
+    final expandedRoot = !_initializing && _browser.folderId == null;
+    final selectionItems = expandedRoot ? allExports : visible;
     final writesEnabled =
         _storageRoot?.permission != MediaStoragePermission.revoked;
     _browser.pruneSelection(
-      itemIds: visible.map((item) => item.taskId),
+      itemIds: selectionItems.map((item) => item.taskId),
       folderIds: folders.map((folder) => folder.id),
     );
     final current = _browser.currentFolder;
+
+    Widget libraryItem(MediaArtifact item) => _MediaLibraryTile(
+      key: ValueKey(item.taskId),
+      app: app,
+      item: item,
+      task: app.mediaLibrary.presentationTask(item),
+      showMigration: _migrationCandidates.contains(item.taskId),
+      showReauthorize:
+          _storageRoot?.permission == MediaStoragePermission.revoked,
+      onAction: (action) => safely(context, () => _fileAction(action, item)),
+      selectionMode: _browser.selectionMode,
+      selected: _browser.selectedItemIds.contains(item.taskId),
+      onSelected: (_) => _browser.toggleItem(item.taskId),
+    );
+
+    Widget libraryFolder(MediaOrganizationFolder folder) =>
+        MediaBrowserFolderRow(
+          folder: folder,
+          itemCount: _browser.physicalMode
+              ? _physicalFolderItemCount(folder.id)
+              : _organization.itemIdsInFolder(folder.id).length,
+          physical: _browser.physicalMode,
+          actionsEnabled: writesEnabled,
+          selectionMode: _browser.selectionMode,
+          selected: _browser.selectedFolderIds.contains(folder.id),
+          onSelected: (_) => _browser.toggleFolder(folder.id),
+          onOpen: () => _browser.physicalMode
+              ? _openPhysicalFolder(folder.id)
+              : _browser.openFolder(folder.id),
+          onAction: (action) =>
+              safely(context, () => _folderAction(folder, action)),
+        );
+
+    final expandedRows = <Widget>[];
+    if (expandedRoot) {
+      void append(Widget row) {
+        if (expandedRows.isNotEmpty) {
+          expandedRows.add(const SiteLensPanelDivider());
+        }
+        expandedRows.add(row);
+      }
+
+      for (final folder in folders) {
+        append(libraryFolder(folder));
+        final folderPath = _physicalFolderPaths[folder.id];
+        final itemIds = _organization.itemIdsInFolder(folder.id).toSet();
+        final folderItems = _browser.physicalMode
+            ? allExports.where((item) {
+                final itemFolder = _physicalItemFolder(item);
+                return folderPath != null &&
+                    (itemFolder == folderPath ||
+                        itemFolder.startsWith('$folderPath/'));
+              })
+            : allExports.where((item) => itemIds.contains(item.taskId));
+        for (final item in folderItems) {
+          append(libraryItem(item));
+        }
+      }
+      for (final item in visible) {
+        append(libraryItem(item));
+      }
+    }
     return SiteLensPageScaffold(
       title: _browser.selectionMode ? '已选 ${_browser.selectedCount} 项' : '媒体',
       canPop: false,
@@ -2028,7 +2092,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
         ] else
           MediaBrowserSelectionActions(
             controller: _browser,
-            visibleItemIds: visible.map((item) => item.taskId),
+            visibleItemIds: selectionItems.map((item) => item.taskId),
             visibleFolderIds: folders.map((folder) => folder.id),
             onAction: (action) => unawaited(_batchAction(action)),
             writesEnabled: writesEnabled,
@@ -2096,7 +2160,12 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
                       subtitle: const Text('完成扫描后显示文件夹和媒体文件'),
                     ),
                   ),
-                if (current != null)
+                if (expandedRoot && expandedRows.isNotEmpty)
+                  SliverList.builder(
+                    itemCount: expandedRows.length,
+                    itemBuilder: (_, index) => expandedRows[index],
+                  ),
+                if (!expandedRoot && current != null)
                   SliverToBoxAdapter(
                     child: MediaBrowserFolderRow(
                       folder: current,
@@ -2109,7 +2178,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
                       onAction: (_) {},
                     ),
                   ),
-                if (folders.isNotEmpty)
+                if (!expandedRoot && folders.isNotEmpty)
                   SliverList.builder(
                     itemCount: folders.length * 2 - 1,
                     itemBuilder: (_, index) {
@@ -2159,36 +2228,13 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
                       ),
                     ),
                   ),
-                if (visible.isNotEmpty)
+                if (!expandedRoot && visible.isNotEmpty)
                   SliverList.builder(
                     itemCount: visible.length,
                     itemBuilder: (_, index) => Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        _MediaLibraryTile(
-                          key: ValueKey(visible[index].taskId),
-                          app: app,
-                          item: visible[index],
-                          task: app.mediaLibrary.presentationTask(
-                            visible[index],
-                          ),
-                          showMigration: _migrationCandidates.contains(
-                            visible[index].taskId,
-                          ),
-                          showReauthorize:
-                              _storageRoot?.permission ==
-                              MediaStoragePermission.revoked,
-                          onAction: (action) => safely(
-                            context,
-                            () => _fileAction(action, visible[index]),
-                          ),
-                          selectionMode: _browser.selectionMode,
-                          selected: _browser.selectedItemIds.contains(
-                            visible[index].taskId,
-                          ),
-                          onSelected: (_) =>
-                              _browser.toggleItem(visible[index].taskId),
-                        ),
+                        libraryItem(visible[index]),
                         if (index < visible.length - 1)
                           const SiteLensPanelDivider(),
                       ],
@@ -3605,12 +3651,64 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         .where((task) => _organization.folderFor(task.id) == _browser.folderId)
         .toList();
     final folders = _browser.folders;
+    final expandedRoot = _browser.folderId == null;
+    final selectionTasks = expandedRoot ? allTasks : visibleTasks;
     _browser.pruneSelection(
-      itemIds: visibleTasks.map((task) => task.id),
+      itemIds: selectionTasks.map((task) => task.id),
       folderIds: folders.map((folder) => folder.id),
     );
     final activePlayback = widget.app.nativeMedia.active;
     final current = _browser.currentFolder;
+    Widget taskFolder(MediaOrganizationFolder folder) => MediaBrowserFolderRow(
+      folder: folder,
+      itemCount: _organization.itemIdsInFolder(folder.id).length,
+      taskGroup: true,
+      selectionMode: _browser.selectionMode,
+      selected: _browser.selectedFolderIds.contains(folder.id),
+      onSelected: (_) => _browser.toggleFolder(folder.id),
+      onOpen: () => _browser.openFolder(folder.id),
+      onAction: (action) =>
+          safely(context, () => _taskFolderAction(folder, action)),
+      extraActions: const [
+        SiteLensGlassMenuAction(
+          value: 'retry',
+          label: '重试文件夹任务',
+          icon: Icons.replay,
+        ),
+        SiteLensGlassMenuAction(
+          value: 'refresh',
+          label: '刷新文件夹状态',
+          icon: Icons.refresh,
+        ),
+        SiteLensGlassMenuAction(
+          value: 'export',
+          label: '导出文件夹 MP4',
+          icon: Icons.file_download_outlined,
+        ),
+      ],
+    );
+    final expandedRows = <Widget>[];
+    if (expandedRoot) {
+      void append(Widget row) {
+        if (expandedRows.isNotEmpty) {
+          expandedRows.add(const SiteLensPanelDivider());
+        }
+        expandedRows.add(row);
+      }
+
+      for (final folder in folders) {
+        append(taskFolder(folder));
+        final itemIds = _organization.itemIdsInFolder(folder.id).toSet();
+        for (final task in allTasks.where(
+          (task) => itemIds.contains(task.id),
+        )) {
+          append(_buildMediaTaskRow(context, task));
+        }
+      }
+      for (final task in visibleTasks) {
+        append(_buildMediaTaskRow(context, task));
+      }
+    }
     final selectionExtras = <SiteLensGlassMenuAction<String>>[
       const SiteLensGlassMenuAction(
         value: 'retry',
@@ -3649,7 +3747,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         ] else
           MediaBrowserSelectionActions(
             controller: _browser,
-            visibleItemIds: visibleTasks.map((task) => task.id),
+            visibleItemIds: selectionTasks.map((task) => task.id),
             visibleFolderIds: folders.map((folder) => folder.id),
             onAction: (action) => unawaited(_taskSharedBatchAction(action)),
             extraActions: selectionExtras,
@@ -3711,7 +3809,12 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                       ),
                     if (activePlayback != null)
                       const SliverToBoxAdapter(child: SiteLensPanelDivider()),
-                    if (current != null)
+                    if (expandedRoot && expandedRows.isNotEmpty)
+                      SliverList.builder(
+                        itemCount: expandedRows.length,
+                        itemBuilder: (_, index) => expandedRows[index],
+                      ),
+                    if (!expandedRoot && current != null)
                       SliverToBoxAdapter(
                         child: MediaBrowserFolderRow(
                           folder: current,
@@ -3722,7 +3825,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                           onAction: (_) {},
                         ),
                       ),
-                    if (folders.isNotEmpty)
+                    if (!expandedRoot && folders.isNotEmpty)
                       SliverList.builder(
                         itemCount: folders.length * 2 - 1,
                         itemBuilder: (_, index) {
@@ -3766,7 +3869,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                       ),
                     if (widget.app.mediaTasks.available &&
                         _startupError == null &&
-                        visibleTasks.isEmpty &&
+                        selectionTasks.isEmpty &&
                         (current != null ||
                             (folders.isEmpty && allTasks.isEmpty)))
                       SliverToBoxAdapter(
@@ -3785,7 +3888,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                           ),
                         ),
                       ),
-                    if (visibleTasks.isNotEmpty)
+                    if (!expandedRoot && visibleTasks.isNotEmpty)
                       SliverList.builder(
                         itemCount: visibleTasks.length,
                         itemBuilder: (context, index) => Column(
