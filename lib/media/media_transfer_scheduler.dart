@@ -3,9 +3,16 @@ import 'dart:async';
 /// Bounds concurrent media resource writes and gives active playback a
 /// priority boost while aging ordinary work so it cannot starve forever.
 class MediaTransferScheduler {
-  MediaTransferScheduler({this.maxActive = 4});
+  MediaTransferScheduler({int maxActive = 4})
+    : _maxActive = maxActive.clamp(1, 16);
 
-  final int maxActive;
+  int _maxActive;
+  int get maxActive => _maxActive;
+  set maxActive(int value) {
+    _maxActive = value.clamp(1, 16);
+    _pump();
+  }
+
   final _queue = <_QueuedTransfer<dynamic>>[];
   var _active = 0;
   var _sequence = 0;

@@ -29,7 +29,7 @@ import 'media_browser.dart';
 
 enum _VideoFitMode { contain, cover, fill }
 
-enum _MediaBatchAction { retry, refresh, export, delete }
+enum _MediaBatchAction { pause, resume, retry, refresh, export, delete }
 
 const _playbackSpeeds = <double>[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3, 4, 8];
 
@@ -1072,6 +1072,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
   );
   String? _error;
   bool _scanning = false;
+  bool _scanInFlight = false;
   MediaStorageRoot? _storageRoot;
   final _migrationCandidates = <String>{};
   final _physicalFolders = <String, MediaOrganizationFolder>{};
@@ -1090,7 +1091,9 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _directoryPoller = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (mounted) unawaited(_rescan(silent: true));
+      if (mounted && app.mediaLibraryAutoRefresh) {
+        unawaited(_rescan(silent: true));
+      }
     });
     _organization.addListener(_changed);
     _browser.addListener(_changed);
@@ -1116,7 +1119,9 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && mounted) {
+    if (state == AppLifecycleState.resumed &&
+        mounted &&
+        app.mediaLibraryAutoRefresh) {
       unawaited(_rescan(silent: true));
     }
   }
@@ -1162,13 +1167,6 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
     try {
       await app.mediaLibrary.restore();
       if (!mounted) return;
-      final result = await app.mediaLibrary.rescan(
-        directory: app.mp4ExportDirectory,
-      );
-      if (result.warnings.isNotEmpty && mounted) {
-        setState(() => _error = result.warnings.join('；'));
-      }
-      if (!mounted) return;
       await _organization.restore();
       if (!mounted) return;
       if (await app.db.setting('mediaLibraryOrganizationMigratedV2') != '1') {
@@ -1183,17 +1181,23 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
         );
         if (!mounted) return;
       }
-      await _loadPhysicalDirectory();
+      if (mounted) setState(() => _initializing = false);
+      if (app.mediaLibraryAutoRefresh) {
+        unawaited(_rescan(silent: true));
+      } else {
+        unawaited(_loadPhysicalDirectory());
+      }
     } catch (error) {
       if (mounted) setState(() => _error = friendlyError(error));
-    } finally {
       if (mounted) setState(() => _initializing = false);
     }
   }
 
   Future<void> _rescan({bool silent = false}) async {
-    if (_scanning) return;
-    setState(() => _scanning = true);
+    if (_scanInFlight) return;
+    if (!mounted) return;
+    _scanInFlight = true;
+    if (!silent) setState(() => _scanning = true);
     try {
       final result = await app.mediaLibrary.rescan(
         directory: app.mp4ExportDirectory,
@@ -1214,7 +1218,8 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
     } catch (error) {
       if (mounted) setState(() => _error = friendlyError(error));
     } finally {
-      if (mounted) setState(() => _scanning = false);
+      _scanInFlight = false;
+      if (!silent && mounted) setState(() => _scanning = false);
     }
   }
 
@@ -2152,12 +2157,12 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
             child: SiteLensListPanel(
               scrollKey: const PageStorageKey('media-library-scroll'),
               slivers: [
-                if (_initializing)
-                  SliverToBoxAdapter(
+                if (_scanning && allExports.isEmpty && folders.isEmpty)
+                  const SliverToBoxAdapter(
                     child: SiteLensCompactRow(
-                      leading: const Icon(Icons.sync_outlined, size: 18),
-                      title: const Text('正在同步媒体目录…'),
-                      subtitle: const Text('完成扫描后显示文件夹和媒体文件'),
+                      leading: Icon(Icons.sync_outlined, size: 18),
+                      title: Text('正在后台刷新媒体目录…'),
+                      subtitle: Text('已有媒体会立即显示，刷新完成后自动更新'),
                     ),
                   ),
                 if (expandedRoot && expandedRows.isNotEmpty)
@@ -2929,6 +2934,50 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
                   ),
                 ),
                 const SiteLensPanelDivider(),
+                SiteLensCompactRow(
+                  title: const Text('自动同步媒体目录'),
+                  subtitle: Text(
+                    app.mediaLibraryAutoRefresh
+                        ? '进入页面、回到前台和每 30 秒静默刷新'
+                        : '关闭自动刷新，可用媒体页右上角按钮手动刷新',
+                  ),
+                  onTap: () => safely(
+                    context,
+                    () => app.setMediaLibraryAutoRefresh(
+                      !app.mediaLibraryAutoRefresh,
+                    ),
+                  ),
+                  trailing: SiteLensCompactSwitch(
+                    value: app.mediaLibraryAutoRefresh,
+                    semanticLabel: '自动同步媒体目录',
+                    onChanged: (value) => safely(
+                      context,
+                      () => app.setMediaLibraryAutoRefresh(value),
+                    ),
+                  ),
+                ),
+                const SiteLensPanelDivider(),
+                SiteLensCompactRow(
+                  title: const Text('下载并发数量'),
+                  subtitle: const Text('同时下载的媒体任务数量，范围 1 到 6'),
+                  trailing: SiteLensMenuSelector<int>(
+                    label: '下载并发数量',
+                    value: app.mediaDownloadConcurrency,
+                    options: [
+                      for (
+                        var value = AppPolicy.minMediaDownloadConcurrency;
+                        value <= AppPolicy.maxMediaDownloadConcurrency;
+                        value++
+                      )
+                        SiteLensMenuOption(value: value, label: '$value 个'),
+                    ],
+                    onSelected: (value) => safely(
+                      context,
+                      () => app.setMediaDownloadConcurrency(value),
+                    ),
+                  ),
+                ),
+                const SiteLensPanelDivider(),
                 SiteLensDisclosure(
                   leading: const Icon(Icons.folder_outlined),
                   title: const Text('媒体库目录'),
@@ -3273,6 +3322,10 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         await _runFolderBatch(folder.id, _MediaBatchAction.refresh);
       case 'export':
         await _runFolderBatch(folder.id, _MediaBatchAction.export);
+      case 'pause':
+        await _runFolderBatch(folder.id, _MediaBatchAction.pause);
+      case 'resume':
+        await _runFolderBatch(folder.id, _MediaBatchAction.resume);
     }
   }
 
@@ -3516,6 +3569,8 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           MediaTaskState.paused,
           MediaTaskState.reauthorize,
         }.contains(task.state),
+        _MediaBatchAction.pause => task.state == MediaTaskState.downloading,
+        _MediaBatchAction.resume => task.state == MediaTaskState.paused,
         _MediaBatchAction.refresh || _MediaBatchAction.delete => true,
       };
 
@@ -3592,6 +3647,10 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           switch (action) {
             case _MediaBatchAction.retry:
               await _retry(task, notify: false);
+            case _MediaBatchAction.pause:
+              await widget.app.mediaDownloads.pause(task.id);
+            case _MediaBatchAction.resume:
+              await _togglePause(task);
             case _MediaBatchAction.refresh:
               await _refreshNative(task);
             case _MediaBatchAction.export:
@@ -3621,6 +3680,8 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         setState(() {});
       }
       final verb = switch (action) {
+        _MediaBatchAction.pause => '已暂停',
+        _MediaBatchAction.resume => '已继续',
         _MediaBatchAction.retry => '已重试',
         _MediaBatchAction.refresh => '已刷新',
         _MediaBatchAction.export => '已导出',
@@ -3671,6 +3732,16 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           safely(context, () => _taskFolderAction(folder, action)),
       extraActions: const [
         SiteLensGlassMenuAction(
+          value: 'pause',
+          label: '暂停文件夹下载',
+          icon: Icons.pause_circle_outline,
+        ),
+        SiteLensGlassMenuAction(
+          value: 'resume',
+          label: '继续文件夹下载',
+          icon: Icons.play_circle_outline,
+        ),
+        SiteLensGlassMenuAction(
           value: 'retry',
           label: '重试文件夹任务',
           icon: Icons.replay,
@@ -3709,7 +3780,26 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         append(_buildMediaTaskRow(context, task));
       }
     }
+    final selectedTaskIds = <String>{..._browser.selectedItemIds};
+    for (final folderId in _browser.selectedFolderIds) {
+      selectedTaskIds.addAll(_organization.itemIdsInFolder(folderId));
+    }
+    final selectedTasks = allTasks
+        .where((task) => selectedTaskIds.contains(task.id))
+        .toList(growable: false);
     final selectionExtras = <SiteLensGlassMenuAction<String>>[
+      if (selectedTasks.any((task) => task.state == MediaTaskState.downloading))
+        const SiteLensGlassMenuAction(
+          value: 'pause',
+          label: '批量暂停下载',
+          icon: Icons.pause_circle_outline,
+        ),
+      if (selectedTasks.any((task) => task.state == MediaTaskState.paused))
+        const SiteLensGlassMenuAction(
+          value: 'resume',
+          label: '批量继续下载',
+          icon: Icons.play_circle_outline,
+        ),
       const SiteLensGlassMenuAction(
         value: 'retry',
         label: '批量重试下载',
@@ -3771,7 +3861,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
             child: SiteLensHelpNotice(
               app: widget.app,
               noticeId: 'media.tasks',
-              text: '这里管理媒体任务的下载、播放和导出，可批量重试、刷新、删除或导出。',
+              text: '这里管理媒体任务的下载、播放和导出，可批量暂停、继续、重试、刷新、删除或导出。',
             ),
           ),
           Expanded(
@@ -3848,6 +3938,16 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                               () => _taskFolderAction(folder, action),
                             ),
                             extraActions: const [
+                              SiteLensGlassMenuAction(
+                                value: 'pause',
+                                label: '暂停文件夹下载',
+                                icon: Icons.pause_circle_outline,
+                              ),
+                              SiteLensGlassMenuAction(
+                                value: 'resume',
+                                label: '继续文件夹下载',
+                                icon: Icons.play_circle_outline,
+                              ),
                               SiteLensGlassMenuAction(
                                 value: 'retry',
                                 label: '重试文件夹任务',

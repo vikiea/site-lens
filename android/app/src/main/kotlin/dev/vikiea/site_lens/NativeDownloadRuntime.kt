@@ -43,6 +43,27 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
             if (disposed) return@execute
             val outcome = runCatching {
                 when (call.method) {
+                    "progressNotification" -> {
+                        NativeMediaDownloadWorker.postProgressNotification(
+                            context,
+                            call.argument<String>("taskId") ?: error("缺少任务 ID"),
+                            call.argument<String>("title") ?: "媒体下载",
+                            call.argument<Number>("bytes")?.toLong() ?: 0L,
+                            call.argument<Number>("totalBytes")?.toLong(),
+                        )
+                        null
+                    }
+                    "clearProgressNotification" -> {
+                        NativeMediaDownloadWorker.clearProgressNotification(
+                            context,
+                            call.argument<String>("taskId") ?: error("缺少任务 ID"),
+                        )
+                        null
+                    }
+                    "configureConcurrency" -> {
+                        configureConcurrency(call)
+                        null
+                    }
                     "migrateLegacyDirectories" -> {
                         migrateLegacyDirectories()
                         null
@@ -107,6 +128,16 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
             } ?: "",
         )
         return enqueue(record)
+    }
+
+    private fun configureConcurrency(call: MethodCall) {
+        val value = (call.argument<Number>("maxConcurrency")?.toInt() ?: 2)
+            .coerceIn(1, 6)
+        context.getSharedPreferences(
+            NativeMediaDownloadWorker.PREFERENCES,
+            Context.MODE_PRIVATE,
+        ).edit().putInt(NativeMediaDownloadWorker.CONCURRENCY_KEY, value).apply()
+        NativeMediaDownloadWorker.configureMaxConcurrency(value)
     }
 
     private fun enqueue(record: NativeMediaTaskRepository.Record): Map<String, Any?> {

@@ -310,4 +310,22 @@ void main() {
     expect(find.text('已开启，稳定识别后保存播放进度'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'media management exposes quiet refresh and concurrency settings',
+    (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildSiteLensTheme(ThemePresetId.mistPine, Brightness.light),
+          home: MediaManagementScreen(app: app),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('自动同步媒体目录'), findsOneWidget);
+      expect(find.text('下载并发数量'), findsOneWidget);
+      expect(find.text('同时下载的媒体任务数量，范围 1 到 6'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

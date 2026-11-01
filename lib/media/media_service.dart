@@ -1948,6 +1948,8 @@ class MediaDownloadService {
     this.tlsTransferWithHeaders,
     this.resourceCoordinator,
     this.progressElapsed,
+    this.onProgressNotification,
+    this.onTaskNotificationDone,
   }) : http = http ?? ControlledHttp();
 
   final MediaTaskStore tasks;
@@ -1956,6 +1958,9 @@ class MediaDownloadService {
   final NativeTlsTransferWithHeaders? tlsTransferWithHeaders;
   final MediaResourceCoordinator? resourceCoordinator;
   final Duration Function()? progressElapsed;
+  void Function(String taskId, String title, int bytes, int? totalBytes)?
+  onProgressNotification;
+  void Function(String taskId)? onTaskNotificationDone;
 
   /// Optional Android OS-managed backend. The deterministic Dart backend stays
   /// available for tests and platforms without DownloadManager.
@@ -1981,6 +1986,12 @@ class MediaDownloadService {
 
   bool get _hasNativeTransfer =>
       tlsTransfer != null || tlsTransferWithHeaders != null;
+
+  int get maxConcurrency => _transferScheduler.maxActive;
+
+  set maxConcurrency(int value) {
+    _transferScheduler.maxActive = value;
+  }
 
   Future<void> _transferNative(
     Uri url,
@@ -2079,7 +2090,9 @@ class MediaDownloadService {
     }
 
     if (items.isNotEmpty) {
-      await Future.wait(List.generate(min(2, items.length), (_) => worker()));
+      await Future.wait(
+        List.generate(min(maxConcurrency, items.length), (_) => worker()),
+      );
     }
     return MediaBatchDownloadResult(
       List.unmodifiable(results.whereType<MediaBatchDownloadItemResult>()),
@@ -2124,10 +2137,16 @@ class MediaDownloadService {
     final effectiveTotal = totalBytes == null && currentTotal == null
         ? null
         : max(max(totalBytes ?? 0, currentTotal ?? 0), effectiveBytes);
-    tasks.updateProgress(
+    final updated = tasks.updateProgress(
       taskId,
       effectiveBytes,
       totalBytes: effectiveTotal == 0 ? null : effectiveTotal,
+    );
+    onProgressNotification?.call(
+      taskId,
+      updated.displayName,
+      updated.bytesDownloaded,
+      updated.totalBytes,
     );
   }
 
@@ -2751,6 +2770,15 @@ class MediaDownloadService {
         if (latest?.state == MediaTaskState.completed ||
             latest?.state == MediaTaskState.playable) {
           _requestContexts.remove(id);
+        }
+        if (latest == null ||
+            latest.state == MediaTaskState.completed ||
+            latest.state == MediaTaskState.playable ||
+            latest.state == MediaTaskState.paused ||
+            latest.state == MediaTaskState.failed ||
+            latest.state == MediaTaskState.reauthorize ||
+            latest.state == MediaTaskState.cancelled) {
+          onTaskNotificationDone?.call(id);
         }
       }
     }),

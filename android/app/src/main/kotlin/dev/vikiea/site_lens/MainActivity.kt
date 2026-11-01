@@ -195,6 +195,23 @@ class MainActivity : FlutterActivity() {
                     postNotification(title, body)
                     result.success(true)
                 }
+                "prepareNotifications" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                        checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+                            PackageManager.PERMISSION_GRANTED
+                    ) {
+                        if (!notificationPermissionAsked) {
+                            notificationPermissionAsked = true
+                            requestPermissions(
+                                arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+                                4711,
+                            )
+                        }
+                        result.success(false)
+                    } else {
+                        result.success(true)
+                    }
+                }
                 else -> result.notImplemented()
             }
         }

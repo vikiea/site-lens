@@ -50,6 +50,8 @@ void main() {
         'autoSaveWebPlayback': true,
         'allowStreamingWhileDownloading': false,
         'themePreset': 'aurora_cyan',
+        'mediaLibraryAutoRefresh': false,
+        'mediaDownloadConcurrency': 5,
       });
       final decoded = jsonDecode(
         (await db.setting(AppPolicy.settingsKey))!,
@@ -61,10 +63,35 @@ void main() {
       expect(decoded['autoSaveWebPlayback'], isTrue);
       expect(decoded['allowStreamingWhileDownloading'], isFalse);
       expect(decoded['themePreset'], 'aurora_cyan');
+      expect(decoded['mediaLibraryAutoRefresh'], isFalse);
+      expect(decoded['mediaDownloadConcurrency'], 5);
       expect(decoded['backgroundMode'], 'default_gradient');
       expect(decoded['secureDnsProvider'], 'off');
       expect(await db.setting('glassOpacity'), isNull);
       expect(await db.setting('replaceSameSiteTabs'), isNull);
+    },
+  );
+
+  test(
+    'media refresh and download concurrency settings validate and restore',
+    () async {
+      final restored = AppSettings.fromJson({
+        'mediaLibraryAutoRefresh': false,
+        'mediaDownloadConcurrency': 99,
+      });
+      expect(restored.mediaLibraryAutoRefresh, isFalse);
+      expect(
+        restored.mediaDownloadConcurrency,
+        AppPolicy.maxMediaDownloadConcurrency,
+      );
+      await expectLater(
+        settings.update({'mediaDownloadConcurrency': 0}),
+        throwsA(isA<FormatException>()),
+      );
+      await expectLater(
+        settings.update({'mediaDownloadConcurrency': 2.5}),
+        throwsA(isA<FormatException>()),
+      );
     },
   );
 

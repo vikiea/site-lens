@@ -67,4 +67,35 @@ void main() {
       expect(order, ['first', 'playback', 'ordinary']);
     },
   );
+
+  test('runtime concurrency changes pump queued transfers', () async {
+    final scheduler = MediaTransferScheduler(maxActive: 1);
+    final release = Completer<void>();
+    var active = 0;
+    var peak = 0;
+    final first = scheduler.schedule<void>(
+      priority: 0,
+      action: () async {
+        active++;
+        peak = active > peak ? active : peak;
+        await release.future;
+        active--;
+      },
+    );
+    final second = scheduler.schedule<void>(
+      priority: 0,
+      action: () async {
+        active++;
+        peak = active > peak ? active : peak;
+        active--;
+      },
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(peak, 1);
+
+    scheduler.maxActive = 2;
+    release.complete();
+    await Future.wait([first, second]);
+    expect(peak, 2);
+  });
 }

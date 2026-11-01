@@ -10,6 +10,27 @@ class NativeDownloadRuntime {
     : _channel = channel ?? const MethodChannel('site_lens/native_download');
 
   final MethodChannel _channel;
+  static const MethodChannel _deviceChannel = MethodChannel('site_lens/device');
+
+  Future<void> setConcurrency(int value) => _channel.invokeMethod<void>(
+    'configureConcurrency',
+    {'maxConcurrency': value.clamp(1, 6)},
+  );
+
+  Future<void> progressNotification(
+    String taskId,
+    String title,
+    int bytes, {
+    int? totalBytes,
+  }) => _channel.invokeMethod<void>('progressNotification', {
+    'taskId': taskId,
+    'title': title,
+    'bytes': bytes,
+    ...?totalBytes == null ? null : {'totalBytes': totalBytes},
+  });
+
+  Future<void> clearProgressNotification(String taskId) => _channel
+      .invokeMethod<void>('clearProgressNotification', {'taskId': taskId});
 
   /// Android exposes a cross-call mutation reservation. Test doubles can
   /// override this to keep their in-memory backend behavior unchanged.
@@ -27,6 +48,14 @@ class NativeDownloadRuntime {
       throw StateError('stale_generation');
     }
     if (!candidate.playable) throw const FormatException('invalid_url');
+    try {
+      await _deviceChannel.invokeMethod<bool>('prepareNotifications');
+    } on PlatformException {
+      // Notification permission is optional; WorkManager still owns the
+      // durable download and foreground service lifecycle.
+    } on MissingPluginException {
+      // Non-Android test and desktop paths do not expose this channel.
+    }
     final value = await _channel.invokeMapMethod<String, Object?>('start', {
       'taskId': task.id,
       'candidateId': candidate.id,

@@ -220,6 +220,34 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           : null,
       resourceCoordinator: mediaResourceCoordinator,
     );
+    _mediaRuntimeReady = true;
+    mediaDownloads.maxConcurrency = settings.mediaDownloadConcurrency;
+    if (nativeDownloads != null) {
+      mediaDownloads.onProgressNotification = (taskId, title, bytes, total) {
+        unawaited(
+          nativeDownloads!.progressNotification(
+            taskId,
+            title,
+            bytes,
+            totalBytes: total,
+          ),
+        );
+      };
+      mediaDownloads.onTaskNotificationDone = (taskId) {
+        unawaited(nativeDownloads!.clearProgressNotification(taskId));
+      };
+      unawaited(
+        nativeDownloads!
+            .setConcurrency(settings.mediaDownloadConcurrency)
+            .catchError((error, stack) {
+              AppErrorLogger.capture(
+                error,
+                module: 'media.settings',
+                stack: stack,
+              );
+            }),
+      );
+    }
     mediaExports = Mp4ExportService(tasks: mediaTasks, native: nativeExports);
     mediaLibrary = MediaLibrary(
       db: db,
@@ -525,6 +553,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   late final MediaTaskStore mediaTasks;
   late final WatchSaveStore watchSaves;
   late final MediaDownloadService mediaDownloads;
+  var _mediaRuntimeReady = false;
   late final Mp4ExportService mediaExports;
   late final MediaLibrary mediaLibrary;
   late final MediaStorageService mediaStorage;
@@ -569,6 +598,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   bool autoSaveWebPlayback = false;
   bool autoConvertToMp4 = false;
   String? mp4ExportDirectory;
+  bool mediaLibraryAutoRefresh = true;
+  int mediaDownloadConcurrency = AppPolicy.defaultMediaDownloadConcurrency;
   PlayerVerticalGestureMode playerVerticalGesture =
       PlayerVerticalGestureMode.brightnessVolume;
   FilterPolicy filterPolicy = const FilterPolicy();
@@ -1116,6 +1147,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     autoSaveWebPlayback = settings.autoSaveWebPlayback;
     autoConvertToMp4 = settings.autoConvertToMp4;
     mp4ExportDirectory = settings.mp4ExportDirectory;
+    mediaLibraryAutoRefresh = settings.mediaLibraryAutoRefresh;
+    mediaDownloadConcurrency = settings.mediaDownloadConcurrency;
+    if (_mediaRuntimeReady) {
+      mediaDownloads.maxConcurrency = mediaDownloadConcurrency;
+    }
     playerVerticalGesture = settings.playerVerticalGesture;
     scriptsDisabled = settings.scriptsDisabled;
     pullToRefresh = settings.pullToRefresh;
@@ -1218,6 +1254,16 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> setMp4ExportDirectory(String? value) =>
       updateSettings({'mp4ExportDirectory': value});
+
+  Future<void> setMediaLibraryAutoRefresh(bool value) =>
+      updateSettings({'mediaLibraryAutoRefresh': value});
+
+  Future<void> setMediaDownloadConcurrency(int value) async {
+    await updateSettings({'mediaDownloadConcurrency': value});
+    if (nativeDownloads != null) {
+      await nativeDownloads!.setConcurrency(mediaDownloadConcurrency);
+    }
+  }
 
   Future<void> setMediaLibraryNoticeDismissed(bool value) =>
       updateSettings({'mediaLibraryNoticeDismissed': value});

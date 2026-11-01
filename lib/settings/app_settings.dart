@@ -160,6 +160,8 @@ class AppSettings {
     this.autoSaveWebPlayback = false,
     this.autoConvertToMp4 = false,
     this.mp4ExportDirectory,
+    this.mediaLibraryAutoRefresh = true,
+    this.mediaDownloadConcurrency = AppPolicy.defaultMediaDownloadConcurrency,
     this.mediaLibraryNoticeDismissed = false,
     this.mediaTasksNoticeDismissed = false,
     this.dismissedNotices = const {},
@@ -192,6 +194,8 @@ class AppSettings {
   final bool autoSaveWebPlayback;
   final bool autoConvertToMp4;
   final String? mp4ExportDirectory;
+  final bool mediaLibraryAutoRefresh;
+  final int mediaDownloadConcurrency;
   final bool mediaLibraryNoticeDismissed;
   final bool mediaTasksNoticeDismissed;
   final Set<String> dismissedNotices;
@@ -224,6 +228,8 @@ class AppSettings {
     'autoSaveWebPlayback': autoSaveWebPlayback,
     'autoConvertToMp4': autoConvertToMp4,
     'mp4ExportDirectory': mp4ExportDirectory,
+    'mediaLibraryAutoRefresh': mediaLibraryAutoRefresh,
+    'mediaDownloadConcurrency': mediaDownloadConcurrency,
     'mediaLibraryNoticeDismissed': mediaLibraryNoticeDismissed,
     'mediaTasksNoticeDismissed': mediaTasksNoticeDismissed,
     'dismissedNotices': dismissedNotices.toList()..sort(),
@@ -258,6 +264,16 @@ class AppSettings {
       final value = json[key];
       return value is num && value.isFinite
           ? value.round().clamp(0, 100)
+          : fallback;
+    }
+
+    int concurrency(String key, int fallback) {
+      final value = json[key];
+      return value is num && value.isFinite
+          ? value.round().clamp(
+              AppPolicy.minMediaDownloadConcurrency,
+              AppPolicy.maxMediaDownloadConcurrency,
+            )
           : fallback;
     }
 
@@ -343,6 +359,11 @@ class AppSettings {
       autoSaveWebPlayback: flag('autoSaveWebPlayback', false),
       autoConvertToMp4: flag('autoConvertToMp4', false),
       mp4ExportDirectory: directory('mp4ExportDirectory'),
+      mediaLibraryAutoRefresh: flag('mediaLibraryAutoRefresh', true),
+      mediaDownloadConcurrency: concurrency(
+        'mediaDownloadConcurrency',
+        AppPolicy.defaultMediaDownloadConcurrency,
+      ),
       mediaLibraryNoticeDismissed: flag('mediaLibraryNoticeDismissed', false),
       mediaTasksNoticeDismissed: flag('mediaTasksNoticeDismissed', false),
       dismissedNotices: Set.unmodifiable(
@@ -391,6 +412,8 @@ class AppSettings {
       'autoSaveWebPlayback',
       'autoConvertToMp4',
       'mp4ExportDirectory',
+      'mediaLibraryAutoRefresh',
+      'mediaDownloadConcurrency',
       'mediaLibraryNoticeDismissed',
       'mediaTasksNoticeDismissed',
       'dismissedNotices',
@@ -475,6 +498,15 @@ class AppSettings {
         if (entry.value != null && entry.value is! String) {
           throw const FormatException('媒体库目录必须是文本路径');
         }
+      } else if (entry.key == 'mediaDownloadConcurrency') {
+        final value = entry.value;
+        if (value is! num ||
+            !value.isFinite ||
+            value != value.round() ||
+            value < AppPolicy.minMediaDownloadConcurrency ||
+            value > AppPolicy.maxMediaDownloadConcurrency) {
+          throw const FormatException('下载并发数必须是 1 到 6 之间的整数');
+        }
       } else if (entry.key == 'backgroundAssetId') {
         if (entry.value != null &&
             (entry.value is! String ||
@@ -500,5 +532,8 @@ abstract final class AppPolicy {
   static const maxBrowserTabs = 8;
   static const hideControlsAfter = Duration(seconds: 3);
   static const settingsKey = 'app_settings_v2';
+  static const minMediaDownloadConcurrency = 1;
+  static const maxMediaDownloadConcurrency = 6;
+  static const defaultMediaDownloadConcurrency = 2;
   static const browserSessionsKey = 'browserSession_v1';
 }
