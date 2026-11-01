@@ -82,7 +82,8 @@ void main() {
           home: MediaLibraryScreen(app: app, onRootBack: () => rootBacks++),
         ),
       );
-      await tester.pumpAndSettle();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
       await tester.tap(find.byTooltip('媒体任务'));
       await tester.pumpAndSettle();
       expect(find.text('媒体任务'), findsOneWidget);

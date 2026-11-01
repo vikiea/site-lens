@@ -29,7 +29,15 @@ import 'media_browser.dart';
 
 enum _VideoFitMode { contain, cover, fill }
 
-enum _MediaBatchAction { pause, resume, retry, refresh, export, delete }
+enum _MediaBatchAction {
+  pause,
+  resume,
+  retry,
+  refresh,
+  export,
+  delete,
+  deleteFailed,
+}
 
 const _playbackSpeeds = <double>[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3, 4, 8];
 
@@ -2288,6 +2296,7 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
   late final Future<MediaCandidate?> _candidate = widget.app.db.mediaCandidate(
     widget.task.candidateId,
   );
+  var _expanded = false;
 
   @override
   void didUpdateWidget(covariant _MediaLibraryTile oldWidget) {
@@ -2336,7 +2345,7 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
           },
         ),
       );
-      return SiteLensCompactRow(
+      final row = SiteLensCompactRow(
         leading: widget.selectionMode
             ? Checkbox(
                 value: widget.selected,
@@ -2356,7 +2365,7 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
         ),
         onTap: widget.selectionMode
             ? () => widget.onSelected?.call(!widget.selected)
-            : () => widget.onAction('play'),
+            : () => setState(() => _expanded = !_expanded),
         trailing: widget.selectionMode
             ? null
             : widget.app.mediaLibrary.busy(item.taskId)
@@ -2365,60 +2374,106 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
                 height: 20,
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
-            : SiteLensGlassMenuButton<String>(
-                tooltip: '媒体文件操作',
-                icon: Icons.more_horiz,
-                actions: mediaBrowserFileMenuActions(
-                  canRename: !widget.showReauthorize,
-                  canCopy: !widget.showReauthorize,
-                  canDelete: !widget.showReauthorize,
-                  enabled: !widget.showReauthorize,
-                  moveLabel: '移动到目录',
-                  copyLabel: '复制到目录',
-                  extraActions: [
-                    const SiteLensGlassMenuAction(
-                      value: 'details',
-                      label: '查看详情',
-                      icon: Icons.info_outline,
+            : Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SiteLensGlassMenuButton<String>(
+                    tooltip: '媒体文件操作',
+                    icon: Icons.more_horiz,
+                    actions: mediaBrowserFileMenuActions(
+                      canRename: !widget.showReauthorize,
+                      canCopy: !widget.showReauthorize,
+                      canDelete: !widget.showReauthorize,
+                      enabled: !widget.showReauthorize,
+                      moveLabel: '移动到目录',
+                      copyLabel: '复制到目录',
+                      extraActions: [
+                        const SiteLensGlassMenuAction(
+                          value: 'play',
+                          label: '原生播放',
+                          icon: Icons.play_circle_outline,
+                        ),
+                        if (widget.app.mediaTasks.task(item.taskId) != null)
+                          const SiteLensGlassMenuAction(
+                            value: 'cast',
+                            label: 'DLNA 投屏',
+                            icon: Icons.cast_outlined,
+                          ),
+                        if (widget.app.mediaTasks.task(item.taskId) != null)
+                          SiteLensGlassMenuAction(
+                            value: 'regenerate',
+                            label: '重新导出 MP4',
+                            icon: Icons.file_download_outlined,
+                            enabled: !widget.showReauthorize,
+                          ),
+                        if (widget.showMigration)
+                          const SiteLensGlassMenuAction(
+                            value: 'migrate',
+                            label: '迁移到已配置媒体目录',
+                            icon: Icons.drive_file_move_outlined,
+                          ),
+                        if (widget.showReauthorize)
+                          const SiteLensGlassMenuAction(
+                            value: 'reauthorize',
+                            label: '重新授权媒体目录',
+                            icon: Icons.lock_reset_outlined,
+                          ),
+                      ],
                     ),
-                    const SiteLensGlassMenuAction(
-                      value: 'play',
-                      label: '原生播放',
-                      icon: Icons.play_circle_outline,
+                    onSelected: widget.onAction,
+                  ),
+                  SiteLensCompactIconButton(
+                    tooltip: _expanded ? '收起详情' : '展开详情',
+                    onPressed: () => setState(() => _expanded = !_expanded),
+                    icon: Icon(
+                      _expanded ? Icons.expand_less : Icons.expand_more,
+                      size: SiteLensMetrics.compactIconSize,
                     ),
-                    if (widget.app.mediaTasks.task(item.taskId) != null)
-                      const SiteLensGlassMenuAction(
-                        value: 'cast',
-                        label: 'DLNA 投屏',
-                        icon: Icons.cast_outlined,
-                      ),
-                    if (widget.app.mediaTasks.task(item.taskId) != null)
-                      SiteLensGlassMenuAction(
-                        value: 'regenerate',
-                        label: '重新导出 MP4',
-                        icon: Icons.file_download_outlined,
-                        enabled: !widget.showReauthorize,
-                      ),
-                    if (widget.showMigration)
-                      const SiteLensGlassMenuAction(
-                        value: 'migrate',
-                        label: '迁移到已配置媒体目录',
-                        icon: Icons.drive_file_move_outlined,
-                      ),
-                    if (widget.showReauthorize)
-                      const SiteLensGlassMenuAction(
-                        value: 'reauthorize',
-                        label: '重新授权媒体目录',
-                        icon: Icons.lock_reset_outlined,
-                      ),
-                  ],
-                ),
-                onSelected: widget.onAction,
+                  ),
+                ],
               ),
+      );
+      if (widget.selectionMode || !_expanded) return row;
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [row, _mediaArtifactInlineDetails(context, item, snapshot)],
       );
     },
   );
 }
+
+Widget _mediaArtifactInlineDetails(
+  BuildContext context,
+  MediaArtifact item,
+  AsyncSnapshot<MediaArtifact> snapshot,
+) => Padding(
+  padding: const EdgeInsets.fromLTRB(
+    SiteLensMetrics.accordionContentIndent,
+    0,
+    SiteLensMetrics.compactRowHorizontalPadding,
+    SiteLensMetrics.formGap,
+  ),
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      _MediaDetailRow(label: '文件名', value: item.name),
+      _MediaDetailRow(label: '格式', value: item.mime),
+      _MediaDetailRow(label: '文件大小', value: formatBytes(item.size)),
+      _MediaDetailRow(
+        label: '时长',
+        value: formatMediaDuration(item.durationMs ?? 0),
+      ),
+      if ((item.width ?? 0) > 0 && (item.height ?? 0) > 0)
+        _MediaDetailRow(label: '分辨率', value: '${item.width} × ${item.height}'),
+      _MediaDetailRow(
+        label: '保存位置',
+        value: readableMediaLocation(item.location),
+      ),
+      if (snapshot.hasError)
+        const _MediaDetailRow(label: '文件检查', value: '文件暂不可用'),
+    ],
+  ),
+);
 
 Future<void> showMediaTaskDetails(
   BuildContext context,
@@ -3326,6 +3381,8 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         await _runFolderBatch(folder.id, _MediaBatchAction.pause);
       case 'resume':
         await _runFolderBatch(folder.id, _MediaBatchAction.resume);
+      case 'deleteFailed':
+        await _runFolderBatch(folder.id, _MediaBatchAction.deleteFailed);
     }
   }
 
@@ -3571,6 +3628,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         }.contains(task.state),
         _MediaBatchAction.pause => task.state == MediaTaskState.downloading,
         _MediaBatchAction.resume => task.state == MediaTaskState.paused,
+        _MediaBatchAction.deleteFailed => task.state == MediaTaskState.failed,
         _MediaBatchAction.refresh || _MediaBatchAction.delete => true,
       };
 
@@ -3611,13 +3669,22 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     var succeeded = 0;
     var skipped = 0;
     try {
-      if (action == _MediaBatchAction.delete) {
+      if (action == _MediaBatchAction.delete ||
+          action == _MediaBatchAction.deleteFailed) {
+        final deletableCount = selected
+            .where((task) => _batchEligible(task, action))
+            .length;
+        if (deletableCount == 0) return;
         final confirmed = await showDialog<bool>(
           context: context,
           builder: (dialogContext) => SiteLensAlertDialog(
-            title: const Text('批量删除媒体任务'),
+            title: Text(
+              action == _MediaBatchAction.deleteFailed ? '删除失败任务' : '批量删除媒体任务',
+            ),
             content: Text(
-              '删除选中的 ${selected.length} 个任务和下载缓存？已导出媒体文件保留，正在使用的任务会保留。',
+              action == _MediaBatchAction.deleteFailed
+                  ? '删除选中的 $deletableCount 个失败任务和下载缓存？已导出的 MP4 保留。'
+                  : '删除选中的 ${selected.length} 个任务和下载缓存？已导出媒体文件保留，正在使用的任务会保留。',
             ),
             actions: [
               TextButton(
@@ -3657,6 +3724,8 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
               await widget.app.exportMediaTask(task);
             case _MediaBatchAction.delete:
               await widget.app.deleteMediaTask(task.id);
+            case _MediaBatchAction.deleteFailed:
+              await widget.app.deleteMediaTask(task.id);
           }
           succeeded++;
         } catch (error, stack) {
@@ -3686,6 +3755,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         _MediaBatchAction.refresh => '已刷新',
         _MediaBatchAction.export => '已导出',
         _MediaBatchAction.delete => '已删除',
+        _MediaBatchAction.deleteFailed => '已删除失败任务',
       };
       showShortToast(
         context,
@@ -3740,6 +3810,11 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           value: 'resume',
           label: '继续文件夹下载',
           icon: Icons.play_circle_outline,
+        ),
+        SiteLensGlassMenuAction(
+          value: 'deleteFailed',
+          label: '删除失败任务',
+          icon: Icons.delete_sweep_outlined,
         ),
         SiteLensGlassMenuAction(
           value: 'retry',
@@ -3799,6 +3874,12 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           value: 'resume',
           label: '批量继续下载',
           icon: Icons.play_circle_outline,
+        ),
+      if (selectedTasks.any((task) => task.state == MediaTaskState.failed))
+        const SiteLensGlassMenuAction(
+          value: 'deleteFailed',
+          label: '删除失败任务',
+          icon: Icons.delete_sweep_outlined,
         ),
       const SiteLensGlassMenuAction(
         value: 'retry',
@@ -3947,6 +4028,11 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
                                 value: 'resume',
                                 label: '继续文件夹下载',
                                 icon: Icons.play_circle_outline,
+                              ),
+                              SiteLensGlassMenuAction(
+                                value: 'deleteFailed',
+                                label: '删除失败任务',
+                                icon: Icons.delete_sweep_outlined,
                               ),
                               SiteLensGlassMenuAction(
                                 value: 'retry',
@@ -4126,6 +4212,7 @@ class _MediaTaskRow extends StatefulWidget {
 class _MediaTaskRowState extends State<_MediaTaskRow> {
   late Future<MediaCandidate?> _candidate;
   late Future<MediaArtifact?> _artifact;
+  var _expanded = false;
 
   @override
   void initState() {
@@ -4194,11 +4281,6 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
                 label: '刷新后台状态',
                 icon: Icons.refresh,
                 enabled: !busy,
-              ),
-              const SiteLensGlassMenuAction(
-                value: 'details',
-                label: '查看详情',
-                icon: Icons.info_outline,
               ),
               if (widget.task.state == MediaTaskState.playable)
                 SiteLensGlassMenuAction(
@@ -4308,46 +4390,61 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
                     ConnectionState.waiting,
                 localThumbnailPath: artifact?.thumbnailPath,
               );
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SiteLensCompactRow(
-              leading: leading,
-              title: Text(
-                widget.organization.nameFor(
-                  widget.task.id,
-                  widget.taskTitle(widget.task, candidate),
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              subtitle: Text(
-                '${_mediaTaskStateLabel(widget.task.state)} · ${widget.taskProgressLabel(widget.task)}${widget.taskErrorLabel(widget.task).isEmpty ? '' : ' · ${widget.taskErrorLabel(widget.task)}'}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              onTap: widget.browser.selectionMode
-                  ? (widget.isBatchSelectable(widget.task)
-                        ? () => widget.browser.toggleItem(widget.task.id)
-                        : null)
-                  : widget.task.state == MediaTaskState.playable ||
-                        (widget.app.allowStreamingWhileDownloading &&
-                            candidate?.isHls == true &&
-                            (widget.task.state == MediaTaskState.downloading ||
-                                widget.task.state == MediaTaskState.paused))
-                  ? () => unawaited(widget.onPlay(widget.task))
-                  : null,
-              trailing: widget.browser.selectionMode
-                  ? Text(
-                      widget.isBatchSelectable(widget.task) ? '可处理' : '执行中',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    )
-                  : SizedBox(
+        final row = SiteLensCompactRow(
+          leading: leading,
+          title: Text(
+            widget.organization.nameFor(
+              widget.task.id,
+              widget.taskTitle(widget.task, candidate),
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          subtitle: Text(
+            '${_mediaTaskStateLabel(widget.task.state)} · ${widget.taskProgressLabel(widget.task)}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          onTap: widget.browser.selectionMode
+              ? (widget.isBatchSelectable(widget.task)
+                    ? () => widget.browser.toggleItem(widget.task.id)
+                    : null)
+              : () => setState(() => _expanded = !_expanded),
+          trailing: widget.browser.selectionMode
+              ? Text(
+                  widget.isBatchSelectable(widget.task) ? '可处理' : '执行中',
+                  style: Theme.of(context).textTheme.bodySmall,
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
                       width: kMinInteractiveDimension,
                       height: kMinInteractiveDimension,
                       child: menu,
                     ),
-            ),
+                    SiteLensCompactIconButton(
+                      tooltip: _expanded ? '收起详情' : '展开详情',
+                      onPressed: () => setState(() => _expanded = !_expanded),
+                      icon: Icon(
+                        _expanded ? Icons.expand_less : Icons.expand_more,
+                        size: SiteLensMetrics.compactIconSize,
+                      ),
+                    ),
+                  ],
+                ),
+        );
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            row,
+            if (!widget.browser.selectionMode && _expanded)
+              _mediaTaskInlineDetails(
+                context,
+                widget.task,
+                candidate,
+                artifact,
+              ),
             if (widget.task.state == MediaTaskState.downloading ||
                 widget.task.state == MediaTaskState.paused)
               Padding(
@@ -4363,6 +4460,57 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
     ),
   );
 }
+
+Widget _mediaTaskInlineDetails(
+  BuildContext context,
+  MediaTask task,
+  MediaCandidate? candidate,
+  MediaArtifact? artifact,
+) => Padding(
+  padding: const EdgeInsets.fromLTRB(
+    SiteLensMetrics.accordionContentIndent,
+    0,
+    SiteLensMetrics.compactRowHorizontalPadding,
+    SiteLensMetrics.formGap,
+  ),
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      _MediaDetailRow(label: '状态', value: _mediaTaskStateLabel(task.state)),
+      _MediaDetailRow(
+        label: '大小',
+        value: task.totalBytes != null && task.totalBytes! > 0
+            ? '${(task.bytesDownloaded / task.totalBytes! * 100).round()}% · ${formatBytes(task.bytesDownloaded)}/${formatBytes(task.totalBytes!)}'
+            : formatBytes(task.bytesDownloaded),
+      ),
+      if (artifact != null) ...[
+        _MediaDetailRow(label: '文件名', value: artifact.name),
+        _MediaDetailRow(label: '格式', value: artifact.mime),
+        _MediaDetailRow(
+          label: '保存位置',
+          value: readableMediaLocation(artifact.location),
+        ),
+      ] else ...[
+        if (candidate != null)
+          _MediaDetailRow(label: '来源格式', value: candidate.effectiveMime),
+        if (task.localRef != null)
+          _MediaDetailRow(
+            label: '本地缓存',
+            value: readableMediaLocation(task.localRef!),
+          ),
+      ],
+      if (_taskErrorLabel(task).isNotEmpty)
+        _MediaDetailRow(label: '错误原因', value: _taskErrorLabel(task)),
+      _MediaDetailRow(
+        label: '文件夹',
+        value: readableMediaLocation(
+          mediaFolderDisplayName(task.storageDirectoryName),
+        ),
+      ),
+      _MediaDetailRow(label: '来源页面', value: task.sourceUrl.toString()),
+    ],
+  ),
+);
 
 class _ActiveMediaPlaybackRow extends StatelessWidget {
   const _ActiveMediaPlaybackRow({
