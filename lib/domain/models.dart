@@ -1338,6 +1338,17 @@ class MediaTask {
     return '$title - $episode';
   }
 
+  /// The generated file name is intentionally episode-only. The series title
+  /// belongs to the containing directory so one episode can be moved or
+  /// exported without duplicating the title in every file name.
+  String get episodeFileName {
+    final explicit = episodeLabel?.trim() ?? '';
+    if (explicit.isNotEmpty) return explicit;
+    final typed = episodeNumber;
+    if (typed != null && typed > 0) return '第$typed集';
+    return '未识别集数-$id';
+  }
+
   String get seriesDirectoryName => mediaSeriesDirectoryName(displayTitle);
 
   /// The directory name used by older builds before batch suffix cleanup.

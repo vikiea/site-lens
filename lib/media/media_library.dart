@@ -240,6 +240,7 @@ class MediaLibrary extends ChangeNotifier {
           '',
         ),
         batchDirectory: item.folder,
+        episodeLabel: mediaEpisodeLabel(item.name),
         bytesDownloaded: item.size,
         totalBytes: item.size,
       );
@@ -828,7 +829,7 @@ class MediaLibrary extends ChangeNotifier {
       name: name ?? mediaExportFileName(task),
       size: stat.size,
       mime: mime,
-      folder: task.batchDirectory,
+      folder: mediaSeriesDirectoryName(task.storageDirectoryName),
       libraryCopy: previous?.location != path
           ? previous?.location
           : previous?.libraryCopy,
@@ -1095,20 +1096,23 @@ class MediaLibrary extends ChangeNotifier {
         (uri.scheme == 'content' && uri.host.isEmpty)) {
       throw StateError('媒体库目录无效，请在媒体管理中重新选择媒体库目录');
     }
-    final batchDirectory = tasks.task(taskId)?.batchDirectory;
+    final task = tasks.task(taskId);
+    final seriesDirectory = task == null
+        ? value.folder
+        : mediaSeriesDirectoryName(task.storageDirectoryName);
     Directory? targetDirectory;
     if (uri.scheme != 'content') {
       targetDirectory = uri.scheme == 'file'
           ? Directory.fromUri(uri)
           : Directory(directory);
     }
-    if (batchDirectory != null &&
-        batchDirectory.trim().isNotEmpty &&
+    if (seriesDirectory != null &&
+        seriesDirectory.trim().isNotEmpty &&
         uri.scheme != 'content') {
       targetDirectory = Directory(
         p.join(
           targetDirectory!.path,
-          mediaSeriesDirectoryName(mediaFolderDisplayName(batchDirectory)),
+          mediaSeriesDirectoryName(mediaFolderDisplayName(seriesDirectory)),
         ),
       );
       uri = targetDirectory.uri;
@@ -1142,9 +1146,9 @@ class MediaLibrary extends ChangeNotifier {
         source: source,
         directory: uri,
         fileName: value.name,
-        subdirectory: batchDirectory == null
+        subdirectory: seriesDirectory == null || seriesDirectory.trim().isEmpty
             ? null
-            : mediaSeriesDirectoryName(mediaFolderDisplayName(batchDirectory)),
+            : mediaSeriesDirectoryName(mediaFolderDisplayName(seriesDirectory)),
       );
     } else {
       final dir = targetDirectory!;
@@ -1191,7 +1195,7 @@ class MediaLibrary extends ChangeNotifier {
         width: value.width,
         height: value.height,
         thumbnailPath: value.thumbnailPath,
-        folder: value.folder,
+        folder: seriesDirectory,
         createdAt: value.createdAt,
       ),
     );

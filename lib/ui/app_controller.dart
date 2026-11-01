@@ -597,6 +597,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   bool allowStreamingWhileDownloading = true;
   bool autoSaveWebPlayback = false;
   bool autoConvertToMp4 = false;
+  bool deleteMediaTaskAfterMp4Export = false;
   String? mp4ExportDirectory;
   bool mediaLibraryAutoRefresh = true;
   int mediaDownloadConcurrency = AppPolicy.defaultMediaDownloadConcurrency;
@@ -1146,6 +1147,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     allowStreamingWhileDownloading = settings.allowStreamingWhileDownloading;
     autoSaveWebPlayback = settings.autoSaveWebPlayback;
     autoConvertToMp4 = settings.autoConvertToMp4;
+    deleteMediaTaskAfterMp4Export = settings.deleteMediaTaskAfterMp4Export;
     mp4ExportDirectory = settings.mp4ExportDirectory;
     mediaLibraryAutoRefresh = settings.mediaLibraryAutoRefresh;
     mediaDownloadConcurrency = settings.mediaDownloadConcurrency;
@@ -1251,6 +1253,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> setAutoConvertToMp4(bool value) =>
       updateSettings({'autoConvertToMp4': value});
+
+  Future<void> setDeleteMediaTaskAfterMp4Export(bool value) =>
+      updateSettings({'deleteMediaTaskAfterMp4Export': value});
 
   Future<void> setMp4ExportDirectory(String? value) =>
       updateSettings({'mp4ExportDirectory': value});
@@ -1390,7 +1395,14 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     await mediaTasks.withExclusive(task.id, () async {
       await mediaLibrary.deliver(task.id, mp4ExportDirectory);
     });
-    return mediaLibrary.item(task.id) ?? artifact;
+    final delivered = mediaLibrary.item(task.id) ?? artifact;
+    if (deleteMediaTaskAfterMp4Export) {
+      // MediaArtifact owns the exported MP4 independently. Deleting through
+      // the task service removes only the task cache and task row, preserving
+      // the exported artifact and its catalog index.
+      await deleteMediaTask(task.id);
+    }
+    return delivered;
   }
 
   Future<MediaArtifact> _prepareMediaArtifact(
@@ -1442,11 +1454,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           artifactMime = mime;
           final baseName = mediaExportFileName(task)
               .replaceFirst(RegExp(r'\.mp4$', caseSensitive: false), '');
-          final folder = task.batchDirectory == null
-              ? 'direct_${DateTime.now().microsecondsSinceEpoch}'
-              : mediaSeriesDirectoryName(
-                  mediaFolderDisplayName(task.batchDirectory!),
-                );
+          final folder = mediaSeriesDirectoryName(task.storageDirectoryName);
           final directory = Directory(
             '${(await mediaTasks.cacheRootDirectory()).parent.path}/media_exports/$folder/${task.cacheKey}',
           );

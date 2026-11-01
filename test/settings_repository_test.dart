@@ -48,6 +48,7 @@ void main() {
         'highQualityAllSurfaces': true,
         'replaceSameSiteTabs': true,
         'autoSaveWebPlayback': true,
+        'deleteMediaTaskAfterMp4Export': true,
         'allowStreamingWhileDownloading': false,
         'themePreset': 'aurora_cyan',
         'mediaLibraryAutoRefresh': false,
@@ -61,6 +62,7 @@ void main() {
       expect(decoded['highQualityAllSurfaces'], isTrue);
       expect(decoded['replaceSameSiteTabs'], isTrue);
       expect(decoded['autoSaveWebPlayback'], isTrue);
+      expect(decoded['deleteMediaTaskAfterMp4Export'], isTrue);
       expect(decoded['allowStreamingWhileDownloading'], isFalse);
       expect(decoded['themePreset'], 'aurora_cyan');
       expect(decoded['mediaLibraryAutoRefresh'], isFalse);
@@ -78,8 +80,10 @@ void main() {
       final restored = AppSettings.fromJson({
         'mediaLibraryAutoRefresh': false,
         'mediaDownloadConcurrency': 99,
+        'deleteMediaTaskAfterMp4Export': true,
       });
       expect(restored.mediaLibraryAutoRefresh, isFalse);
+      expect(restored.deleteMediaTaskAfterMp4Export, isTrue);
       expect(
         restored.mediaDownloadConcurrency,
         AppPolicy.maxMediaDownloadConcurrency,

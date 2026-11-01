@@ -158,6 +158,42 @@ void main() {
     expect(task.resourceKey, hasLength(64));
   });
 
+  test(
+    'generated MP4 names keep only the episode inside the series folder',
+    () {
+      final store = MediaTaskStore();
+      final task = store.create(candidate(title: '母衣半暖默许春朝 - 第3集'));
+
+      expect(task.episodeFileName, '第3集');
+      expect(mediaExportFileName(task), '第3集.mp4');
+      expect(task.storageDirectoryName, '母衣半暖默许春朝');
+    },
+  );
+
+  test('unknown episodes keep generated file names unique', () {
+    final store = MediaTaskStore();
+    final first = store.create(
+      candidate(
+        id: 'unknown-one',
+        title: 'video',
+        url: 'https://cdn.example/a.mp4',
+      ),
+    );
+    final second = store.create(
+      candidate(
+        id: 'unknown-two',
+        title: 'video',
+        url: 'https://cdn.example/b.mp4',
+      ),
+    );
+
+    expect(
+      mediaExportFileName(first),
+      '未识别集数-${first.id.substring(first.id.length - 64)}.mp4',
+    );
+    expect(mediaExportFileName(second), isNot(mediaExportFileName(first)));
+  });
+
   test('typed episode identity survives task creation and JSON roundtrip', () {
     final source = candidate(
       id: 'typed-episode',

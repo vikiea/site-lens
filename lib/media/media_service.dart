@@ -62,13 +62,20 @@ String mediaTitleForEpisode(String title, int episodeNumber) {
 }
 
 String mediaExportFileName(MediaTask task) {
-  final raw = task.displayName.trim().isEmpty ? task.id : task.displayName;
+  final typedEpisode = task.episodeNumber;
+  final hasKnownEpisode =
+      (task.episodeLabel?.trim().isNotEmpty ?? false) ||
+      (typedEpisode != null && typedEpisode > 0);
+  final unknownSuffix = task.id.length <= 64
+      ? task.id
+      : task.id.substring(task.id.length - 64);
+  final raw = hasKnownEpisode ? task.episodeFileName : '未识别集数-$unknownSuffix';
   final safe = raw
       .replaceAll(RegExp(r'[\\/:*?"<>|\u0000-\u001f]'), '_')
       .replaceAll('..', '_')
       .trim()
       .replaceAll(RegExp(r'[. ]+$'), '');
-  final runes = (safe.isEmpty ? task.id : safe).runes.toList();
+  final runes = (safe.isEmpty ? '未识别集数-$unknownSuffix' : safe).runes.toList();
   return '${String.fromCharCodes(runes.length <= 70 ? runes : runes.skip(runes.length - 70))}.mp4';
 }
 
@@ -4142,9 +4149,8 @@ class Mp4ExportService {
       await validateHlsCacheInput(input);
       cancel.check();
       final root = await _directoryProvider();
-      final exportFolder = task.batchDirectory == null
-          ? id
-          : '${mediaSeriesDirectoryName(mediaFolderDisplayName(task.batchDirectory!))}/$id';
+      final seriesFolder = mediaSeriesDirectoryName(task.storageDirectoryName);
+      final exportFolder = '$seriesFolder/$id';
       outputDirectory = Directory('${root.path}/media_exports/$exportFolder');
       await outputDirectory.create(recursive: true);
       output = File('${outputDirectory.path}/${mediaExportFileName(task)}');
@@ -4248,6 +4254,18 @@ class Mp4ExportService {
             await outputDirectory.exists() &&
             await outputDirectory.list().isEmpty) {
           await outputDirectory.delete();
+        }
+        if (outputDirectory != null) {
+          final mediaExports = Directory(
+            p.join((await _directoryProvider()).path, 'media_exports'),
+          );
+          var parent = outputDirectory.parent;
+          while (parent.path != mediaExports.path &&
+              p.isWithin(mediaExports.path, parent.path)) {
+            if (!await parent.exists() || !await parent.list().isEmpty) break;
+            await parent.delete();
+            parent = parent.parent;
+          }
         }
       }
       if (!cancelled) {

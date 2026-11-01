@@ -159,6 +159,7 @@ class AppSettings {
     this.allowStreamingWhileDownloading = true,
     this.autoSaveWebPlayback = false,
     this.autoConvertToMp4 = false,
+    this.deleteMediaTaskAfterMp4Export = false,
     this.mp4ExportDirectory,
     this.mediaLibraryAutoRefresh = true,
     this.mediaDownloadConcurrency = AppPolicy.defaultMediaDownloadConcurrency,
@@ -193,6 +194,7 @@ class AppSettings {
   final bool allowStreamingWhileDownloading;
   final bool autoSaveWebPlayback;
   final bool autoConvertToMp4;
+  final bool deleteMediaTaskAfterMp4Export;
   final String? mp4ExportDirectory;
   final bool mediaLibraryAutoRefresh;
   final int mediaDownloadConcurrency;
@@ -227,6 +229,7 @@ class AppSettings {
     'allowStreamingWhileDownloading': allowStreamingWhileDownloading,
     'autoSaveWebPlayback': autoSaveWebPlayback,
     'autoConvertToMp4': autoConvertToMp4,
+    'deleteMediaTaskAfterMp4Export': deleteMediaTaskAfterMp4Export,
     'mp4ExportDirectory': mp4ExportDirectory,
     'mediaLibraryAutoRefresh': mediaLibraryAutoRefresh,
     'mediaDownloadConcurrency': mediaDownloadConcurrency,
@@ -358,6 +361,10 @@ class AppSettings {
       ),
       autoSaveWebPlayback: flag('autoSaveWebPlayback', false),
       autoConvertToMp4: flag('autoConvertToMp4', false),
+      deleteMediaTaskAfterMp4Export: flag(
+        'deleteMediaTaskAfterMp4Export',
+        false,
+      ),
       mp4ExportDirectory: directory('mp4ExportDirectory'),
       mediaLibraryAutoRefresh: flag('mediaLibraryAutoRefresh', true),
       mediaDownloadConcurrency: concurrency(
@@ -411,6 +418,7 @@ class AppSettings {
       'allowStreamingWhileDownloading',
       'autoSaveWebPlayback',
       'autoConvertToMp4',
+      'deleteMediaTaskAfterMp4Export',
       'mp4ExportDirectory',
       'mediaLibraryAutoRefresh',
       'mediaDownloadConcurrency',

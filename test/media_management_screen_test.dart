@@ -326,6 +326,11 @@ void main() {
       expect(find.text('自动同步媒体目录'), findsOneWidget);
       expect(find.text('下载并发数量'), findsOneWidget);
       expect(find.text('同时下载的媒体任务数量，范围 1 到 6'), findsOneWidget);
+      expect(find.text('导出 MP4 后删除任务和缓存'), findsOneWidget);
+      expect(app.deleteMediaTaskAfterMp4Export, isFalse);
+      await tester.tap(find.text('导出 MP4 后删除任务和缓存'));
+      await tester.pumpAndSettle();
+      expect(app.deleteMediaTaskAfterMp4Export, isTrue);
       expect(tester.takeException(), isNull);
     },
   );

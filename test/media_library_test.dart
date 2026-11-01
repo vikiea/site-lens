@@ -343,7 +343,7 @@ void main() {
     'artifact uses actual output bytes and persists title with current episode',
     () async {
       final item = await library.register(task, output.path);
-      expect(item.name, '示例系列 - 第1集.mp4');
+      expect(item.name, '第1集.mp4');
       expect(item.size, 6);
       expect(tasks.task(task.id)?.localRef, isNull);
       final restored = MediaLibrary(db: db, tasks: tasks);
@@ -360,7 +360,10 @@ void main() {
       await library.register(task, output.path);
       final directory = Directory('${root.path}/chosen');
       await directory.create();
-      final previous = File('${directory.path}/${mediaExportFileName(task)}');
+      final previous = File(
+        '${directory.path}/${task.storageDirectoryName}/${mediaExportFileName(task)}',
+      );
+      await previous.parent.create(recursive: true);
       await previous.writeAsBytes([9]);
       await library.deliver(task.id, directory.path);
       final delivered = library.item(task.id)!;
@@ -995,7 +998,7 @@ void main() {
       await library.restore();
       final restored = tasks.task(task.id)!;
       expect(restored.displayName, '示例系列 - 第1集');
-      expect(library.items.single.name, '示例系列 - 第1集.mp4');
+      expect(library.items.single.name, '第1集.mp4');
       expect(library.items.single.size, 6);
     },
   );

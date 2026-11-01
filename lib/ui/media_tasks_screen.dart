@@ -39,6 +39,20 @@ enum _MediaBatchAction {
   deleteFailed,
 }
 
+enum MediaTaskRowAction { play, pause, retry }
+
+MediaTaskRowAction? mediaTaskRowActionForState(MediaTaskState state) =>
+    switch (state) {
+      MediaTaskState.completed ||
+      MediaTaskState.playable => MediaTaskRowAction.play,
+      MediaTaskState.downloading ||
+      MediaTaskState.paused => MediaTaskRowAction.pause,
+      MediaTaskState.failed ||
+      MediaTaskState.cancelled ||
+      MediaTaskState.reauthorize => MediaTaskRowAction.retry,
+      MediaTaskState.queued => null,
+    };
+
 const _playbackSpeeds = <double>[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3, 4, 8];
 
 String _speedLabel(double speed) =>
@@ -2283,7 +2297,7 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
   late final Future<MediaCandidate?> _candidate = widget.app.db.mediaCandidate(
     widget.task.candidateId,
   );
-  var _expanded = false;
+  var _expanded = true;
 
   @override
   void didUpdateWidget(covariant _MediaLibraryTile oldWidget) {
@@ -2300,7 +2314,6 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
       final item =
           widget.app.mediaLibrary.item(widget.item.taskId) ?? widget.item;
       final thumbnail = item.thumbnailPath;
-      final details = <String>['MP4', formatBytes(item.size)];
       final preview = SizedBox(
         width: 68,
         height: 48,
@@ -2338,7 +2351,7 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
           item.name.replaceFirst(RegExp(r'\.mp4$', caseSensitive: false), ''),
         ),
         subtitle: Text(
-          '${details.join(' · ')}${snapshot.hasError ? ' · 文件暂不可用' : ''}',
+          snapshot.hasError ? '不可用' : '可播放',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: Theme.of(context).textTheme.labelSmall
@@ -2346,7 +2359,7 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
         ),
         onTap: widget.selectionMode
             ? () => widget.onSelected?.call(!widget.selected)
-            : () => setState(() => _expanded = !_expanded),
+            : () => unawaited(widget.onAction('play')),
         trailing: widget.selectionMode
             ? null
             : widget.app.mediaLibrary.busy(item.taskId)
@@ -2369,6 +2382,11 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
                       moveLabel: '移动到目录',
                       copyLabel: '复制到目录',
                       extraActions: [
+                        const SiteLensGlassMenuAction(
+                          value: 'details',
+                          label: '查看详情',
+                          icon: Icons.info_outline,
+                        ),
                         const SiteLensGlassMenuAction(
                           value: 'play',
                           label: '原生播放',
@@ -2437,7 +2455,7 @@ Widget _mediaArtifactInlineDetails(
   child: Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      _MediaDetailRow(label: '文件名', value: item.name),
+      _MediaDetailRow(label: '文件大小', value: formatBytes(item.size)),
       _MediaDetailRow(label: '格式', value: item.mime),
       _MediaDetailRow(
         label: '时长',
@@ -2947,6 +2965,25 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
                     semanticLabel: '下载完成自动导出 MP4',
                     onChanged: (value) =>
                         safely(context, () => app.setAutoConvertToMp4(value)),
+                  ),
+                ),
+                const SiteLensPanelDivider(),
+                SiteLensCompactRow(
+                  title: const Text('导出 MP4 后删除任务和缓存'),
+                  subtitle: const Text('已导出的 MP4 保留在媒体库，任务与下载缓存会清理'),
+                  onTap: () => safely(
+                    context,
+                    () => app.setDeleteMediaTaskAfterMp4Export(
+                      !app.deleteMediaTaskAfterMp4Export,
+                    ),
+                  ),
+                  trailing: SiteLensCompactSwitch(
+                    value: app.deleteMediaTaskAfterMp4Export,
+                    semanticLabel: '导出 MP4 后删除任务和缓存',
+                    onChanged: (value) => safely(
+                      context,
+                      () => app.setDeleteMediaTaskAfterMp4Export(value),
+                    ),
                   ),
                 ),
                 const SiteLensPanelDivider(),
@@ -4090,8 +4127,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         busy: _taskBusy(task.id),
         isBatchSelectable: _isBatchSelectable,
         isBatchExportable: _isBatchExportable,
-        taskTitle: _taskTitle,
-        taskProgress: _taskProgress,
+        taskTitle: (task, _) => _taskTitle(task),
         taskProgressLabel: _taskProgressLabel,
         taskErrorLabel: _taskErrorLabel,
         onRefresh: (value) =>
@@ -4122,23 +4158,8 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     return '${(progress * 100).round()}% · ${formatBytes(task.bytesDownloaded)}/${formatBytes(task.totalBytes!)}';
   }
 
-  String _taskTitle(MediaTask task, MediaCandidate? candidate) {
-    final frozen = mediaPlaylistEntryName(
-      widget.app.mediaTasks.tasks,
-      task,
-    ).trim();
-    if (frozen.isNotEmpty) return _shortMediaName(frozen);
-    final title = candidate?.title.trim();
-    if (title != null && title.isNotEmpty) return _shortMediaName(title);
-    final segments = candidate?.mediaUrl.pathSegments
-        .where((segment) => segment.isNotEmpty)
-        .toList();
-    final filename = segments == null || segments.isEmpty
-        ? null
-        : segments.last;
-    return _shortMediaName(
-      filename == null || filename.isEmpty ? task.id : filename,
-    );
+  String _taskTitle(MediaTask task) {
+    return _shortMediaName(task.episodeFileName.trim());
   }
 }
 
@@ -4153,7 +4174,6 @@ class _MediaTaskRow extends StatefulWidget {
     required this.isBatchSelectable,
     required this.isBatchExportable,
     required this.taskTitle,
-    required this.taskProgress,
     required this.taskProgressLabel,
     required this.taskErrorLabel,
     required this.onRefresh,
@@ -4175,7 +4195,6 @@ class _MediaTaskRow extends StatefulWidget {
   final bool Function(MediaTask) isBatchSelectable;
   final bool Function(MediaTask) isBatchExportable;
   final String Function(MediaTask, MediaCandidate?) taskTitle;
-  final double? Function(MediaTask) taskProgress;
   final String Function(MediaTask) taskProgressLabel;
   final String Function(MediaTask) taskErrorLabel;
   final Future<void> Function(MediaTask) onRefresh;
@@ -4195,7 +4214,7 @@ class _MediaTaskRow extends StatefulWidget {
 class _MediaTaskRowState extends State<_MediaTaskRow> {
   late Future<MediaCandidate?> _candidate;
   late Future<MediaArtifact?> _artifact;
-  var _expanded = false;
+  var _expanded = true;
 
   @override
   void initState() {
@@ -4239,6 +4258,20 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
     }
   }
 
+  Future<void> _activateRow() async {
+    if (widget.busy) return;
+    switch (mediaTaskRowActionForState(widget.task.state)) {
+      case MediaTaskRowAction.play:
+        await widget.onPlay(widget.task);
+      case MediaTaskRowAction.pause:
+        await widget.onPause(widget.task);
+      case MediaTaskRowAction.retry:
+        await widget.onRetry(widget.task);
+      case null:
+        break;
+    }
+  }
+
   @override
   Widget build(BuildContext context) => FutureBuilder<MediaCandidate?>(
     future: _candidate,
@@ -4259,6 +4292,11 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
             moveLabel: '移动到任务分组',
             copyLabel: '复制任务',
             extraActions: [
+              const SiteLensGlassMenuAction(
+                value: 'details',
+                label: '查看详情',
+                icon: Icons.info_outline,
+              ),
               SiteLensGlassMenuAction(
                 value: 'refresh',
                 label: '刷新后台状态',
@@ -4384,7 +4422,7 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
             overflow: TextOverflow.ellipsis,
           ),
           subtitle: Text(
-            '${_mediaTaskStateLabel(widget.task.state)} · ${widget.taskProgressLabel(widget.task)}',
+            _mediaTaskStateLabel(widget.task.state),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
@@ -4392,7 +4430,7 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
               ? (widget.isBatchSelectable(widget.task)
                     ? () => widget.browser.toggleItem(widget.task.id)
                     : null)
-              : () => setState(() => _expanded = !_expanded),
+              : () => unawaited(_activateRow()),
           trailing: widget.browser.selectionMode
               ? Text(
                   widget.isBatchSelectable(widget.task) ? '可处理' : '执行中',
@@ -4427,15 +4465,7 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
                 widget.task,
                 candidate,
                 artifact,
-              ),
-            if (widget.task.state == MediaTaskState.downloading ||
-                widget.task.state == MediaTaskState.paused)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(18, 0, 18, 10),
-                child: LinearProgressIndicator(
-                  value: widget.taskProgress(widget.task),
-                  minHeight: 4,
-                ),
+                progressLabel: widget.taskProgressLabel(widget.task),
               ),
           ],
         );
@@ -4448,8 +4478,9 @@ Widget _mediaTaskInlineDetails(
   BuildContext context,
   MediaTask task,
   MediaCandidate? candidate,
-  MediaArtifact? artifact,
-) => Padding(
+  MediaArtifact? artifact, {
+  required String progressLabel,
+}) => Padding(
   padding: const EdgeInsets.fromLTRB(
     SiteLensMetrics.accordionContentIndent,
     0,
@@ -4459,31 +4490,32 @@ Widget _mediaTaskInlineDetails(
   child: Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
+      if (artifact == null)
+        _MediaDetailRow(label: '进度', value: progressLabel),
       if (artifact != null) ...[
-        _MediaDetailRow(label: '文件名', value: artifact.name),
+        _MediaDetailRow(label: '文件大小', value: formatBytes(artifact.size)),
         _MediaDetailRow(label: '格式', value: artifact.mime),
         _MediaDetailRow(
-          label: '保存位置',
-          value: readableMediaLocation(artifact.location),
+          label: '时长',
+          value: formatMediaDuration(artifact.durationMs ?? 0),
         ),
       ] else ...[
         if (candidate != null)
-          _MediaDetailRow(label: '来源格式', value: candidate.effectiveMime),
-        if (task.localRef != null)
-          _MediaDetailRow(
-            label: '本地缓存',
-            value: readableMediaLocation(task.localRef!),
-          ),
+          _MediaDetailRow(label: '格式', value: candidate.effectiveMime),
       ],
       if (_taskErrorLabel(task).isNotEmpty)
         _MediaDetailRow(label: '错误原因', value: _taskErrorLabel(task)),
-      _MediaDetailRow(
-        label: '文件夹',
-        value: readableMediaLocation(
-          mediaFolderDisplayName(task.storageDirectoryName),
+      if (task.state == MediaTaskState.downloading ||
+          task.state == MediaTaskState.paused)
+        Padding(
+          padding: const EdgeInsets.only(top: 4, bottom: 10),
+          child: LinearProgressIndicator(
+            value: task.totalBytes == null || task.totalBytes! <= 0
+                ? null
+                : (task.bytesDownloaded / task.totalBytes!).clamp(0, 1),
+            minHeight: 4,
+          ),
         ),
-      ),
-      _MediaDetailRow(label: '来源页面', value: task.sourceUrl.toString()),
     ],
   ),
 );
