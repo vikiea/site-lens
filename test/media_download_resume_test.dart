@@ -376,6 +376,62 @@ void main() {
   );
 
   test(
+    'header-aware native transport receives the WebView CDN request context',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-cdn-header-native-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final playlist = Uri.parse('https://cdn.example/index.m3u8');
+      final candidate = MediaCandidate(
+        id: 'cdn-header-candidate',
+        hostId: 7,
+        generation: 3,
+        sourceUrl: Uri.parse('https://example.com/watch'),
+        mediaUrl: playlist,
+        title: 'CDN header regression',
+        mime: 'application/vnd.apple.mpegurl',
+        source: MediaCandidateSource.dom,
+        manifestHeaders: const {
+          'x-cdn-auth': 'signed-value',
+          'x-cdn-app': '150',
+        },
+        resourceHeaders: const {
+          'x-cdn-auth': 'signed-value',
+          'x-cdn-app': '150',
+        },
+      );
+      final tasks = MediaTaskStore(directoryProvider: () async => root);
+      final http = _FailingManifestHttp(playlist, playlist.resolve('seg.ts'));
+      Map<String, String>? observed;
+      final result = await MediaDownloadService(
+        tasks: tasks,
+        http: http,
+        tlsTransferWithHeaders:
+            (
+              url,
+              document,
+              destination,
+              maxBytes,
+              cancel, {
+              void Function(int bytesWritten)? onProgress,
+              Map<String, String>? headers,
+            }) async {
+              observed = headers;
+              await destination.writeAsString(
+                '#EXTM3U\n#EXTINF:1,\nseg.ts\n',
+                flush: true,
+              );
+              onProgress?.call(28);
+            },
+      ).start(tasks.create(candidate), candidate);
+
+      expect(result.state, MediaTaskState.playable);
+      expect(observed, {'x-cdn-auth': 'signed-value', 'x-cdn-app': '150'});
+    },
+  );
+
+  test(
     'native response-header reset retries through Dart transport once',
     () async {
       final root = await Directory.systemTemp.createTemp(

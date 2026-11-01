@@ -1884,6 +1884,16 @@ typedef NativeTlsTransfer = Future<void> Function(
   void Function(int bytesWritten)? onProgress,
 });
 
+typedef NativeTlsTransferWithHeaders = Future<void> Function(
+  Uri url,
+  Uri document,
+  File destination,
+  int maxBytes,
+  Cancellation cancellation, {
+  void Function(int bytesWritten)? onProgress,
+  Map<String, String>? headers,
+});
+
 class MediaBatchDownloadRequest {
   const MediaBatchDownloadRequest({
     required this.task,
@@ -1935,6 +1945,7 @@ class MediaDownloadService {
     this.native,
     this.authorize,
     this.tlsTransfer,
+    this.tlsTransferWithHeaders,
     this.resourceCoordinator,
     this.progressElapsed,
   }) : http = http ?? ControlledHttp();
@@ -1942,6 +1953,7 @@ class MediaDownloadService {
   final MediaTaskStore tasks;
   final ControlledHttp http;
   final NativeTlsTransfer? tlsTransfer;
+  final NativeTlsTransferWithHeaders? tlsTransferWithHeaders;
   final MediaResourceCoordinator? resourceCoordinator;
   final Duration Function()? progressElapsed;
 
@@ -1961,6 +1973,65 @@ class MediaDownloadService {
   final _transferScheduler = MediaTransferScheduler();
   final _taskPriorities = <String, int>{};
   final _hlsSeekTargets = <String, int>{};
+  final _requestContexts =
+      <
+        String,
+        ({Map<String, String> manifest, Map<String, String> resource})
+      >{};
+
+  bool get _hasNativeTransfer =>
+      tlsTransfer != null || tlsTransferWithHeaders != null;
+
+  Future<void> _transferNative(
+    Uri url,
+    Uri document,
+    File destination,
+    int maxBytes,
+    Cancellation cancel, {
+    void Function(int bytesWritten)? onProgress,
+    Map<String, String> headers = const {},
+  }) {
+    final withHeaders = tlsTransferWithHeaders;
+    if (withHeaders != null) {
+      return withHeaders(
+        url,
+        document,
+        destination,
+        maxBytes,
+        cancel,
+        onProgress: onProgress,
+        headers: headers,
+      );
+    }
+    final legacy = tlsTransfer;
+    if (legacy == null) throw StateError('原生媒体传输不可用');
+    return legacy(
+      url,
+      document,
+      destination,
+      maxBytes,
+      cancel,
+      onProgress: onProgress,
+    );
+  }
+
+  ({Map<String, String> manifest, Map<String, String> resource})
+  _requestContextFor(String taskId, MediaCandidate candidate) {
+    final id = tasks.resolveTaskId(taskId);
+    if (candidate.hasRequestHeaders) {
+      final context = (
+        manifest: candidate.manifestHeaders,
+        resource: candidate.resourceHeaders,
+      );
+      _requestContexts[id] = context;
+      return context;
+    }
+    return _requestContexts[id] ??
+        (
+          manifest: const <String, String>{},
+          resource: const <String, String>{},
+        );
+  }
 
   /// Starts a user-selected batch through the same per-task lifecycle as a
   /// single download. The UI may disappear while these futures run; durable
@@ -2388,6 +2459,7 @@ class MediaDownloadService {
       });
     } finally {
       _stopping.remove(id);
+      _requestContexts.remove(id);
       try {
         if (nativeReservation != null) {
           try {
@@ -2534,7 +2606,9 @@ class MediaDownloadService {
   }
 
   Future<MediaTask> startNative(MediaTask task, MediaCandidate candidate) {
-    if (native == null || candidate.isHls) return start(task, candidate);
+    if (native == null || candidate.isHls || candidate.hasRequestHeaders) {
+      return start(task, candidate);
+    }
     return _launch(
       task,
       (id) => _control(id, (id) async {
@@ -2610,6 +2684,7 @@ class MediaDownloadService {
           ? candidate
           : authorize!(currentTask, candidate);
       _validateTaskCandidate(currentTask, authorized);
+      final requestContext = _requestContextFor(id, authorized);
       _dartTasks.add(id);
       final cancel = Cancellation();
       _active[id] = cancel;
@@ -2625,6 +2700,8 @@ class MediaDownloadService {
             authorized,
             cancel: cancel,
             maxBytes: maxBytes,
+            manifestHeaders: requestContext.manifest,
+            resourceHeaders: requestContext.resource,
           );
         }
         var current = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
@@ -2643,6 +2720,7 @@ class MediaDownloadService {
           cancel,
           document: authorized.sourceUrl,
           maxBytes: maxBytes,
+          headers: requestContext.resource,
           onProgress: (bytes) => _reportTaskProgress(id, bytes),
         );
         cancel.check();
@@ -2669,6 +2747,11 @@ class MediaDownloadService {
         if (identical(_active[id], cancel)) _active.remove(id);
         _dartTasks.remove(id);
         _progressAtMs.remove(id);
+        final latest = tasks.task(id);
+        if (latest?.state == MediaTaskState.completed ||
+            latest?.state == MediaTaskState.playable) {
+          _requestContexts.remove(id);
+        }
       }
     }),
   );
@@ -2683,6 +2766,8 @@ class MediaDownloadService {
     MediaCandidate candidate, {
     required int maxBytes,
     required Cancellation cancel,
+    Map<String, String> manifestHeaders = const {},
+    Map<String, String> resourceHeaders = const {},
   }) async {
     var current = tasks.task(task.id) ?? task;
     Directory? staging;
@@ -2711,6 +2796,7 @@ class MediaDownloadService {
         cancel,
         document: candidate.sourceUrl,
         staging: staging,
+        headers: manifestHeaders,
       );
       playlistUri = fetched.url;
       var playlistText = fetched.text;
@@ -2722,6 +2808,7 @@ class MediaDownloadService {
           cancel,
           document: candidate.sourceUrl,
           staging: staging,
+          headers: manifestHeaders,
         );
         playlistUri = fetched.url;
         playlistText = fetched.text;
@@ -2781,6 +2868,7 @@ class MediaDownloadService {
               document: candidate.sourceUrl,
               resourceKind: line.startsWith('#EXT-X-KEY:') ? 'key' : 'map',
               ownerId: task.id,
+              headers: resourceHeaders,
               onProgress: (bytes) =>
                   _reportTaskProgress(task.id, totalBytes + bytes),
             );
@@ -2818,6 +2906,7 @@ class MediaDownloadService {
               document: candidate.sourceUrl,
               resourceKind: 'seek-segment',
               ownerId: task.id,
+              headers: resourceHeaders,
               onProgress: (bytes) =>
                   _reportTaskProgress(task.id, totalBytes + bytes),
             );
@@ -2835,6 +2924,7 @@ class MediaDownloadService {
           document: candidate.sourceUrl,
           resourceKind: 'segment',
           ownerId: task.id,
+          headers: resourceHeaders,
           onProgress: (bytes) =>
               _reportTaskProgress(task.id, totalBytes + bytes),
         );
@@ -2937,6 +3027,7 @@ class MediaDownloadService {
     Cancellation cancel, {
     required Uri document,
     required Directory staging,
+    Map<String, String> headers = const {},
   }) async {
     try {
       final response = await _fetchMediaWithRetry(
@@ -2944,6 +3035,7 @@ class MediaDownloadService {
         connect: const {'*'},
         document: document,
         cancel: cancel,
+        headers: headers,
         maxBytes: 16 * 1024 * 1024,
       );
       if (response.status < 200 || response.status >= 300) {
@@ -2956,13 +3048,20 @@ class MediaDownloadService {
       }
       return (url: response.url, text: utf8.decode(response.bytes));
     } catch (error) {
-      if (tlsTransfer == null || !_isMediaNetworkError(error)) rethrow;
+      if (!_hasNativeTransfer || !_isMediaNetworkError(error)) rethrow;
       final key = sha256
           .convert(utf8.encode(_resumeContentIdentity(url)))
           .toString();
       final partial = File('${staging.path}/.playlist_$key.part');
       try {
-        await tlsTransfer!(url, document, partial, 16 * 1024 * 1024, cancel);
+        await _transferNative(
+          url,
+          document,
+          partial,
+          16 * 1024 * 1024,
+          cancel,
+          headers: headers,
+        );
         cancel.check();
         if (!await partial.exists() || await partial.length() == 0) {
           throw StateError('HLS 清单响应为空');
@@ -3043,6 +3142,7 @@ class MediaDownloadService {
     required Uri document,
     required String resourceKind,
     required String ownerId,
+    Map<String, String> headers = const {},
     void Function(int bytesWritten)? onProgress,
   }) async {
     final remote = playlist.resolve(raw);
@@ -3121,6 +3221,7 @@ class MediaDownloadService {
           cancel,
           document: document,
           maxBytes: min(64 * 1024 * 1024, maxBytes),
+          headers: headers,
           onProgress: onProgress,
         ),
       );
@@ -3140,6 +3241,7 @@ class MediaDownloadService {
               Cancellation(),
               document: document,
               maxBytes: min(64 * 1024 * 1024, maxBytes),
+              headers: headers,
               onProgress: onProgress,
             ),
           );
@@ -3345,18 +3447,20 @@ class MediaDownloadService {
     Cancellation cancel, {
     required Uri document,
     required int maxBytes,
+    Map<String, String> headers = const {},
     void Function(int bytesWritten)? onProgress,
   }) async {
     final nativeResume = File('${partial.path}.resume');
-    if (tlsTransfer != null && await nativeResume.exists()) {
+    if (_hasNativeTransfer && await nativeResume.exists()) {
       try {
-        await tlsTransfer!(
+        await _transferNative(
           url,
           document,
           partial,
           maxBytes,
           cancel,
           onProgress: onProgress,
+          headers: headers,
         );
         cancel.check();
         return;
@@ -3373,6 +3477,7 @@ class MediaDownloadService {
           maxBytes: maxBytes,
           onProgress: onProgress,
           allowNativeFallback: false,
+          headers: headers,
         );
         return;
       }
@@ -3384,6 +3489,7 @@ class MediaDownloadService {
       document: document,
       maxBytes: maxBytes,
       onProgress: onProgress,
+      headers: headers,
       allowNativeFallback: true,
     );
   }
@@ -3395,6 +3501,7 @@ class MediaDownloadService {
     required Uri document,
     required int maxBytes,
     void Function(int bytesWritten)? onProgress,
+    Map<String, String> headers = const {},
     required bool allowNativeFallback,
   }) async {
     final identity = sha256
@@ -3426,6 +3533,7 @@ class MediaDownloadService {
           routeAttempt: attempt,
           onProgress: onProgress,
           headers: {
+            ...headers,
             if (offset > 0) 'Range': 'bytes=$offset-',
             if (offset > 0 && validator != null) 'If-Range': validator,
           },
@@ -3519,19 +3627,20 @@ class MediaDownloadService {
       } else {
         if (allowNativeFallback &&
             (lastError is TlsException || lastError is SocketException) &&
-            tlsTransfer != null) {
+            _hasNativeTransfer) {
           // Android can recover CDN connections that reset before Dart reports
           // a TLS error. Bridge the Dart sidecar into Android's format before
           // handing over the same flushed prefix.
           await _prepareNativeResumeState(url, partial);
           try {
-            await tlsTransfer!(
+            await _transferNative(
               url,
               document,
               partial,
               maxBytes,
               cancel,
               onProgress: onProgress,
+              headers: headers,
             );
             cancel.check();
             return;
@@ -3547,6 +3656,7 @@ class MediaDownloadService {
               document: document,
               maxBytes: maxBytes,
               onProgress: onProgress,
+              headers: headers,
               allowNativeFallback: false,
             );
             return;

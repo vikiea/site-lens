@@ -134,8 +134,18 @@ class MediaNetworkRuntime(
             require(output.name.endsWith(".part")) { "媒体缓存目标无效" }
             val maxBytes = call.argument<Number>("maxBytes")?.toLong() ?: 0L
             require(maxBytes in 1..(2L * 1024 * 1024 * 1024)) { "媒体大小上限无效" }
+            val requestHeaders = (call.argument<Map<*, *>>("headers") ?: emptyMap<Any?, Any?>())
+                .mapNotNull { (key, value) ->
+                    val name = key?.toString()?.trim()?.lowercase()
+                    val text = value?.toString()?.trim()
+                    if (name in setOf("x-cdn-auth", "x-cdn-app") &&
+                        !text.isNullOrEmpty() && text.length <= 512
+                    ) name!! to text else null
+                }
+                .toMap()
             var lastProgressAt: Long? = null
             transfer.transfer(url, document, output, userAgent, maxBytes = maxBytes,
+                requestHeaders = requestHeaders,
                 requestCookies = { target ->
                     AndroidCookieReader.get(target.toString())
                         ?: AndroidCookieReader.get(document.toString())

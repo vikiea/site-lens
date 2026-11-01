@@ -215,7 +215,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
             MediaNetwork().route(uri, attempt: attempt),
       ),
       authorize: _authorizeMediaDownload,
-      tlsTransfer: Platform.isAndroid ? MediaNetwork().transferFile : null,
+      tlsTransferWithHeaders: Platform.isAndroid
+          ? MediaNetwork().transferFile
+          : null,
       resourceCoordinator: mediaResourceCoordinator,
     );
     mediaExports = Mp4ExportService(tasks: mediaTasks, native: nativeExports);

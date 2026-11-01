@@ -55,6 +55,7 @@ class ResumableMediaTransfer(
     fun transfer(url: URI, source: URI, partial: File, userAgent: String,
         maxBytes: Long = 2L * 1024 * 1024 * 1024,
         requestCookies: (URI) -> String? = { null },
+        requestHeaders: Map<String, String> = emptyMap(),
         onProgress: (Long, Long?) -> Unit = { _, _ -> },
     ): Long {
         val metadataFile = File(partial.path + ".resume")
@@ -100,6 +101,9 @@ class ResumableMediaTransfer(
                             current.setRequestProperty("Accept-Encoding", "identity")
                             current.setRequestProperty("User-Agent", userAgent)
                             current.setRequestProperty("Accept", "*/*")
+                            requestHeaders.forEach { (name, value) ->
+                                current.setRequestProperty(name, value)
+                            }
                             current.setRequestProperty("Referer", source.toString())
                             current.setRequestProperty("Origin", "${source.scheme}://${source.rawAuthority}")
                             requestCookies(uri)?.takeIf { it.isNotBlank() }?.let {

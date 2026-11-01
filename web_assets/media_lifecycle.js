@@ -203,6 +203,20 @@
       ? document.getElementById('videoInitialData')
       : null;
   }
+  function pageCdnHeaders(scope) {
+    const element = initialDataElement();
+    if (!element || element.getAttribute('type') !== 'application/json') return {};
+    try {
+      const data = JSON.parse(element.textContent || '{}');
+      const key = String(data.cdnAuthKey || '').trim().toLowerCase();
+      const value = String(data.cdnAuthValue || '').trim();
+      const app = String(data.cdnApp || '').trim();
+      if (key !== 'x-cdn-auth' || !value || !app) return {};
+      if (scope === 'manifest' && data.cdnM3u8Enabled !== true) return {};
+      if (scope === 'resource' && data.cdnOtherEnabled !== true) return {};
+      return {'x-cdn-auth': value, 'x-cdn-app': app};
+    } catch (_) { return {}; }
+  }
   function explicitMediaUrl(raw) {
     if (typeof raw !== 'string') return null;
     try {
@@ -781,6 +795,10 @@
         mime: resolvedMime.slice(0, 128),
         pageUrl: ownerPage || pageUrl(),
       };
+      const manifestHeaders = pageCdnHeaders('manifest');
+      const resourceHeaders = pageCdnHeaders('resource');
+      if (Object.keys(manifestHeaders).length) candidate.manifestHeaders = manifestHeaders;
+      if (Object.keys(resourceHeaders).length) candidate.resourceHeaders = resourceHeaders;
       if (Number.isFinite(priority) && priority > 0 && !force) {
         candidate.representationRank = priority;
       }

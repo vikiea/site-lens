@@ -216,6 +216,11 @@ dataElements.length = 0;
 dataElements.push(new DataElement({'data-play-src': 'https://cdn.example.test/explicit/episode-1.m3u8?token=mirror'}, '第1集 第2集 第3集 第4集'));
 initialData = new JsonElement(JSON.stringify({
   videoTitle: '显式剧集映射',
+  cdnAuthKey: 'x-cdn-auth',
+  cdnAuthValue: 'signed-value',
+  cdnApp: '150',
+  cdnM3u8Enabled: true,
+  cdnOtherEnabled: false,
   tracking: {total_episode: 8},
   recommendations: [{url: 'https://cdn.example.test/recommendation.mp4'}],
   epPlaySrcs: {
@@ -235,7 +240,13 @@ const explicitCandidates = outbound.filter(value => value.kind === 'candidates')
 assert.equal(explicitCandidates.length, 2);
 assert.ok(explicitCandidates.some(value => value.episodeNumber === 1 && value.url.includes('episode-1')));
 assert.ok(explicitCandidates.some(value => value.episodeNumber === 2 && value.url.includes('episode-2')));
+assert.ok(explicitCandidates.every(value =>
+  value.manifestHeaders?.['x-cdn-auth'] === 'signed-value' &&
+  value.manifestHeaders?.['x-cdn-app'] === '150' &&
+  value.resourceHeaders === undefined,
+));
 console.log('Explicit page episode-to-media mapping is discovered without inferring missing episodes PASS.');
+console.log('Player CDN manifest request context is carried without exposing segment headers when disabled PASS.');
 const beforeExplicitRoute = outbound.length;
 window.history.pushState({}, '', '/video/explicit-route');
 await waitForReport();

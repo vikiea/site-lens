@@ -47,6 +47,7 @@ class MediaNetwork {
     int maxBytes,
     Cancellation cancel, {
     void Function(int bytesWritten)? onProgress,
+    Map<String, String>? headers,
   }) async {
     if (!_nativeAvailable) throw UnsupportedError('需要 Android 媒体传输');
     cancel.check();
@@ -72,6 +73,7 @@ class MediaNetwork {
         'document': document.toString(),
         'path': destination.path,
         'maxBytes': maxBytes,
+        if (headers != null && headers.isNotEmpty) 'headers': headers,
       });
     } on PlatformException catch (error) {
       cancel.check();

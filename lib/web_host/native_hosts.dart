@@ -477,6 +477,8 @@ class NativeHosts extends WebHostEvents {
         final epoch = (raw['epoch'] as num?)?.toInt() ?? -1;
         final frameKey = frame.isEmpty ? 'host:${session.id}' : frame;
         final rawMime = (raw['mime'] as String? ?? '').trim();
+        final manifestHeaders = safeMediaRequestHeaders(raw['manifestHeaders']);
+        final resourceHeaders = safeMediaRequestHeaders(raw['resourceHeaders']);
         final thumbnailUrl = optionalMediaUri(raw['thumbnail'] as String?);
         final rawSeriesKey = (raw['seriesKey'] as String? ?? '').trim();
         final rawEpisodeNumber = (raw['episodeNumber'] as num?)?.toInt();
@@ -522,6 +524,8 @@ class NativeHosts extends WebHostEvents {
           thumbnailUrl: thumbnailUrl,
           durationMs: (raw['durationMs'] as num?)?.toInt(),
           createdAt: DateTime.now().toUtc(),
+          manifestHeaders: manifestHeaders,
+          resourceHeaders: resourceHeaders,
         );
         const MediaCandidateValidator().validate(
           candidate,
@@ -892,6 +896,12 @@ class NativeHosts extends WebHostEvents {
             : rawTitle;
         final thumbnailUrl = optionalMediaUri(args['thumbnail'] as String?);
         final rawMime = (args['mime'] as String? ?? '').trim();
+        final manifestHeaders = safeMediaRequestHeaders(
+          args['manifestHeaders'],
+        );
+        final resourceHeaders = safeMediaRequestHeaders(
+          args['resourceHeaders'],
+        );
         final mime = rawMime.isEmpty ? inferMediaMime(mediaUrl) : rawMime;
         final candidate = MediaCandidate(
           id:
@@ -913,6 +923,8 @@ class NativeHosts extends WebHostEvents {
           thumbnailUrl: thumbnailUrl,
           durationMs: (args['durationMs'] as num?)?.toInt(),
           createdAt: DateTime.now().toUtc(),
+          manifestHeaders: manifestHeaders,
+          resourceHeaders: resourceHeaders,
         );
         const validator = MediaCandidateValidator();
         validator.validate(

@@ -1060,7 +1060,8 @@ class MediaLibraryScreen extends StatefulWidget {
   State<MediaLibraryScreen> createState() => _MediaLibraryScreenState();
 }
 
-class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
+class _MediaLibraryScreenState extends State<MediaLibraryScreen>
+    with WidgetsBindingObserver {
   AppController get app => widget.app;
   late final MediaOrganizationService _organization = MediaOrganizationService(
     db: app.db,
@@ -1081,10 +1082,16 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
   Future<void>? _physicalRefresh;
   String? _physicalRequestedLocation;
   int _physicalRequestEpoch = 0;
+  bool _initializing = true;
+  Timer? _directoryPoller;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _directoryPoller = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) unawaited(_rescan(silent: true));
+    });
     _organization.addListener(_changed);
     _browser.addListener(_changed);
     app.addListener(_changed);
@@ -1097,12 +1104,21 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _directoryPoller?.cancel();
     _organization.removeListener(_changed);
     _browser.removeListener(_changed);
     app.removeListener(_changed);
     app.mediaLibrary.removeListener(_libraryChanged);
     _browser.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      unawaited(_rescan(silent: true));
+    }
   }
 
   void _changed() {
@@ -1146,6 +1162,13 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
     try {
       await app.mediaLibrary.restore();
       if (!mounted) return;
+      final result = await app.mediaLibrary.rescan(
+        directory: app.mp4ExportDirectory,
+      );
+      if (result.warnings.isNotEmpty && mounted) {
+        setState(() => _error = result.warnings.join('；'));
+      }
+      if (!mounted) return;
       await _organization.restore();
       if (!mounted) return;
       if (await app.db.setting('mediaLibraryOrganizationMigratedV2') != '1') {
@@ -1163,10 +1186,12 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
       await _loadPhysicalDirectory();
     } catch (error) {
       if (mounted) setState(() => _error = friendlyError(error));
+    } finally {
+      if (mounted) setState(() => _initializing = false);
     }
   }
 
-  Future<void> _rescan() async {
+  Future<void> _rescan({bool silent = false}) async {
     if (_scanning) return;
     setState(() => _scanning = true);
     try {
@@ -1175,12 +1200,14 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
       );
       await _loadPhysicalDirectory();
       if (!mounted) return;
-      showShortToast(
-        context,
-        result.added == 0 && result.removed == 0 && result.updated == 0
-            ? '已扫描 ${result.found} 个 MP4，目录和索引没有变化'
-            : '已同步 ${result.found} 个 MP4（新增 ${result.added}，更新 ${result.updated}，移除 ${result.removed}）',
-      );
+      if (!silent) {
+        showShortToast(
+          context,
+          result.added == 0 && result.removed == 0 && result.updated == 0
+              ? '已扫描 ${result.found} 个 MP4，目录和索引没有变化'
+              : '已同步 ${result.found} 个 MP4（新增 ${result.added}，更新 ${result.updated}，移除 ${result.removed}）',
+        );
+      }
       if (result.warnings.isNotEmpty) {
         setState(() => _error = result.warnings.join('；'));
       }
@@ -1937,8 +1964,12 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final allExports = app.mediaLibrary.items;
-    final visible = _browser.physicalMode
+    final allExports = _initializing
+        ? const <MediaArtifact>[]
+        : app.mediaLibrary.items;
+    final visible = _initializing
+        ? const <MediaArtifact>[]
+        : _browser.physicalMode
         ? _visiblePhysicalItems()
         : allExports
               .where(
@@ -1946,7 +1977,9 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
                     _organization.folderFor(item.taskId) == _browser.folderId,
               )
               .toList();
-    final folders = _browser.folders;
+    final folders = _initializing
+        ? const <MediaOrganizationFolder>[]
+        : _browser.folders;
     final writesEnabled =
         _storageRoot?.permission != MediaStoragePermission.revoked;
     _browser.pruneSelection(
@@ -2055,6 +2088,14 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
             child: SiteLensListPanel(
               scrollKey: const PageStorageKey('media-library-scroll'),
               slivers: [
+                if (_initializing)
+                  SliverToBoxAdapter(
+                    child: SiteLensCompactRow(
+                      leading: const Icon(Icons.sync_outlined, size: 18),
+                      title: const Text('正在同步媒体目录…'),
+                      subtitle: const Text('完成扫描后显示文件夹和媒体文件'),
+                    ),
+                  ),
                 if (current != null)
                   SliverToBoxAdapter(
                     child: MediaBrowserFolderRow(
@@ -2072,7 +2113,9 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
                   SliverList.builder(
                     itemCount: folders.length * 2 - 1,
                     itemBuilder: (_, index) {
-                      if (index.isOdd) return const SiteLensPanelDivider();
+                      if (index.isOdd) {
+                        return const SiteLensPanelDivider();
+                      }
                       final folder = folders[index ~/ 2];
                       return MediaBrowserFolderRow(
                         folder: folder,
@@ -2096,7 +2139,8 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen> {
                       );
                     },
                   ),
-                if (visible.isEmpty &&
+                if (!_initializing &&
+                    visible.isEmpty &&
                     (current != null ||
                         (folders.isEmpty && allExports.isEmpty)))
                   SliverToBoxAdapter(
@@ -3162,13 +3206,14 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           );
         }
       case 'delete':
-        final result = await runMediaBrowserDelete(
+        final result = await runMediaBrowserDeleteSelection(
           context,
           organization: _organization,
           operations: _browserOperations,
           itemIds: _organization.itemIdsInFolder(folder.id),
+          folderIds: [folder.id],
           title: '删除文件夹内容',
-          message: '删除“${folder.name}”中的媒体任务？已导出的 MP4 保留。',
+          message: '删除“${folder.name}”中的媒体任务？已导出的 MP4 保留，空任务分组会一并删除。',
         );
         if (mounted && result.failed.isNotEmpty) {
           showShortToast(

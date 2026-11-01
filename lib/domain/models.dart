@@ -1033,6 +1033,21 @@ String mediaSeriesDirectoryName(String title) {
   return String.fromCharCodes(runes.take(80));
 }
 
+/// Short lived, page supplied headers used by a media player for CDN access.
+/// These headers are deliberately kept out of JSON, Drift rows and native DTOs.
+Map<String, String> safeMediaRequestHeaders(Object? raw) {
+  if (raw is! Map) return const <String, String>{};
+  const allowed = {'x-cdn-auth', 'x-cdn-app'};
+  final result = <String, String>{};
+  for (final entry in raw.entries) {
+    final key = entry.key.toString().trim().toLowerCase();
+    final value = entry.value?.toString().trim() ?? '';
+    if (!allowed.contains(key) || value.isEmpty || value.length > 512) continue;
+    result[key] = value;
+  }
+  return Map.unmodifiable(result);
+}
+
 class MediaCandidate {
   const MediaCandidate({
     required this.id,
@@ -1051,6 +1066,8 @@ class MediaCandidate {
     this.thumbnailUrl,
     this.durationMs,
     this.createdAt,
+    this.manifestHeaders = const {},
+    this.resourceHeaders = const {},
   });
 
   final String id;
@@ -1069,6 +1086,14 @@ class MediaCandidate {
   final Uri? thumbnailUrl;
   final int? durationMs;
   final DateTime? createdAt;
+
+  /// Ephemeral CDN headers observed from the current WebView page. These are
+  /// intentionally omitted from [toJson] and persistence.
+  final Map<String, String> manifestHeaders;
+  final Map<String, String> resourceHeaders;
+
+  bool get hasRequestHeaders =>
+      manifestHeaders.isNotEmpty || resourceHeaders.isNotEmpty;
 
   String get effectiveMime => mime.trim().isEmpty
       ? inferMediaMime(mediaUrl)
