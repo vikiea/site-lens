@@ -411,6 +411,44 @@ class MediaOrganizationService extends ChangeNotifier {
     }
   }
 
+  /// Removes empty leaf folders after task/file cleanup. Children are checked
+  /// deepest-first so a chain of now-empty task groups collapses completely.
+  Future<int> removeEmptyFolders() async {
+    _ensureWritable();
+    await restore();
+    final ordered = _folders.keys.toList()
+      ..sort(
+        (left, right) => _folderDepth(right).compareTo(_folderDepth(left)),
+      );
+    var removed = 0;
+    for (final id in ordered) {
+      if (!_folders.containsKey(id) ||
+          _folders.values.any((folder) => folder.parentId == id) ||
+          _itemFolders.values.any((folderId) => folderId == id)) {
+        continue;
+      }
+      _folders.remove(id);
+      _legacyFolders.removeWhere((_, folderId) => folderId == id);
+      removed++;
+    }
+    if (removed > 0) {
+      await _persist();
+      _notifyIfAlive();
+    }
+    return removed;
+  }
+
+  int _folderDepth(String id) {
+    var depth = 0;
+    var current = _folders[id]?.parentId;
+    final seen = <String>{id};
+    while (current != null && seen.add(current)) {
+      depth++;
+      current = _folders[current]?.parentId;
+    }
+    return depth;
+  }
+
   List<String> descendantsOf(String folderId) => _descendantsOf(folderId);
 
   List<String> itemIdsInFolder(String folderId, {bool recursive = true}) {

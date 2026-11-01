@@ -2046,19 +2046,6 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
 
       for (final folder in folders) {
         append(libraryFolder(folder));
-        final folderPath = _physicalFolderPaths[folder.id];
-        final itemIds = _organization.itemIdsInFolder(folder.id).toSet();
-        final folderItems = _browser.physicalMode
-            ? allExports.where((item) {
-                final itemFolder = _physicalItemFolder(item);
-                return folderPath != null &&
-                    (itemFolder == folderPath ||
-                        itemFolder.startsWith('$folderPath/'));
-              })
-            : allExports.where((item) => itemIds.contains(item.taskId));
-        for (final item in folderItems) {
-          append(libraryItem(item));
-        }
       }
       for (final item in visible) {
         append(libraryItem(item));
@@ -2313,13 +2300,7 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
       final item =
           widget.app.mediaLibrary.item(widget.item.taskId) ?? widget.item;
       final thumbnail = item.thumbnailPath;
-      final details = <String>[
-        'MP4',
-        formatBytes(item.size),
-        if ((item.durationMs ?? 0) > 0) formatMediaDuration(item.durationMs!),
-        if ((item.width ?? 0) > 0 && (item.height ?? 0) > 0)
-          '${item.width}×${item.height}',
-      ];
+      final details = <String>['MP4', formatBytes(item.size)];
       final preview = SizedBox(
         width: 68,
         height: 48,
@@ -2458,7 +2439,6 @@ Widget _mediaArtifactInlineDetails(
     children: [
       _MediaDetailRow(label: '文件名', value: item.name),
       _MediaDetailRow(label: '格式', value: item.mime),
-      _MediaDetailRow(label: '文件大小', value: formatBytes(item.size)),
       _MediaDetailRow(
         label: '时长',
         value: formatMediaDuration(item.durationMs ?? 0),
@@ -3666,6 +3646,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
       _browser.busy = true;
     });
     final failedIds = <String>{};
+    final deletedIds = <String>{};
     var succeeded = 0;
     var skipped = 0;
     try {
@@ -3724,8 +3705,10 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
               await widget.app.exportMediaTask(task);
             case _MediaBatchAction.delete:
               await widget.app.deleteMediaTask(task.id);
+              deletedIds.add(task.id);
             case _MediaBatchAction.deleteFailed:
               await widget.app.deleteMediaTask(task.id);
+              deletedIds.add(task.id);
           }
           succeeded++;
         } catch (error, stack) {
@@ -3739,6 +3722,12 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         } finally {
           _operations.remove(task.id);
         }
+      }
+      if (deletedIds.isNotEmpty &&
+          (action == _MediaBatchAction.delete ||
+              action == _MediaBatchAction.deleteFailed)) {
+        await _organization.removeItems(deletedIds);
+        await _organization.removeEmptyFolders();
       }
       if (!mounted) return;
       if (mounted && retainFailedSelection) {
@@ -3844,12 +3833,6 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
 
       for (final folder in folders) {
         append(taskFolder(folder));
-        final itemIds = _organization.itemIdsInFolder(folder.id).toSet();
-        for (final task in allTasks.where(
-          (task) => itemIds.contains(task.id),
-        )) {
-          append(_buildMediaTaskRow(context, task));
-        }
       }
       for (final task in visibleTasks) {
         append(_buildMediaTaskRow(context, task));
@@ -4476,13 +4459,6 @@ Widget _mediaTaskInlineDetails(
   child: Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      _MediaDetailRow(label: '状态', value: _mediaTaskStateLabel(task.state)),
-      _MediaDetailRow(
-        label: '大小',
-        value: task.totalBytes != null && task.totalBytes! > 0
-            ? '${(task.bytesDownloaded / task.totalBytes! * 100).round()}% · ${formatBytes(task.bytesDownloaded)}/${formatBytes(task.totalBytes!)}'
-            : formatBytes(task.bytesDownloaded),
-      ),
       if (artifact != null) ...[
         _MediaDetailRow(label: '文件名', value: artifact.name),
         _MediaDetailRow(label: '格式', value: artifact.mime),
