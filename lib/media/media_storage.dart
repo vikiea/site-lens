@@ -628,7 +628,7 @@ class MediaStorageService extends ChangeNotifier {
         : root.location;
     await _assertWithinRoot(target);
     final entries = await _listDirectoryFresh(root, target);
-    _rememberDirectory(root, target, entries);
+    await _rememberDirectory(root, target, entries);
     return entries;
   }
 
@@ -708,31 +708,31 @@ class MediaStorageService extends ChangeNotifier {
   String _directoryKey(String rootId, String directory) =>
       '$rootId\n$directory';
 
-  void _rememberDirectory(
+  Future<void> _rememberDirectory(
     MediaStorageRoot root,
     String directory,
     List<MediaStorageEntry> entries,
-  ) {
+  ) async {
     _directoryCache[_directoryKey(root.location, directory)] =
         List<MediaStorageEntry>.unmodifiable(entries);
-    unawaited(
-      library.db
-          .saveMediaDirectoryCache(
-            rootId: root.location,
-            directory: directory,
-            entries: jsonEncode([
-              for (final entry in entries)
-                {
-                  'location': entry.location,
-                  'name': entry.name,
-                  'directory': entry.directory,
-                  'size': entry.size,
-                  'modifiedMs': entry.modifiedMs,
-                },
-            ]),
-          )
-          .catchError((_) {}),
-    );
+    try {
+      await library.db.saveMediaDirectoryCache(
+        rootId: root.location,
+        directory: directory,
+        entries: jsonEncode([
+          for (final entry in entries)
+            {
+              'location': entry.location,
+              'name': entry.name,
+              'directory': entry.directory,
+              'size': entry.size,
+              'modifiedMs': entry.modifiedMs,
+            },
+        ]),
+      );
+    } catch (_) {
+      // The in-memory snapshot remains usable when the database is closing.
+    }
   }
 
   Future<List<MediaStorageEntry>> _listDirectoryFresh(

@@ -1083,7 +1083,9 @@ class MediaLibrary extends ChangeNotifier {
     final cached = _inspectionModifiedMs[taskId];
     if (cached == null) return true;
     final current = await _modifiedMs(location);
-    return current == null || current == cached;
+    final uri = Uri.tryParse(location);
+    if (current == null) return uri?.scheme == 'content';
+    return current == cached;
   }
 
   Future<int?> _modifiedMs(String location) async {

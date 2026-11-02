@@ -1644,23 +1644,12 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
 
   Future<void> _openPhysicalFolder(String location) async {
     _browser.openFolder(location);
-    final root = _storageRoot;
-    final cached = app.mediaStorage.peekDirectory(location);
-    if (root != null && cached != null) {
-      _publishPhysicalDirectory(root, location, cached);
-    }
     await _loadPhysicalDirectory(directory: location);
   }
 
   Future<void> _goUpPhysicalFolder() async {
     final parent = _browser.currentFolder?.parentId;
     _browser.goUp();
-    final root = _storageRoot;
-    final target = parent ?? root?.location;
-    if (root != null && target != null) {
-      final cached = app.mediaStorage.peekDirectory(target);
-      if (cached != null) _publishPhysicalDirectory(root, target, cached);
-    }
     await _loadPhysicalDirectory(directory: parent);
   }
 
