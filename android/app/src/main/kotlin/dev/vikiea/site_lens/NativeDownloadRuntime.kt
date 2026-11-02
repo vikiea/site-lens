@@ -17,9 +17,6 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.Closeable
 import java.io.File
-import java.nio.file.LinkOption
-import java.nio.file.Files
-import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -62,10 +59,6 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
                     }
                     "configureConcurrency" -> {
                         configureConcurrency(call)
-                        null
-                    }
-                    "migrateLegacyDirectories" -> {
-                        migrateLegacyDirectories()
                         null
                     }
                     "reserveMutation" -> reserveMutation(call)
@@ -387,7 +380,7 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
         repository.save(record.copy(paused = !cancelled, cancelled = cancelled))
         NativeMediaDownloadWorker.abort(taskId)
         workManager.cancelUniqueWork(workName(taskId)).result.get(30, TimeUnit.SECONDS)
-        NativeMediaDownloadWorker.withFileLock(context, taskId, record.seriesDirectory) { }
+        NativeMediaDownloadWorker.withFileLock(context, taskId) { }
     }
 
     private fun resume(taskId: String): Map<String, Any?> {
@@ -423,188 +416,12 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
     private fun deleteUnderLease(taskId: String, legacy: LegacySnapshot?) {
         stop(taskId, true, mutationHeld = true, legacy = legacy)
         val record = repository.read(taskId) ?: return
-        NativeMediaDownloadWorker.withFileLock(context, taskId, record.seriesDirectory) {
+        NativeMediaDownloadWorker.withFileLock(context, taskId) {
             NativeMediaDownloadWorker.files(context, record).forEach { file ->
                 if (file.exists()) check(file.delete()) { "无法删除下载文件" }
             }
             repository.remove(taskId)
         }
-    }
-
-    /**
-     * Moves old batch directories in the Android-owned download root into the
-     * clean series directory and merges duplicate children by replacing the
-     * destination with the legacy source. WorkManager records that can still
-     * write are left untouched and retried on a later cold restore.
-     */
-    private fun migrateLegacyDirectories() {
-        val rawRoot = NativeMediaDownloadWorker.root(context)
-        if (Files.isSymbolicLink(rawRoot.toPath()) ||
-            !Files.isDirectory(rawRoot.toPath(), LinkOption.NOFOLLOW_LINKS)
-        ) return
-        val root = rawRoot.canonicalFile
-        val records = repository.all()
-        val activeDirectories = records
-            .filter { isWorkActive(it) }
-            .flatMap { listOf(it.seriesDirectory, cleanDirectory(it.seriesDirectory)) }
-            .toSet()
-        val migrations = linkedMapOf<String, String>().apply {
-            putAll(repository.directoryMigrationJournal())
-        }
-        for (record in records) {
-            val target = cleanDirectory(record.seriesDirectory)
-            if (target != record.seriesDirectory) {
-                migrations[record.seriesDirectory] = target
-            }
-        }
-        root.listFiles()
-            ?.filter {
-                !Files.isSymbolicLink(it.toPath()) &&
-                    Files.isDirectory(it.toPath(), LinkOption.NOFOLLOW_LINKS)
-            }
-            ?.sortedBy { it.name }
-            ?.forEach { directory ->
-                val target = cleanDirectory(directory.name)
-                if (target != directory.name) migrations[directory.name] = target
-            }
-
-        for ((oldName, newName) in migrations.toSortedMap()) {
-            if (oldName in activeDirectories || newName in activeDirectories || oldName == newName) continue
-            if (!validDirectoryName(oldName) || !validDirectoryName(newName)) continue
-            val sourceRaw = File(root, oldName)
-            val targetRaw = File(root, newName)
-            require(sourceRaw.parentFile?.canonicalFile == root) { "媒体目录越界" }
-            require(targetRaw.parentFile?.canonicalFile == root) { "媒体目录越界" }
-            if (Files.isSymbolicLink(sourceRaw.toPath()) || Files.isSymbolicLink(targetRaw.toPath())) {
-                NativeCrashStore.append(
-                    context,
-                    module = "media.storage-migration",
-                    message = "媒体目录包含符号链接，已跳过迁移",
-                    details = "symbolic_link",
-                    contextValue = "directory-migration",
-                )
-                continue
-            }
-            val sourceExists = Files.isDirectory(sourceRaw.toPath(), LinkOption.NOFOLLOW_LINKS)
-            val targetExists = Files.isDirectory(targetRaw.toPath(), LinkOption.NOFOLLOW_LINKS)
-            if (!sourceExists && !targetExists) continue
-            repository.rememberDirectoryMigration(oldName, newName)
-            try {
-                val scope = MediaFileLeaseRegistry.Scope.file(sourceRaw) +
-                    MediaFileLeaseRegistry.Scope.file(targetRaw)
-                NativeMediaFileLeases.registry.mutate(scope) {
-                    NativeMediaDownloadWorker.withDirectoryLocks(
-                        context,
-                        listOf(oldName, newName),
-                    ) {
-                        if (Files.isDirectory(sourceRaw.toPath(), LinkOption.NOFOLLOW_LINKS)) {
-                            mergeDirectory(sourceRaw, targetRaw)
-                        }
-                        check(Files.isDirectory(targetRaw.toPath(), LinkOption.NOFOLLOW_LINKS)) {
-                            "无法确认媒体目录迁移目标"
-                        }
-                        // If the source disappeared before this process
-                        // started, the journal still lets us finish the
-                        // durable record rewrite after a prior physical merge.
-                        repository.rewriteSeriesDirectory(oldName, newName)
-                        repository.completeDirectoryMigration(oldName)
-                    }
-                }
-            } catch (error: Exception) {
-                NativeCrashStore.append(
-                    context,
-                    module = "media.storage-migration",
-                    message = "媒体目录迁移已暂缓",
-                    details = error.javaClass.simpleName,
-                    contextValue = "directory-migration",
-                )
-            }
-        }
-    }
-
-    private fun isWorkActive(record: NativeMediaTaskRepository.Record): Boolean {
-        if (record.downloadId >= 0L && record.workId == null) return true
-        val workId = record.workId ?: return false
-        val lookup = runCatching {
-            workManager.getWorkInfoById(UUID.fromString(workId)).get(2, TimeUnit.SECONDS)
-        }
-        if (lookup.isFailure) return true
-        val info = lookup.getOrNull() ?: return false
-        return info.state == WorkInfo.State.RUNNING ||
-            info.state == WorkInfo.State.ENQUEUED ||
-            info.state == WorkInfo.State.BLOCKED
-    }
-
-    private fun cleanDirectory(value: String): String {
-        val display = value.replace(Regex("[_ -]*批次[0-9]{16}$"), "")
-        return safeDirectory(display)
-    }
-
-    private fun mergeDirectory(source: File, target: File) {
-        check(!Files.isSymbolicLink(source.toPath())) { "媒体目录包含符号链接，无法自动合并" }
-        if (!Files.isDirectory(source.toPath(), LinkOption.NOFOLLOW_LINKS)) return
-        target.parentFile?.mkdirs()
-        if (Files.isSymbolicLink(target.toPath())) {
-            error("媒体目录目标包含符号链接，无法自动合并")
-        }
-        if (Files.exists(target.toPath(), LinkOption.NOFOLLOW_LINKS) &&
-            !Files.isDirectory(target.toPath(), LinkOption.NOFOLLOW_LINKS)
-        ) {
-            check(target.delete()) { "无法替换媒体目录" }
-        }
-        check(target.mkdirs() || Files.isDirectory(target.toPath(), LinkOption.NOFOLLOW_LINKS)) {
-            "无法创建媒体目录"
-        }
-        val children = source.listFiles() ?: error("无法读取旧媒体目录")
-        children.sortedBy { it.name }.forEach { child ->
-            check(!Files.isSymbolicLink(child.toPath())) { "媒体目录包含符号链接，无法自动合并" }
-            val destination = File(target, child.name)
-            if (Files.isSymbolicLink(destination.toPath())) {
-                error("媒体目标包含符号链接，无法自动合并")
-            }
-            if (Files.isDirectory(child.toPath(), LinkOption.NOFOLLOW_LINKS)) {
-                if (Files.exists(destination.toPath(), LinkOption.NOFOLLOW_LINKS) &&
-                    !Files.isDirectory(destination.toPath(), LinkOption.NOFOLLOW_LINKS)
-                ) {
-                    check(destination.delete()) { "无法替换媒体文件" }
-                }
-                mergeDirectory(child, destination)
-            } else {
-                val temporary = File(destination.path + ".site-lens-migrate.part")
-                if (temporary.exists()) check(temporary.delete())
-                val expected = sha256(child)
-                child.copyTo(temporary, overwrite = true)
-                check(
-                    temporary.length() == child.length() &&
-                        sha256(temporary).contentEquals(expected),
-                ) { "媒体目录迁移校验失败" }
-                if (destination.exists()) check(destination.delete()) { "无法覆盖媒体文件" }
-                check(temporary.renameTo(destination)) { "无法提交媒体目录迁移" }
-                check(sha256(destination).contentEquals(expected)) { "媒体目录提交校验失败" }
-                check(child.delete()) { "无法清理旧媒体文件" }
-            }
-        }
-        if (Files.exists(source.toPath(), LinkOption.NOFOLLOW_LINKS)) {
-            check(source.delete()) { "无法清理旧媒体目录" }
-        }
-    }
-
-    private fun validDirectoryName(value: String): Boolean =
-        value.isNotBlank() && value != "." && value != ".." &&
-            !value.contains('/') && !value.contains('\\') &&
-            value.none { it.code < 0x20 }
-
-    private fun sha256(file: File): ByteArray {
-        val digest = MessageDigest.getInstance("SHA-256")
-        file.inputStream().use { input ->
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                digest.update(buffer, 0, read)
-            }
-        }
-        return digest.digest()
     }
 
     private fun validTaskId(raw: String?): String = (raw?.trim() ?: error("缺少任务 ID")).also {
@@ -648,7 +465,6 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
                         NativeMediaDownloadWorker.withFileLock(
                             context,
                             reservation.taskId,
-                            record.seriesDirectory,
                         ) {}
                     }
                 }.isSuccess

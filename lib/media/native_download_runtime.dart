@@ -89,11 +89,6 @@ class NativeDownloadRuntime {
       }) ??
       const <String, Object?>{};
 
-  /// Consolidates legacy batch directories in the Android-owned download
-  /// root and updates native task records after each successful merge.
-  Future<void> migrateLegacyDirectories() =>
-      _channel.invokeMethod<void>('migrateLegacyDirectories');
-
   Future<String?> reserveMutation(String taskId, List<String> paths) async =>
       _channel.invokeMethod<String>('reserveMutation', {
         'taskId': taskId,

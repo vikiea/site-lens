@@ -143,6 +143,20 @@ const _v17MediaResourceOwnersTable =
     'owner_id TEXT NOT NULL, owner_kind TEXT NOT NULL, created_at TEXT NOT NULL, '
     'PRIMARY KEY(resource_key, owner_id))';
 
+const _v19MediaOperationsTables = <String>[
+  'CREATE TABLE IF NOT EXISTS media_operations('
+      'id TEXT PRIMARY KEY, kind TEXT NOT NULL, action TEXT NOT NULL, '
+      'state TEXT NOT NULL, concurrency INTEGER NOT NULL, total INTEGER NOT NULL, '
+      'completed INTEGER NOT NULL DEFAULT 0, succeeded INTEGER NOT NULL DEFAULT 0, '
+      'failed INTEGER NOT NULL DEFAULT 0, stop_requested INTEGER NOT NULL DEFAULT 0, '
+      'error TEXT, started_at TEXT NOT NULL, finished_at TEXT, updated_at TEXT NOT NULL)',
+  'CREATE TABLE IF NOT EXISTS media_operation_items('
+      'operation_id TEXT NOT NULL REFERENCES media_operations(id) ON DELETE CASCADE, '
+      'position INTEGER NOT NULL, item_id TEXT NOT NULL, state TEXT NOT NULL, '
+      'attempts INTEGER NOT NULL DEFAULT 0, error TEXT, started_at TEXT, finished_at TEXT, '
+      'PRIMARY KEY(operation_id, item_id))',
+];
+
 const _v18MediaCandidateColumns = <(String, String)>[
   ('ALTER TABLE media_candidates ADD COLUMN series_key TEXT', 'series_key'),
   (
@@ -211,7 +225,7 @@ class AppDatabase extends GeneratedDatabase {
   static void Function(String step)? migrationDebugHook;
 
   @override
-  int get schemaVersion => 18;
+  int get schemaVersion => 19;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -238,6 +252,7 @@ class AppDatabase extends GeneratedDatabase {
         _v15MediaResourceKeyColumn,
         _v16MediaResourcesTable,
         _v17MediaResourceOwnersTable,
+        ..._v19MediaOperationsTables,
       ]) {
         await customStatement(sql);
       }
@@ -332,6 +347,11 @@ class AppDatabase extends GeneratedDatabase {
           if (!await _columnExists('media_tasks', column)) {
             await customStatement(sql);
           }
+        }
+      }
+      if (from < 19) {
+        for (final sql in _v19MediaOperationsTables) {
+          await customStatement(sql);
         }
       }
     },

@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.Settings
 import android.provider.DocumentsContract
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -56,7 +59,9 @@ import javax.crypto.spec.SecretKeySpec
 @androidx.annotation.OptIn(UnstableApi::class)
 class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCallHandler {
     private val filesRoot = context.filesDir.canonicalFile
-    private val worker = Executors.newSingleThreadExecutor()
+    private val worker = Executors.newFixedThreadPool(2) { runnable ->
+        Thread(runnable, "site-lens-media-io").apply { isDaemon = true }
+    }
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var disposed = false
     @Volatile private var activeCancellation: AtomicBoolean? = null
@@ -64,6 +69,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
     private val cancelledJobs = ConcurrentHashMap.newKeySet<String>()
     private val verifiedTreeDocuments = ConcurrentHashMap<String, MutableSet<String>>()
     private var pendingDirectoryResult: MethodChannel.Result? = null
+    @Volatile private var directRoot: File? = null
 
     companion object {
         const val PICK_DIRECTORY_REQUEST = 6101
@@ -75,7 +81,12 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         private const val STALE_INSPECTION_TEMP_MILLIS = 60 * 60 * 1000L
     }
 
-    init { System.loadLibrary("site_lens_export") }
+    init {
+        System.loadLibrary("site_lens_export")
+        directRoot = context.getSharedPreferences("media_access", Context.MODE_PRIVATE)
+            .getString("directRoot", null)
+            ?.let { runCatching { File(it).canonicalFile }.getOrNull() }
+    }
 
     private external fun nativeValidatePath(path: String, root: String): Boolean
 
@@ -92,7 +103,42 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             try { pickDirectory(result) } catch (error: Exception) { fail(call, result, error) }
             return
         }
-        val supported = setOf("validateLocalInput", "muxHls", "validateOutput", "deliver", "deliverToDirectory", "checkDirectory", "isDocumentWithinTree", "listDirectory", "createDirectory", "stat", "inspect", "inspectSamples", "scanMedia", "materialize", "rename", "move", "delete", "deleteOwnedSources", "copyVerified")
+        if (call.method == "directAccessState") {
+            result.success(directAccessState())
+            return
+        }
+        if (call.method == "requestDirectAccess") {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                result.success(false)
+                return
+            }
+            try {
+                context.startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:${context.packageName}"),
+                    ),
+                )
+                result.success(true)
+            } catch (_: Exception) {
+                result.success(false)
+            }
+            return
+        }
+        if (call.method == "configureDirectRoot") {
+            val raw = call.argument<String>("path")?.trim().orEmpty()
+            directRoot = if (raw.isEmpty()) null else File(raw).canonicalFile
+            context.getSharedPreferences("media_access", Context.MODE_PRIVATE)
+                .edit()
+                .apply {
+                    if (directRoot == null) remove("directRoot")
+                    else putString("directRoot", directRoot!!.path)
+                }
+                .apply()
+            result.success(null)
+            return
+        }
+        val supported = setOf("validateLocalInput", "muxHls", "validateOutput", "deliver", "deliverToDirectory", "checkDirectory", "checkDirectDirectory", "isDocumentWithinTree", "listDirectory", "listDirectDirectory", "createDirectory", "copyEntry", "stat", "sha256", "inspect", "inspectSamples", "scanMedia", "materialize", "rename", "move", "delete", "deleteOwnedSources", "copyVerified")
         if (call.method !in supported) { result.notImplemented(); return }
         val jobId = call.argument<String>("jobId") ?: "job-${System.nanoTime()}"
         val cancellation = AtomicBoolean(false)
@@ -147,7 +193,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
 
     private fun readScope(call: MethodCall): MediaFileLeaseRegistry.Scope {
         val raw = when (call.method) {
-            "deliver", "deliverToDirectory", "inspect", "inspectSamples", "stat", "materialize" -> call.argument<String>("source")
+            "deliver", "deliverToDirectory", "inspect", "inspectSamples", "stat", "sha256", "materialize" -> call.argument<String>("source")
             "validateOutput" -> call.argument<String>("path")
             "validateLocalInput", "muxHls" -> {
                 val path = call.argument<String>(if (call.method == "muxHls") "playlist" else "path")
@@ -174,7 +220,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             val raw = (it as? String)?.takeIf { value -> value.length <= 4096 }
                 ?: error("HLS 允许目录无效")
             File(raw).canonicalFile.also { root ->
-                require(root.isDirectory && isAppLocal(root)) { "HLS 允许目录越界" }
+                require(root.isDirectory && isReadableLocal(root)) { "HLS 允许目录越界" }
             }
         }.also { require(it.size <= 32) { "HLS 允许目录过多" } }
 
@@ -192,6 +238,30 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                     source("source") + MediaFileLeaseRegistry.Scope.file(target) +
                         MediaFileLeaseRegistry.Scope.file(File(target.path + ".part"))
                 }
+            }
+            "copyEntry" -> {
+                val sourceRaw = call.argument<String>("source") ?: error("缺少 source")
+                val sourceUri = Uri.parse(sourceRaw)
+                require(sourceUri.scheme == null || sourceUri.scheme == "file") {
+                    "暂不支持 SAF 整目录操作"
+                }
+                val sourceFile = validateLocalPath(
+                    if (sourceUri.scheme == "file") sourceUri.path!! else sourceRaw,
+                )
+                val rawDirectory = call.argument<String>("directory") ?: error("缺少 directory")
+                val directoryUri = Uri.parse(rawDirectory)
+                require(directoryUri.scheme == null || directoryUri.scheme == "file") {
+                    "暂不支持向 SAF 目录复制整个目录"
+                }
+                val directoryPath = if (directoryUri.scheme == "file") {
+                    directoryUri.path!!
+                } else {
+                    rawDirectory
+                }
+                val destinationParent = validateLocalPath(directoryPath)
+                val destination = File(destinationParent, sourceFile.name).canonicalFile
+                MediaFileLeaseRegistry.Scope.file(sourceFile) +
+                    MediaFileLeaseRegistry.Scope.file(destination)
             }
             "deleteOwnedSources" -> {
                 val taskId = call.argument<String>("taskId")?.takeIf { it.isNotBlank() } ?: error("缺少媒体身份")
@@ -255,13 +325,23 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             "deliver" -> { deliver(argument("source"), Uri.parse(argument("destination"))); null }
             "deliverToDirectory" -> deliverToDirectory(argument("source"), Uri.parse(argument("directory")), argument("fileName"), call.argument<String>("subdirectory"), call.argument<Boolean>("reuseExistingIfSameSize") == true)
             "checkDirectory" -> checkDirectory(Uri.parse(argument("directory")))
+            "checkDirectDirectory" -> checkDirectDirectory(argument("path"))
             "isDocumentWithinTree" -> isDocumentWithinTree(
                 Uri.parse(argument("directory")),
                 Uri.parse(argument("document")),
             )
             "listDirectory" -> listDirectory(Uri.parse(argument("directory")))
+            "listDirectDirectory" -> listDirectDirectory(argument("path"))
             "createDirectory" -> createDirectory(Uri.parse(argument("directory")), argument("name"))
+            "copyEntry" -> copyEntry(
+                argument("source"),
+                Uri.parse(argument("directory")),
+                call.argument<Boolean>("move") == true,
+                call.argument<Boolean>("reportRewrites") == true,
+                call.argument<Boolean>("deferDelete") == true,
+            )
             "stat" -> stat(argument("source"))
+            "sha256" -> sha256(argument("source"))
             "inspect" -> inspect(argument("source"))
             "inspectSamples" -> inspectSamples(argument("source"))
             "scanMedia" -> scanMedia(call.argument<String>("directory"), cancellation)
@@ -313,6 +393,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         // already covers the complete set, including any later active reader.
         sources.forEach { source ->
             val uri = Uri.parse(source)
+            require(uri.scheme != "content") { "不允许删除用户系统文件" }
             if (uri.scheme != "content") {
                 require(uri.scheme == null || uri.scheme == "file") { "仅允许本地媒体文件" }
                 validateLocalPath(if (uri.scheme == "file") uri.path!! else source)
@@ -405,7 +486,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
 
     private fun validateLocalPath(path: String): File {
         val file = File(path).canonicalFile
-        require(isAppLocal(file)) { "输入路径越界" }
+        require(isReadableLocal(file)) { "输入路径越界" }
         return file
     }
 
@@ -413,6 +494,52 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         filesRoot,
         context.getExternalFilesDir(null)?.canonicalFile,
     ).any { nativeValidatePath(file.path, it.path) }
+
+    private fun isDirectStorageAvailable(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            Environment.isExternalStorageManager()
+
+    private fun isDirectPath(file: File): Boolean {
+        val root = directRoot ?: return false
+        return isDirectStorageAvailable() &&
+            root.isDirectory &&
+            !java.nio.file.Files.isSymbolicLink(root.toPath()) &&
+            nativeValidatePath(file.path, root.path)
+    }
+
+    private fun isReadableLocal(file: File): Boolean = isAppLocal(file) || isDirectPath(file)
+
+    private fun directAccessState(): Map<String, Any?> = mapOf(
+        "supported" to (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R),
+        "granted" to isDirectStorageAvailable(),
+        "configured" to (directRoot != null),
+        "root" to directRoot?.path,
+    )
+
+    private fun checkDirectDirectory(path: String): Boolean {
+        val root = directRoot ?: return false
+        val directory = runCatching { File(path).canonicalFile }.getOrNull() ?: return false
+        return isDirectStorageAvailable() &&
+            directory.isDirectory &&
+            !java.nio.file.Files.isSymbolicLink(directory.toPath()) &&
+            nativeValidatePath(directory.path, root.path)
+    }
+
+    private fun listDirectDirectory(path: String): List<Map<String, Any?>> {
+        val directory = File(path).canonicalFile
+        require(checkDirectDirectory(directory.path)) { "直接文件目录访问权限已失效" }
+        return directory.listFiles { file ->
+            !java.nio.file.Files.isSymbolicLink(file.toPath())
+        }?.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name })?.map { file ->
+            mapOf(
+                "path" to file.path,
+                "name" to file.name,
+                "directory" to file.isDirectory,
+                "size" to if (file.isFile) file.length() else 0L,
+                "modifiedMs" to file.lastModified(),
+            )
+        } ?: emptyList()
+    }
 
     private fun checkActive(cancelled: AtomicBoolean) {
         check(!cancelled.get() && !disposed) { "导出已取消" }
@@ -1086,6 +1213,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         val targetFile = when (destination.scheme) {
             "file", "", null -> File(destination.path ?: error("文件目标无效")).canonicalFile.also {
                 require(it.isAbsolute && it != source) { "导出目标与源文件相同或无效" }
+                validateLocalPath(it.path)
                 it.parentFile?.mkdirs()
             }
             "content" -> null
@@ -1178,8 +1306,31 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
 
     private fun deliverToDirectory(sourcePath: String, directory: Uri, fileName: String, subdirectory: String? = null, reuseExistingIfSameSize: Boolean = false, failOnConflict: Boolean = false): String {
         sourceStream(sourcePath).close()
-        require(directory.scheme == "content") { "系统目录无效" }
         validateName(fileName)
+        if (directory.scheme == null || directory.scheme == "file") {
+            val raw = if (directory.scheme == "file") directory.path!! else directory.toString()
+            var parent = File(raw).canonicalFile
+            require(checkDirectDirectory(parent.path)) { "直接文件目录访问权限已失效" }
+            if (!subdirectory.isNullOrBlank()) {
+                validateName(subdirectory)
+                parent = File(parent, subdirectory).canonicalFile
+                require(nativeValidatePath(parent.path, directRoot!!.path)) { "媒体目录越界" }
+                if (!parent.exists()) check(parent.mkdirs()) { "无法创建媒体目录" }
+                require(parent.isDirectory) { "媒体目录不可用" }
+            }
+            var target = File(parent, fileName).canonicalFile
+            require(nativeValidatePath(target.path, directRoot!!.path)) { "媒体文件越界" }
+            if (target.exists()) {
+                val same = verifyExistingMediaCopy(target, { sourceStream(sourcePath) }, {
+                    check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                })
+                if (same && reuseExistingIfSameSize) return target.path
+                if (failOnConflict) error("目标文件同名但内容不同")
+                target = uniqueDirectTarget(parent, fileName)
+            }
+            return copyVerified(sourcePath, target.path)
+        }
+        require(directory.scheme == "content") { "系统目录无效" }
         val (tree, parentId) = treeParentDocument(directory)
         var treeDocument = DocumentsContract.buildDocumentUriUsingTree(tree, parentId)
         if (!subdirectory.isNullOrBlank()) {
@@ -1280,6 +1431,17 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             runCatching { DocumentsContract.deleteDocument(context.contentResolver, outputTarget) }
             throw error
         }
+    }
+
+    private fun uniqueDirectTarget(parent: File, original: String): File {
+        val extension = original.substringAfterLast('.', "").takeIf { it.isNotEmpty() }
+            ?.let { ".${it}" } ?: ""
+        val base = if (extension.isEmpty()) original else original.dropLast(extension.length)
+        for (suffix in 2..10000) {
+            val candidate = File(parent, "$base ($suffix)$extension")
+            if (!candidate.exists()) return candidate
+        }
+        error("无法生成唯一媒体文件名")
     }
 
     private fun checkDirectory(directory: Uri): Boolean {
@@ -1497,6 +1659,18 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
 
     private fun createDirectory(directory: Uri, name: String): String {
         validateName(name)
+        if (directory.scheme == null || directory.scheme == "file") {
+            val raw = if (directory.scheme == "file") directory.path!! else directory.toString()
+            val parent = File(raw).canonicalFile
+            require(checkDirectDirectory(parent.path)) { "直接文件目录访问权限已失效" }
+            val target = File(parent, name).canonicalFile
+            require(nativeValidatePath(target.path, directRoot!!.path)) { "媒体目录越界" }
+            require(!java.nio.file.Files.exists(target.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                "已存在同名文件或目录"
+            }
+            check(target.mkdir()) { "无法创建媒体目录" }
+            return target.path
+        }
         val (tree, parentId) = treeParentDocument(directory)
         val parent = DocumentsContract.buildDocumentUriUsingTree(tree, parentId)
         return (DocumentsContract.createDocument(
@@ -1505,6 +1679,78 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             DocumentsContract.Document.MIME_TYPE_DIR,
             name,
         ) ?: error("无法创建媒体目录")).toString()
+    }
+
+    private fun copyEntry(
+        source: String,
+        directory: Uri,
+        move: Boolean,
+        reportRewrites: Boolean,
+        deferDelete: Boolean,
+    ): Map<String, Any?> {
+        val sourceUri = Uri.parse(source)
+        require(sourceUri.scheme == null || sourceUri.scheme == "file") {
+            "暂不支持 SAF 整目录操作"
+        }
+        require(directory.scheme == null || directory.scheme == "file") {
+            "暂不支持向 SAF 目录复制整个目录"
+        }
+        val sourceFile = validateLocalPath(
+            if (sourceUri.scheme == "file") sourceUri.path!! else source,
+        )
+        require(sourceFile.isDirectory) { "源目录不存在" }
+        val rawDirectory = if (directory.scheme == "file") directory.path!! else directory.toString()
+        val destinationParent = File(rawDirectory).canonicalFile
+        validateLocalPath(destinationParent.path)
+        require(destinationParent.isDirectory) { "目标目录不存在" }
+        val destination = File(destinationParent, sourceFile.name).canonicalFile
+        require(nativeValidatePath(destination.path, allowedRootFor(destination))) { "媒体目录越界" }
+        require(destination != sourceFile &&
+            !destination.path.startsWith(sourceFile.path + File.separator)) {
+            "不能复制或移动目录到自身或子目录"
+        }
+        var copied = 0
+        var skipped = 0
+        val rewrites = linkedMapOf<String, String>()
+
+        fun visit(sourceNode: File, targetNode: File) {
+            if (java.nio.file.Files.isSymbolicLink(sourceNode.toPath())) {
+                skipped++
+                return
+            }
+            if (sourceNode.isDirectory) {
+                if (targetNode.exists() && !targetNode.isDirectory) {
+                    skipped++
+                    return
+                }
+                if (!targetNode.exists()) check(targetNode.mkdir()) { "无法创建媒体目录" }
+                val children = sourceNode.listFiles() ?: error("无法读取目录")
+                children.sortedBy { it.name }.forEach { child ->
+                    visit(child, File(targetNode, child.name))
+                }
+                return
+            }
+            if (targetNode.exists()) {
+                skipped++
+                return
+            }
+            copyVerified(sourceNode.path, targetNode.path)
+            copied++
+            if (move || reportRewrites) rewrites[sourceNode.path] = targetNode.path
+        }
+
+        visit(sourceFile, destination)
+        if (move && skipped > 0) error("目录存在冲突，已保留源目录")
+        if (move && !deferDelete) {
+            deleteLocalEntry(sourceFile)
+        }
+        return mapOf("copied" to copied, "skipped" to skipped, "rewrites" to rewrites)
+    }
+
+    private fun allowedRootFor(file: File): String = when {
+        isAppLocal(file) -> filesRoot.path
+        directRoot != null && isDirectPath(file) -> directRoot!!.path
+        else -> error("媒体目录越界")
     }
 
     private fun sourceStream(source: String): java.io.InputStream {
@@ -1538,8 +1784,8 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             val path = if (uri.scheme == "file") uri.path!! else source
             val file = validateLocalPath(path)
             if (allowMissing && !file.exists()) return
-            require(file.isFile) { "本地媒体文件不存在" }
-            check(file.delete()) { "无法删除媒体文件" }
+            require(file.exists()) { "本地媒体文件不存在" }
+            deleteLocalEntry(file)
         }
     }
 
@@ -1548,12 +1794,25 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         val uri = Uri.parse(source)
         if (uri.scheme == "content") return DocumentsContract.renameDocument(context.contentResolver, uri, name)?.toString() ?: error("当前目录不支持重命名")
         val path = if (uri.scheme == "file") uri.path!! else source
-        validateLocal(path)
-        val file = File(path).canonicalFile
+        val file = validateLocalPath(path)
+        require(file.exists()) { "本地媒体文件不存在" }
+        require(!java.nio.file.Files.isSymbolicLink(file.toPath())) { "不支持重命名符号链接" }
         val destination = File(file.parentFile, name)
         require(!destination.exists()) { "已存在同名文件" }
         check(file.renameTo(destination)) { "重命名失败" }
         return destination.path
+    }
+
+    private fun deleteLocalEntry(entry: File) {
+        val path = entry.toPath()
+        if (java.nio.file.Files.isSymbolicLink(path)) {
+            check(entry.delete()) { "无法删除媒体文件" }
+            return
+        }
+        if (java.nio.file.Files.isDirectory(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            entry.listFiles()?.sortedBy { it.name }?.forEach(::deleteLocalEntry)
+        }
+        check(entry.delete()) { "无法删除媒体文件" }
     }
 
     private fun materialize(source: String): String {
@@ -1605,7 +1864,29 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         return mapOf("size" to file.length(), "modifiedMs" to file.lastModified())
     }
 
+    private fun sha256(source: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        sourceStream(source).use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
     private fun scanMedia(directory: String?, cancelled: AtomicBoolean): Map<String, Any> {
+        val requested = directory?.trim().orEmpty()
+        val requestedUri = Uri.parse(requested)
+        if (requested.isNotEmpty() && requestedUri.scheme != "content") {
+            val path = if (requestedUri.scheme == "file") requestedUri.path!! else requested
+            return scanDirectMedia(path, cancelled)
+        }
+        if (requested.isEmpty() && directRoot != null && isDirectStorageAvailable()) {
+            return scanDirectMedia(directRoot!!.path, cancelled)
+        }
         val grants = context.contentResolver.persistedUriPermissions.filter {
             it.isReadPermission && DocumentsContract.isTreeUri(it.uri)
         }
@@ -1695,6 +1976,52 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             "files" to files,
             "warnings" to warnings.distinct(),
             "roots" to roots.map(Uri::toString),
+        )
+    }
+
+    private fun scanDirectMedia(path: String, cancelled: AtomicBoolean): Map<String, Any> {
+        val root = File(path).canonicalFile
+        require(checkDirectDirectory(root.path)) { "直接文件目录访问权限已失效" }
+        val files = mutableListOf<Map<String, Any?>>()
+        val warnings = mutableListOf<String>()
+        val pending = java.util.ArrayDeque<Pair<File, String>>()
+        pending.add(root to "")
+        while (pending.isNotEmpty()) {
+            check(!cancelled.get() && !disposed) { "扫描已取消" }
+            val (directory, relative) = pending.removeFirst()
+            val children = directory.listFiles { file ->
+                !java.nio.file.Files.isSymbolicLink(file.toPath())
+            } ?: run {
+                warnings += "部分目录暂不可读，已保留现有索引"
+                continue
+            }
+            for (file in children.sortedBy { it.name }) {
+                check(!cancelled.get() && !disposed) { "扫描已取消" }
+                if (file.isDirectory) {
+                    if (relative.count { it == '/' } < 16) {
+                        pending.add(file to if (relative.isEmpty()) file.name else "$relative/${file.name}")
+                    }
+                    continue
+                }
+                if (!file.isFile || !file.name.endsWith(".mp4", ignoreCase = true) || file.length() <= 0L) continue
+                files += mapOf(
+                    "uri" to file.path,
+                    "name" to file.name,
+                    "size" to file.length(),
+                    "modifiedMs" to file.lastModified(),
+                    "folder" to relative.ifEmpty { null },
+                )
+                if (files.size >= 10_000) {
+                    warnings += "目录项目较多，请选择较小的媒体目录继续扫描"
+                    pending.clear()
+                    break
+                }
+            }
+        }
+        return mapOf(
+            "files" to files,
+            "warnings" to warnings.distinct(),
+            "roots" to listOf(root.path),
         )
     }
 

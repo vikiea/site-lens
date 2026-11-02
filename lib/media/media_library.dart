@@ -75,6 +75,26 @@ class MediaArtifact {
     migrationState: migrationState,
   );
 
+  MediaArtifact withFolder(String? value) => MediaArtifact(
+    taskId: taskId,
+    location: location,
+    libraryCopy: libraryCopy,
+    materializedCopy: materializedCopy,
+    name: name,
+    size: size,
+    mime: mime,
+    durationMs: durationMs,
+    width: width,
+    height: height,
+    thumbnailPath: thumbnailPath,
+    folder: value,
+    createdAt: createdAt,
+    storageRootId: storageRootId,
+    relativePath: relativePath,
+    storageKind: storageKind,
+    migrationState: migrationState,
+  );
+
   MediaArtifact withCopies({String? libraryCopy, String? materializedCopy}) =>
       MediaArtifact(
         taskId: taskId,
@@ -219,6 +239,7 @@ class MediaLibrary extends ChangeNotifier {
   bool get scanning => _scanning != null;
   int _catalogEpoch = 0;
   Future<void> _catalogTail = Future<void>.value();
+  int _directoryMutationDepth = 0;
 
   MediaTask presentationTask(MediaArtifact item) =>
       tasks.task(item.taskId) ??
@@ -255,6 +276,19 @@ class MediaLibrary extends ChangeNotifier {
         ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
   MediaArtifact? item(String taskId) => _items[taskId];
   bool busy(String taskId) => _busy.contains(taskId);
+
+  bool get directoryMutationActive => _directoryMutationDepth > 0;
+
+  Future<T> withDirectoryMutation<T>(Future<T> Function() action) async {
+    _directoryMutationDepth++;
+    _catalogEpoch++;
+    try {
+      return await action();
+    } finally {
+      _directoryMutationDepth--;
+      _catalogEpoch++;
+    }
+  }
 
   /// A migration or directory operation must pass the same guard as a single
   /// file mutation before it starts creating destination state.
@@ -294,12 +328,7 @@ class MediaLibrary extends ChangeNotifier {
       final restored = <String, MediaArtifact>{};
       final duplicates = <MediaArtifact>[];
       for (final raw in await db.mediaArtifacts()) {
-        var item = MediaArtifact.fromJson(raw);
-        final migrated = _migrateArtifactPaths(item);
-        if (_artifactChanged(item, migrated)) {
-          item = migrated;
-          await db.saveMediaArtifact(item.taskId, item.toJson());
-        }
+        final item = MediaArtifact.fromJson(raw);
         final key = _sourceKey(item.location);
         final previous = restored[key];
         if (previous == null ||
@@ -354,54 +383,22 @@ class MediaLibrary extends ChangeNotifier {
     _notify();
   }
 
-  MediaArtifact _migrateArtifactPaths(MediaArtifact item) => MediaArtifact(
-    taskId: item.taskId,
-    location: tasks.rewriteManagedPath(item.location),
-    libraryCopy: item.libraryCopy == null
-        ? null
-        : tasks.rewriteManagedPath(item.libraryCopy!),
-    materializedCopy: item.materializedCopy == null
-        ? null
-        : tasks.rewriteManagedPath(item.materializedCopy!),
-    name: item.name,
-    size: item.size,
-    mime: item.mime,
-    durationMs: item.durationMs,
-    width: item.width,
-    height: item.height,
-    thumbnailPath: item.thumbnailPath == null
-        ? null
-        : tasks.rewriteManagedPath(item.thumbnailPath!),
-    folder: _migrateArtifactFolder(item.folder),
-    createdAt: item.createdAt,
-    storageRootId: item.storageRootId,
-    relativePath: item.relativePath,
-    storageKind: item.storageKind,
-    migrationState: item.migrationState,
-  );
-
-  static String? _migrateArtifactFolder(String? folder) {
-    if (folder == null || folder.trim().isEmpty) return folder;
-    final segments = p.split(folder);
-    if (segments.isEmpty) return folder;
-    return p.joinAll([
-      mediaFolderDisplayName(segments.first),
-      ...segments.skip(1),
-    ]);
-  }
-
-  static bool _artifactChanged(MediaArtifact before, MediaArtifact after) =>
-      before.location != after.location ||
-      before.libraryCopy != after.libraryCopy ||
-      before.materializedCopy != after.materializedCopy ||
-      before.folder != after.folder ||
-      before.thumbnailPath != after.thumbnailPath;
-
   Future<
     ({int added, int found, int removed, int updated, List<String> warnings})
   >
-  rescan({String? directory}) =>
-      _scanning ??= _rescan(directory).whenComplete(() => _scanning = null);
+  rescan({String? directory}) {
+    if (directoryMutationActive) {
+      return Future.value((
+        added: 0,
+        found: 0,
+        removed: 0,
+        updated: 0,
+        warnings: ['媒体目录操作进行中，完成后再同步目录'],
+      ));
+    }
+    return _scanning ??= _rescan(directory)
+        .whenComplete(() => _scanning = null);
+  }
 
   Future<
     ({int added, int found, int removed, int updated, List<String> warnings})
@@ -483,19 +480,45 @@ class MediaLibrary extends ChangeNotifier {
             throw const FormatException('媒体库目录类型无效，请重新选择媒体库目录');
           }
           if (native != null) {
-            throw const FormatException('请通过系统选择器重新授权媒体库目录');
+            final response = await native!.scanMedia(directory: configured);
+            scopes.add(
+              _ScanScope(
+                root: configured,
+                content: false,
+                storageKind: 'directPath',
+              ),
+            );
+            for (final raw in (response['files'] as List?) ?? const []) {
+              if (raw is! Map) continue;
+              final source = raw['uri'] as String?;
+              final name = raw['name'] as String?;
+              if (source == null || name == null || !_isMp4(name)) continue;
+              entries.add(
+                _ScannedMedia(
+                  source: source,
+                  name: name,
+                  size: (raw['size'] as num?)?.toInt() ?? 0,
+                  modifiedMs: (raw['modifiedMs'] as num?)?.toInt() ?? 0,
+                  folder: raw['folder'] as String?,
+                ),
+              );
+            }
+            for (final warning in (response['warnings'] as List?) ?? const []) {
+              if (warning is String) warnings.add(warning);
+            }
+          } else {
+            final localRoot = uri?.scheme == 'file'
+                ? Directory.fromUri(uri!)
+                : Directory(configured);
+            scopes.add(
+              _ScanScope(
+                root: localRoot.absolute.path,
+                content: false,
+                storageKind: 'system',
+              ),
+            );
+            await _scanLocal(localRoot, entries);
           }
-          final localRoot = uri?.scheme == 'file'
-              ? Directory.fromUri(uri!)
-              : Directory(configured);
-          scopes.add(
-            _ScanScope(
-              root: localRoot.absolute.path,
-              content: false,
-              storageKind: 'system',
-            ),
-          );
-          await _scanLocal(localRoot, entries);
         }
       } catch (error) {
         warnings.add(readableError(error));
@@ -505,13 +528,20 @@ class MediaLibrary extends ChangeNotifier {
     for (final entry in entries) {
       unique[_sourceKey(entry.source)] = entry;
     }
+    final indexed = <String, MediaArtifact>{
+      for (final item in _items.values) _sourceKey(item.location): item,
+    };
+    final knownCopies = <String>{
+      for (final item in _items.values) ...{
+        if (item.libraryCopy != null) _sourceKey(item.libraryCopy!),
+        if (item.materializedCopy != null) _sourceKey(item.materializedCopy!),
+      },
+    };
     var added = 0;
     var updated = 0;
     for (final entry in unique.values) {
       final key = _sourceKey(entry.source);
-      final existing = _items.values
-          .where((item) => _sourceKey(item.location) == key)
-          .firstOrNull;
+      final existing = indexed[key];
       if (existing != null) {
         final scope = scopes
             .where(
@@ -538,13 +568,7 @@ class MediaLibrary extends ChangeNotifier {
       }
       // Copies and in-flight file operations also invalidate this scan before
       // it can resurrect a removed record.
-      final isKnownCopy = _items.values.any(
-        (item) =>
-            item.libraryCopy != null && _sourceKey(item.libraryCopy!) == key ||
-            item.materializedCopy != null &&
-                _sourceKey(item.materializedCopy!) == key,
-      );
-      if (isKnownCopy || entry.size <= 0) continue;
+      if (knownCopies.contains(key) || entry.size <= 0) continue;
       if (epoch != _catalogEpoch) break;
       // The document may later move while keeping this catalog identity. A
       // new file at its old path must receive a different identity.
@@ -826,6 +850,113 @@ class MediaLibrary extends ChangeNotifier {
     });
   }
 
+  String? _localPath(String value) {
+    final uri = Uri.tryParse(value);
+    if (uri?.scheme == 'content') return null;
+    if (uri?.scheme == 'file') return p.normalize(uri!.toFilePath());
+    if (uri?.hasScheme == true) return null;
+    return p.normalize(p.absolute(value));
+  }
+
+  String? _contentRelativePath(String root, String location) {
+    final rootUri = Uri.tryParse(root);
+    final locationUri = Uri.tryParse(location);
+    if (rootUri?.scheme != 'content' || locationUri?.scheme != 'content') {
+      return null;
+    }
+    if (rootUri!.authority != locationUri!.authority) return null;
+    final rootSegments = rootUri.pathSegments;
+    final locationSegments = locationUri.pathSegments;
+    final rootTreeIndex = rootSegments.indexOf('tree');
+    final rootDocumentIndex = rootSegments.indexOf('document');
+    final locationTreeIndex = locationSegments.indexOf('tree');
+    final locationDocumentIndex = locationSegments.indexOf('document');
+    if (rootTreeIndex < 0 ||
+        locationTreeIndex < 0 ||
+        locationDocumentIndex <= locationTreeIndex) {
+      return null;
+    }
+    final rootTreeId = rootSegments
+        .sublist(
+          rootTreeIndex + 1,
+          rootDocumentIndex > rootTreeIndex
+              ? rootDocumentIndex
+              : rootSegments.length,
+        )
+        .join('/');
+    final locationTreeId = locationSegments
+        .sublist(locationTreeIndex + 1, locationDocumentIndex)
+        .join('/');
+    if (rootTreeId != locationTreeId) return null;
+    final rootDocumentId = rootDocumentIndex > rootTreeIndex
+        ? rootSegments.sublist(rootDocumentIndex + 1).join('/')
+        : rootTreeId;
+    final documentId = locationSegments
+        .sublist(locationDocumentIndex + 1)
+        .join('/');
+    if (documentId == rootDocumentId) return '';
+    if (!documentId.startsWith('$rootDocumentId/')) return null;
+    return documentId.substring(rootDocumentId.length + 1);
+  }
+
+  Future<({String root, String relative})?> _appPrivateMetadata(
+    String location,
+  ) async {
+    final path = _localPath(location);
+    if (path == null) return null;
+    final cacheRoot = await tasks.cacheRootDirectory();
+    final root = p.normalize(p.join(cacheRoot.parent.path, 'media_exports'));
+    if (path != root && !p.isWithin(root, path)) return null;
+    return (root: root, relative: p.relative(path, from: root));
+  }
+
+  Future<bool> _isAppPrivateLocation(String location) async {
+    final path = _localPath(location);
+    if (path == null) return false;
+    final cacheRoot = await tasks.cacheRootDirectory();
+    final appRoot = p.normalize(cacheRoot.parent.path);
+    return path == appRoot || p.isWithin(appRoot, path);
+  }
+
+  MediaArtifact _rewriteLocationMetadata(
+    MediaArtifact item,
+    String location, {
+    String? name,
+  }) {
+    final next = item.withLocation(location, name: name);
+    final root = item.storageRootId;
+    final contentRelative = root == null
+        ? null
+        : _contentRelativePath(root, location);
+    if (contentRelative != null) {
+      final parent = contentRelative.isEmpty
+          ? '.'
+          : p.posix.dirname(contentRelative);
+      return next
+          .withStorageMetadata(
+            storageRootId: root,
+            relativePath: contentRelative,
+            storageKind: item.storageKind,
+            migrationState: 'complete',
+          )
+          .withFolder(parent == '.' ? null : parent);
+    }
+    final rootPath = root == null ? null : _localPath(root);
+    final itemPath = _localPath(location);
+    if (rootPath == null || itemPath == null) return next;
+    if (itemPath != rootPath && !p.isWithin(rootPath, itemPath)) return next;
+    final relative = p.relative(itemPath, from: rootPath);
+    final parent = p.dirname(relative);
+    return next
+        .withStorageMetadata(
+          storageRootId: root,
+          relativePath: relative.replaceAll('\\', '/'),
+          storageKind: item.storageKind,
+          migrationState: 'complete',
+        )
+        .withFolder(parent == '.' ? null : parent.replaceAll('\\', '/'));
+  }
+
   Future<MediaArtifact> register(
     MediaTask task,
     String path, {
@@ -836,6 +967,7 @@ class MediaLibrary extends ChangeNotifier {
     final stat = await File(path).stat();
     if (stat.size <= 0) throw StateError('导出文件为空');
     final previous = _items[task.id];
+    final privateMetadata = await _appPrivateMetadata(path);
     final value = MediaArtifact(
       taskId: task.id,
       location: path,
@@ -848,6 +980,10 @@ class MediaLibrary extends ChangeNotifier {
           : previous?.libraryCopy,
       materializedCopy: previous?.materializedCopy,
       createdAt: DateTime.now().toUtc(),
+      storageRootId: privateMetadata?.root,
+      relativePath: privateMetadata?.relative.replaceAll('\\', '/'),
+      storageKind: privateMetadata == null ? null : 'appPrivate',
+      migrationState: privateMetadata == null ? null : 'complete',
     );
     await _save(value);
     return inspect(task.id);
@@ -1207,11 +1343,12 @@ class MediaLibrary extends ChangeNotifier {
     }
     // Persist the verified destination before deleting old bytes. Pending
     // copies remain indexed if cleanup fails or the app exits in between.
+    final sourceIsOwned = await _isAppPrivateLocation(value.location);
     await _save(
       MediaArtifact(
         taskId: taskId,
         location: target,
-        libraryCopy: value.location,
+        libraryCopy: sourceIsOwned ? value.location : value.libraryCopy,
         materializedCopy: _items[taskId]?.materializedCopy,
         name: value.name,
         size: value.size,
@@ -1230,10 +1367,18 @@ class MediaLibrary extends ChangeNotifier {
   Future<void> _releaseCopies(MediaArtifact value) async {
     var current = value;
     final cache = await tasks.cachedFile(value.taskId, validateHls: false);
-    final paths = {
+    final candidates = {
       if (value.libraryCopy != null) value.libraryCopy!,
       if (value.materializedCopy != null) value.materializedCopy!,
     }..remove(value.location);
+    final paths = <String>{};
+    for (final path in candidates) {
+      final legacyLocalCopy =
+          value.storageKind == null && Uri.tryParse(path)?.scheme != 'content';
+      if (legacyLocalCopy || await _isAppPrivateLocation(path)) {
+        paths.add(path);
+      }
+    }
     if (native != null) {
       final disposable = paths
           .where((path) => cache?.absolute.path != File(path).absolute.path)
@@ -1311,7 +1456,12 @@ class MediaLibrary extends ChangeNotifier {
     await restore();
     final value = _items[taskId];
     final path = value?.materializedCopy;
-    if (value == null || path == null || path == value.location) return;
+    if (value == null ||
+        path == null ||
+        path == value.location ||
+        value.storageKind != null && !await _isAppPrivateLocation(path)) {
+      return;
+    }
     tasks.retain(taskId);
     try {
       if (native != null) {
@@ -1637,24 +1787,32 @@ class MediaLibrary extends ChangeNotifier {
           return uri?.scheme == 'file' ? p.toUri(next).toString() : next;
         }
 
+        final rewritten = _rewriteLocationMetadata(
+          item,
+          rewritePath(item.location),
+        );
         return MediaArtifact(
-          taskId: item.taskId,
-          location: rewritePath(item.location),
+          taskId: rewritten.taskId,
+          location: rewritten.location,
           libraryCopy: item.libraryCopy == null
               ? null
               : rewritePath(item.libraryCopy!),
-          materializedCopy: item.materializedCopy,
-          name: item.name,
-          size: item.size,
-          mime: item.mime,
-          durationMs: item.durationMs,
-          width: item.width,
-          height: item.height,
-          thumbnailPath: item.thumbnailPath == null
+          materializedCopy: rewritten.materializedCopy,
+          name: rewritten.name,
+          size: rewritten.size,
+          mime: rewritten.mime,
+          durationMs: rewritten.durationMs,
+          width: rewritten.width,
+          height: rewritten.height,
+          thumbnailPath: rewritten.thumbnailPath == null
               ? null
-              : rewritePath(item.thumbnailPath!),
-          folder: item.folder,
-          createdAt: item.createdAt,
+              : rewritePath(rewritten.thumbnailPath!),
+          folder: rewritten.folder,
+          createdAt: rewritten.createdAt,
+          storageRootId: rewritten.storageRootId,
+          relativePath: rewritten.relativePath,
+          storageKind: rewritten.storageKind,
+          migrationState: rewritten.migrationState,
         );
       }
 
@@ -1662,7 +1820,9 @@ class MediaLibrary extends ChangeNotifier {
       if (next.location != value.location ||
           next.libraryCopy != value.libraryCopy ||
           next.thumbnailPath != value.thumbnailPath) {
-        await _save(next);
+        if (!await _save(next)) {
+          throw StateError('媒体索引已变化，目录操作未提交');
+        }
       }
     }
   }
@@ -1672,7 +1832,9 @@ class MediaLibrary extends ChangeNotifier {
     for (final value in [..._items.values]) {
       final nextLocation = rewrites[mediaArtifactSourceKey(value.location)];
       if (nextLocation == null || nextLocation == value.location) continue;
-      await _save(value.withLocation(nextLocation));
+      if (!await _save(_rewriteLocationMetadata(value, nextLocation))) {
+        throw StateError('媒体索引已变化，目录操作未提交');
+      }
     }
   }
 
@@ -1680,10 +1842,17 @@ class MediaLibrary extends ChangeNotifier {
     String taskId, {
     required String location,
     required String name,
+    String? libraryCopy,
   }) async {
     await restore();
     final item = _items[taskId] ?? (throw StateError('媒体文件不存在'));
-    await _save(item.withLocation(location, name: name));
+    final next = _rewriteLocationMetadata(item, location, name: name);
+    await _save(
+      next.withCopies(
+        libraryCopy: libraryCopy ?? next.libraryCopy,
+        materializedCopy: next.materializedCopy,
+      ),
+    );
   }
 
   Future<void> updateStorageMetadata(
@@ -1695,14 +1864,17 @@ class MediaLibrary extends ChangeNotifier {
   }) async {
     await restore();
     final item = _items[taskId] ?? (throw StateError('媒体文件不存在'));
-    await _save(
-      item.withStorageMetadata(
-        storageRootId: storageRootId,
-        relativePath: relativePath,
-        storageKind: storageKind,
-        migrationState: migrationState,
-      ),
+    var next = item.withStorageMetadata(
+      storageRootId: storageRootId,
+      relativePath: relativePath,
+      storageKind: storageKind,
+      migrationState: migrationState,
     );
+    if (relativePath != null && relativePath.isNotEmpty) {
+      final parent = p.posix.dirname(relativePath.replaceAll('\\', '/'));
+      next = next.withFolder(parent == '.' ? null : parent);
+    }
+    await _save(next);
   }
 
   Future<void> delete(
@@ -1711,10 +1883,15 @@ class MediaLibrary extends ChangeNotifier {
     String? nativeMutationReservation,
   }) => _mutate(taskId, (value) async {
     final ownedPaths = {
-      value.location,
-      if (value.libraryCopy != null) value.libraryCopy!,
-      if (value.materializedCopy != null) value.materializedCopy!,
+      if (Uri.tryParse(value.location)?.scheme != 'content') value.location,
+      if (value.libraryCopy != null &&
+          Uri.tryParse(value.libraryCopy!)?.scheme != 'content')
+        value.libraryCopy!,
+      if (value.materializedCopy != null &&
+          Uri.tryParse(value.materializedCopy!)?.scheme != 'content')
+        value.materializedCopy!,
     };
+    final primaryContent = Uri.tryParse(value.location)?.scheme == 'content';
     var cache = await tasks.cachedFile(taskId);
     var cachePath = cache == null ? null : await cache.resolveSymbolicLinks();
     // A previous detach may have copied bytes but failed while persisting the
@@ -1764,6 +1941,9 @@ class MediaLibrary extends ChangeNotifier {
         }
       }
     }
+    if (primaryContent && native != null) {
+      await native!.delete(value.location, allowMissing: true);
+    }
     final disposable = <String>[];
     for (final path in ownedPaths) {
       if (Uri.tryParse(path)?.scheme != 'content') {
@@ -1774,11 +1954,35 @@ class MediaLibrary extends ChangeNotifier {
       disposable.add(path);
     }
     if (native != null) {
-      await native!.deleteOwnedSources(
-        taskId,
-        disposable,
-        mutationReservationId: nativeMutationReservation,
-      );
+      try {
+        if (disposable.isNotEmpty) {
+          await native!.deleteOwnedSources(
+            taskId,
+            disposable,
+            mutationReservationId: nativeMutationReservation,
+          );
+        }
+      } on PlatformException catch (error) {
+        final details = error.details;
+        if (details is Map && details['deletedSources'] is List) {
+          final deleted = (details['deletedSources'] as List)
+              .whereType<String>()
+              .toSet();
+          var updated = value;
+          for (final path in deleted) {
+            updated = updated.withCopies(
+              libraryCopy: updated.libraryCopy == path
+                  ? null
+                  : updated.libraryCopy,
+              materializedCopy: updated.materializedCopy == path
+                  ? null
+                  : updated.materializedCopy,
+            );
+          }
+          await _save(updated);
+        }
+        rethrow;
+      }
     } else {
       for (final path in disposable) {
         final file = File(path);

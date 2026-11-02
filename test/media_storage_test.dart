@@ -1,14 +1,16 @@
 import 'dart:io';
 
 import 'package:drift/native.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
-import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/media/media_library.dart';
 import 'package:site_lens/media/media_service.dart';
 import 'package:site_lens/media/media_storage.dart';
+import 'package:site_lens/media/native_export_runtime.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   late Directory root;
   late AppDatabase db;
   late MediaTaskStore tasks;
@@ -59,6 +61,8 @@ void main() {
         name: outside.uri.pathSegments.last,
         size: 2,
         createdAt: DateTime.now().toUtc(),
+        storageRootId: root.path,
+        relativePath: 'outside.mp4',
       ).toJson(),
     );
     await db.saveMediaArtifact(
@@ -69,6 +73,8 @@ void main() {
         name: inside.uri.pathSegments.last,
         size: 2,
         createdAt: DateTime.now().toUtc(),
+        storageRootId: destination.path,
+        relativePath: 'inside.mp4',
       ).toJson(),
     );
     await library.restore();
@@ -81,6 +87,136 @@ void main() {
     expect(await storage.needsMigration(library.item('outside')!), isTrue);
     expect(await storage.needsMigration(library.item('inside')!), isFalse);
   });
+
+  test('a mode switch recognizes an existing file through its persisted relative path', () async {
+    final destination = Directory('${root.path}/system-media/series')
+      ..createSync(recursive: true);
+    final existing = File('${destination.path}/episode.mp4')
+      ..writeAsBytesSync([1, 2, 3]);
+    await db.saveMediaArtifact(
+      'same-physical-file',
+      MediaArtifact(
+        taskId: 'same-physical-file',
+        location: 'content://provider/tree/old/document/old/series/episode',
+        name: 'episode.mp4',
+        size: 3,
+        createdAt: DateTime.now().toUtc(),
+        relativePath: 'series/episode.mp4',
+        storageRootId: 'content://provider/tree/old',
+        storageKind: 'safTree',
+        migrationState: 'complete',
+      ).toJson(),
+    );
+    await library.restore();
+    const channel = MethodChannel('test.media-storage-identity');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          switch (call.method) {
+            case 'configureDirectRoot':
+              return null;
+            case 'checkDirectDirectory':
+              return true;
+            case 'sha256':
+              return 'same-content-digest';
+          }
+          throw PlatformException(code: 'unexpected', message: call.method);
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null),
+    );
+    final storage = MediaStorageService(
+      tasks: tasks,
+      library: library,
+      configuredRoot: () async => destination.parent.path,
+      native: NativeExportRuntime(channel: channel),
+    );
+
+    expect(
+      await storage.needsMigration(library.item('same-physical-file')!),
+      isFalse,
+    );
+    expect(await existing.exists(), isTrue);
+  });
+
+  test(
+    'explicit migration preserves the persisted relative directory',
+    () async {
+      final destination = Directory('${root.path}/system-media')
+        ..createSync(recursive: true);
+      final sourceDirectory = Directory('${root.path}/old-media/series')
+        ..createSync(recursive: true);
+      final source = File('${sourceDirectory.path}/episode.mp4')
+        ..writeAsBytesSync([1, 2, 3]);
+      await db.saveMediaArtifact(
+        'preserve-folder',
+        MediaArtifact(
+          taskId: 'preserve-folder',
+          location: source.path,
+          name: 'episode.mp4',
+          size: 3,
+          createdAt: DateTime.now().toUtc(),
+          relativePath: 'series/episode.mp4',
+          folder: 'series',
+          storageRootId: sourceDirectory.parent.path,
+        ).toJson(),
+      );
+      await library.restore();
+      final storage = MediaStorageService(
+        tasks: tasks,
+        library: library,
+        configuredRoot: () async => destination.path,
+      );
+
+      await storage.migrateArtifact('preserve-folder');
+
+      expect(
+        await File('${destination.path}/series/episode.mp4').readAsBytes(),
+        [1, 2, 3],
+      );
+      expect(await File('${destination.path}/episode.mp4').exists(), isFalse);
+      expect(
+        library.item('preserve-folder')!.relativePath,
+        'series/episode.mp4',
+      );
+    },
+  );
+
+  test(
+    'does not migrate when SAF and direct path representations are unproven',
+    () async {
+      final destination = Directory('${root.path}/system-media')
+        ..createSync(recursive: true);
+      await db.saveMediaArtifact(
+        'unknown-representation',
+        MediaArtifact(
+          taskId: 'unknown-representation',
+          location: 'content://provider/tree/old/document/old/series/episode',
+          name: 'episode.mp4',
+          size: 3,
+          createdAt: DateTime.now().toUtc(),
+          relativePath: 'series/episode.mp4',
+        ).toJson(),
+      );
+      await library.restore();
+      final storage = MediaStorageService(
+        tasks: tasks,
+        library: library,
+        configuredRoot: () async => destination.path,
+      );
+
+      await expectLater(
+        storage.needsMigration(library.item('unknown-representation')!),
+        throwsA(isA<StateError>()),
+      );
+      await expectLater(
+        storage.migrateArtifact('unknown-representation'),
+        throwsA(isA<StateError>()),
+      );
+      expect(await Directory('${destination.path}/series').exists(), isFalse);
+      expect(await db.setting(MediaStorageService.migrationJournalKey), isNull);
+    },
+  );
 
   test('lists and creates real directories in the app-private root', () async {
     final storage = MediaStorageService(
@@ -99,6 +235,108 @@ void main() {
     expect(created, endsWith('/Season 1'));
     expect(entries.single.name, 'Season 1');
     expect(entries.single.directory, isTrue);
+  });
+
+  test(
+    'whole-directory copy preserves non-media files and hierarchy',
+    () async {
+      final storage = MediaStorageService(
+        tasks: tasks,
+        library: library,
+        configuredRoot: () async => null,
+      );
+      final rootValue = await storage.resolve();
+      final source = Directory('${rootValue.location}/source/sub')
+        ..createSync(recursive: true);
+      File('${rootValue.location}/source/video.mp4').writeAsBytesSync([1, 2]);
+      File('${source.path}/notes.txt').writeAsStringSync('keep');
+      final destination = Directory('${rootValue.location}/destination')
+        ..createSync(recursive: true);
+
+      await storage.copyEntry('${rootValue.location}/source', destination.path);
+
+      expect(await File('${destination.path}/source/video.mp4').readAsBytes(), [
+        1,
+        2,
+      ]);
+      expect(
+        await File('${destination.path}/source/sub/notes.txt').readAsString(),
+        'keep',
+      );
+    },
+  );
+
+  test(
+    'whole-directory move keeps the source until catalog rewrites commit',
+    () async {
+      final storage = MediaStorageService(
+        tasks: tasks,
+        library: library,
+        configuredRoot: () async => null,
+      );
+      final rootValue = await storage.resolve();
+      final source = Directory('${rootValue.location}/source')
+        ..createSync(recursive: true);
+      final sourceFile = File('${source.path}/video.mp4')
+        ..writeAsBytesSync([1, 2]);
+      final destination = Directory('${rootValue.location}/destination')
+        ..createSync(recursive: true);
+
+      final rewrites = await storage.copyEntry(
+        source.path,
+        destination.path,
+        move: true,
+      );
+
+      expect(await sourceFile.exists(), isTrue);
+      expect(await File('${destination.path}/source/video.mp4').readAsBytes(), [
+        1,
+        2,
+      ]);
+      expect(rewrites[sourceFile.path], '${destination.path}/source/video.mp4');
+
+      await storage.deleteEntry(source.path);
+      expect(await source.exists(), isFalse);
+    },
+  );
+
+  test('moved migration journal keeps the original index when content differs', () async {
+    final destination = Directory('${root.path}/system-media')
+      ..createSync(recursive: true);
+    final source = File('${root.path}/episode.mp4')..writeAsBytesSync([1, 2]);
+    final target = File('${destination.path}/episode.mp4')
+      ..writeAsBytesSync([3, 4]);
+    await db.saveMediaArtifact(
+      'journal-mismatch',
+      MediaArtifact(
+        taskId: 'journal-mismatch',
+        location: source.path,
+        name: 'episode.mp4',
+        size: 2,
+        createdAt: DateTime.now().toUtc(),
+        storageRootId: root.path,
+        relativePath: 'episode.mp4',
+      ).toJson(),
+    );
+    await library.restore();
+    await db.setSetting(
+      MediaStorageService.migrationJournalKey,
+      '{"journal-mismatch":{"target":"${destination.path}","fileName":"episode.mp4","phase":"moved"}}',
+    );
+    final storage = MediaStorageService(
+      tasks: tasks,
+      library: library,
+      configuredRoot: () async => destination.path,
+    );
+
+    await storage.reconcileMigrationJournal();
+
+    expect(library.item('journal-mismatch')!.location, source.path);
+    expect(await target.exists(), isTrue);
+    expect(
+      await db.setting(MediaStorageService.migrationJournalKey),
+      isNotEmpty,
+    );
   });
 
   test('rejects traversal and protects the media root from deletion', () async {
@@ -184,57 +422,7 @@ void main() {
     expect(item.migrationState, 'complete');
   });
 
-  test('one-click naming migration moves legacy files to series and episode layout', () async {
-    final oldDirectory = Directory(
-      '${root.path}/media_exports/示例系列 - 批次1234567890123456',
-    )..createSync(recursive: true);
-    final oldFile = File('${oldDirectory.path}/示例系列 - 第1集.mp4')
-      ..writeAsBytesSync([1, 2, 3]);
-    final candidate = MediaCandidate(
-      id: 'migration-candidate',
-      hostId: 1,
-      generation: 1,
-      sourceUrl: Uri.parse('https://example.test/watch/1'),
-      mediaUrl: Uri.parse('https://cdn.example/episode-1.mp4'),
-      title: '示例系列 - 第1集',
-      mime: 'video/mp4',
-      source: MediaCandidateSource.dom,
-    );
-    await db.saveMediaCandidate(candidate);
-    var task = tasks.create(candidate);
-    task = tasks.transition(task.id, MediaTaskState.downloading);
-    task = tasks.transition(task.id, MediaTaskState.completed);
-    task = tasks.transition(task.id, MediaTaskState.playable);
-    await tasks.flush(task.id);
-    await db.saveMediaArtifact(
-      task.id,
-      MediaArtifact(
-        taskId: task.id,
-        location: oldFile.path,
-        name: '示例系列 - 第1集.mp4',
-        size: 3,
-        folder: oldDirectory.path,
-        createdAt: DateTime.now().toUtc(),
-      ).toJson(),
-    );
-    await library.restore();
-    final storage = MediaStorageService(
-      tasks: tasks,
-      library: library,
-      configuredRoot: () async => null,
-    );
-
-    final report = await storage.migrateLegacyMediaNaming();
-
-    final target = File('${root.path}/media_exports/示例系列/第1集.mp4');
-    expect(report.migrated, 1);
-    expect(await target.readAsBytes(), [1, 2, 3]);
-    expect(await oldFile.exists(), isFalse);
-    expect(library.item(task.id)!.name, '第1集.mp4');
-    expect(library.item(task.id)!.location, target.path);
-  });
-
-  test('reconciles a journaled local move after catalog persistence failure', () async {
+  test('keeps a journaled move when the source cannot prove target identity', () async {
     final mediaRoot = Directory('${root.path}/media_exports')
       ..createSync(recursive: true);
     final target = File('${mediaRoot.path}/recovered.mp4')
@@ -263,7 +451,8 @@ void main() {
 
     await storage.reconcileMigrationJournal();
 
-    expect(library.item('journal')!.location, target.path);
-    expect(await storage.pendingMigrationCount(), 0);
+    expect(library.item('journal')!.location, '${root.path}/missing.mp4');
+    expect(await storage.pendingMigrationCount(), 1);
+    expect(await target.exists(), isTrue);
   });
 }

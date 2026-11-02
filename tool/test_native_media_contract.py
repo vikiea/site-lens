@@ -143,15 +143,11 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn('reserveMutation', download)
         self.assertIn('mutationReservations', download)
         for token in (
-            'directoryMigrationJournal',
-            'rewriteSeriesDirectory',
-            'withDirectoryLocks',
-            'LinkOption.NOFOLLOW_LINKS',
-            'newName in activeDirectories',
             'ownsMutationReservation',
             'fun dispose()',
         ):
             self.assertIn(token, download)
+        self.assertNotIn('"migrateLegacyDirectories"', download)
         delete = download.split(
             'private fun delete(taskId: String, reservationId: String? = null)', 1
         )[1].split('private fun validTaskId(', 1)[0]

@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import '../media/media_storage_mode.dart';
+
 enum ThemePresetId {
   oceanBlue,
   mistPine,
@@ -160,6 +162,7 @@ class AppSettings {
     this.autoSaveWebPlayback = false,
     this.autoConvertToMp4 = false,
     this.deleteMediaTaskAfterMp4Export = false,
+    this.mediaStorageMode = MediaStorageMode.appPrivate,
     this.mp4ExportDirectory,
     this.mediaLibraryAutoRefresh = true,
     this.mediaDownloadConcurrency = AppPolicy.defaultMediaDownloadConcurrency,
@@ -195,6 +198,7 @@ class AppSettings {
   final bool autoSaveWebPlayback;
   final bool autoConvertToMp4;
   final bool deleteMediaTaskAfterMp4Export;
+  final MediaStorageMode mediaStorageMode;
   final String? mp4ExportDirectory;
   final bool mediaLibraryAutoRefresh;
   final int mediaDownloadConcurrency;
@@ -230,6 +234,7 @@ class AppSettings {
     'autoSaveWebPlayback': autoSaveWebPlayback,
     'autoConvertToMp4': autoConvertToMp4,
     'deleteMediaTaskAfterMp4Export': deleteMediaTaskAfterMp4Export,
+    'mediaStorageMode': mediaStorageMode.wireId,
     'mp4ExportDirectory': mp4ExportDirectory,
     'mediaLibraryAutoRefresh': mediaLibraryAutoRefresh,
     'mediaDownloadConcurrency': mediaDownloadConcurrency,
@@ -292,6 +297,19 @@ class AppSettings {
       if (value is! String) return null;
       final trimmed = value.trim();
       return trimmed.isEmpty ? null : trimmed;
+    }
+
+    MediaStorageMode storageMode() {
+      final raw = json['mediaStorageMode'];
+      final explicit = MediaStorageMode.values
+          .where((value) => value.wireId == raw)
+          .firstOrNull;
+      if (explicit != null) return explicit;
+      final legacy = directory('mp4ExportDirectory');
+      if (legacy == null) return MediaStorageMode.appPrivate;
+      return Uri.tryParse(legacy)?.scheme == 'content'
+          ? MediaStorageMode.safTree
+          : MediaStorageMode.directPath;
     }
 
     String? assetId(String key) {
@@ -365,6 +383,7 @@ class AppSettings {
         'deleteMediaTaskAfterMp4Export',
         false,
       ),
+      mediaStorageMode: storageMode(),
       mp4ExportDirectory: directory('mp4ExportDirectory'),
       mediaLibraryAutoRefresh: flag('mediaLibraryAutoRefresh', true),
       mediaDownloadConcurrency: concurrency(
@@ -419,6 +438,7 @@ class AppSettings {
       'autoSaveWebPlayback',
       'autoConvertToMp4',
       'deleteMediaTaskAfterMp4Export',
+      'mediaStorageMode',
       'mp4ExportDirectory',
       'mediaLibraryAutoRefresh',
       'mediaDownloadConcurrency',
@@ -475,6 +495,7 @@ class AppSettings {
         'adguard',
       },
       'playerVerticalGesture': {'brightnessVolume', 'episodeSwitch'},
+      'mediaStorageMode': {'app_private', 'saf_tree', 'direct_path'},
     };
     for (final entry in changes.entries) {
       final choices = enums[entry.key];
@@ -505,6 +526,22 @@ class AppSettings {
       } else if (entry.key == 'mp4ExportDirectory') {
         if (entry.value != null && entry.value is! String) {
           throw const FormatException('媒体库目录必须是文本路径');
+        }
+      } else if (entry.key == 'mediaStorageMode') {
+        final value = entry.value;
+        if (value == 'saf_tree') {
+          final directory = changes['mp4ExportDirectory'] ?? mp4ExportDirectory;
+          if (directory is! String ||
+              Uri.tryParse(directory)?.scheme != 'content') {
+            throw const FormatException('SAF 模式需要系统目录授权');
+          }
+        }
+        if (value == 'direct_path') {
+          final directory = changes['mp4ExportDirectory'] ?? mp4ExportDirectory;
+          final uri = directory is String ? Uri.tryParse(directory) : null;
+          if (directory is! String || uri?.scheme == 'content') {
+            throw const FormatException('直接文件模式需要普通目录路径');
+          }
         }
       } else if (entry.key == 'mediaDownloadConcurrency') {
         final value = entry.value;

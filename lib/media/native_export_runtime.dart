@@ -23,6 +23,34 @@ class NativeExportRuntime {
   Future<String?> pickDirectory() =>
       _channel.invokeMethod<String>('pickDirectory');
 
+  Future<Map<String, Object?>> directAccessState() async =>
+      await _channel.invokeMapMethod<String, Object?>('directAccessState') ??
+      const <String, Object?>{};
+
+  Future<bool> requestDirectAccess() async =>
+      await _channel.invokeMethod<bool>('requestDirectAccess') ?? false;
+
+  Future<bool> checkDirectDirectory(String path) async =>
+      await _channel.invokeMethod<bool>('checkDirectDirectory', {
+        'path': path,
+      }) ??
+      false;
+
+  Future<void> configureDirectRoot(String? path) =>
+      _channel.invokeMethod<void>('configureDirectRoot', {'path': path});
+
+  Future<List<Map<String, Object?>>> listDirectDirectory(String path) async {
+    final raw = await _channel.invokeMethod<List<Object?>>(
+      'listDirectDirectory',
+      {'path': path},
+    );
+    return [
+      for (final value in raw ?? const <Object?>[])
+        if (value is Map)
+          Map<String, Object?>.from(value.cast<String, Object?>()),
+    ];
+  }
+
   Future<bool> checkDirectory(Uri directory) async =>
       await _channel.invokeMethod<bool>('checkDirectory', {
         'directory': directory.toString(),
@@ -57,6 +85,22 @@ class NativeExportRuntime {
     'directory': directory.toString(),
     'name': name,
   }))!;
+
+  Future<Map<String, Object?>> copyEntry({
+    required String source,
+    required Uri directory,
+    bool move = false,
+    bool reportRewrites = false,
+    bool deferDelete = false,
+  }) async =>
+      await _channel.invokeMapMethod<String, Object?>('copyEntry', {
+        'source': source,
+        'directory': directory.toString(),
+        'move': move,
+        'reportRewrites': reportRewrites,
+        'deferDelete': deferDelete,
+      }) ??
+      const <String, Object?>{};
 
   Future<String> muxHls({
     required String playlist,
@@ -121,6 +165,9 @@ class NativeExportRuntime {
   /// Checks readable bytes independently of optional codec metadata.
   Future<Map<String, Object?>> stat(String source) async => (await _channel
       .invokeMapMethod<String, Object?>('stat', {'source': source}))!;
+
+  Future<String> sha256(String source) async =>
+      (await _channel.invokeMethod<String>('sha256', {'source': source}))!;
 
   /// Enumerates MP4 documents in app storage and persisted, user-granted trees.
   Future<Map<String, Object?>> scanMedia({String? directory}) async =>

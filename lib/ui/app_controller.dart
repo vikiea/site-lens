@@ -45,6 +45,8 @@ import '../media/media_storage.dart';
 import '../media/dlna_service.dart';
 import '../media/native_download_runtime.dart';
 import '../media/native_export_runtime.dart';
+import '../media/media_storage_mode.dart';
+import '../media/media_operation_runner.dart';
 import '../media/media_network.dart';
 import '../media/media_resource_coordinator.dart';
 import '../media/native_media_runtime.dart';
@@ -184,9 +186,14 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       directoryProvider: mediaDirectoryProvider,
       resourceCoordinator: mediaResourceCoordinator,
     );
+    mediaOperations = MediaOperationRunner(db);
+    unawaited(mediaOperations.markInterrupted().catchError((_) {}));
     watchSaves = WatchSaveStore(db);
     nativeDownloads = Platform.isAndroid ? NativeDownloadRuntime() : null;
     nativeExports = Platform.isAndroid ? NativeExportRuntime() : null;
+    if (nativeExports != null && settings.mediaStorageMode == MediaStorageMode.directPath) {
+      unawaited(nativeExports!.configureDirectRoot(settings.mp4ExportDirectory));
+    }
     nativeMedia = NativeMediaRuntime();
     nativeMediaAuthRefresh = Platform.isAndroid
         ? NativeMediaAuthRefresh()
@@ -259,6 +266,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       tasks: mediaTasks,
       library: mediaLibrary,
       native: nativeExports,
+      configuredMode: () async => settings.mediaStorageMode,
       configuredRoot: () async => mp4ExportDirectory,
     );
     mediaLibrary.mutationGuard = mediaStorage.ensureWritable;
@@ -558,6 +566,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   late final Mp4ExportService mediaExports;
   late final MediaLibrary mediaLibrary;
   late final MediaStorageService mediaStorage;
+  late final MediaOperationRunner mediaOperations;
   final _exportingMedia = <String, Future<MediaArtifact>>{};
   late final CastSessionController castSessions;
   late final DlnaCastController mediaCast;
@@ -599,6 +608,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   bool autoSaveWebPlayback = false;
   bool autoConvertToMp4 = false;
   bool deleteMediaTaskAfterMp4Export = false;
+  MediaStorageMode mediaStorageMode = MediaStorageMode.appPrivate;
   String? mp4ExportDirectory;
   bool mediaLibraryAutoRefresh = true;
   int mediaDownloadConcurrency = AppPolicy.defaultMediaDownloadConcurrency;
@@ -964,6 +974,16 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
     if (!settings.restoreBrowserSessions) await sessionStore.clear();
     _applySettings();
+    if (nativeExports != null &&
+        (patch.containsKey('mediaStorageMode') ||
+            patch.containsKey('mp4ExportDirectory'))) {
+      await nativeExports!.configureDirectRoot(
+        mediaStorageMode == MediaStorageMode.directPath
+            ? mp4ExportDirectory
+            : null,
+      );
+    }
+    mediaStorage.invalidate();
     await hosts.applyPreferences(hostPreferences);
     await syncMediaPolicy();
     notifyListeners();
@@ -1149,6 +1169,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     autoSaveWebPlayback = settings.autoSaveWebPlayback;
     autoConvertToMp4 = settings.autoConvertToMp4;
     deleteMediaTaskAfterMp4Export = settings.deleteMediaTaskAfterMp4Export;
+    mediaStorageMode = settings.mediaStorageMode;
     mp4ExportDirectory = settings.mp4ExportDirectory;
     mediaLibraryAutoRefresh = settings.mediaLibraryAutoRefresh;
     mediaDownloadConcurrency = settings.mediaDownloadConcurrency;
@@ -1260,6 +1281,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> setMp4ExportDirectory(String? value) =>
       updateSettings({'mp4ExportDirectory': value});
+
+  Future<void> setMediaStorageMode(MediaStorageMode value) =>
+      updateSettings({'mediaStorageMode': value.wireId});
 
   Future<void> setMediaLibraryAutoRefresh(bool value) =>
       updateSettings({'mediaLibraryAutoRefresh': value});
@@ -3087,6 +3111,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     );
     mediaLibrary.removeListener(notifyMediaChanged);
     mediaStorage.dispose();
+    mediaOperations.dispose();
     mediaLibrary.dispose();
     watchSaves.dispose();
     AppErrorLogger.detach(errorLogger);

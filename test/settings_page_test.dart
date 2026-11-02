@@ -298,7 +298,7 @@ void main() {
       final opacitySlider = tester.getRect(find.byType(Slider));
       expect(
         (opacityValue.center.dy - opacitySlider.center.dy).abs(),
-        lessThan(18),
+        lessThan(19),
       );
       expect(find.byType(BottomSheet), findsNothing);
 

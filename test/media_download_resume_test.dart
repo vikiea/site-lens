@@ -15,7 +15,7 @@ void main() {
   // REGRESSION CONTRACT: MEDIA-HLS-001
   // REGRESSION CONTRACT: MEDIA-PLAY-001
   // REGRESSION CONTRACT: MEDIA-UPGRADE-001
-  test('legacy batch cache directory is normalized during restore', () async {
+  test('legacy batch cache directory remains unchanged during restore', () async {
     final root = await Directory.systemTemp.createTemp('site-lens-upgrade-');
     addTearDown(() => root.delete(recursive: true));
     final db = AppDatabase(NativeDatabase.memory());
@@ -40,7 +40,7 @@ void main() {
       localRef: '',
     );
     final legacyDirectory = Directory(
-      '${root.path}/media_cache/${task.legacyStorageDirectoryName}',
+      '${root.path}/media_cache/${task.storageDirectoryName}',
     );
     await legacyDirectory.create(recursive: true);
     final playlist = File('${legacyDirectory.path}/index.m3u8');
@@ -51,11 +51,13 @@ void main() {
 
     final restored = store.task(task.id);
     expect(restored, isNotNull);
-    expect(restored!.batchDirectory, '系统带我攻略弟弟（漫剧版）');
-    expect(restored.storageDirectoryName, '系统带我攻略弟弟（漫剧版）');
-    expect(await playlist.exists(), isFalse);
+    expect(restored!.batchDirectory, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
+    expect(restored.storageDirectoryName, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
+    expect(await playlist.exists(), isTrue);
     expect(
-      await File('${root.path}/media_cache/系统带我攻略弟弟（漫剧版）/index.m3u8').exists(),
+      await File(
+        '${root.path}/media_cache/系统带我攻略弟弟（漫剧版） - 批次1792686431921372/index.m3u8',
+      ).exists(),
       isTrue,
     );
   });

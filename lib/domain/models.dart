@@ -1007,8 +1007,8 @@ String mediaCandidateGroupKey(Uri url) {
   return mediaCandidateKey(clean);
 }
 
-/// User-facing and on-disk name for folders created by the legacy batch
-/// downloader. The suffix is transport metadata, not part of the series name.
+/// User-facing name for a legacy logical folder. This is retained for the
+/// organization view; physical media paths are never rewritten from it.
 String mediaFolderDisplayName(String name) =>
     name.replaceFirst(RegExp(r' - 批次\d{16}$'), '');
 
@@ -1351,16 +1351,10 @@ class MediaTask {
 
   String get seriesDirectoryName => mediaSeriesDirectoryName(displayTitle);
 
-  /// The directory name used by older builds before batch suffix cleanup.
-  String get legacyStorageDirectoryName =>
-      batchDirectory == null || batchDirectory!.trim().isEmpty
-      ? seriesDirectoryName
-      : mediaSeriesDirectoryName(batchDirectory!);
-
   String get storageDirectoryName =>
       batchDirectory == null || batchDirectory!.trim().isEmpty
       ? seriesDirectoryName
-      : mediaSeriesDirectoryName(mediaFolderDisplayName(batchDirectory!));
+      : batchDirectory!.trim();
 
   MediaTask copyWith({
     String? id,

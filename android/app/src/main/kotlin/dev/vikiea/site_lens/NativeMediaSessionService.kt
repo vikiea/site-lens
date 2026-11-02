@@ -325,6 +325,25 @@ class NativeMediaSessionService : MediaSessionService() {
     private fun open(request: OpenRequest): Map<String, Any?> {
         val uri = Uri.parse(request.uri)
         require(uri.scheme == "file" || uri.scheme == "content") { "本地媒体地址无效" }
+        if (uri.scheme == "file") {
+            val file = File(uri.path ?: error("媒体路径无效")).canonicalFile
+            val roots = listOfNotNull(
+                applicationContext.filesDir.canonicalFile,
+                applicationContext.getExternalFilesDir(null)?.canonicalFile,
+            )
+            val directRoot = applicationContext
+                .getSharedPreferences("media_access", Context.MODE_PRIVATE)
+                .getString("directRoot", null)
+                ?.let { runCatching { File(it).canonicalFile }.getOrNull() }
+            val directAllowed = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                android.os.Environment.isExternalStorageManager() &&
+                directRoot?.isDirectory == true &&
+                !java.nio.file.Files.isSymbolicLink(directRoot.toPath()) &&
+                (file.path == directRoot.path || file.path.startsWith("${directRoot.path}${File.separator}"))
+            require(roots.any { file.path == it.path || file.path.startsWith("${it.path}${File.separator}") } || directAllowed) {
+                "本地媒体路径越界"
+            }
+        }
         val leaseScope = MediaFileLeaseRegistry.Scope.task(request.taskId) +
             if (uri.scheme == "file" && request.hls) {
                 MediaFileLeaseRegistry.Scope.file(File(uri.path!!).parentFile!!)

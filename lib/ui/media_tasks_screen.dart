@@ -14,6 +14,8 @@ import '../media/media_service.dart';
 import '../media/media_library.dart';
 import '../media/media_organization.dart';
 import '../media/media_storage.dart';
+import '../media/media_storage_mode.dart';
+import '../media/media_operation_runner.dart';
 import '../settings/app_settings.dart';
 import 'app_controller.dart';
 import 'dlna_cast_screen.dart';
@@ -144,8 +146,8 @@ String mediaTaskRowDescription(
 }) {
   if (_isMediaTaskErrorState(task.state)) return '点击重试';
   return switch (task.state) {
-    MediaTaskState.completed || MediaTaskState.playable =>
-      _mediaPlayableDescription(task, artifact),
+    MediaTaskState.completed ||
+    MediaTaskState.playable => _mediaPlayableDescription(task, artifact),
     MediaTaskState.downloading =>
       '下载中 · ${_mediaTaskProgressDescription(task, totalKnown: candidate?.isHls != true)}',
     MediaTaskState.paused =>
@@ -1143,6 +1145,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
   String? _error;
   bool _scanning = false;
   bool _scanInFlight = false;
+  bool _scanPending = false;
   MediaStorageRoot? _storageRoot;
   final _migrationCandidates = <String>{};
   final _physicalFolders = <String, MediaOrganizationFolder>{};
@@ -1198,11 +1201,11 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
 
   void _changed() {
     if (mounted) setState(() {});
-    unawaited(_refreshStorageState());
   }
 
   void _libraryChanged() {
     _changed();
+    unawaited(_refreshStorageState());
     if (mounted) unawaited(_loadPhysicalDirectory());
   }
 
@@ -1239,18 +1242,6 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
       if (!mounted) return;
       await _organization.restore();
       if (!mounted) return;
-      if (await app.db.setting('mediaLibraryOrganizationMigratedV2') != '1') {
-        if (!mounted) return;
-        await _organization.restoreAndSync(
-          app.mediaLibrary.items.map(
-            (item) => MediaOrganizationSeed(
-              itemId: item.taskId,
-              legacyFolder: app.mediaLibrary.folderFor(item),
-            ),
-          ),
-        );
-        if (!mounted) return;
-      }
       if (mounted) setState(() => _initializing = false);
       if (app.mediaLibraryAutoRefresh) {
         unawaited(_rescan(silent: true));
@@ -1264,7 +1255,11 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
   }
 
   Future<void> _rescan({bool silent = false}) async {
-    if (_scanInFlight) return;
+    if (_scanInFlight) {
+      _scanPending = true;
+      if (!silent && mounted) showShortToast(context, '正在同步媒体目录，完成后会继续刷新');
+      return;
+    }
     if (!mounted) return;
     _scanInFlight = true;
     if (!silent) setState(() => _scanning = true);
@@ -1290,6 +1285,10 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
     } finally {
       _scanInFlight = false;
       if (!silent && mounted) setState(() => _scanning = false);
+      if (_scanPending && mounted) {
+        _scanPending = false;
+        unawaited(_rescan(silent: true));
+      }
     }
   }
 
@@ -1544,10 +1543,10 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
       return recorded.replaceAll('\\', '/');
     }
     final itemUri = Uri.tryParse(item.location);
-    if (root.kind == MediaStorageKind.system && itemUri?.scheme == 'content') {
+    if (root.kind == MediaStorageKind.safTree && itemUri?.scheme == 'content') {
       return '';
     }
-    final rootPath = root.kind == MediaStorageKind.system
+    final rootPath = root.kind == MediaStorageKind.safTree
         ? (Uri.tryParse(root.location)?.scheme == 'file'
               ? Uri.parse(root.location).toFilePath()
               : root.location)
@@ -1594,7 +1593,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
       return rootTreeId == locationTreeId &&
           (documentId == rootTreeId || documentId.startsWith('$rootTreeId/'));
     }
-    final rootPath = root.kind == MediaStorageKind.system
+    final rootPath = root.kind == MediaStorageKind.safTree
         ? (rootUri?.scheme == 'file' ? rootUri!.toFilePath() : root.location)
         : root.location;
     final itemPath = locationUri?.scheme == 'file'
@@ -1853,44 +1852,98 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
             await _loadPhysicalDirectory(directory: folder.parentId);
           }
         case 'delete':
+          final files = await _collectPhysicalFiles(folder.id);
+          final items = <MediaArtifact>[];
+          for (final location in files.values) {
+            final item = app.mediaLibrary.items
+                .where(
+                  (candidate) =>
+                      mediaArtifactSourceKey(candidate.location) ==
+                      mediaArtifactSourceKey(location),
+                )
+                .firstOrNull;
+            if (item == null) {
+              throw StateError('目录包含未索引文件，已保留目录');
+            }
+            items.add(item);
+          }
+          if (!mounted) return;
           final confirmed = await confirmMediaBrowserDelete(
             context,
             title: '删除目录',
-            message: '删除“${folder.name}”及其全部媒体文件？',
+            message: '删除“${folder.name}”及其中已索引媒体文件？目录包含其他文件时会拒绝操作。',
           );
           if (!confirmed) return;
-          {
-            Future<List<MediaStorageEntry>> collectFiles(
-              String location,
-            ) async {
-              final entries = await app.mediaStorage.listDirectory(
-                directory: location,
-              );
-              final files = <MediaStorageEntry>[];
-              for (final entry in entries) {
-                if (entry.directory) {
-                  files.addAll(await collectFiles(entry.location));
-                } else {
-                  files.add(entry);
+          await app.mediaLibrary.withDirectoryMutation(() async {
+            final directoryOperation = await app.mediaOperations.run(
+              kind: 'physical_directory',
+              action: 'delete',
+              itemIds: [folder.id],
+              concurrency: 1,
+              execute: (_) async {
+                if (items.isNotEmpty) {
+                  final mediaOperation = await app.mediaOperations.run(
+                    kind: 'physical_media',
+                    action: 'delete',
+                    itemIds: items.map((item) => item.taskId),
+                    concurrency: 2,
+                    execute: app.deleteMediaArtifact,
+                  );
+                  final mediaResult = await app.mediaOperations.wait(
+                    mediaOperation.id,
+                  );
+                  if (mediaResult.failed > 0) {
+                    throw StateError('部分媒体删除失败，已保留目录');
+                  }
                 }
-              }
-              return files;
+                await app.mediaStorage.deleteEntry(folder.id);
+              },
+            );
+            final result = await app.mediaOperations.wait(
+              directoryOperation.id,
+            );
+            if (result.failed > 0) {
+              throw StateError('目录删除失败，已保留目录');
             }
-
-            for (final child in await collectFiles(folder.id)) {
-              final item = app.mediaLibrary.items
-                  .where(
-                    (candidate) =>
-                        mediaArtifactSourceKey(candidate.location) ==
-                        mediaArtifactSourceKey(child.location),
-                  )
-                  .firstOrNull;
-              if (item != null) await app.deleteMediaArtifact(item.taskId);
+          });
+          await app.mediaLibrary.rescan(directory: app.mp4ExportDirectory);
+          if (!mounted) return;
+          await _loadPhysicalDirectory(directory: folder.parentId);
+        case 'move':
+        case 'copy':
+          final destination = await _pickStorageDestination(
+            title: action == 'move' ? '移动整个目录到' : '复制整个目录到',
+          );
+          if (destination == null) return;
+          await app.mediaLibrary.withDirectoryMutation(() async {
+            final operation = await app.mediaOperations.run(
+              kind: 'physical_directory',
+              action: action,
+              itemIds: [folder.id],
+              concurrency: 1,
+              execute: (_) async {
+                final rewrites = await app.mediaStorage.copyEntry(
+                  folder.id,
+                  destination,
+                  move: action == 'move',
+                );
+                if (action == 'move') {
+                  if (rewrites.isNotEmpty) {
+                    await app.mediaLibrary.rewriteLocations(rewrites);
+                  }
+                  await app.mediaStorage.deleteEntry(folder.id);
+                }
+              },
+            );
+            final result = await app.mediaOperations.wait(operation.id);
+            if (result.failed > 0) {
+              throw StateError('目录操作失败，已保留源目录');
             }
-            await app.mediaStorage.deleteEntry(folder.id);
-            if (!mounted) return;
-            await _loadPhysicalDirectory(directory: folder.parentId);
-          }
+          });
+          await app.mediaLibrary.rescan(directory: app.mp4ExportDirectory);
+          if (!mounted) return;
+          showShortToast(context, action == 'move' ? '目录已移动' : '目录已复制');
+          await _loadPhysicalDirectory(directory: folder.parentId);
       }
       return;
     }
@@ -1956,29 +2009,128 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
     final folderIds = _browser.selectedFolderIds.toList();
     try {
       if (_browser.physicalMode) {
+        final physicalIds = <String>{...itemIds};
+        final folderItemIds = <String>{};
+        final folderFiles = <String, Map<String, String>>{};
+        for (final folderId in folderIds) {
+          final files = await _collectPhysicalFiles(folderId);
+          folderFiles[folderId] = files;
+          for (final location in files.values) {
+            final item = app.mediaLibrary.items
+                .where(
+                  (candidate) =>
+                      mediaArtifactSourceKey(candidate.location) ==
+                      mediaArtifactSourceKey(location),
+                )
+                .firstOrNull;
+            if (item != null) {
+              physicalIds.add(item.taskId);
+              folderItemIds.add(item.taskId);
+            }
+          }
+        }
         final directory = switch (action) {
           'move' => await _pickStorageDestination(title: '移动媒体文件到目录'),
           'copy' => await _pickStorageDestination(title: '复制媒体文件到目录'),
           _ => null,
         };
-        if (action == 'move' && directory != null) {
-          for (final id in itemIds) {
-            await app.mediaStorage.moveArtifact(id, directory);
+        if ((action == 'move' || action == 'copy') && directory != null) {
+          physicalIds.removeAll(folderItemIds);
+          MediaOperationSnapshot? result;
+          var folderFailures = 0;
+          await app.mediaLibrary.withDirectoryMutation(() async {
+            if (folderIds.isNotEmpty) {
+              final folderOperation = await app.mediaOperations.run(
+                kind: 'physical_directory',
+                action: action,
+                itemIds: folderIds,
+                concurrency: 1,
+                execute: (folderId) async {
+                  final rewrites = await app.mediaStorage.copyEntry(
+                    folderId,
+                    directory,
+                    move: action == 'move',
+                  );
+                  if (action == 'move') {
+                    if (rewrites.isNotEmpty) {
+                      await app.mediaLibrary.rewriteLocations(rewrites);
+                    }
+                    await app.mediaStorage.deleteEntry(folderId);
+                  }
+                },
+              );
+              final folderResult = await app.mediaOperations.wait(
+                folderOperation.id,
+              );
+              folderFailures = folderResult.failed;
+            }
+            if (physicalIds.isNotEmpty) {
+              final operation = await app.mediaOperations.run(
+                kind: 'physical_media',
+                action: action,
+                itemIds: physicalIds,
+                concurrency: 2,
+                execute: (id) => action == 'move'
+                    ? app.mediaStorage.moveArtifact(id, directory)
+                    : app.mediaStorage.copyArtifact(id, directory).then((_) {}),
+              );
+              result = await app.mediaOperations.wait(operation.id);
+            }
+          });
+          await app.mediaLibrary.rescan(directory: app.mp4ExportDirectory);
+          if (mounted) {
+            showShortToast(
+              context,
+              '$action 完成 ${result?.succeeded ?? 0} 项，失败 ${(result?.failed ?? 0) + folderFailures} 项',
+            );
           }
-        } else if (action == 'copy' && directory != null) {
-          for (final id in itemIds) {
-            await app.mediaStorage.copyArtifact(id, directory);
+        } else if (action == 'delete' &&
+            (physicalIds.isNotEmpty || folderIds.isNotEmpty)) {
+          final unindexed = <String>[];
+          for (final files in folderFiles.values) {
+            for (final location in files.values) {
+              final indexed = app.mediaLibrary.items.any(
+                (candidate) =>
+                    mediaArtifactSourceKey(candidate.location) ==
+                    mediaArtifactSourceKey(location),
+              );
+              if (!indexed) unindexed.add(location);
+            }
           }
-        } else if (action == 'delete' && itemIds.isNotEmpty) {
+          if (unindexed.isNotEmpty) {
+            throw StateError('选中的目录包含未索引文件，已保留目录');
+          }
           if (!mounted) return;
           final confirmed = await confirmMediaBrowserDelete(
             context,
             title: '删除选中的媒体',
-            message: '删除选中的 ${itemIds.length} 个媒体文件？关联任务缓存会保留。',
+            message: '删除选中的 ${physicalIds.length} 个媒体文件？关联任务缓存会保留。',
           );
           if (confirmed) {
-            for (final id in itemIds) {
-              await app.deleteMediaArtifact(id);
+            MediaOperationSnapshot? result;
+            await app.mediaLibrary.withDirectoryMutation(() async {
+              if (physicalIds.isNotEmpty) {
+                final operation = await app.mediaOperations.run(
+                  kind: 'physical_media',
+                  action: action,
+                  itemIds: physicalIds,
+                  concurrency: 2,
+                  execute: (id) => app.deleteMediaArtifact(id),
+                );
+                result = await app.mediaOperations.wait(operation.id);
+              }
+              if (result == null || result!.failed == 0) {
+                for (final folderId in folderIds) {
+                  await app.mediaStorage.deleteEntry(folderId);
+                }
+              }
+            });
+            await app.mediaLibrary.rescan(directory: app.mp4ExportDirectory);
+            if (mounted) {
+              showShortToast(
+                context,
+                '删除完成 ${result?.succeeded ?? 0} 项，失败 ${result?.failed ?? 0} 项',
+              );
             }
           }
         }
@@ -2190,28 +2342,6 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
               text: '这里是已导出的 MP4。下载和批量操作请打开“媒体任务”。',
             ),
           ),
-          if (_organization.hasStoredOrganization)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(
-                SiteLensMetrics.pagePadding,
-                8,
-                SiteLensMetrics.pagePadding,
-                0,
-              ),
-              child: SiteLensCompactRow(
-                leading: const Icon(Icons.auto_fix_high_outlined),
-                title: const Text('发现旧媒体分类'),
-                subtitle: const Text('打开媒体管理，可将分类迁移为真实目录'),
-                onTap: () => Navigator.of(context).push<void>(
-                  MaterialPageRoute<void>(
-                    builder: (_) => MediaManagementScreen(
-                      app: app,
-                      onRootBack: widget.onRootBack,
-                    ),
-                  ),
-                ),
-              ),
-            ),
           Expanded(
             child: SiteLensListPanel(
               scrollKey: const PageStorageKey('media-library-scroll'),
@@ -2629,49 +2759,58 @@ class MediaManagementScreen extends StatefulWidget {
   State<MediaManagementScreen> createState() => _MediaManagementScreenState();
 }
 
-class _MediaManagementScreenState extends State<MediaManagementScreen> {
+class _MediaManagementScreenState extends State<MediaManagementScreen>
+    with WidgetsBindingObserver {
   AppController get app => widget.app;
   String? _expandedDetail;
-  late final MediaOrganizationService _libraryOrganization =
-      MediaOrganizationService(db: app.db, collection: 'library');
-  bool _hasLegacyOrganization = false;
   bool _hasPendingMigration = false;
   bool _migrationRunning = false;
   int _migrationCompleted = 0;
   int _migrationTotal = 0;
   String? _migrationCurrent;
   String? _migrationStatus;
-  bool _namingMigrationRunning = false;
-  String? _namingMigrationStatus;
+  Map<String, Object?>? _directAccessState;
 
   @override
   void initState() {
     super.initState();
-    unawaited(_loadLegacyOrganization());
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(_loadPendingMigration());
+    unawaited(_refreshDirectAccessState());
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
-  Future<void> _loadLegacyOrganization() async {
-    await _libraryOrganization.restore();
-    if (!mounted) return;
-    await app.mediaLibrary.restore();
-    if (!mounted) return;
-    if (await app.db.setting('mediaLibraryOrganizationMigratedV2') != '1') {
-      if (!mounted) return;
-      await _libraryOrganization.restoreAndSync(
-        app.mediaLibrary.items.map(
-          (item) => MediaOrganizationSeed(
-            itemId: item.taskId,
-            legacyFolder: app.mediaLibrary.folderFor(item),
-          ),
-        ),
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      app.mediaStorage.invalidate();
+      unawaited(_refreshDirectAccessState());
+      unawaited(
+        app.mediaStorage.resolve().then((_) {
+          if (mounted) setState(() {});
+        }),
       );
-      if (!mounted) return;
     }
+  }
+
+  Future<void> _refreshDirectAccessState() async {
+    final runtime = app.nativeExports;
+    if (runtime == null) return;
+    try {
+      final state = await runtime.directAccessState();
+      if (mounted) setState(() => _directAccessState = state);
+    } catch (_) {
+      // The status row remains available only on Android builds that expose
+      // the native media bridge.
+    }
+  }
+
+  Future<void> _loadPendingMigration() async {
     var pending = 0;
     try {
       await app.mediaStorage.reconcileMigrationJournal();
@@ -2679,75 +2818,83 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
     } catch (_) {
       // Storage migration is optional for rendering this settings page.
     }
-    if (mounted) {
-      setState(() {
-        _hasLegacyOrganization = _libraryOrganization.hasStoredOrganization;
-      });
-    }
     if (mounted && pending > 0) {
       setState(() => _hasPendingMigration = true);
     }
   }
 
   Future<void> _pickMp4Directory() async {
-    final selected = Platform.isAndroid && app.nativeExports != null
+    final selected = app.mediaStorageMode == MediaStorageMode.directPath
+        ? await FilePicker.getDirectoryPath(dialogTitle: '选择直接文件目录')
+        : Platform.isAndroid && app.nativeExports != null
         ? await app.nativeExports!.pickDirectory()
         : await FilePicker.getDirectoryPath(dialogTitle: '选择媒体库目录');
     if (selected == null || selected.trim().isEmpty) return;
-    await app.setMp4ExportDirectory(selected);
+    var mode = app.mediaStorageMode;
+    if (mode == MediaStorageMode.appPrivate) {
+      mode = Uri.tryParse(selected)?.scheme == 'content'
+          ? MediaStorageMode.safTree
+          : MediaStorageMode.directPath;
+    }
+    if (mode == MediaStorageMode.directPath && app.nativeExports != null) {
+      final state = await app.nativeExports!.directAccessState();
+      if (state['granted'] != true) {
+        await app.nativeExports!.requestDirectAccess();
+        await _refreshDirectAccessState();
+        throw StateError('请先授予管理所有文件权限，再选择直接文件目录');
+      }
+      await app.nativeExports!.configureDirectRoot(selected);
+    }
+    await app.updateSettings({
+      'mediaStorageMode': mode.wireId,
+      'mp4ExportDirectory': selected,
+    });
     await app.mediaStorage.resolve();
     if (mounted) showShortToast(context, '媒体库目录已更新');
   }
 
-  Future<void> _migrateMediaNaming() async {
-    if (_namingMigrationRunning) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => SiteLensAlertDialog(
-        title: const Text('整理历史媒体文件'),
-        content: const Text(
-          '将已有 MP4 统一整理为“剧集文件夹/第N集.mp4”。下载缓存和任务身份保持不变；同名但大小不同的文件会保留并报告冲突。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('开始整理'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-    setState(() {
-      _namingMigrationRunning = true;
-      _namingMigrationStatus = '正在扫描历史媒体…';
-    });
-    try {
-      final report = await app.mediaStorage.migrateLegacyMediaNaming(
-        onProgress: (current, total, name) {
-          if (!mounted) return;
-          setState(() {
-            _namingMigrationStatus = '正在整理 $current / $total · $name';
-          });
-        },
-      );
-      await app.mediaLibrary.rescan();
-      if (!mounted) return;
-      final suffix = <String>[
-        if (report.conflicts > 0) '冲突 ${report.conflicts}',
-        if (report.failed > 0) '失败 ${report.failed}',
-      ];
-      setState(() {
-        _namingMigrationStatus =
-            '已整理 ${report.migrated} 个，跳过 ${report.skipped} 个'
-            '${suffix.isEmpty ? '' : '，${suffix.join('，')}'}';
+  Future<void> _selectStorageMode(MediaStorageMode mode) async {
+    if (mode == MediaStorageMode.appPrivate) {
+      await app.setMediaStorageMode(mode);
+      await app.setMp4ExportDirectory(null);
+      return;
+    }
+    if (mode == MediaStorageMode.directPath) {
+      final runtime = app.nativeExports;
+      if (runtime == null) throw StateError('当前平台不支持直接文件目录');
+      final state = await runtime.directAccessState();
+      if (state['supported'] != true) {
+        throw StateError('当前 Android 版本不支持管理所有文件权限');
+      }
+      if (state['granted'] != true) {
+        await runtime.requestDirectAccess();
+        await _refreshDirectAccessState();
+        if (mounted) showShortToast(context, '请在系统设置中授予权限，返回后再选择目录');
+        return;
+      }
+    }
+    final needsDirectory =
+        app.mp4ExportDirectory == null ||
+        (mode == MediaStorageMode.safTree &&
+            Uri.tryParse(app.mp4ExportDirectory!)?.scheme != 'content') ||
+        (mode == MediaStorageMode.directPath &&
+            Uri.tryParse(app.mp4ExportDirectory!)?.scheme == 'content');
+    if (needsDirectory) {
+      final selected = mode == MediaStorageMode.directPath
+          ? await FilePicker.getDirectoryPath(dialogTitle: '选择直接文件目录')
+          : Platform.isAndroid && app.nativeExports != null
+          ? await app.nativeExports!.pickDirectory()
+          : await FilePicker.getDirectoryPath(dialogTitle: '选择媒体库目录');
+      if (selected == null || selected.trim().isEmpty) return;
+      if (mode == MediaStorageMode.directPath && app.nativeExports != null) {
+        await app.nativeExports!.configureDirectRoot(selected);
+      }
+      await app.updateSettings({
+        'mediaStorageMode': mode.wireId,
+        'mp4ExportDirectory': selected,
       });
-      showShortToast(context, _namingMigrationStatus!);
-    } finally {
-      if (mounted) setState(() => _namingMigrationRunning = false);
+    } else {
+      await app.setMediaStorageMode(mode);
     }
   }
 
@@ -2758,9 +2905,10 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
     final root = await app.mediaStorage.resolve();
     if (!mounted) return;
     if (!root.available) throw StateError('请先选择并授权媒体库目录');
-    await _libraryOrganization.restore();
-    if (!mounted) return;
-    final items = [...app.mediaLibrary.items];
+    final items = <MediaArtifact>[];
+    for (final item in app.mediaLibrary.items) {
+      if (await app.mediaStorage.needsMigration(item)) items.add(item);
+    }
     final blocked = items
         .where((item) => !app.mediaLibrary.canMutate(item.taskId))
         .toList(growable: false);
@@ -2776,37 +2924,9 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
         _migrationStatus = '正在准备媒体目录…';
       });
     }
-    final folderLocations = <String, String>{};
-
-    Future<String> ensureDirectory(String parent, String name) async {
-      final existing = await app.mediaStorage.listDirectory(directory: parent);
-      if (!mounted) throw StateError('媒体管理页面已关闭');
-      final match = existing
-          .where((entry) => entry.directory && entry.name == name)
-          .firstOrNull;
-      if (match != null) return match.location;
-      return app.mediaStorage.createDirectory(parent: parent, name: name);
-    }
-
-    Future<void> createFolderTree(
-      MediaOrganizationFolder folder,
-      String parent,
-    ) async {
-      if (!mounted) throw StateError('媒体管理页面已关闭');
-      final location = await ensureDirectory(parent, folder.name);
-      if (!mounted) throw StateError('媒体管理页面已关闭');
-      folderLocations[folder.id] = location;
-      for (final child in _libraryOrganization.children(folder.id)) {
-        await createFolderTree(child, location);
-      }
-    }
 
     var migrated = 0;
     try {
-      for (final folder in _libraryOrganization.children(null)) {
-        await createFolderTree(folder, root.location);
-        if (!mounted) throw StateError('媒体管理页面已关闭');
-      }
       for (final item in items) {
         if (!mounted) throw StateError('媒体管理页面已关闭');
         if (mounted) {
@@ -2816,48 +2936,10 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
                 '正在处理 ${_migrationCompleted + 1} / $_migrationTotal';
           });
         }
-        final folderId = _libraryOrganization.folderFor(item.taskId);
-        final destination = folderId == null
-            ? root.location
-            : folderLocations[folderId];
-        if (destination != null &&
-            !await app.mediaStorage.isArtifactInDirectory(item, destination)) {
-          await app.mediaStorage.recordMigration(
-            taskId: item.taskId,
-            source: item.location,
-            target: destination,
-            fileName: item.name,
-            phase: 'planned',
-          );
-          if (!mounted) throw StateError('媒体管理页面已关闭');
-          await app.mediaStorage.moveArtifact(item.taskId, destination);
-          if (!mounted) throw StateError('媒体管理页面已关闭');
-          await app.mediaStorage.recordMigration(
-            taskId: item.taskId,
-            source: item.location,
-            target: destination,
-            fileName: item.name,
-            phase: 'moved',
-          );
-          if (!mounted) throw StateError('媒体管理页面已关闭');
-          migrated++;
-        }
+        await app.mediaStorage.migrateArtifact(item.taskId);
         if (!mounted) throw StateError('媒体管理页面已关闭');
-        final name = _libraryOrganization.nameFor(item.taskId, item.name);
-        if (name != item.name) {
-          await app.mediaLibrary.rename(item.taskId, name);
-          if (!mounted) throw StateError('媒体管理页面已关闭');
-        }
-        await app.mediaStorage.clearMigration(item.taskId);
-        if (!mounted) throw StateError('媒体管理页面已关闭');
+        migrated++;
         if (mounted) setState(() => _migrationCompleted++);
-      }
-      if (_libraryOrganization.hasStoredOrganization) {
-        if (!mounted) throw StateError('媒体管理页面已关闭');
-        await _libraryOrganization.clearAll();
-        if (!mounted) throw StateError('媒体管理页面已关闭');
-        await app.db.setSetting('mediaLibraryOrganizationMigratedV2', '1');
-        if (mounted) setState(() => _hasLegacyOrganization = false);
       }
       if (mounted) {
         setState(() {
@@ -3143,26 +3225,56 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
                 ),
                 const SiteLensPanelDivider(),
                 SiteLensCompactRow(
-                  leading: const Icon(Icons.drive_file_rename_outline),
-                  title: const Text('整理历史媒体文件'),
-                  subtitle: Text(
-                    _namingMigrationRunning
-                        ? _namingMigrationStatus ?? '正在整理历史媒体…'
-                        : _namingMigrationStatus ??
-                              '统一为剧集文件夹和集数文件名；已符合规则的文件会跳过',
+                  leading: const Icon(Icons.storage_outlined),
+                  title: const Text('媒体存储模式'),
+                  subtitle: Text(switch (app.mediaStorageMode) {
+                    MediaStorageMode.appPrivate => '文件保存在应用私有媒体库',
+                    MediaStorageMode.safTree =>
+                      app.mp4ExportDirectory == null
+                          ? '需要选择并授权系统目录'
+                          : '使用系统目录授权访问',
+                    MediaStorageMode.directPath =>
+                      app.mp4ExportDirectory == null
+                          ? '需要全文件权限和直接目录'
+                          : '使用管理所有文件权限访问',
+                  }),
+                  trailing: SiteLensMenuSelector<MediaStorageMode>(
+                    label: '媒体存储模式',
+                    value: app.mediaStorageMode,
+                    options: [
+                      for (final mode in MediaStorageMode.values)
+                        SiteLensMenuOption(value: mode, label: mode.label),
+                    ],
+                    onSelected: (value) =>
+                        safely(context, () => _selectStorageMode(value)),
                   ),
-                  onTap: _namingMigrationRunning
-                      ? null
-                      : () => safely(context, _migrateMediaNaming),
-                  trailing: _namingMigrationRunning
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.chevron_right),
                 ),
                 const SiteLensPanelDivider(),
+                if (app.mediaStorageMode == MediaStorageMode.directPath &&
+                    app.nativeExports != null)
+                  SiteLensCompactRow(
+                    leading: Icon(
+                      _directAccessState?['granted'] == true
+                          ? Icons.check_circle_outline
+                          : Icons.lock_outline,
+                    ),
+                    title: const Text('管理所有文件权限'),
+                    subtitle: Text(
+                      _directAccessState == null
+                          ? '正在检查授权状态'
+                          : _directAccessState!['granted'] == true
+                          ? '已授权，可访问选定的直接文件目录'
+                          : '未授权，点击前往系统设置',
+                    ),
+                    onTap: () => safely(context, () async {
+                      await app.nativeExports!.requestDirectAccess();
+                      await _refreshDirectAccessState();
+                    }),
+                    trailing: const Icon(Icons.chevron_right),
+                  ),
+                if (app.mediaStorageMode == MediaStorageMode.directPath &&
+                    app.nativeExports != null)
+                  const SiteLensPanelDivider(),
                 SiteLensDisclosure(
                   leading: const Icon(Icons.folder_outlined),
                   title: const Text('媒体库目录'),
@@ -3199,9 +3311,7 @@ class _MediaManagementScreenState extends State<MediaManagementScreen> {
                     ],
                   ),
                 ),
-                if (app.mp4ExportDirectory != null ||
-                    _hasLegacyOrganization ||
-                    _hasPendingMigration) ...[
+                if (app.mp4ExportDirectory != null || _hasPendingMigration) ...[
                   const SiteLensPanelDivider(),
                   SiteLensDisclosure(
                     leading: const Icon(Icons.library_music_outlined),
@@ -3330,6 +3440,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   StreamSubscription<NativePlaybackSession>? _mediaStates;
   final _operations = <String>{};
   bool _batchBusy = false;
+  String? _activeOperationId;
   late final MediaOrganizationService _organization = MediaOrganizationService(
     db: widget.app.db,
     collection: 'tasks',
@@ -3831,46 +3942,56 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         );
         if (confirmed != true) return;
       }
+      final eligibleIds = <String>[];
       for (final snapshot in selected) {
         final task = widget.app.mediaTasks.task(snapshot.id);
         if (task == null || !_batchEligible(task, action)) {
           skipped++;
-          continue;
+        } else {
+          eligibleIds.add(task.id);
         }
-        if (!_operations.add(task.id)) {
-          failedIds.add(task.id);
-          continue;
-        }
-        try {
-          switch (action) {
-            case _MediaBatchAction.retry:
-              await _retry(task, notify: false);
-            case _MediaBatchAction.pause:
-              await widget.app.mediaDownloads.pause(task.id);
-            case _MediaBatchAction.resume:
-              await _togglePause(task);
-            case _MediaBatchAction.refresh:
-              await _refreshNative(task);
-            case _MediaBatchAction.export:
-              await widget.app.exportMediaTask(task);
-            case _MediaBatchAction.delete:
-              await widget.app.deleteMediaTask(task.id);
-              deletedIds.add(task.id);
-            case _MediaBatchAction.deleteFailed:
-              await widget.app.deleteMediaTask(task.id);
-              deletedIds.add(task.id);
+      }
+      if (eligibleIds.isNotEmpty) {
+        final operation = await widget.app.mediaOperations.run(
+          kind: 'media_tasks',
+          action: action.name,
+          itemIds: eligibleIds,
+          concurrency: action == _MediaBatchAction.export ? 1 : 4,
+          execute: (id) async {
+            final task = widget.app.mediaTasks.task(id);
+            if (task == null || !_batchEligible(task, action)) {
+              throw StateError('任务状态已变化');
+            }
+            switch (action) {
+              case _MediaBatchAction.retry:
+                await _retry(task, notify: false);
+              case _MediaBatchAction.pause:
+                await widget.app.mediaDownloads.pause(task.id);
+              case _MediaBatchAction.resume:
+                await _togglePause(task);
+              case _MediaBatchAction.refresh:
+                await _refreshNative(task);
+              case _MediaBatchAction.export:
+                await widget.app.exportMediaTask(task);
+              case _MediaBatchAction.delete:
+              case _MediaBatchAction.deleteFailed:
+                await widget.app.deleteMediaTask(task.id);
+                deletedIds.add(task.id);
+            }
+          },
+        );
+        _activeOperationId = operation.id;
+        if (mounted) setState(() {});
+        final result = await widget.app.mediaOperations.wait(operation.id);
+        succeeded = result.succeeded;
+        for (final item in await widget.app.mediaOperations.items(
+          operation.id,
+        )) {
+          if (item.state == MediaOperationItemState.failed ||
+              item.state == MediaOperationItemState.stopped ||
+              item.state == MediaOperationItemState.interrupted) {
+            failedIds.add(item.itemId);
           }
-          succeeded++;
-        } catch (error, stack) {
-          failedIds.add(task.id);
-          AppErrorLogger.capture(
-            error,
-            stack: stack,
-            module: 'media.batch',
-            context: '${action.name}:${task.id}',
-          );
-        } finally {
-          _operations.remove(task.id);
         }
       }
       if (deletedIds.isNotEmpty &&
@@ -3905,6 +4026,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         ].join('，'),
       );
     } finally {
+      _activeOperationId = null;
       if (mounted) {
         setState(() {
           _batchBusy = false;
@@ -4037,6 +4159,18 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         if (!didPop) _handleBack();
       },
       actions: [
+        if (_batchBusy && _activeOperationId != null)
+          IconButton(
+            tooltip: '停止批量操作',
+            icon: const Icon(Icons.stop_circle_outlined),
+            onPressed: () async {
+              final id = _activeOperationId;
+              if (id == null) return;
+              await widget.app.mediaOperations.stop(id);
+              if (!context.mounted) return;
+              showShortToast(context, '已请求停止，正在执行的项目会安全收尾');
+            },
+          ),
         if (!_browser.selectionMode) ...[
           IconButton(
             tooltip: '新建文件夹',

@@ -2,18 +2,18 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 
-import '../diagnostics/error_log.dart';
-import '../network/transport.dart';
 import 'media_library.dart';
 import 'media_service.dart';
+import 'media_storage_mode.dart';
 import 'native_export_runtime.dart';
 
-enum MediaStorageKind { appPrivate, system }
+enum MediaStorageKind { appPrivate, safTree, directPath }
 
-enum MediaStoragePermission { available, unconfigured, revoked }
+enum MediaStoragePermission { available, unconfigured, revoked, unsupported }
 
 /// The single storage root used by the media library. Download caches remain
 /// owned by [MediaTaskStore] and are deliberately not represented here.
@@ -28,8 +28,10 @@ class MediaStorageRoot {
   final MediaStorageKind kind;
   final MediaStoragePermission permission;
 
-  bool get configured => kind == MediaStorageKind.system;
-  bool get available => permission != MediaStoragePermission.revoked;
+  bool get configured => kind != MediaStorageKind.appPrivate;
+  bool get available =>
+      permission == MediaStoragePermission.available ||
+      permission == MediaStoragePermission.unconfigured;
 }
 
 class MediaStorageEntry {
@@ -48,22 +50,6 @@ class MediaStorageEntry {
   final int modifiedMs;
 }
 
-class MediaNamingMigrationReport {
-  const MediaNamingMigrationReport({
-    required this.migrated,
-    required this.skipped,
-    required this.conflicts,
-    required this.failed,
-    this.failureReasons = const <String, String>{},
-  });
-
-  final int migrated;
-  final int skipped;
-  final int conflicts;
-  final int failed;
-  final Map<String, String> failureReasons;
-}
-
 /// Coordinates the configured media root with the existing media catalog.
 ///
 /// The service intentionally does not own download task paths. It only answers
@@ -75,18 +61,25 @@ class MediaStorageService extends ChangeNotifier {
     required this.tasks,
     required this.library,
     required this.configuredRoot,
+    this.configuredMode,
     this.native,
   });
 
   final MediaTaskStore tasks;
   final MediaLibrary library;
   final Future<String?> Function() configuredRoot;
+  final Future<MediaStorageMode> Function()? configuredMode;
   final NativeExportRuntime? native;
 
   MediaStorageRoot? _current;
   Future<MediaStorageRoot>? _resolving;
 
   MediaStorageRoot? get current => _current;
+
+  void invalidate() {
+    _current = null;
+    notifyListeners();
+  }
 
   Future<void> ensureWritable() async {
     final root = await resolve();
@@ -100,13 +93,22 @@ class MediaStorageService extends ChangeNotifier {
 
   Future<MediaStorageRoot> _resolve() async {
     final configured = (await configuredRoot())?.trim();
-    if (configured != null && configured.isNotEmpty) {
+    final mode = configuredMode == null
+        ? ((Uri.tryParse(configured ?? '')?.scheme == 'content')
+              ? MediaStorageMode.safTree
+              : configured == null || configured.isEmpty
+              ? MediaStorageMode.appPrivate
+              : MediaStorageMode.directPath)
+        : await configuredMode!();
+    if (mode != MediaStorageMode.appPrivate &&
+        configured != null &&
+        configured.isNotEmpty) {
       final uri = Uri.tryParse(configured);
-      if (uri?.scheme == 'content') {
+      if (mode == MediaStorageMode.safTree && uri?.scheme == 'content') {
         final available = native == null || await native!.checkDirectory(uri!);
         final value = MediaStorageRoot(
           location: configured,
-          kind: MediaStorageKind.system,
+          kind: MediaStorageKind.safTree,
           permission: available
               ? MediaStoragePermission.available
               : MediaStoragePermission.revoked,
@@ -115,13 +117,32 @@ class MediaStorageService extends ChangeNotifier {
         notifyListeners();
         return value;
       }
-      final directory = uri?.scheme == 'file'
-          ? Directory.fromUri(uri!)
-          : Directory(configured);
+      if (mode == MediaStorageMode.directPath && uri?.scheme != 'content') {
+        final path = uri?.scheme == 'file' ? uri!.toFilePath() : configured;
+        if (native != null) await native!.configureDirectRoot(path);
+        final available = native == null
+            ? !Platform.isAndroid
+            : await native!.checkDirectDirectory(path);
+        final value = MediaStorageRoot(
+          location: Directory(path).absolute.path,
+          kind: MediaStorageKind.directPath,
+          permission: native == null && Platform.isAndroid
+              ? MediaStoragePermission.unsupported
+              : available
+              ? MediaStoragePermission.available
+              : MediaStoragePermission.revoked,
+        );
+        _current = value;
+        notifyListeners();
+        return value;
+      }
+      final kind = mode == MediaStorageMode.safTree
+          ? MediaStorageKind.safTree
+          : MediaStorageKind.directPath;
       final value = MediaStorageRoot(
-        location: directory.absolute.path,
-        kind: MediaStorageKind.system,
-        permission: MediaStoragePermission.available,
+        location: configured,
+        kind: kind,
+        permission: MediaStoragePermission.revoked,
       );
       _current = value;
       notifyListeners();
@@ -147,26 +168,107 @@ class MediaStorageService extends ChangeNotifier {
     final locationUri = Uri.tryParse(artifact.location);
     final rootUri = Uri.tryParse(root.location);
     if (locationUri?.scheme == 'content' || rootUri?.scheme == 'content') {
-      if (native != null &&
-          locationUri?.scheme == 'content' &&
-          rootUri?.scheme == 'content') {
-        return native!.isDocumentWithinTree(
-          directory: rootUri!,
-          document: locationUri!,
-        );
+      if (locationUri?.scheme == 'content' && rootUri?.scheme == 'content') {
+        if (native != null) {
+          return native!.isDocumentWithinTree(
+            directory: rootUri!,
+            document: locationUri!,
+          );
+        }
+        return _contentLocationInTree(root.location, artifact.location);
       }
-      return _contentLocationInTree(root.location, artifact.location);
     }
     final rootPath = _localPath(root.location);
     final itemPath = _localPath(artifact.location);
-    if (rootPath == null || itemPath == null) return false;
-    return itemPath == rootPath || p.isWithin(rootPath, itemPath);
+    if (rootPath != null && itemPath != null) {
+      try {
+        final resolvedRoot = await Directory(rootPath).resolveSymbolicLinks();
+        final resolvedItem = await File(itemPath).resolveSymbolicLinks();
+        if (resolvedItem == resolvedRoot ||
+            p.isWithin(resolvedRoot, resolvedItem)) {
+          return true;
+        }
+      } on FileSystemException {
+        throw StateError('无法确认媒体文件与当前目录的关系，已停止迁移');
+      }
+    }
+    return false;
+  }
+
+  Future<String?> _existingDestination(
+    MediaStorageRoot root,
+    MediaArtifact artifact,
+  ) async {
+    final rootPath = _localPath(root.location);
+    final relative = artifact.relativePath?.trim();
+    if (rootPath == null || relative == null || relative.isEmpty) {
+      return null;
+    }
+    final segments = relative
+        .replaceAll('\\', '/')
+        .split('/')
+        .where((segment) => segment.isNotEmpty && segment != '.')
+        .toList(growable: false);
+    if (segments.isEmpty || segments.any((segment) => segment == '..')) {
+      return null;
+    }
+    final candidate = p.normalize(p.joinAll([rootPath, ...segments]));
+    if (p.normalize(candidate) != rootPath &&
+        !p.isWithin(rootPath, candidate)) {
+      return null;
+    }
+    if (p.basename(candidate) != artifact.name) return null;
+    final file = File(candidate);
+    return await file.exists() ? candidate : null;
+  }
+
+  Future<bool> _hasVerifiedDestination(
+    String candidate,
+    MediaArtifact artifact,
+  ) async {
+    final candidateUri = Uri.tryParse(candidate);
+    if (candidateUri?.scheme != 'content' &&
+        await File(candidate).length() != artifact.size) {
+      return false;
+    }
+    final runtime = native;
+    try {
+      Future<String> digest(String location) async {
+        if (runtime != null) return runtime.sha256(location);
+        final path = _localPath(location);
+        if (path == null) throw StateError('无法验证媒体文件身份');
+        return (await sha256.bind(File(path).openRead()).first).toString();
+      }
+
+      final sourceDigest = await digest(artifact.location);
+      final candidateDigest = await digest(candidate);
+      return sourceDigest == candidateDigest;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<String> _digestLocation(String location) async {
+    if (native != null) return native!.sha256(location);
+    final path = _localPath(location);
+    if (path == null) throw StateError('无法验证媒体文件身份');
+    return (await sha256.bind(File(path).openRead()).first).toString();
   }
 
   Future<bool> needsMigration(MediaArtifact artifact) async {
     final root = await resolve();
     if (!root.configured || !root.available) return false;
-    return !(await isInRoot(artifact));
+    if (await isInRoot(artifact)) return false;
+    final candidate = await _existingDestination(root, artifact);
+    if (candidate != null) {
+      if (await _hasVerifiedDestination(candidate, artifact)) return false;
+      throw StateError('目标已存在同名媒体，但无法确认文件身份；请检查权限或文件内容');
+    }
+    if (_hasMixedRepresentations(root, artifact)) {
+      throw StateError('无法确认 SAF 文件与当前目录的对应关系，已停止迁移');
+    }
+    await _trustedMigrationRelativePath(artifact);
+    return true;
   }
 
   Future<bool> isArtifactInDirectory(
@@ -200,18 +302,121 @@ class MediaStorageService extends ChangeNotifier {
     final artifact = library.item(taskId);
     if (artifact == null) throw StateError('媒体文件不存在');
     if (await isInRoot(artifact)) return;
+    final candidate = await _existingDestination(root, artifact);
+    if (candidate != null) {
+      if (await _hasVerifiedDestination(candidate, artifact)) {
+        await library.repointArtifact(
+          taskId,
+          location: candidate,
+          name: artifact.name,
+          libraryCopy: await _isAppPrivateLocation(artifact.location)
+              ? artifact.location
+              : null,
+        );
+        await library.updateStorageMetadata(
+          taskId,
+          storageRootId: root.location,
+          relativePath: _relativePath(candidate, root.location),
+          storageKind: root.kind.name,
+          migrationState: 'complete',
+        );
+        return;
+      }
+      throw StateError('目标已存在同名媒体，但无法确认文件身份；请检查权限或文件内容');
+    }
+    if (_hasMixedRepresentations(root, artifact)) {
+      throw StateError('无法确认 SAF 文件与当前直接目录的对应关系，已停止迁移');
+    }
     if (!library.canMutate(taskId)) {
       throw StateError('媒体正在播放、导出、投屏或管理中，请先停止后再迁移');
     }
+    final destination = await _migrationDestinationDirectory(root, artifact);
+    final sourceDigest = await _digestLocation(artifact.location);
     await recordMigration(
       taskId: taskId,
       source: artifact.location,
-      target: root.location,
+      target: destination,
       fileName: artifact.name,
+      sourceSha256: sourceDigest,
       phase: 'planned',
     );
-    await moveArtifact(taskId, root.location);
+    await moveArtifact(taskId, destination);
+    await recordMigration(
+      taskId: taskId,
+      source: artifact.location,
+      target: destination,
+      fileName: artifact.name,
+      sourceSha256: sourceDigest,
+      phase: 'moved',
+    );
     await clearMigration(taskId);
+  }
+
+  Future<String> _migrationDestinationDirectory(
+    MediaStorageRoot root,
+    MediaArtifact artifact,
+  ) async {
+    final relative = await _trustedMigrationRelativePath(artifact);
+    final parent = p.posix.dirname(relative);
+    if (parent == '.' || parent.isEmpty) return root.location;
+    final segments = parent.split('/');
+    var current = root.location;
+    for (final segment in segments) {
+      final entries = await listDirectory(directory: current);
+      final existing = entries
+          .where((entry) => entry.directory && entry.name == segment)
+          .firstOrNull;
+      current =
+          existing?.location ??
+          await createDirectory(parent: current, name: segment);
+    }
+    return current;
+  }
+
+  Future<String> _trustedMigrationRelativePath(MediaArtifact artifact) async {
+    final sourceRoot = artifact.storageRootId?.trim();
+    final relative = artifact.relativePath?.trim().replaceAll('\\', '/');
+    if (sourceRoot == null ||
+        sourceRoot.isEmpty ||
+        relative == null ||
+        relative.isEmpty) {
+      throw StateError('缺少可验证的媒体原目录信息，已停止迁移');
+    }
+    if (relative.startsWith('/') || p.posix.isAbsolute(relative)) {
+      throw StateError('媒体原目录路径无效，已停止迁移');
+    }
+    final sourceRootPath = _localPath(sourceRoot);
+    final sourcePath = _localPath(artifact.location);
+    if (sourceRootPath == null ||
+        sourcePath == null ||
+        p.normalize(p.join(sourceRootPath, relative)) != sourcePath ||
+        p.basename(sourcePath) != artifact.name) {
+      throw StateError('媒体原目录信息与文件位置不一致，已停止迁移');
+    }
+    final segments = relative.split('/');
+    if (segments.any(
+      (segment) => segment.isEmpty || segment == '.' || segment == '..',
+    )) {
+      throw StateError('媒体原目录路径无效，已停止迁移');
+    }
+    try {
+      final resolvedRoot = await Directory(sourceRootPath)
+          .resolveSymbolicLinks();
+      final resolvedSource = await File(sourcePath).resolveSymbolicLinks();
+      if (!p.isWithin(resolvedRoot, resolvedSource) ||
+          p.normalize(p.join(resolvedRoot, relative)) != resolvedSource) {
+        throw StateError('媒体原目录包含符号链接或已变更，已停止迁移');
+      }
+    } on FileSystemException {
+      throw StateError('无法验证媒体原目录，已停止迁移');
+    }
+    return relative;
+  }
+
+  bool _hasMixedRepresentations(MediaStorageRoot root, MediaArtifact artifact) {
+    final locationScheme = Uri.tryParse(artifact.location)?.scheme;
+    final rootScheme = Uri.tryParse(root.location)?.scheme;
+    return (locationScheme == 'content') != (rootScheme == 'content');
   }
 
   Future<void> moveArtifact(
@@ -243,108 +448,6 @@ class MediaStorageService extends ChangeNotifier {
     );
   }
 
-  /// Reconciles old exported files into the canonical series-directory and
-  /// episode-only filename layout. Download caches remain untouched.
-  Future<MediaNamingMigrationReport> migrateLegacyMediaNaming({
-    void Function(int current, int total, String name)? onProgress,
-  }) async {
-    await library.restore();
-    final root = await resolve();
-    if (!root.available) {
-      throw StateError('媒体目录访问权限已失效，请重新授权媒体目录');
-    }
-    final items = [...library.items];
-    var migrated = 0;
-    var skipped = 0;
-    var conflicts = 0;
-    var failed = 0;
-    final failureReasons = <String, String>{};
-    final directories = <String, String>{};
-
-    Future<String> ensureSeriesDirectory(String name) async {
-      final existing = directories[name];
-      if (existing != null) return existing;
-      final entries = await listDirectory(directory: root.location);
-      final found = entries
-          .where((entry) => entry.directory && entry.name == name)
-          .firstOrNull;
-      final location =
-          found?.location ??
-          await createDirectory(parent: root.location, name: name);
-      directories[name] = location;
-      return location;
-    }
-
-    for (var index = 0; index < items.length; index++) {
-      final item = items[index];
-      onProgress?.call(index + 1, items.length, item.name);
-      final task =
-          tasks.referenceTask(item.taskId) ?? library.presentationTask(item);
-      final seriesName = task.seriesDirectoryName;
-      final fileName = mediaExportFileName(task);
-      try {
-        if (!library.canMutate(item.taskId)) {
-          failed++;
-          failureReasons[item.taskId] = '媒体正在播放、导出、投屏或管理中';
-          continue;
-        }
-        final directory = await ensureSeriesDirectory(seriesName);
-        final entries = await listDirectory(directory: directory);
-        final targetIsCurrent = entries.any(
-          (entry) =>
-              !entry.directory &&
-              entry.name == fileName &&
-              entry.size == item.size &&
-              _sameLocation(entry.location, item.location),
-        );
-        if (targetIsCurrent) {
-          skipped++;
-          continue;
-        }
-        final existing = entries
-            .where((entry) => !entry.directory && entry.name == fileName)
-            .firstOrNull;
-        if (existing != null && existing.size != item.size) {
-          conflicts++;
-          failureReasons[item.taskId] = '目标文件同名但大小不同';
-          continue;
-        }
-        await recordMigration(
-          taskId: item.taskId,
-          source: item.location,
-          target: directory,
-          fileName: fileName,
-          phase: 'planned',
-        );
-        await moveArtifact(
-          item.taskId,
-          directory,
-          fileName: fileName,
-          reuseExistingVerified: existing != null,
-        );
-        await clearMigration(item.taskId);
-        migrated++;
-      } catch (error, stack) {
-        failed++;
-        failureReasons[item.taskId] = readableError(error);
-        AppErrorLogger.capture(
-          error,
-          module: 'media.naming-migration',
-          context: item.taskId,
-          stack: stack,
-        );
-      }
-    }
-    await library.rescan();
-    return MediaNamingMigrationReport(
-      migrated: migrated,
-      skipped: skipped,
-      conflicts: conflicts,
-      failed: failed,
-      failureReasons: Map.unmodifiable(failureReasons),
-    );
-  }
-
   Future<MediaArtifact> copyArtifact(String taskId, String directory) async {
     await _assertWithinRoot(directory);
     final result = await library.copyToDirectory(taskId, directory);
@@ -364,6 +467,7 @@ class MediaStorageService extends ChangeNotifier {
     required String source,
     required String target,
     String? fileName,
+    String? sourceSha256,
     required String phase,
   }) async {
     final raw = await library.db.setting(migrationJournalKey);
@@ -378,6 +482,7 @@ class MediaStorageService extends ChangeNotifier {
       'source': source,
       'target': target,
       'fileName': fileName,
+      'sourceSha256': sourceSha256,
       'phase': phase,
       'updatedAt': DateTime.now().toUtc().toIso8601String(),
     };
@@ -431,24 +536,70 @@ class MediaStorageService extends ChangeNotifier {
           .where((item) => item.size == artifact.size)
           .where((item) => _sameLocation(item.location, artifact.location))
           .firstOrNull;
-      if (direct != null && await library.isReadableArtifact(entry.key)) {
+      final readable = await library.isReadableArtifact(entry.key);
+      if (direct != null && readable) {
         journal.remove(entry.key);
         continue;
       }
-      if (!await library.isReadableArtifact(entry.key)) {
-        final candidate = candidates
-            .where((item) => !item.directory)
-            .where((item) => item.name == fileName)
-            .where((item) => item.size == artifact.size)
-            .firstOrNull;
-        if (candidate != null &&
-            await library.isReadableLocation(candidate.location)) {
-          await library.repointArtifact(
-            entry.key,
-            location: candidate.location,
-            name: candidate.name,
-          );
-          journal.remove(entry.key);
+      final candidate = candidates
+          .where((item) => !item.directory)
+          .where((item) => item.name == fileName)
+          .where((item) => item.size == artifact.size)
+          .firstOrNull;
+      if (candidate == null ||
+          !await library.isReadableLocation(candidate.location)) {
+        continue;
+      }
+      final phase = value['phase'] as String?;
+      final sourceSha256 = value['sourceSha256'] as String?;
+      if (sourceSha256 != null && sourceSha256.trim().isNotEmpty) {
+        try {
+          if (await _digestLocation(candidate.location) == sourceSha256) {
+            await library.repointArtifact(
+              entry.key,
+              location: candidate.location,
+              name: candidate.name,
+            );
+            await library.updateStorageMetadata(
+              entry.key,
+              storageRootId: root.location,
+              relativePath: _relativePath(candidate.location, root.location),
+              storageKind: root.kind.name,
+              migrationState: 'complete',
+            );
+            journal.remove(entry.key);
+            continue;
+          }
+        } catch (_) {
+          // Keep the original index and journal when the digest is unavailable.
+        }
+      }
+      if (phase == 'moved') {
+        if (!await _hasVerifiedDestination(candidate.location, artifact)) {
+          continue;
+        }
+        await library.repointArtifact(
+          entry.key,
+          location: candidate.location,
+          name: candidate.name,
+        );
+        journal.remove(entry.key);
+        continue;
+      }
+      if (readable && native != null) {
+        try {
+          final sourceDigest = await native!.sha256(artifact.location);
+          final targetDigest = await native!.sha256(candidate.location);
+          if (sourceDigest == targetDigest) {
+            await library.repointArtifact(
+              entry.key,
+              location: candidate.location,
+              name: candidate.name,
+            );
+            journal.remove(entry.key);
+          }
+        } catch (_) {
+          // Keep the journal and original index when identity cannot be read.
         }
       }
     }
@@ -483,6 +634,19 @@ class MediaStorageService extends ChangeNotifier {
             ),
       ];
     }
+    if (root.kind == MediaStorageKind.directPath && native != null) {
+      final values = await native!.listDirectDirectory(target);
+      return [
+        for (final value in values)
+          MediaStorageEntry(
+            location: value['path'] as String,
+            name: value['name'] as String,
+            directory: value['directory'] == true,
+            size: (value['size'] as num?)?.toInt() ?? 0,
+            modifiedMs: (value['modifiedMs'] as num?)?.toInt() ?? 0,
+          ),
+      ];
+    }
     final path = uri?.scheme == 'file' ? uri!.toFilePath() : target;
     final entries = <MediaStorageEntry>[];
     final entities = await Directory(path).list(followLinks: false).toList();
@@ -504,9 +668,7 @@ class MediaStorageService extends ChangeNotifier {
             modifiedMs: (await entity.stat()).modified.millisecondsSinceEpoch,
           ),
         );
-      } else if (entity is File &&
-          entity.path.toLowerCase().endsWith('.mp4') &&
-          !entity.path.toLowerCase().endsWith('.mp4.part')) {
+      } else if (entity is File && true) {
         final stat = await entity.stat();
         entries.add(
           MediaStorageEntry(
@@ -533,6 +695,12 @@ class MediaStorageService extends ChangeNotifier {
     await _assertWithinRoot(parent);
     _validateEntryName(name);
     final uri = Uri.tryParse(parent);
+    if (root.kind == MediaStorageKind.directPath && native != null) {
+      return native!.createDirectory(
+        directory: Uri.file(_localPath(parent) ?? parent),
+        name: name,
+      );
+    }
     if (uri?.scheme == 'content') {
       final runtime = native ?? (throw StateError('当前平台不支持系统目录'));
       return runtime.createDirectory(directory: uri!, name: name);
@@ -558,6 +726,9 @@ class MediaStorageService extends ChangeNotifier {
     }
     _validateEntryName(name);
     final uri = Uri.tryParse(location);
+    if (root.kind == MediaStorageKind.directPath && native != null) {
+      return native!.rename(location, name);
+    }
     if (uri?.scheme == 'content') {
       final runtime = native ?? (throw StateError('当前平台不支持系统目录'));
       return runtime.rename(location, name);
@@ -584,6 +755,10 @@ class MediaStorageService extends ChangeNotifier {
       throw StateError('不能删除媒体根目录');
     }
     final uri = Uri.tryParse(location);
+    if (root.kind == MediaStorageKind.directPath && native != null) {
+      await native!.delete(location);
+      return;
+    }
     if (uri?.scheme == 'content') {
       final runtime = native ?? (throw StateError('当前平台不支持系统目录'));
       await runtime.delete(location);
@@ -593,6 +768,77 @@ class MediaStorageService extends ChangeNotifier {
         ? File(location)
         : Directory(location);
     await entity.delete(recursive: true);
+  }
+
+  /// Copies or moves a whole physical directory, including files that are not
+  /// media records. Existing files are preserved and reported as skipped by
+  /// the native path implementation.
+  Future<Map<String, String>> copyEntry(
+    String source,
+    String directory, {
+    bool move = false,
+  }) async {
+    await _assertWithinRoot(source);
+    await _assertWithinRoot(directory);
+    final sourceUri = Uri.tryParse(source);
+    final directoryUri = Uri.tryParse(directory);
+    if (native != null &&
+        sourceUri?.scheme != 'content' &&
+        directoryUri?.scheme != 'content') {
+      final result = await native!.copyEntry(
+        source: source,
+        directory: directoryUri?.scheme == 'file'
+            ? directoryUri!
+            : Uri.file(directory),
+        move: move,
+        reportRewrites: move,
+        deferDelete: move,
+      );
+      final raw = result['rewrites'];
+      if (raw is Map) {
+        return {
+          for (final entry in raw.entries)
+            if (entry.key is String && entry.value is String)
+              entry.key as String: entry.value as String,
+        };
+      }
+      return const <String, String>{};
+    }
+    if (sourceUri?.scheme == 'content' || directoryUri?.scheme == 'content') {
+      throw StateError('当前系统目录不支持整目录复制，请逐项操作');
+    }
+    final sourceDirectory = Directory(_localPath(source) ?? source);
+    final targetParent = Directory(_localPath(directory) ?? directory);
+    final target = Directory(
+      p.join(targetParent.path, p.basename(sourceDirectory.path)),
+    );
+    final rewrites = <String, String>{};
+    var skipped = false;
+    Future<void> visit(Directory from, Directory to) async {
+      await to.create(recursive: true);
+      await for (final entity in from.list(followLinks: false)) {
+        final destination = p.join(to.path, p.basename(entity.path));
+        if (entity is Directory) {
+          await visit(entity, Directory(destination));
+        } else if (entity is File) {
+          final output = File(destination);
+          if (await output.exists()) {
+            skipped = true;
+            continue;
+          }
+          final temporary = File('$destination.part');
+          await entity.copy(temporary.path);
+          await temporary.rename(destination);
+          if (move) rewrites[entity.path] = destination;
+        }
+      }
+    }
+
+    await visit(sourceDirectory, target);
+    if (move && skipped) {
+      throw StateError('目录存在冲突，已保留源目录');
+    }
+    return rewrites;
   }
 
   Future<String> _uniqueFileName(String directory, String name) async {
@@ -744,6 +990,17 @@ class MediaStorageService extends ChangeNotifier {
       return null;
     }
     return p.relative(file, from: rootPath);
+  }
+
+  Future<bool> _isAppPrivateLocation(String location) async {
+    final uri = Uri.tryParse(location);
+    if (uri?.scheme == 'content' || uri?.hasScheme == true) return false;
+    final cacheRoot = await tasks.cacheRootDirectory();
+    final root = p.normalize(p.join(cacheRoot.parent.path, 'media_exports'));
+    final path = p.normalize(
+      p.absolute(uri?.scheme == 'file' ? uri!.toFilePath() : location),
+    );
+    return path == root || p.isWithin(root, path);
   }
 
   bool _sameLocation(String left, String right) {

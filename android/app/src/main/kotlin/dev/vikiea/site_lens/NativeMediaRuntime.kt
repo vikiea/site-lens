@@ -4,6 +4,8 @@ import android.app.Activity
 import android.content.Context
 import android.media.AudioManager
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.view.Surface
 import android.webkit.WebSettings
 import androidx.media3.common.MediaItem
@@ -274,7 +276,15 @@ class NativeMediaRuntime(
             context.filesDir.canonicalFile,
             context.getExternalFilesDir(null)?.canonicalFile,
         )
-        require(roots.any { file.path == it.path || file.path.startsWith("${it.path}${File.separator}") }) {
+        val directRoot = context.getSharedPreferences("media_access", Context.MODE_PRIVATE)
+            .getString("directRoot", null)
+            ?.let { runCatching { File(it).canonicalFile }.getOrNull() }
+        val directAllowed = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            Environment.isExternalStorageManager() &&
+            directRoot?.isDirectory == true &&
+            !java.nio.file.Files.isSymbolicLink(directRoot.toPath()) &&
+            (file.path == directRoot.path || file.path.startsWith("${directRoot.path}${File.separator}"))
+        require(roots.any { file.path == it.path || file.path.startsWith("${it.path}${File.separator}") } || directAllowed) {
             "本地媒体路径越界"
         }
         val mime = call.argument<String>("mime")?.trim().orEmpty()

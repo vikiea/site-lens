@@ -160,6 +160,26 @@ void main() {
     },
   );
 
+  test('storage mode is explicit and validates its root shape', () async {
+    final saf = await settings.update({
+      'mediaStorageMode': 'saf_tree',
+      'mp4ExportDirectory': 'content://provider/tree/root',
+    });
+    expect(saf.mediaStorageMode.name, 'safTree');
+    final direct = await settings.update({
+      'mediaStorageMode': 'direct_path',
+      'mp4ExportDirectory': '/storage/emulated/0/Movies',
+    });
+    expect(direct.mediaStorageMode.name, 'directPath');
+    await expectLater(
+      settings.update({
+        'mediaStorageMode': 'direct_path',
+        'mp4ExportDirectory': 'content://provider/tree/root',
+      }),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
   test(
     'glass opacity accepts 0..100 and rejects values outside the range',
     () async {

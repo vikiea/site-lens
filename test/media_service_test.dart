@@ -8,7 +8,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/media/dlna_service.dart';
-import 'package:site_lens/media/media_directory_migration.dart';
 import 'package:site_lens/media/media_library.dart';
 import 'package:site_lens/media/media_service.dart';
 import 'package:site_lens/media/native_download_runtime.dart';
@@ -617,7 +616,7 @@ void main() {
     );
 
     expect(retry.id, original.id);
-    expect(retry.batchDirectory, '旧剧集');
+    expect(retry.batchDirectory, '旧剧集 - 批次1792686431921372');
     expect(retry.candidateId, 'retry-new');
   });
 
@@ -647,7 +646,7 @@ void main() {
     expect(directory.path, endsWith('/media_cache/批量下载一'));
   });
 
-  test('legacy media folders are physically merged and catalog paths follow', () async {
+  test('legacy media folders remain at their persisted paths', () async {
     final root = await Directory.systemTemp.createTemp('site-lens-migrate-');
     addTearDown(() => root.delete(recursive: true));
     final db = AppDatabase(NativeDatabase.memory());
@@ -668,11 +667,8 @@ void main() {
     final oldCache = Directory(
       '${root.path}/media_cache/系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
     )..createSync(recursive: true);
-    final newCache = Directory('${root.path}/media_cache/系统带我攻略弟弟（漫剧版）')
-      ..createSync(recursive: true);
     final oldFile = File('${oldCache.path}/${task.cacheKey}.media')
       ..writeAsBytesSync([1, 2, 3]);
-    File('${newCache.path}/${task.cacheKey}.media').writeAsBytesSync([9]);
     final oldExport = Directory(
       '${root.path}/media_exports/系统带我攻略弟弟（漫剧版） - 批次1792686431921372/${task.cacheKey}',
     )..createSync(recursive: true);
@@ -697,53 +693,22 @@ void main() {
     );
     await restored.restore();
     final cleanTask = restored.task(task.id)!;
-    expect(cleanTask.batchDirectory, '系统带我攻略弟弟（漫剧版）');
-    expect(cleanTask.localRef, '${newCache.path}/${task.cacheKey}.media');
+    expect(cleanTask.batchDirectory, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
+    expect(cleanTask.localRef, oldFile.path);
     expect(await File(cleanTask.localRef!).readAsBytes(), [1, 2, 3]);
-    expect(await oldCache.exists(), isFalse);
+    expect(await oldCache.exists(), isTrue);
 
     final library = MediaLibrary(db: db, tasks: restored);
     addTearDown(library.dispose);
     await library.restore();
     final migratedArtifact = library.item(task.id)!;
-    expect(
-      migratedArtifact.location,
-      oldExportFile.path.replaceFirst(
-        '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
-        '系统带我攻略弟弟（漫剧版）',
-      ),
-    );
-    expect(migratedArtifact.folder, '系统带我攻略弟弟（漫剧版）');
+    expect(migratedArtifact.location, oldExportFile.path);
+    expect(migratedArtifact.folder, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
     expect(await File(migratedArtifact.location).readAsBytes(), [4, 5, 6]);
   });
 
   test(
-    'corrupt media migration journal is discarded and rebuilt from disk',
-    () async {
-      final root = await Directory.systemTemp.createTemp(
-        'site-lens-bad-journal-',
-      );
-      addTearDown(() => root.delete(recursive: true));
-      final db = AppDatabase(NativeDatabase.memory());
-      addTearDown(db.close);
-      await db.setSetting(MediaDirectoryMigration.journalKey, '{broken json');
-      final legacy = Directory(
-        '${root.path}/media_cache/系列 - 批次1792686431921372',
-      )..createSync(recursive: true);
-      File('${legacy.path}/episode.media').writeAsBytesSync([1, 2, 3]);
-
-      await MediaDirectoryMigration(db).migrateLocal(root);
-
-      expect(
-        await File('${root.path}/media_cache/系列/episode.media').readAsBytes(),
-        [1, 2, 3],
-      );
-      expect(await legacy.exists(), isFalse);
-    },
-  );
-
-  test(
-    'legacy cache identity stays stable while its display name is clean',
+    'legacy cache identity stays stable at its persisted directory',
     () {
       final store = MediaTaskStore();
       final task = store.create(
@@ -751,8 +716,8 @@ void main() {
         batchDirectory: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
       );
 
-      expect(task.batchDirectory, '系统带我攻略弟弟（漫剧版）');
-      expect(task.storageDirectoryName, '系统带我攻略弟弟（漫剧版）');
+      expect(task.batchDirectory, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
+      expect(task.storageDirectoryName, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
       expect(mediaFolderDisplayName(task.batchDirectory!), '系统带我攻略弟弟（漫剧版）');
     },
   );

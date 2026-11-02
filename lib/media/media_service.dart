@@ -14,7 +14,6 @@ import '../data/database.dart';
 import '../diagnostics/error_log.dart';
 import '../domain/models.dart';
 import '../network/transport.dart';
-import 'media_directory_migration.dart';
 import 'media_resource_coordinator.dart';
 import 'media_transfer_scheduler.dart';
 import 'native_download_runtime.dart';
@@ -508,11 +507,6 @@ class MediaTaskStore extends ChangeNotifier {
   final _writeFailures = <String, (Object, StackTrace)>{};
   final _aliases = <String, String>{};
   final _authorizationKeys = <String, String>{};
-  MediaStorageMigration _storageMigration = const MediaStorageMigration({}, {});
-
-  /// Rewrites a managed app-private media path after a legacy folder merge.
-  /// Content URIs and paths outside the app's managed roots are returned as-is.
-  String rewriteManagedPath(String value) => _storageMigration.rewrite(value);
   String _resolveId(String id) {
     var current = id;
     final seen = <String>{};
@@ -646,16 +640,11 @@ class MediaTaskStore extends ChangeNotifier {
     if (task.localRef != null) {
       directories.add(File(task.localRef!).parent.path);
     }
-    for (final name in {
-      task.storageDirectoryName,
-      task.legacyStorageDirectoryName,
-    }) {
-      final series = mediaSeriesDirectoryName(name);
-      directories.add(p.join(mediaCache.path, series, '${task.cacheKey}.hls'));
-      directories.add(
-        p.join(mediaCache.path, series, '${task.cacheKey}.hls.part'),
-      );
-    }
+    final series = _storageDirectoryComponent(task.storageDirectoryName);
+    directories.add(p.join(mediaCache.path, series, '${task.cacheKey}.hls'));
+    directories.add(
+      p.join(mediaCache.path, series, '${task.cacheKey}.hls.part'),
+    );
     for (final path in directories) {
       final directory = Directory(path);
       if (await directory.exists()) {
@@ -835,7 +824,7 @@ class MediaTaskStore extends ChangeNotifier {
       state: MediaTaskState.queued,
       updatedAt: DateTime.now().toUtc(),
       displayTitle: candidate.title.trim(),
-      batchDirectory: _normalizeBatchDirectory(batchDirectory),
+      batchDirectory: _preserveBatchDirectory(batchDirectory),
       episodeLabel: _candidateEpisodeLabel(candidate),
       seriesKey: candidate.seriesKey,
       episodeNumber: candidate.episodeNumber,
@@ -847,12 +836,15 @@ class MediaTaskStore extends ChangeNotifier {
     return task;
   }
 
-  static String? _normalizeBatchDirectory(String? value) {
+  static String? _preserveBatchDirectory(String? value) {
     final trimmed = value?.trim() ?? '';
-    return trimmed.isEmpty
-        ? null
-        : mediaSeriesDirectoryName(mediaFolderDisplayName(trimmed))
-              .replaceAll('..', '_');
+    if (trimmed.isEmpty) return null;
+    final safe = trimmed
+        .replaceAll(RegExp(r'[\\/:*?"<>|\u0000-\u001f]'), '_')
+        .replaceAll('..', '_')
+        .trim()
+        .replaceAll(RegExp(r'[. ]+$'), '');
+    return safe.isEmpty ? null : safe.substring(0, safe.length.clamp(1, 120));
   }
 
   static String? _candidateEpisodeLabel(MediaCandidate candidate) {
@@ -906,13 +898,12 @@ class MediaTaskStore extends ChangeNotifier {
     await flushAll();
     final persisted = await db?.mediaTasks();
     if (persisted == null) return;
-    _storageMigration = const MediaStorageMigration({}, {});
     Directory? storageRoot;
     try {
       storageRoot = await _directoryProvider();
     } catch (error, stack) {
       // Platform-free restore tests have no path provider. The catalog can
-      // still load, while a real app retries physical migration next time.
+      // still load without restoring resource ownership from disk.
       AppErrorLogger.capture(
         error,
         module: 'media.storage-migration',
@@ -920,19 +911,9 @@ class MediaTaskStore extends ChangeNotifier {
         stack: stack,
       );
     }
-    if (storageRoot != null) {
-      _storageMigration = await MediaDirectoryMigration(db!)
-          .migrateLocal(storageRoot);
-    }
-    final migrated = _storageMigration.hasRewrites
-        ? await db!.mediaTasks()
-        : persisted;
     final repaired = <MediaTask>[];
     final authorizationKeys = <String, String>{};
-    final cacheRoot = storageRoot == null
-        ? null
-        : Directory(p.join(storageRoot.path, 'media_cache'));
-    for (final task in migrated) {
+    for (final task in persisted) {
       final candidate = await db!.mediaCandidate(task.candidateId);
       final missingTitle =
           task.displayTitle.trim().isEmpty ||
@@ -943,15 +924,6 @@ class MediaTaskStore extends ChangeNotifier {
           }.contains(task.displayTitle.trim().toLowerCase());
       final sameIdentity =
           candidate != null && task.cacheKey == cacheKey(candidate);
-      final canNormalize =
-          cacheRoot != null &&
-          _storageMigration.canNormalizeLegacy(
-            cacheRoot,
-            task.legacyStorageDirectoryName,
-          );
-      final migratedRef = task.localRef == null
-          ? null
-          : rewriteManagedPath(task.localRef!);
       final independentCopy = task.id.startsWith('media_copy_');
       final resourceKey = independentCopy
           ? ''
@@ -960,18 +932,10 @@ class MediaTaskStore extends ChangeNotifier {
           : candidate == null
           ? ''
           : mediaResourceKeyForCandidate(candidate);
-      final normalized = canNormalize && task.batchDirectory != null
-          ? task.copyWith(
-              updatedAt: task.updatedAt,
-              batchDirectory: mediaFolderDisplayName(task.batchDirectory!),
-              localRef: migratedRef,
-              resourceKey: resourceKey,
-            )
-          : task.copyWith(
-              updatedAt: task.updatedAt,
-              localRef: migratedRef,
-              resourceKey: resourceKey,
-            );
+      final normalized = task.copyWith(
+        updatedAt: task.updatedAt,
+        resourceKey: resourceKey,
+      );
       final next = !sameIdentity
           ? normalized
           : task.copyWith(
@@ -1151,13 +1115,16 @@ class MediaTaskStore extends ChangeNotifier {
         totalBytes != null && totalBytes < bytesDownloaded) {
       throw RangeError('媒体任务进度无效');
     }
+    final nextTotal = totalBytes ??
+        (task.totalBytes != null && task.totalBytes! >= bytesDownloaded
+            ? task.totalBytes
+            : null);
+    if (task.bytesDownloaded == bytesDownloaded && task.totalBytes == nextTotal) {
+      return task;
+    }
     final next = task.copyWith(
       bytesDownloaded: bytesDownloaded,
-      totalBytes:
-          totalBytes ??
-          (task.totalBytes != null && task.totalBytes! >= bytesDownloaded
-              ? task.totalBytes
-              : null),
+      totalBytes: nextTotal,
     );
     _tasks[canonicalId] = next;
     _saveTask(next);
@@ -1359,9 +1326,7 @@ class MediaTaskStore extends ChangeNotifier {
         files.add(file.path);
       }
     }
-    final directory = await cacheDirectory(
-      storageDirectory: current.storageDirectoryName,
-    );
+    final directory = await cacheDirectoryForTask(current);
     // A missing or stale localRef must not turn task deletion into a metadata
     // only operation. Recover the deterministic Dart cache names from the
     // task key so an orphaned complete HLS directory or direct media file is
@@ -1382,28 +1347,6 @@ class MediaTaskStore extends ChangeNotifier {
       '${directory.path}/${current.cacheKey}.hls',
       '${directory.path}/${current.cacheKey}.hls.part',
     ]);
-    final legacyName = current.legacyStorageDirectoryName;
-    if (legacyName != current.storageDirectoryName) {
-      final legacyDirectory = Directory(
-        p.join(
-          appRoot.path,
-          'media_cache',
-          mediaSeriesDirectoryName(legacyName),
-        ),
-      );
-      files.addAll([
-        '${legacyDirectory.path}/${current.cacheKey}.media',
-        '${legacyDirectory.path}/${current.cacheKey}.part',
-        '${legacyDirectory.path}/${current.cacheKey}.part.resume.json',
-        '${legacyDirectory.path}/${current.cacheKey}.part.resume.json.tmp',
-        '${legacyDirectory.path}/${current.cacheKey}.part.resume',
-        '${legacyDirectory.path}/${current.cacheKey}.part.resume.tmp',
-      ]);
-      directories.addAll([
-        '${legacyDirectory.path}/${current.cacheKey}.hls',
-        '${legacyDirectory.path}/${current.cacheKey}.hls.part',
-      ]);
-    }
     return MediaCacheDeletionPlan(
       files: files.toList(),
       directories: directories.toList(),
@@ -1421,7 +1364,7 @@ class MediaTaskStore extends ChangeNotifier {
     final requested = storageDirectory ?? seriesDirectory;
     final safeSeries = requested == null || requested.isEmpty
         ? null
-        : mediaSeriesDirectoryName(requested).replaceAll('..', '_');
+        : _storageDirectoryComponent(requested);
     final directory = safeSeries == null
         ? base
         : Directory('${base.path}/$safeSeries');
@@ -1440,6 +1383,21 @@ class MediaTaskStore extends ChangeNotifier {
   }
 
   Future<Directory> cacheRootDirectory() => cacheDirectory();
+
+  static String _storageDirectoryComponent(String value) {
+    final safe = value
+        .trim()
+        .replaceAll(RegExp(r'[\\/:*?"<>|\u0000-\u001f]'), '_')
+        .replaceAll('..', '_')
+        .replaceAll(RegExp(r'[. ]+$'), '');
+    return safe.isEmpty
+        ? '未命名媒体'
+        : safe.substring(0, safe.length.clamp(1, 120));
+  }
+
+  Future<Directory> cacheDirectoryForTask(MediaTask task) async {
+    return cacheDirectory(storageDirectory: task.storageDirectoryName);
+  }
 
   /// Copies completed cache bytes under a new identity. Presentation folders
   /// never change the storage directory of an existing native download.
@@ -1634,9 +1592,7 @@ class MediaTaskStore extends ChangeNotifier {
             current.state != MediaTaskState.paused)) {
       return null;
     }
-    final directory = await cacheDirectory(
-      storageDirectory: current.storageDirectoryName,
-    );
+    final directory = await cacheDirectoryForTask(current);
     final playlist = File(
       '${directory.path}/${current.cacheKey}.hls/index.m3u8',
     );
@@ -2198,20 +2154,6 @@ class MediaDownloadService {
   }
 
   Future<void> reconcileNative() async {
-    if (native != null) {
-      try {
-        await native!.migrateLegacyDirectories();
-      } catch (error, stack) {
-        // A running WorkManager writer can legitimately defer a directory
-        // merge until the next cold restore. Status reconciliation still
-        // needs to run so the task remains usable in the current session.
-        AppErrorLogger.capture(
-          error,
-          module: 'media.native-storage-migration',
-          stack: stack,
-        );
-      }
-    }
     for (final task in tasks.tasks) {
       await refreshTask(task.id);
     }
@@ -2736,9 +2678,7 @@ class MediaDownloadService {
           return current;
         }
         current = tasks.transition(id, MediaTaskState.downloading);
-        final directory = await tasks.cacheDirectory(
-          storageDirectory: task.storageDirectoryName,
-        );
+        final directory = await tasks.cacheDirectoryForTask(task);
         final base = File('${directory.path}/${task.cacheKey}.part');
         await _downloadFile(
           authorized.mediaUrl,
@@ -2808,9 +2748,7 @@ class MediaDownloadService {
     Directory? staging;
     try {
       current = tasks.transition(task.id, MediaTaskState.downloading);
-      final directory = await tasks.cacheDirectory(
-        storageDirectory: task.storageDirectoryName,
-      );
+      final directory = await tasks.cacheDirectoryForTask(task);
       final legacyPart = Directory(
         '${directory.path}/${task.cacheKey}.hls.part',
       );
