@@ -228,6 +228,8 @@ class MediaLibrary extends ChangeNotifier {
   final _items = <String, MediaArtifact>{};
   final _busy = <String>{};
   final _inspections = <String, Future<MediaArtifact>>{};
+  final _inspectionCache = <String, MediaArtifact>{};
+  final _inspectionModifiedMs = <String, int>{};
   final _materializations = <String, Future<File?>>{};
   bool _restored = false;
   Future<void>? _restoring;
@@ -405,6 +407,7 @@ class MediaLibrary extends ChangeNotifier {
   >
   _rescan(String? directory) async {
     await restore();
+    _inspectionCache.clear();
     if (_busy.isNotEmpty) {
       return (
         added: 0,
@@ -994,6 +997,15 @@ class MediaLibrary extends ChangeNotifier {
         try {
           await restore();
           final value = _items[taskId] ?? (throw StateError('媒体文件不存在'));
+          final cached = _inspectionCache[taskId];
+          if (cached != null &&
+              cached.location == value.location &&
+              cached.size == value.size &&
+              cached.thumbnailPath == value.thumbnailPath &&
+              await _sameObservedModifiedTime(taskId, value.location) &&
+              await _thumbnailExists(cached.thumbnailPath)) {
+            return cached;
+          }
           late final Map<String, Object?> metadata;
           if (native == null) {
             final file = File(value.location);
@@ -1050,11 +1062,49 @@ class MediaLibrary extends ChangeNotifier {
               metadata = await native!.stat(value.location);
             }
           }
-          return await _saveInspectedArtifact(value, metadata);
+          final inspected = await _saveInspectedArtifact(value, metadata);
+          if (inspected.thumbnailPath != null) {
+            _inspectionCache[taskId] = inspected;
+            final modified = await _modifiedMs(inspected.location);
+            if (modified != null) _inspectionModifiedMs[taskId] = modified;
+          }
+          return inspected;
         } finally {
           _inspections.remove(taskId);
         }
       });
+
+  Future<MediaArtifact> ensureThumbnail(String taskId) async {
+    await restore();
+    return inspect(taskId);
+  }
+
+  Future<bool> _sameObservedModifiedTime(String taskId, String location) async {
+    final cached = _inspectionModifiedMs[taskId];
+    if (cached == null) return true;
+    final current = await _modifiedMs(location);
+    return current == null || current == cached;
+  }
+
+  Future<int?> _modifiedMs(String location) async {
+    final uri = Uri.tryParse(location);
+    if (uri?.scheme == 'content' || uri?.hasScheme == true) return null;
+    try {
+      return (await File(location).stat()).modified.millisecondsSinceEpoch;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<bool> _thumbnailExists(String? path) async {
+    if (path == null || path.startsWith('content:')) return false;
+    try {
+      final file = File(path);
+      return await file.exists() && await file.length() > 0;
+    } catch (_) {
+      return false;
+    }
+  }
 
   Future<MediaArtifact> _saveInspectedArtifact(
     MediaArtifact value,

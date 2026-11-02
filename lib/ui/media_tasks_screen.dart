@@ -1159,6 +1159,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
   int _physicalRequestEpoch = 0;
   bool _initializing = true;
   Timer? _directoryPoller;
+  bool _changeScheduled = false;
 
   @override
   void initState() {
@@ -1193,21 +1194,24 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed &&
-        mounted &&
-        app.mediaLibraryAutoRefresh) {
-      unawaited(_rescan(silent: true));
+    if (state == AppLifecycleState.resumed && mounted) {
+      unawaited(app.mediaStorage.resolve(force: true));
+      if (app.mediaLibraryAutoRefresh) unawaited(_rescan(silent: true));
     }
   }
 
   void _changed() {
-    if (mounted) setState(() {});
+    if (!mounted || _changeScheduled) return;
+    _changeScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _changeScheduled = false;
+      if (mounted) setState(() {});
+    });
   }
 
   void _libraryChanged() {
     _changed();
     unawaited(_refreshStorageState());
-    if (mounted) unawaited(_loadPhysicalDirectory());
   }
 
   Future<void> _refreshStorageState() {
@@ -1268,6 +1272,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
       final result = await app.mediaLibrary.rescan(
         directory: app.mp4ExportDirectory,
       );
+      unawaited(_refreshStorageState());
       await _loadPhysicalDirectory();
       if (!mounted) return;
       if (!silent) {
@@ -1299,6 +1304,60 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
     return _physicalRefresh ??= _drainPhysicalDirectoryRequests();
   }
 
+  void _publishPhysicalDirectory(
+    MediaStorageRoot root,
+    String target,
+    List<MediaStorageEntry> entries,
+  ) {
+    final currentId = target == root.location ? null : target;
+    final currentParentId = currentId == null
+        ? null
+        : _physicalFolders[target]?.parentId;
+    final current = currentId == null
+        ? null
+        : _physicalFolders[target] ??
+              MediaOrganizationFolder(
+                id: target,
+                name: _physicalName(target),
+                parentId: currentParentId,
+              );
+    final targetPath = target == root.location
+        ? ''
+        : _physicalFolderPaths[target] ??
+              current?.name ??
+              _physicalName(target);
+    final nextFolders = <String, MediaOrganizationFolder>{};
+    final nextFolderPaths = <String, String>{};
+    if (currentId != null && current != null) {
+      nextFolders[currentId] = current;
+      if (targetPath.isNotEmpty) nextFolderPaths[currentId] = targetPath;
+    }
+    for (final entry in entries.where((entry) => entry.directory)) {
+      nextFolders[entry.location] = MediaOrganizationFolder(
+        id: entry.location,
+        name: entry.name,
+        parentId: currentId,
+      );
+      nextFolderPaths[entry.location] = targetPath.isEmpty
+          ? entry.name
+          : '$targetPath/${entry.name}';
+    }
+    _physicalFolders
+      ..clear()
+      ..addAll(nextFolders);
+    _physicalFolderPaths
+      ..clear()
+      ..addAll(nextFolderPaths);
+    _physicalEntriesLocation = target;
+    _browser.setPhysicalFolders(nextFolders.values);
+    if (mounted) {
+      setState(() {
+        _storageEntries = entries;
+        _storageRoot = root;
+      });
+    }
+  }
+
   Future<void> _drainPhysicalDirectoryRequests() async {
     var completedEpoch = _physicalRequestEpoch;
     try {
@@ -1328,39 +1387,18 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
           }
           final target =
               _physicalRequestedLocation ?? _browser.folderId ?? root.location;
-          if (target != root.location) {
-            final current = _physicalFolders[target];
-            final parentLocation = current?.parentId ?? root.location;
-            final parentEntries = await app.mediaStorage.listDirectory(
-              directory: parentLocation,
-            );
-            final currentEntry = parentEntries
-                .where((entry) => entry.directory && entry.location == target)
-                .firstOrNull;
-            if (currentEntry == null) {
-              _removePhysicalFolderBranch(target);
-              _browser.goUp();
-              _physicalRequestedLocation = current?.parentId;
-              _physicalRequestEpoch++;
-              continue;
-            }
-            final parentPath = current?.parentId == null
-                ? ''
-                : _physicalFolderPaths[current!.parentId!] ?? '';
-            _physicalFolders[target] =
-                (current ??
-                        MediaOrganizationFolder(
-                          id: target,
-                          name: currentEntry.name,
-                        ))
-                    .copyWith(name: currentEntry.name);
-            _physicalFolderPaths[target] = parentPath.isEmpty
-                ? currentEntry.name
-                : '$parentPath/${currentEntry.name}';
-          }
-          final entries = await app.mediaStorage.listDirectory(
+          final cachedFuture = app.mediaStorage.cachedDirectorySnapshot(
+            rootId: root.location,
             directory: target,
           );
+          final freshFuture = app.mediaStorage.listDirectory(directory: target);
+          final cached = await cachedFuture;
+          if (cached != null &&
+              requestEpoch == _physicalRequestEpoch &&
+              (_browser.folderId ?? root.location) == target) {
+            _publishPhysicalDirectory(root, target, cached);
+          }
+          final entries = await freshFuture;
           if (!mounted) return;
 
           // A refresh started before navigation or root replacement must never
@@ -1374,44 +1412,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
             continue;
           }
 
-          final parentId = target == root.location ? null : target;
-          final targetPath = target == root.location
-              ? ''
-              : _physicalFolderPaths[target] ?? '';
-          final nextFolders = <String, MediaOrganizationFolder>{};
-          final nextFolderPaths = <String, String>{};
-          if (parentId != null) {
-            final current = _physicalFolders[parentId];
-            nextFolders[parentId] =
-                current ??
-                MediaOrganizationFolder(
-                  id: parentId,
-                  name: _physicalName(parentId),
-                );
-            if (targetPath.isNotEmpty) nextFolderPaths[parentId] = targetPath;
-          }
-          for (final entry in entries.where((entry) => entry.directory)) {
-            nextFolders[entry.location] = MediaOrganizationFolder(
-              id: entry.location,
-              name: entry.name,
-              parentId: parentId,
-            );
-            nextFolderPaths[entry.location] = targetPath.isEmpty
-                ? entry.name
-                : '$targetPath/${entry.name}';
-          }
-          _physicalFolders
-            ..clear()
-            ..addAll(nextFolders);
-          _physicalFolderPaths
-            ..clear()
-            ..addAll(nextFolderPaths);
-          _physicalEntriesLocation = target;
-          _browser.setPhysicalFolders(nextFolders.values);
-          setState(() {
-            _storageEntries = entries;
-            _storageRoot = root;
-          });
+          _publishPhysicalDirectory(root, target, entries);
         } catch (error) {
           if (mounted && requestEpoch == _physicalRequestEpoch) {
             final root = _storageRoot;
@@ -1643,12 +1644,23 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
 
   Future<void> _openPhysicalFolder(String location) async {
     _browser.openFolder(location);
+    final root = _storageRoot;
+    final cached = app.mediaStorage.peekDirectory(location);
+    if (root != null && cached != null) {
+      _publishPhysicalDirectory(root, location, cached);
+    }
     await _loadPhysicalDirectory(directory: location);
   }
 
   Future<void> _goUpPhysicalFolder() async {
     final parent = _browser.currentFolder?.parentId;
     _browser.goUp();
+    final root = _storageRoot;
+    final target = parent ?? root?.location;
+    if (root != null && target != null) {
+      final cached = app.mediaStorage.peekDirectory(target);
+      if (cached != null) _publishPhysicalDirectory(root, target, cached);
+    }
     await _loadPhysicalDirectory(directory: parent);
   }
 
@@ -1674,6 +1686,15 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
   }
 
   Future<void> _fileAction(String action, MediaArtifact item) async {
+    Future<void> physicalChanged() async {
+      app.mediaStorage.invalidateDirectoryCache();
+      if (_browser.physicalMode && mounted) {
+        await _loadPhysicalDirectory(
+          directory: _browser.folderId ?? _storageRoot?.location,
+        );
+      }
+    }
+
     switch (action) {
       case 'details':
         final task =
@@ -1695,6 +1716,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
         final task = app.mediaTasks.task(item.taskId);
         if (task == null) throw StateError('原下载任务已不存在，请重新下载 HLS 后导出');
         await app.exportMediaTask(task, forceRegenerate: true);
+        await physicalChanged();
         if (mounted) showShortToast(context, 'MP4 已重新导出');
       case 'rename':
         final name = await showMediaBrowserNameDialog(
@@ -1709,23 +1731,27 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
         );
         if (name != null && name.trim().isNotEmpty) {
           await app.mediaLibrary.rename(item.taskId, name);
+          await physicalChanged();
         }
       case 'move':
       case 'movePhysical':
         final directory = await _pickStorageDestination(title: '移动媒体文件到目录');
         if (directory != null) {
           await app.mediaStorage.moveArtifact(item.taskId, directory);
+          await physicalChanged();
         }
       case 'migrate':
         if (!app.mediaLibrary.canMutate(item.taskId)) {
           throw StateError('媒体正在播放、导出、投屏或管理中，请先停止后再迁移');
         }
         await app.mediaStorage.migrateArtifact(item.taskId);
+        await physicalChanged();
         await _refreshStorageState();
       case 'copy':
         final directory = await _pickStorageDestination(title: '复制媒体文件到目录');
         if (directory != null) {
           await app.mediaStorage.copyArtifact(item.taskId, directory);
+          await physicalChanged();
         }
       case 'reauthorize':
         await Navigator.of(context).push<void>(
@@ -1777,6 +1803,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
           deleteTaskCache: linkedTask != null && deleteTaskCache,
           deleteTask: linkedTask != null && deleteTaskCache,
         );
+        await physicalChanged();
         await _organization.removeItems([item.taskId]);
     }
   }
@@ -2369,17 +2396,6 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
                       subtitle: Text('已有媒体会立即显示，刷新完成后自动更新'),
                     ),
                   ),
-                if (!_initializing &&
-                    _browser.physicalMode &&
-                    _storageRoot?.available == true &&
-                    !physicalEntriesReady)
-                  const SliverToBoxAdapter(
-                    child: SiteLensCompactRow(
-                      leading: Icon(Icons.folder_open_outlined, size: 18),
-                      title: Text('正在加载文件夹…'),
-                      subtitle: Text('目录内容更新后会立即显示'),
-                    ),
-                  ),
                 if (expandedRoot && expandedRows.isNotEmpty)
                   SliverList.builder(
                     itemCount: expandedRows.length,
@@ -2498,9 +2514,8 @@ class _MediaLibraryTile extends StatefulWidget {
 }
 
 class _MediaLibraryTileState extends State<_MediaLibraryTile> {
-  late Future<MediaArtifact> _metadata = widget.app.mediaLibrary.inspect(
-    widget.item.taskId,
-  );
+  late Future<MediaArtifact> _metadata = widget.app.mediaLibrary
+      .ensureThumbnail(widget.item.taskId);
   late final Future<MediaCandidate?> _candidate = widget.app.db.mediaCandidate(
     widget.task.candidateId,
   );
@@ -2510,7 +2525,7 @@ class _MediaLibraryTileState extends State<_MediaLibraryTile> {
   void didUpdateWidget(covariant _MediaLibraryTile oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.item.location != widget.item.location) {
-      _metadata = widget.app.mediaLibrary.inspect(widget.item.taskId);
+      _metadata = widget.app.mediaLibrary.ensureThumbnail(widget.item.taskId);
     }
   }
 
@@ -4499,16 +4514,8 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
   Future<MediaArtifact?> _resolveArtifact() async {
     final current = widget.app.mediaLibrary.item(widget.task.id);
     if (current == null) return null;
-    final thumbnail = current.thumbnailPath;
-    if (thumbnail != null && !thumbnail.startsWith('content:')) {
-      try {
-        if (await File(thumbnail).exists()) return current;
-      } catch (_) {
-        // Let the catalog inspection try to recover the local frame.
-      }
-    }
     try {
-      return await widget.app.mediaLibrary.inspect(widget.task.id);
+      return await widget.app.mediaLibrary.ensureThumbnail(widget.task.id);
     } catch (_) {
       return current;
     }

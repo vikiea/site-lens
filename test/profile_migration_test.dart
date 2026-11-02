@@ -191,7 +191,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 19);
+      expect(raw.userVersion, 20);
       expect(
         raw.select(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='watch_saves'",
@@ -455,7 +455,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 19);
+      expect(raw.userVersion, 20);
       expect(
         raw.select(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='filter_snapshots'",
@@ -516,7 +516,7 @@ void main() {
 
     final raw = sqlite3.open(file.path);
     addTearDown(raw.close);
-    expect(raw.userVersion, 19);
+    expect(raw.userVersion, 20);
     expect(
       raw.select('PRAGMA table_info(media_tasks)').map((row) => row['name']),
       contains('batch_directory'),
@@ -552,7 +552,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 19);
+      expect(raw.userVersion, 20);
       expect(
         raw
             .select('PRAGMA table_info(media_tasks)')
@@ -706,6 +706,25 @@ void main() {
 
       final db = AppDatabase(NativeDatabase(file));
       try {
+        final tables = await db
+            .customSelect(
+              "SELECT name FROM sqlite_master WHERE type='table' AND name='media_directory_cache'",
+            )
+            .get();
+        expect(tables, hasLength(1));
+        await db.saveMediaDirectoryCache(
+          rootId: '/media',
+          directory: '/media/series',
+          entries:
+              '[{"name":"episode.mp4","location":"/media/series/episode.mp4"}]',
+        );
+        expect(
+          await db.mediaDirectoryCache(
+            rootId: '/media',
+            directory: '/media/series',
+          ),
+          contains('episode.mp4'),
+        );
         final restoredCandidate = await db.mediaCandidate(candidate.id);
         final restoredTask = (await db.mediaTasks()).single;
         expect(restoredCandidate?.seriesKey, isNull);

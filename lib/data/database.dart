@@ -157,6 +157,11 @@ const _v19MediaOperationsTables = <String>[
       'PRIMARY KEY(operation_id, item_id))',
 ];
 
+const _v20MediaDirectoryCacheTable =
+    'CREATE TABLE IF NOT EXISTS media_directory_cache('
+    'root_id TEXT NOT NULL, directory TEXT NOT NULL, entries TEXT NOT NULL, '
+    'updated_at INTEGER NOT NULL, PRIMARY KEY(root_id, directory))';
+
 const _v18MediaCandidateColumns = <(String, String)>[
   ('ALTER TABLE media_candidates ADD COLUMN series_key TEXT', 'series_key'),
   (
@@ -225,7 +230,7 @@ class AppDatabase extends GeneratedDatabase {
   static void Function(String step)? migrationDebugHook;
 
   @override
-  int get schemaVersion => 19;
+  int get schemaVersion => 20;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -253,6 +258,7 @@ class AppDatabase extends GeneratedDatabase {
         _v16MediaResourcesTable,
         _v17MediaResourceOwnersTable,
         ..._v19MediaOperationsTables,
+        _v20MediaDirectoryCacheTable,
       ]) {
         await customStatement(sql);
       }
@@ -354,6 +360,7 @@ class AppDatabase extends GeneratedDatabase {
           await customStatement(sql);
         }
       }
+      if (from < 20) await customStatement(_v20MediaDirectoryCacheTable);
     },
     beforeOpen: (_) async {
       await customStatement('PRAGMA foreign_keys = ON');
@@ -1887,6 +1894,52 @@ class AppDatabase extends GeneratedDatabase {
 
   Future<void> deleteMediaArtifact(String taskId) =>
       customStatement('DELETE FROM media_artifacts WHERE task_id=?', [taskId]);
+
+  Future<String?> mediaDirectoryCache({
+    required String rootId,
+    required String directory,
+  }) async {
+    final row = await customSelect(
+      'SELECT entries FROM media_directory_cache WHERE root_id=? AND directory=?',
+      variables: [Variable.withString(rootId), Variable.withString(directory)],
+    ).getSingleOrNull();
+    return row?.read<String>('entries');
+  }
+
+  Future<void> saveMediaDirectoryCache({
+    required String rootId,
+    required String directory,
+    required String entries,
+  }) => customStatement(
+    'INSERT INTO media_directory_cache(root_id,directory,entries,updated_at) '
+    'VALUES(?,?,?,?) ON CONFLICT(root_id,directory) DO UPDATE SET '
+    'entries=excluded.entries,updated_at=excluded.updated_at',
+    [rootId, directory, entries, DateTime.now().millisecondsSinceEpoch],
+  );
+
+  Future<void> deleteMediaDirectoryCache({
+    String? rootId,
+    String? directory,
+  }) async {
+    if (rootId == null && directory == null) {
+      await customStatement('DELETE FROM media_directory_cache');
+    } else if (rootId != null && directory != null) {
+      await customStatement(
+        'DELETE FROM media_directory_cache WHERE root_id=? AND directory=?',
+        [rootId, directory],
+      );
+    } else if (rootId != null) {
+      await customStatement(
+        'DELETE FROM media_directory_cache WHERE root_id=?',
+        [rootId],
+      );
+    } else {
+      await customStatement(
+        'DELETE FROM media_directory_cache WHERE directory=?',
+        [directory],
+      );
+    }
+  }
 
   Future<void> appendAppError({
     required String level,

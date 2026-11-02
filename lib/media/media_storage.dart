@@ -73,11 +73,13 @@ class MediaStorageService extends ChangeNotifier {
 
   MediaStorageRoot? _current;
   Future<MediaStorageRoot>? _resolving;
+  final _directoryCache = <String, List<MediaStorageEntry>>{};
 
   MediaStorageRoot? get current => _current;
 
   void invalidate() {
     _current = null;
+    _directoryCache.clear();
     notifyListeners();
   }
 
@@ -88,8 +90,12 @@ class MediaStorageService extends ChangeNotifier {
     }
   }
 
-  Future<MediaStorageRoot> resolve() =>
-      _resolving ??= _resolve().whenComplete(() => _resolving = null);
+  Future<MediaStorageRoot> resolve({bool force = false}) {
+    if (force) _current = null;
+    final current = _current;
+    if (current != null) return Future.value(current);
+    return _resolving ??= _resolve().whenComplete(() => _resolving = null);
+  }
 
   Future<MediaStorageRoot> _resolve() async {
     final configured = (await configuredRoot())?.trim();
@@ -350,6 +356,7 @@ class MediaStorageService extends ChangeNotifier {
       phase: 'moved',
     );
     await clearMigration(taskId);
+    invalidateDirectoryCache();
   }
 
   Future<String> _migrationDestinationDirectory(
@@ -446,6 +453,7 @@ class MediaStorageService extends ChangeNotifier {
       storageKind: root.kind.name,
       migrationState: 'complete',
     );
+    invalidateDirectoryCache();
   }
 
   Future<MediaArtifact> copyArtifact(String taskId, String directory) async {
@@ -459,6 +467,7 @@ class MediaStorageService extends ChangeNotifier {
       storageKind: root.kind.name,
       migrationState: 'complete',
     );
+    invalidateDirectoryCache();
     return library.item(result.taskId)!;
   }
 
@@ -618,6 +627,118 @@ class MediaStorageService extends ChangeNotifier {
         ? directory!.trim()
         : root.location;
     await _assertWithinRoot(target);
+    final entries = await _listDirectoryFresh(root, target);
+    _rememberDirectory(root, target, entries);
+    return entries;
+  }
+
+  /// Returns a previously observed directory without touching the provider or
+  /// filesystem. This keeps navigation fast while a fresh read runs later.
+  Future<List<MediaStorageEntry>?> cachedDirectory({String? directory}) async {
+    final root = await resolve();
+    if (!root.available) {
+      throw StateError('媒体目录访问权限已失效，请重新授权媒体目录');
+    }
+    final target = directory?.trim().isNotEmpty == true
+        ? directory!.trim()
+        : root.location;
+    await _assertWithinRoot(target);
+    return _cachedDirectorySnapshot(root.location, target);
+  }
+
+  Future<List<MediaStorageEntry>?> cachedDirectorySnapshot({
+    required String rootId,
+    required String directory,
+  }) async {
+    final root = await resolve();
+    if (!root.available || root.location != rootId) return null;
+    try {
+      await _assertWithinRoot(directory);
+    } catch (_) {
+      return null;
+    }
+    return _cachedDirectorySnapshot(rootId, directory);
+  }
+
+  Future<List<MediaStorageEntry>?> _cachedDirectorySnapshot(
+    String rootId,
+    String target,
+  ) async {
+    final key = _directoryKey(rootId, target);
+    final memory = _directoryCache[key];
+    if (memory != null) return List<MediaStorageEntry>.of(memory);
+    final encoded = await library.db.mediaDirectoryCache(
+      rootId: rootId,
+      directory: target,
+    );
+    if (encoded == null) return null;
+    try {
+      final decoded = jsonDecode(encoded);
+      if (decoded is! List) return null;
+      final entries = [
+        for (final raw in decoded)
+          if (raw is Map && raw['location'] is String && raw['name'] is String)
+            MediaStorageEntry(
+              location: raw['location'] as String,
+              name: raw['name'] as String,
+              directory: raw['directory'] == true,
+              size: (raw['size'] as num?)?.toInt() ?? 0,
+              modifiedMs: (raw['modifiedMs'] as num?)?.toInt() ?? 0,
+            ),
+      ];
+      _directoryCache[key] = List<MediaStorageEntry>.unmodifiable(entries);
+      return entries;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<List<MediaStorageEntry>> refreshDirectory({String? directory}) =>
+      listDirectory(directory: directory);
+
+  List<MediaStorageEntry>? peekDirectory(String directory) {
+    final root = _current;
+    if (root == null) return null;
+    final entries = _directoryCache[_directoryKey(root.location, directory)];
+    return entries == null ? null : List<MediaStorageEntry>.of(entries);
+  }
+
+  void invalidateDirectoryCache() => _directoryCache.clear();
+
+  String _directoryKey(String rootId, String directory) =>
+      '$rootId\n$directory';
+
+  void _rememberDirectory(
+    MediaStorageRoot root,
+    String directory,
+    List<MediaStorageEntry> entries,
+  ) {
+    _directoryCache[_directoryKey(root.location, directory)] =
+        List<MediaStorageEntry>.unmodifiable(entries);
+    unawaited(
+      library.db
+          .saveMediaDirectoryCache(
+            rootId: root.location,
+            directory: directory,
+            entries: jsonEncode([
+              for (final entry in entries)
+                {
+                  'location': entry.location,
+                  'name': entry.name,
+                  'directory': entry.directory,
+                  'size': entry.size,
+                  'modifiedMs': entry.modifiedMs,
+                },
+            ]),
+          )
+          .catchError((_) {}),
+    );
+  }
+
+  Future<List<MediaStorageEntry>> _listDirectoryFresh(
+    MediaStorageRoot root,
+    String target,
+  ) async {
     final uri = Uri.tryParse(target);
     if (uri?.scheme == 'content') {
       final runtime = native ?? (throw StateError('当前平台不支持系统目录'));
@@ -696,19 +817,27 @@ class MediaStorageService extends ChangeNotifier {
     _validateEntryName(name);
     final uri = Uri.tryParse(parent);
     if (root.kind == MediaStorageKind.directPath && native != null) {
-      return native!.createDirectory(
+      final created = await native!.createDirectory(
         directory: Uri.file(_localPath(parent) ?? parent),
         name: name,
       );
+      invalidateDirectoryCache();
+      return created;
     }
     if (uri?.scheme == 'content') {
       final runtime = native ?? (throw StateError('当前平台不支持系统目录'));
-      return runtime.createDirectory(directory: uri!, name: name);
+      final created = await runtime.createDirectory(
+        directory: uri!,
+        name: name,
+      );
+      invalidateDirectoryCache();
+      return created;
     }
     final directory = Directory(
       p.join(uri?.scheme == 'file' ? uri!.toFilePath() : parent, name),
     );
     await directory.create(recursive: false);
+    invalidateDirectoryCache();
     return directory.absolute.path;
   }
 
@@ -727,11 +856,15 @@ class MediaStorageService extends ChangeNotifier {
     _validateEntryName(name);
     final uri = Uri.tryParse(location);
     if (root.kind == MediaStorageKind.directPath && native != null) {
-      return native!.rename(location, name);
+      final renamed = await native!.rename(location, name);
+      invalidateDirectoryCache();
+      return renamed;
     }
     if (uri?.scheme == 'content') {
       final runtime = native ?? (throw StateError('当前平台不支持系统目录'));
-      return runtime.rename(location, name);
+      final renamed = await runtime.rename(location, name);
+      invalidateDirectoryCache();
+      return renamed;
     }
     final rawPath = uri?.scheme == 'file' ? uri!.toFilePath() : location;
     final source = await File(rawPath).exists()
@@ -742,7 +875,9 @@ class MediaStorageService extends ChangeNotifier {
         FileSystemEntityType.notFound) {
       throw StateError('已存在同名文件或目录');
     }
-    return (await source.rename(target)).path;
+    final renamed = (await source.rename(target)).path;
+    invalidateDirectoryCache();
+    return renamed;
   }
 
   Future<void> deleteEntry(String location) async {
@@ -757,17 +892,20 @@ class MediaStorageService extends ChangeNotifier {
     final uri = Uri.tryParse(location);
     if (root.kind == MediaStorageKind.directPath && native != null) {
       await native!.delete(location);
+      invalidateDirectoryCache();
       return;
     }
     if (uri?.scheme == 'content') {
       final runtime = native ?? (throw StateError('当前平台不支持系统目录'));
       await runtime.delete(location);
+      invalidateDirectoryCache();
       return;
     }
     final entity = await File(location).exists()
         ? File(location)
         : Directory(location);
     await entity.delete(recursive: true);
+    invalidateDirectoryCache();
   }
 
   /// Copies or moves a whole physical directory, including files that are not
@@ -796,6 +934,7 @@ class MediaStorageService extends ChangeNotifier {
       );
       final raw = result['rewrites'];
       if (raw is Map) {
+        invalidateDirectoryCache();
         return {
           for (final entry in raw.entries)
             if (entry.key is String && entry.value is String)
@@ -838,6 +977,7 @@ class MediaStorageService extends ChangeNotifier {
     if (move && skipped) {
       throw StateError('目录存在冲突，已保留源目录');
     }
+    invalidateDirectoryCache();
     return rewrites;
   }
 

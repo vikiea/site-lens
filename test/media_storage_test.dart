@@ -7,7 +7,40 @@ import 'package:site_lens/data/database.dart';
 import 'package:site_lens/media/media_library.dart';
 import 'package:site_lens/media/media_service.dart';
 import 'package:site_lens/media/media_storage.dart';
+import 'package:site_lens/media/media_storage_mode.dart';
 import 'package:site_lens/media/native_export_runtime.dart';
+
+class _DirectoryCacheRuntime extends NativeExportRuntime {
+  int listCalls = 0;
+  bool available = true;
+
+  @override
+  Future<void> configureDirectRoot(String? path) async {}
+
+  @override
+  Future<bool> checkDirectDirectory(String path) async => available;
+
+  @override
+  Future<List<Map<String, Object?>>> listDirectDirectory(String path) async {
+    listCalls++;
+    return [
+      {
+        'path': '$path/series',
+        'name': 'series',
+        'directory': true,
+        'size': 0,
+        'modifiedMs': 10,
+      },
+      {
+        'path': '$path/readme.txt',
+        'name': 'readme.txt',
+        'directory': false,
+        'size': 12,
+        'modifiedMs': 11,
+      },
+    ];
+  }
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -44,6 +77,48 @@ void main() {
       expect(resolved.permission, MediaStoragePermission.unconfigured);
       expect(resolved.location, endsWith('/media_exports'));
       expect(await Directory(resolved.location).exists(), isTrue);
+    },
+  );
+
+  test(
+    'directory snapshots reuse memory and persist across service instances',
+    () async {
+      final destination = Directory('${root.path}/system-media')
+        ..createSync(recursive: true);
+      final runtime = _DirectoryCacheRuntime();
+      final first = MediaStorageService(
+        tasks: tasks,
+        library: library,
+        configuredRoot: () async => destination.path,
+        configuredMode: () async => MediaStorageMode.directPath,
+        native: runtime,
+      );
+
+      final fresh = await first.listDirectory();
+      expect(fresh, hasLength(2));
+      expect(runtime.listCalls, 1);
+      expect(await first.cachedDirectory(), hasLength(2));
+      expect(runtime.listCalls, 1);
+
+      first.invalidate();
+      final second = MediaStorageService(
+        tasks: tasks,
+        library: library,
+        configuredRoot: () async => destination.path,
+        configuredMode: () async => MediaStorageMode.directPath,
+        native: runtime,
+      );
+      expect(await second.cachedDirectory(), hasLength(2));
+      expect(runtime.listCalls, 1);
+      runtime.available = false;
+      second.invalidate();
+      expect(
+        await second.cachedDirectorySnapshot(
+          rootId: destination.absolute.path,
+          directory: destination.absolute.path,
+        ),
+        isNull,
+      );
     },
   );
 

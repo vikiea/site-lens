@@ -184,6 +184,16 @@ class _OversizedMetadataRuntime extends NativeExportRuntime {
   }
 }
 
+class _CountingInspectRuntime extends NativeExportRuntime {
+  int inspectCalls = 0;
+
+  @override
+  Future<Map<String, Object?>> inspect(String source) async {
+    inspectCalls++;
+    return {'size': 6};
+  }
+}
+
 class _ScanRuntime extends NativeExportRuntime {
   _ScanRuntime(
     this.files, {
@@ -351,6 +361,35 @@ void main() {
       await restored.restore();
       expect(restored.items.single.name, item.name);
       expect((await restored.localFile(task.id))?.path, output.path);
+    },
+  );
+
+  test(
+    'reuses an existing thumbnail without re-inspecting the media file',
+    () async {
+      final thumbnail = File('${root.path}/thumbnail.jpg')
+        ..writeAsBytesSync([1]);
+      final value = MediaArtifact(
+        taskId: task.id,
+        location: output.path,
+        name: mediaExportFileName(task),
+        size: 6,
+        thumbnailPath: thumbnail.path,
+        createdAt: DateTime.now().toUtc(),
+      );
+      await db.saveMediaArtifact(task.id, value.toJson());
+      library.dispose();
+      final runtime = _CountingInspectRuntime();
+      library = MediaLibrary(db: db, tasks: tasks, native: runtime);
+      await library.restore();
+
+      await library.ensureThumbnail(task.id);
+      await library.ensureThumbnail(task.id);
+      expect(runtime.inspectCalls, 1);
+
+      await thumbnail.delete();
+      await library.ensureThumbnail(task.id);
+      expect(runtime.inspectCalls, 2);
     },
   );
 

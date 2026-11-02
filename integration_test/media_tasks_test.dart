@@ -295,7 +295,22 @@ void main() {
             ),
           ),
         );
-        final thumbnail = find.byType(MediaThumbnail);
+        final row = find.byKey(ValueKey<String>(task.id));
+        final rowDeadline = DateTime.now().add(const Duration(seconds: 10));
+        while (row.evaluate().isEmpty && DateTime.now().isBefore(rowDeadline)) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        expect(
+          row,
+          findsOneWidget,
+          reason:
+              'expected the created task row on ${library ? 'library' : 'tasks'} page',
+        );
+        final thumbnail = find.descendant(
+          of: row,
+          matching: find.byType(MediaThumbnail),
+        );
+        expect(thumbnail, findsOneWidget);
         final scrollable = find.descendant(
           of: find.byKey(
             PageStorageKey<String>(
@@ -311,9 +326,12 @@ void main() {
           matching: find.byType(RawImage),
         );
         final deadline = DateTime.now().add(const Duration(seconds: 10));
-        while (rawImage.evaluate().isEmpty &&
-            DateTime.now().isBefore(deadline)) {
+        while (DateTime.now().isBefore(deadline)) {
           await tester.pump(const Duration(milliseconds: 100));
+          if (rawImage.evaluate().length == 1 &&
+              tester.widget<RawImage>(rawImage).image != null) {
+            break;
+          }
         }
         expect(rawImage, findsOneWidget);
         final provider = tester

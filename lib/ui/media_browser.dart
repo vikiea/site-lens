@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 
 import '../media/media_organization.dart';
 import 'app_theme.dart';
@@ -38,16 +39,33 @@ class MediaBrowserController extends ChangeNotifier {
   bool get physicalMode => _physicalFolders != null;
 
   void setPhysicalFolders(Iterable<MediaOrganizationFolder> folders) {
-    _physicalFolders = folders.toList(growable: false);
+    final next = folders.toList(growable: false);
+    final changed =
+        _physicalFolders == null ||
+        _physicalFolders!.length != next.length ||
+        _physicalFolders!.asMap().entries.any((entry) {
+          final before = entry.value;
+          final after = next[entry.key];
+          return before.id != after.id ||
+              before.name != after.name ||
+              before.parentId != after.parentId;
+        });
+    final selectedItems = Set<String>.of(selectedItemIds);
+    final selectedFolders = Set<String>.of(selectedFolderIds);
+    _physicalFolders = next;
     if (folderId != null && !hasFolder(folderId)) folderId = null;
     pruneSelection(
       itemIds: selectedItemIds,
       folderIds: _physicalFolders!.map((folder) => folder.id),
     );
-    notifyListeners();
+    final selectionChanged =
+        !setEquals(selectedItems, selectedItemIds) ||
+        !setEquals(selectedFolders, selectedFolderIds);
+    if (changed || selectionChanged) notifyListeners();
   }
 
   void clearPhysicalFolders() {
+    if (_physicalFolders == null) return;
     _physicalFolders = null;
     notifyListeners();
   }
