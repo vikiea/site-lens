@@ -1151,6 +1151,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
   final _physicalFolders = <String, MediaOrganizationFolder>{};
   final _physicalFolderPaths = <String, String>{};
   List<MediaStorageEntry> _storageEntries = const [];
+  String? _physicalEntriesLocation;
   String? _physicalRootLocation;
   Future<void>? _storageRefresh;
   Future<void>? _physicalRefresh;
@@ -1309,6 +1310,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
           if (_physicalRootLocation != root.location) {
             _physicalFolders.clear();
             _physicalFolderPaths.clear();
+            _physicalEntriesLocation = null;
             _physicalRootLocation = root.location;
             _physicalRequestedLocation = null;
             if (_browser.folderId != null) _browser.goUp();
@@ -1316,6 +1318,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
           if (!root.available) {
             _physicalFolders.clear();
             _physicalFolderPaths.clear();
+            _physicalEntriesLocation = null;
             _browser.setPhysicalFolders(const []);
             setState(() {
               _storageEntries = const [];
@@ -1403,6 +1406,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
           _physicalFolderPaths
             ..clear()
             ..addAll(nextFolderPaths);
+          _physicalEntriesLocation = target;
           _browser.setPhysicalFolders(nextFolders.values);
           setState(() {
             _storageEntries = entries;
@@ -1498,6 +1502,11 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
   }
 
   List<MediaArtifact> _visiblePhysicalItems() {
+    final visibleDirectory = _browser.folderId ?? _storageRoot?.location;
+    if (visibleDirectory == null ||
+        _physicalEntriesLocation != visibleDirectory) {
+      return const <MediaArtifact>[];
+    }
     final bySource = <String, MediaArtifact>{
       for (final item in app.mediaLibrary.items)
         mediaArtifactSourceKey(item.location): item,
@@ -2210,6 +2219,12 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
         ? const <MediaOrganizationFolder>[]
         : _browser.folders;
     final expandedRoot = !_initializing && _browser.folderId == null;
+    final visiblePhysicalDirectory =
+        _browser.folderId ?? _storageRoot?.location;
+    final physicalEntriesReady =
+        !_browser.physicalMode ||
+        (_physicalEntriesLocation != null &&
+            _physicalEntriesLocation == visiblePhysicalDirectory);
     final selectionItems = expandedRoot ? allExports : visible;
     final writesEnabled =
         _storageRoot?.permission != MediaStoragePermission.revoked;
@@ -2354,6 +2369,17 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
                       subtitle: Text('已有媒体会立即显示，刷新完成后自动更新'),
                     ),
                   ),
+                if (!_initializing &&
+                    _browser.physicalMode &&
+                    _storageRoot?.available == true &&
+                    !physicalEntriesReady)
+                  const SliverToBoxAdapter(
+                    child: SiteLensCompactRow(
+                      leading: Icon(Icons.folder_open_outlined, size: 18),
+                      title: Text('正在加载文件夹…'),
+                      subtitle: Text('目录内容更新后会立即显示'),
+                    ),
+                  ),
                 if (expandedRoot && expandedRows.isNotEmpty)
                   SliverList.builder(
                     itemCount: expandedRows.length,
@@ -2403,6 +2429,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
                     },
                   ),
                 if (!_initializing &&
+                    physicalEntriesReady &&
                     visible.isEmpty &&
                     (current != null ||
                         (folders.isEmpty && allExports.isEmpty)))
