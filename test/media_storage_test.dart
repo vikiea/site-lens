@@ -122,6 +122,53 @@ void main() {
     },
   );
 
+  test(
+    'indexed artifacts provide an immediate child-directory snapshot',
+    () async {
+      final destination = Directory('${root.path}/system-media')
+        ..createSync(recursive: true);
+      await db.saveMediaArtifact(
+        'indexed-media',
+        MediaArtifact(
+          taskId: 'indexed-media',
+          location: '${destination.path}/series/第1集.mp4',
+          name: '第1集.mp4',
+          size: 6,
+          createdAt: DateTime.now().toUtc(),
+          storageRootId: destination.absolute.path,
+          relativePath: 'series/第1集.mp4',
+          storageKind: 'directPath',
+          migrationState: 'complete',
+        ).toJson(),
+      );
+      await library.restore();
+      final storage = MediaStorageService(
+        tasks: tasks,
+        library: library,
+        configuredRoot: () async => destination.path,
+        configuredMode: () async => MediaStorageMode.directPath,
+        native: _DirectoryCacheRuntime(),
+      );
+      final rootValue = await storage.resolve();
+
+      final rootSnapshot = storage.indexedDirectorySnapshot(
+        root: rootValue,
+        directory: destination.path,
+      );
+      expect(rootSnapshot, hasLength(1));
+      expect(rootSnapshot!.single.directory, isTrue);
+      expect(rootSnapshot.single.name, 'series');
+
+      final childSnapshot = storage.indexedDirectorySnapshot(
+        root: rootValue,
+        directory: '${destination.path}/series',
+      );
+      expect(childSnapshot, hasLength(1));
+      expect(childSnapshot!.single.name, '第1集.mp4');
+      expect(childSnapshot.single.directory, isFalse);
+    },
+  );
+
   test('only artifacts outside a configured root need migration', () async {
     final destination = Directory('${root.path}/system-media')
       ..createSync(recursive: true);

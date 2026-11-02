@@ -4170,8 +4170,10 @@ class Mp4ExportService {
     tasks.retain(taskId);
     try {
       cancel.check();
+      report(1);
       await validateHlsCacheInput(input);
       cancel.check();
+      report(5);
       final root = await _directoryProvider();
       final seriesFolder = task.seriesDirectoryName;
       final exportFolder = seriesFolder;
@@ -4231,6 +4233,9 @@ class Mp4ExportService {
             resourcePaths: graph.resourcePaths,
             allowedRoots: graph.allowedRootPaths,
             jobId: jobId,
+            onProgress: (progress) {
+              report(10 + (progress * 0.8).round());
+            },
           );
         } finally {
           nativeJobActive = false;
@@ -4240,6 +4245,7 @@ class Mp4ExportService {
         throw StateError(MediaErrorCode.unsupported);
       }
       cancel.check();
+      report(92);
       if (!await temporary.exists() || await temporary.length() == 0) {
         throw StateError('导出文件为空');
       }
@@ -4264,6 +4270,7 @@ class Mp4ExportService {
         } finally {
           validationActive = false;
         }
+        report(96);
       }
       cancel.check();
       if (await output.exists() &&
@@ -4289,6 +4296,7 @@ class Mp4ExportService {
           rethrow;
         }
       }
+      report(98);
       await _writeExportManifest(manifest, output, task.cacheKey);
       cancel.check();
       committed = true;

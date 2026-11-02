@@ -1316,10 +1316,11 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
       await _organization.restore();
       if (!mounted) return;
       if (mounted) setState(() => _initializing = false);
+      // Render the cached/indexed directory immediately. Automatic reconcile
+      // is deliberately independent from the first visible directory frame.
+      unawaited(_loadPhysicalDirectory());
       if (app.mediaLibraryAutoRefresh) {
         unawaited(_rescan(silent: true));
-      } else {
-        unawaited(_loadPhysicalDirectory());
       }
     } catch (error) {
       if (mounted) setState(() => _error = friendlyError(error));
@@ -1461,10 +1462,17 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
           );
           final freshFuture = app.mediaStorage.listDirectory(directory: target);
           final cached = await cachedFuture;
-          if (cached != null &&
+          final indexed = cached == null
+              ? app.mediaStorage.indexedDirectorySnapshot(
+                  root: root,
+                  directory: target,
+                )
+              : null;
+          final immediate = cached ?? indexed;
+          if (immediate != null &&
               requestEpoch == _physicalRequestEpoch &&
               (_browser.folderId ?? root.location) == target) {
-            _publishPhysicalDirectory(root, target, cached);
+            _publishPhysicalDirectory(root, target, immediate);
           }
           final entries = await freshFuture;
           if (!mounted) return;
@@ -1495,6 +1503,7 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
                 target != root.location &&
                 current != null &&
                 _isMissingPhysicalDirectoryError(error)) {
+              _clearVisiblePhysicalDirectory();
               _removePhysicalFolderBranch(target);
               _browser.goUp();
               _physicalRequestedLocation = current.parentId;
@@ -1502,6 +1511,10 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
               continue;
             }
             setState(() => _error = friendlyError(error));
+            // A cached/indexed snapshot is only a fast placeholder. Once the
+            // authoritative read fails, keeping it visible would present
+            // stale files after a revoked permission or external change.
+            _clearVisiblePhysicalDirectory();
           }
         }
         if (requestEpoch == _physicalRequestEpoch) break;
@@ -1549,6 +1562,12 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
     }
     _physicalFolders.removeWhere((id, _) => removed.contains(id));
     _physicalFolderPaths.removeWhere((id, _) => removed.contains(id));
+  }
+
+  void _clearVisiblePhysicalDirectory() {
+    _physicalEntriesLocation = null;
+    _browser.setPhysicalFolders(const []);
+    if (mounted) setState(() => _storageEntries = const []);
   }
 
   Future<Map<String, String>> _collectPhysicalFiles(
@@ -2461,14 +2480,6 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
             child: SiteLensListPanel(
               scrollKey: const PageStorageKey('media-library-scroll'),
               slivers: [
-                if (_scanning && allExports.isEmpty && folders.isEmpty)
-                  const SliverToBoxAdapter(
-                    child: SiteLensCompactRow(
-                      leading: Icon(Icons.sync_outlined, size: 18),
-                      title: Text('正在后台刷新媒体目录…'),
-                      subtitle: Text('已有媒体会立即显示，刷新完成后自动更新'),
-                    ),
-                  ),
                 if (expandedRoot && expandedRows.isNotEmpty)
                   SliverList.builder(
                     itemCount: expandedRows.length,
@@ -3570,6 +3581,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     widget.app.mediaTasks.addListener(_tasksChanged);
     _organization.addListener(_tasksChanged);
     _browser.addListener(_tasksChanged);
+    widget.app.mediaExportProgressChanged.addListener(_exportProgressChanged);
     unawaited(_syncOrganization());
     _mediaStates = widget.app.nativeMedia.states.listen((_) {
       if (mounted) setState(() {});
@@ -3587,6 +3599,9 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     widget.app.mediaTasks.removeListener(_tasksChanged);
     _organization.removeListener(_tasksChanged);
     _browser.removeListener(_tasksChanged);
+    widget.app.mediaExportProgressChanged.removeListener(
+      _exportProgressChanged,
+    );
     _browser.dispose();
     _poller?.cancel();
     _mediaStates?.cancel();
@@ -3596,6 +3611,10 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   void _tasksChanged() {
     if (mounted) setState(() {});
     unawaited(_syncOrganization());
+  }
+
+  void _exportProgressChanged() {
+    if (mounted) setState(() {});
   }
 
   String? _startupError;
@@ -4630,11 +4649,15 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
             widget.app.mediaLibrary.item(widget.task.id);
         final busy = widget.busy;
         final hasError = _isMediaTaskErrorState(widget.task.state);
+        final exportProgress = widget.app.mediaExportProgress(widget.task.id);
         final description = mediaTaskRowDescription(
           widget.task,
           candidate: candidate,
           artifact: artifact,
         );
+        final rowDescription = exportProgress == null
+            ? description
+            : '导出 MP4 中 · $exportProgress%';
         final menu = SiteLensGlassMenuButton<String>(
           tooltip: '媒体任务操作',
           icon: Icons.more_horiz,
@@ -4773,7 +4796,7 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          subtitle: Text(description),
+          subtitle: Text(rowDescription),
           onTap: widget.browser.selectionMode
               ? (widget.isBatchSelectable(widget.task)
                     ? () => widget.browser.toggleItem(widget.task.id)
@@ -4808,6 +4831,14 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
           mainAxisSize: MainAxisSize.min,
           children: [
             row,
+            if (exportProgress != null)
+              Padding(
+                padding: const EdgeInsets.only(left: 12, right: 12, bottom: 4),
+                child: LinearProgressIndicator(
+                  value: exportProgress / 100,
+                  minHeight: 2,
+                ),
+              ),
             if (!widget.browser.selectionMode && hasError && _expanded)
               _mediaErrorInlineDetails(
                 context,

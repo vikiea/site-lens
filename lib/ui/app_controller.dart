@@ -191,8 +191,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     watchSaves = WatchSaveStore(db);
     nativeDownloads = Platform.isAndroid ? NativeDownloadRuntime() : null;
     nativeExports = Platform.isAndroid ? NativeExportRuntime() : null;
-    if (nativeExports != null && settings.mediaStorageMode == MediaStorageMode.directPath) {
-      unawaited(nativeExports!.configureDirectRoot(settings.mp4ExportDirectory));
+    if (nativeExports != null &&
+        settings.mediaStorageMode == MediaStorageMode.directPath) {
+      unawaited(
+        nativeExports!.configureDirectRoot(settings.mp4ExportDirectory),
+      );
     }
     nativeMedia = NativeMediaRuntime();
     nativeMediaAuthRefresh = Platform.isAndroid
@@ -568,6 +571,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   late final MediaStorageService mediaStorage;
   late final MediaOperationRunner mediaOperations;
   final _exportingMedia = <String, Future<MediaArtifact>>{};
+  final _mediaExportProgress = <String, int>{};
+  final _mediaExportProgressChanged = ChangeNotifier();
   late final CastSessionController castSessions;
   late final DlnaCastController mediaCast;
   late final NativePlaybackController mediaPlayback;
@@ -1390,6 +1395,46 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     if (!_disposed) notifyListeners();
   }
 
+  int? mediaExportProgress(String taskId) => _mediaExportProgress[taskId];
+
+  ChangeNotifier get mediaExportProgressChanged => _mediaExportProgressChanged;
+
+  void _setMediaExportProgress(String taskId, int progress) {
+    final next = progress.clamp(0, 100).toInt();
+    if (_mediaExportProgress[taskId] == next) return;
+    _mediaExportProgress[taskId] = next;
+    if (!_disposed) _mediaExportProgressChanged.notifyListeners();
+    final downloads = nativeDownloads;
+    if (downloads != null) {
+      unawaited(
+        downloads
+            .progressNotification(
+              'export:$taskId',
+              '导出 MP4',
+              next,
+              totalBytes: 100,
+            )
+            .catchError((Object _) {}),
+      );
+    }
+  }
+
+  void _clearMediaExportProgress(String taskId) {
+    if (_mediaExportProgress.remove(taskId) == null) return;
+    if (!_disposed) {
+      _mediaExportProgressChanged.notifyListeners();
+      notifyMediaChanged();
+    }
+    final downloads = nativeDownloads;
+    if (downloads != null) {
+      unawaited(
+        downloads
+            .clearProgressNotification('export:$taskId')
+            .catchError((Object _) {}),
+      );
+    }
+  }
+
   Future<void> _autoConvertCompletedMedia(MediaTask task) async {
     if (!autoConvertToMp4) return;
     final file = await mediaTasks.cachedFile(task.id);
@@ -1411,28 +1456,64 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     bool deliverToConfiguredDirectory = true,
     bool forceRegenerate = false,
   }) async {
-    final artifactFuture = _exportingMedia.putIfAbsent(
-      task.id,
-      () => _prepareMediaArtifact(task, forceRegenerate: forceRegenerate),
-    );
-    final artifact = await artifactFuture;
-    if (!deliverToConfiguredDirectory) return artifact;
-    await mediaTasks.withExclusive(task.id, () async {
-      await mediaLibrary.deliver(task.id, mp4ExportDirectory);
-    });
-    final delivered = mediaLibrary.item(task.id) ?? artifact;
-    if (deleteMediaTaskAfterMp4Export) {
-      // MediaArtifact owns the exported MP4 independently. Deleting through
-      // the task service removes only the task cache and task row, preserving
-      // the exported artifact and its catalog index.
-      await deleteMediaTask(task.id);
+    _setMediaExportProgress(task.id, 0);
+    var backgroundExportStarted = false;
+    try {
+      final exports = nativeExports;
+      if (exports != null) {
+        try {
+          await exports.beginBackgroundExport(task.id);
+          backgroundExportStarted = true;
+        } catch (error, stack) {
+          // The foreground service is a durability aid. A denied or
+          // unavailable service must not make an otherwise valid local export
+          // fail.
+          AppErrorLogger.capture(
+            error,
+            module: 'media.export.background',
+            context: task.id,
+            stack: stack,
+          );
+        }
+      }
+      final artifactFuture = _exportingMedia.putIfAbsent(
+        task.id,
+        () => _prepareMediaArtifact(
+          task,
+          forceRegenerate: forceRegenerate,
+          onProgress: (progress) => _setMediaExportProgress(task.id, progress),
+        ),
+      );
+      final artifact = await artifactFuture;
+      if (!deliverToConfiguredDirectory) return artifact;
+      await mediaTasks.withExclusive(task.id, () async {
+        await mediaLibrary.deliver(task.id, mp4ExportDirectory);
+      });
+      final delivered = mediaLibrary.item(task.id) ?? artifact;
+      if (deleteMediaTaskAfterMp4Export) {
+        // MediaArtifact owns the exported MP4 independently. Deleting through
+        // the task service removes only the task cache and task row, preserving
+        // the exported artifact and its catalog index.
+        await deleteMediaTask(task.id);
+      }
+      return delivered;
+    } finally {
+      if (backgroundExportStarted) {
+        final exports = nativeExports;
+        if (exports != null) {
+          unawaited(
+            exports.endBackgroundExport(task.id).catchError((Object _) {}),
+          );
+        }
+      }
+      _clearMediaExportProgress(task.id);
     }
-    return delivered;
   }
 
   Future<MediaArtifact> _prepareMediaArtifact(
     MediaTask task, {
     bool forceRegenerate = false,
+    void Function(int progress)? onProgress,
   }) async {
     var retained = false;
     try {
@@ -1452,6 +1533,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
       if (artifact == null) {
+        onProgress?.call(5);
         final file = await mediaTasks.cachedFile(task.id);
         if (file == null) {
           mediaTasks.markCacheMissing(task.id);
@@ -1466,6 +1548,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
             task.id,
             input,
             forceRegenerate: forceRegenerate,
+            onProgress: onProgress,
           );
           if (result.state != ExportState.deliverable ||
               result.outputPath == null) {
@@ -1473,6 +1556,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           }
           output = result.outputPath!;
         } else {
+          onProgress?.call(10);
           final metadata = nativeExports == null
               ? <String, Object?>{'mime': inferMediaMime(file.uri)}
               : await nativeExports!.inspect(file.path);
@@ -1502,6 +1586,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
             final previous = File('${destination.path}.previous');
             try {
               await file.copy(temporary.path);
+              onProgress?.call(90);
               if (await temporary.length() != sourceSize) {
                 throw StateError('MP4 副本校验失败');
               }
@@ -1522,6 +1607,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
             }
           }
         }
+        onProgress?.call(95);
         artifact = await mediaLibrary.register(
           mediaTasks.task(task.id) ?? task,
           output,
@@ -1529,6 +1615,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           mime: artifactMime,
         );
       }
+      onProgress?.call(100);
       return artifact;
     } finally {
       if (retained) mediaTasks.release(task.id);
@@ -3114,6 +3201,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     mediaOperations.dispose();
     mediaLibrary.dispose();
     watchSaves.dispose();
+    _mediaExportProgressChanged.dispose();
     AppErrorLogger.detach(errorLogger);
     super.dispose();
   }

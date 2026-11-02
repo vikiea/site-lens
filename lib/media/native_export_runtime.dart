@@ -4,9 +4,21 @@ import 'package:flutter/services.dart';
 /// verified MP4 to a user-selected Storage Access Framework destination.
 class NativeExportRuntime {
   NativeExportRuntime({MethodChannel? channel})
-    : _channel = channel ?? const MethodChannel('site_lens/native_export');
+    : _channel = channel ?? const MethodChannel('site_lens/native_export') {
+    // Test doubles inject their own channel before a Flutter binding exists;
+    // only the production channel needs the native-to-Dart event handler.
+    if (channel == null) {
+      try {
+        _channel.setMethodCallHandler(_onNativeEvent);
+      } on AssertionError {
+        // A pure Dart test may construct the runtime before Flutter binding
+        // initialization. The injected native channel is unused in that path.
+      }
+    }
+  }
 
   final MethodChannel _channel;
+  final _progressCallbacks = <String, void Function(int)>{};
 
   Future<bool> validateLocalInput(
     String path, {
@@ -38,6 +50,12 @@ class NativeExportRuntime {
 
   Future<void> configureDirectRoot(String? path) =>
       _channel.invokeMethod<void>('configureDirectRoot', {'path': path});
+
+  Future<void> beginBackgroundExport(String taskId) =>
+      _channel.invokeMethod<void>('beginBackgroundExport', {'taskId': taskId});
+
+  Future<void> endBackgroundExport(String taskId) =>
+      _channel.invokeMethod<void>('endBackgroundExport', {'taskId': taskId});
 
   Future<List<Map<String, Object?>>> listDirectDirectory(String path) async {
     final raw = await _channel.invokeMethod<List<Object?>>(
@@ -108,15 +126,32 @@ class NativeExportRuntime {
     List<String> resourcePaths = const [],
     List<String> allowedRoots = const [],
     String? jobId,
+    void Function(int progress)? onProgress,
   }) async {
-    final result = await _channel.invokeMapMethod<String, Object?>('muxHls', {
-      'playlist': playlist,
-      'output': output,
-      'resourcePaths': resourcePaths,
-      'allowedRoots': allowedRoots,
-      'jobId': jobId ?? 'export-${DateTime.now().microsecondsSinceEpoch}',
-    });
-    return result?['output'] as String? ?? output;
+    final resolvedJobId =
+        jobId ?? 'export-${DateTime.now().microsecondsSinceEpoch}';
+    if (onProgress != null) _progressCallbacks[resolvedJobId] = onProgress;
+    try {
+      final result = await _channel.invokeMapMethod<String, Object?>('muxHls', {
+        'playlist': playlist,
+        'output': output,
+        'resourcePaths': resourcePaths,
+        'allowedRoots': allowedRoots,
+        'jobId': resolvedJobId,
+      });
+      return result?['output'] as String? ?? output;
+    } finally {
+      _progressCallbacks.remove(resolvedJobId);
+    }
+  }
+
+  Future<void> _onNativeEvent(MethodCall call) async {
+    if (call.method != 'exportProgress' || call.arguments is! Map) return;
+    final raw = Map<String, Object?>.from(call.arguments as Map);
+    final jobId = raw['jobId'] as String?;
+    final progress = (raw['progress'] as num?)?.toInt();
+    if (jobId == null || progress == null) return;
+    _progressCallbacks[jobId]?.call(progress.clamp(0, 100).toInt());
   }
 
   Future<bool> validateOutput(String path, {String? jobId}) async =>

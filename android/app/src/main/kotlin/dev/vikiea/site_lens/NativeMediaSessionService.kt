@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.content.pm.ServiceInfo
 import android.view.Surface
 import androidx.core.content.ContextCompat
@@ -48,9 +49,11 @@ class NativeMediaSessionService : MediaSessionService() {
     private var mediaUri: String? = null
     private var mediaMime: String = ""
     private var mediaIsHls: Boolean = false
+    private var mediaOpenedAtElapsedMs = 0L
     private var speed = 1f
     private var state = "stopped"
     private var lastError: String? = null
+    private var sourceRetryCount = 0
     private var userPaused = false
     private var stopping = false
     private var engineReleased = false
@@ -148,7 +151,10 @@ class NativeMediaSessionService : MediaSessionService() {
         )
         player.setHandleAudioBecomingNoisy(true)
         player.addListener(object : Player.Listener {
-            override fun onPlaybackStateChanged(playbackState: Int) = syncState()
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) sourceRetryCount = 0
+                syncState()
+            }
             override fun onIsPlayingChanged(isPlaying: Boolean) = syncState()
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
                 if (NativeMediaSessionPolicy.isExplicitPlayWhenReadyChange(reason)) {
@@ -157,13 +163,38 @@ class NativeMediaSessionService : MediaSessionService() {
                 syncState()
             }
             override fun onPlayerError(error: PlaybackException) {
+                // ExoPlayer reports elapsed-realtime timestamps. An error
+                // posted by the previous item after a rapid switch must not
+                // retry or fail the newly opened media item.
+                if (sessionId == null || error.timestampMs < mediaOpenedAtElapsedMs) {
+                    syncState()
+                    return
+                }
+                val recoverable = isRecoverableSourceError(error)
+                if (recoverable && sourceRetryCount == 0 && sessionId != null) {
+                    sourceRetryCount++
+                    state = "preparing"
+                    publish()
+                    retrySourcePlayback()
+                    return
+                }
                 state = "failed"
-                lastError = "${error.errorCodeName}:${error.message ?: "播放失败"}"
+                lastError = buildString {
+                    append(error.errorCodeName)
+                    append(": ").append(error.message ?: "播放失败")
+                    append("; recoverable=").append(recoverable)
+                    append("; mediaItem=")
+                        .append(player.currentMediaItem?.localConfiguration?.uri?.scheme ?: "none")
+                    error.cause?.let {
+                        append("; cause=").append(it.javaClass.simpleName)
+                        append(":").append(it.message ?: "")
+                    }
+                }
                 NativeCrashStore.append(
                     this@NativeMediaSessionService,
                     module = "media.session",
                     message = "后台媒体播放失败",
-                    details = error.stackTraceToString(),
+                    details = lastError + "\n" + error.stackTraceToString(),
                     contextValue = "session=${sessionId ?: "unknown"}",
                 )
                 publish()
@@ -186,6 +217,13 @@ class NativeMediaSessionService : MediaSessionService() {
         setShowNotificationForIdlePlayer(SHOW_NOTIFICATION_FOR_IDLE_PLAYER_AFTER_STOP_OR_ERROR)
         drainPending()
     }
+
+    private fun isRecoverableSourceError(error: PlaybackException): Boolean =
+        error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+            error.errorCode == PlaybackException.ERROR_CODE_TIMEOUT ||
+            error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
+            error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
 
     /** Android 14 requires a foreground service to promote itself promptly.
      * MediaSessionService will subsequently update the media notification, but
@@ -212,6 +250,11 @@ class NativeMediaSessionService : MediaSessionService() {
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = mediaSession
+
+    private fun retrySourcePlayback() {
+        player.playWhenReady = !userPaused
+        player.prepare()
+    }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         if (sessionId == null) {
@@ -363,12 +406,15 @@ class NativeMediaSessionService : MediaSessionService() {
             mediaUri = request.uri
             mediaMime = request.mime
             mediaIsHls = request.hls
+            mediaOpenedAtElapsedMs = SystemClock.elapsedRealtime()
             title = request.title.ifBlank { "Site Lens" }.take(512)
             speed = 1f
             lastError = null
+            sourceRetryCount = 0
             userPaused = false
             clearRestorable()
             val item = MediaItem.Builder()
+                .setMediaId(sessionId ?: "")
                 .setUri(uri)
                 .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build())
                 .apply { if (request.mime.isNotBlank()) setMimeType(request.mime) }

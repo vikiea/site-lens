@@ -703,7 +703,158 @@ class MediaStorageService extends ChangeNotifier {
     return entries == null ? null : List<MediaStorageEntry>.of(entries);
   }
 
+  /// Builds a directory snapshot from the durable media catalog without
+  /// touching the provider or filesystem. It is intentionally a fallback for
+  /// first navigation into a directory that has not been enumerated yet; the
+  /// fresh provider read still reconciles and replaces it afterward.
+  List<MediaStorageEntry>? indexedDirectorySnapshot({
+    required MediaStorageRoot root,
+    required String directory,
+  }) {
+    final target = _relativeDirectory(root.location, directory);
+    if (target == null) return null;
+    final entries = <String, MediaStorageEntry>{};
+    for (final item in library.items) {
+      final relative = _artifactRelativePath(root, item);
+      if (relative == null || relative.isEmpty) continue;
+      final remainder = _relativeChild(relative, target);
+      if (remainder == null || remainder.isEmpty) continue;
+      final segments = remainder.split('/');
+      final name = segments.first;
+      if (segments.length == 1) {
+        entries[name] = MediaStorageEntry(
+          location: item.location,
+          name: item.name,
+          directory: false,
+          size: item.size,
+          modifiedMs: item.createdAt.millisecondsSinceEpoch,
+        );
+      } else {
+        entries.putIfAbsent(
+          name,
+          () => MediaStorageEntry(
+            location: _childLocation(directory, name),
+            name: name,
+            directory: true,
+            size: 0,
+            modifiedMs: item.createdAt.millisecondsSinceEpoch,
+          ),
+        );
+      }
+    }
+    if (entries.isEmpty) return null;
+    final result = entries.values.toList()
+      ..sort((left, right) {
+        if (left.directory != right.directory) {
+          return left.directory ? -1 : 1;
+        }
+        return left.name.toLowerCase().compareTo(right.name.toLowerCase());
+      });
+    return List<MediaStorageEntry>.unmodifiable(result);
+  }
+
   void invalidateDirectoryCache() => _directoryCache.clear();
+
+  String? _artifactRelativePath(MediaStorageRoot root, MediaArtifact item) {
+    if (root.kind == MediaStorageKind.safTree) {
+      if (item.storageRootId != null && item.storageRootId != root.location) {
+        return null;
+      }
+      final persisted = item.relativePath?.trim();
+      if (persisted != null && persisted.isNotEmpty) {
+        return _normalizeRelative(persisted);
+      }
+      return _contentRelativePath(root.location, item.location);
+    }
+    final rootPath = _localPath(root.location);
+    final itemPath = _localPath(item.location);
+    if (rootPath == null || itemPath == null) return null;
+    final normalizedRoot = p.normalize(rootPath);
+    final normalizedItem = p.normalize(itemPath);
+    if (normalizedItem == normalizedRoot ||
+        !p.isWithin(normalizedRoot, normalizedItem)) {
+      return null;
+    }
+    return _normalizeRelative(p.relative(normalizedItem, from: normalizedRoot));
+  }
+
+  String? _relativeDirectory(String root, String directory) {
+    final rootUri = Uri.tryParse(root);
+    final directoryUri = Uri.tryParse(directory);
+    if (rootUri?.scheme == 'content' || directoryUri?.scheme == 'content') {
+      return _contentRelativePath(root, directory);
+    }
+    final rootPath = _localPath(root);
+    final directoryPath = _localPath(directory);
+    if (rootPath == null || directoryPath == null) return null;
+    final normalizedRoot = p.normalize(rootPath);
+    final normalizedDirectory = p.normalize(directoryPath);
+    if (normalizedDirectory == normalizedRoot) return '';
+    if (!p.isWithin(normalizedRoot, normalizedDirectory)) return null;
+    return _normalizeRelative(
+      p.relative(normalizedDirectory, from: normalizedRoot),
+    );
+  }
+
+  String? _contentRelativePath(String root, String location) {
+    final rootUri = Uri.tryParse(root);
+    final locationUri = Uri.tryParse(location);
+    if (rootUri?.scheme != 'content' || locationUri?.scheme != 'content') {
+      return null;
+    }
+    if (rootUri!.authority != locationUri!.authority) return null;
+    final rootSegments = rootUri.pathSegments;
+    final locationSegments = locationUri.pathSegments;
+    final rootTree = rootSegments.indexOf('tree');
+    final locationTree = locationSegments.indexOf('tree');
+    final rootDocument = rootSegments.indexOf('document');
+    final locationDocument = locationSegments.indexOf('document');
+    if (rootTree < 0 || locationTree < 0 || locationDocument < 0) {
+      return null;
+    }
+    final rootTreeId = rootSegments
+        .sublist(rootTree + 1, rootDocument > rootTree ? rootDocument : null)
+        .join('/');
+    final locationTreeId = locationSegments
+        .sublist(locationTree + 1, locationDocument)
+        .join('/');
+    if (rootTreeId != locationTreeId) return null;
+    final rootDocumentId = rootDocument > rootTree
+        ? rootSegments.sublist(rootDocument + 1).join('/')
+        : rootTreeId;
+    final locationDocumentId = locationSegments
+        .sublist(locationDocument + 1)
+        .join('/');
+    if (locationDocumentId == rootDocumentId) return '';
+    if (!locationDocumentId.startsWith('$rootDocumentId/')) return null;
+    return _normalizeRelative(
+      locationDocumentId.substring(rootDocumentId.length + 1),
+    );
+  }
+
+  String? _relativeChild(String value, String parent) {
+    final normalizedValue = _normalizeRelative(value);
+    final normalizedParent = _normalizeRelative(parent);
+    if (normalizedParent.isEmpty) return normalizedValue;
+    if (normalizedValue == normalizedParent) return '';
+    final prefix = '$normalizedParent/';
+    if (!normalizedValue.startsWith(prefix)) return null;
+    return normalizedValue.substring(prefix.length);
+  }
+
+  String _normalizeRelative(String value) => value
+      .replaceAll('\\', '/')
+      .split('/')
+      .where((segment) => segment.isNotEmpty && segment != '.')
+      .join('/');
+
+  String _childLocation(String directory, String name) {
+    final uri = Uri.tryParse(directory);
+    if (uri?.scheme == 'content') {
+      return uri!.replace(pathSegments: [...uri.pathSegments, name]).toString();
+    }
+    return p.join(_localPath(directory) ?? directory, name);
+  }
 
   String _directoryKey(String rootId, String directory) =>
       '$rootId\n$directory';

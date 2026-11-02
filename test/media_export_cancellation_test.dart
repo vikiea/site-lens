@@ -30,8 +30,10 @@ class _ExportRuntime extends NativeExportRuntime {
     List<String> resourcePaths = const [],
     List<String> allowedRoots = const [],
     String? jobId,
+    void Function(int progress)? onProgress,
   }) async {
     await File(output).writeAsBytes([1, 2, 3]);
+    onProgress?.call(50);
     started.complete();
     await stopped.future;
     if (cancellations.isNotEmpty) {

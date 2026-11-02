@@ -279,10 +279,11 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
             manager.createNotificationChannel(
                 NotificationChannel(CHANNEL, "媒体下载", NotificationManager.IMPORTANCE_LOW),
             )
+            val progressLabel = if (taskId.startsWith("export:")) "导出中" else "下载中"
             val content = if (total != null && total > 0L) {
-                "下载中 · ${(bytes * 100 / total).coerceIn(0L, 100L)}%"
+                "$progressLabel · ${(bytes * 100 / total).coerceIn(0L, 100L)}%"
             } else {
-                "下载中 · ${bytes / (1024 * 1024)} MB"
+                "$progressLabel · ${bytes / (1024 * 1024)} MB"
             }
             val builder = Notification.Builder(context, CHANNEL)
                 .setSmallIcon(android.R.drawable.stat_sys_download)

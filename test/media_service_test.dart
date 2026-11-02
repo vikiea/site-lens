@@ -101,9 +101,11 @@ class _CaptureExportRuntime extends NativeExportRuntime {
     List<String> resourcePaths = const [],
     List<String> allowedRoots = const [],
     String? jobId,
+    void Function(int progress)? onProgress,
   }) async {
     muxedResources = List.of(resourcePaths);
     muxedRoots = List.of(allowedRoots);
+    onProgress?.call(50);
     await File(output).writeAsBytes([9, 8, 7]);
     return output;
   }

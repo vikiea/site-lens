@@ -300,7 +300,10 @@ class MainActivity : FlutterActivity() {
 
     private fun registerNativeExportChannel(flutterEngine: FlutterEngine) {
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/native_export")
-        nativeExport = NativeExportRuntime(this).also { channel.setMethodCallHandler(it) }
+        nativeExport = NativeExportRuntime(this).also {
+            it.attach(channel)
+            channel.setMethodCallHandler(it)
+        }
     }
 
     private fun registerDlnaChannel(flutterEngine: FlutterEngine) {

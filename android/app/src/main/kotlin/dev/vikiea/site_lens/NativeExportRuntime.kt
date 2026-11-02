@@ -34,6 +34,7 @@ import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ExoPlayerAssetLoader
+import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
 import androidx.media3.common.util.Clock
 import android.os.Handler
@@ -46,6 +47,7 @@ import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -62,9 +64,14 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
     private val worker = Executors.newFixedThreadPool(2) { runnable ->
         Thread(runnable, "site-lens-media-io").apply { isDaemon = true }
     }
+    // Metadata/frame inspection and Transformer both allocate Media3/native
+    // decoder state. Serialize only these heavy operations so thumbnail loads
+    // cannot overlap an export and push the app into native memory pressure.
+    private val heavyMediaGate = Semaphore(1)
     private val main = Handler(Looper.getMainLooper())
+    @Volatile private var progressChannel: MethodChannel? = null
     @Volatile private var disposed = false
-    @Volatile private var activeCancellation: AtomicBoolean? = null
+    private val operationCancellation = ThreadLocal<AtomicBoolean?>()
     private val cancellations = ConcurrentHashMap<String, AtomicBoolean>()
     private val cancelledJobs = ConcurrentHashMap.newKeySet<String>()
     private val verifiedTreeDocuments = ConcurrentHashMap<String, MutableSet<String>>()
@@ -79,6 +86,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         private const val MAX_INSPECTION_COPY_BYTES = 256L * 1024 * 1024
         private const val INSPECTION_COPY_BUFFER_BYTES = 128 * 1024
         private const val STALE_INSPECTION_TEMP_MILLIS = 60 * 60 * 1000L
+        private const val PROGRESS_POLL_INTERVAL_MS = 200L
     }
 
     init {
@@ -90,11 +98,15 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
 
     private external fun nativeValidatePath(path: String, root: String): Boolean
 
+    fun attach(channel: MethodChannel) {
+        progressChannel = channel
+    }
+
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         if (disposed) return
         if (call.method == "cancel") {
             val jobId = call.argument<String>("jobId")
-            if (jobId == null) activeCancellation?.set(true)
+            if (jobId == null) cancellations.values.forEach { it.set(true) }
             else if (cancellations[jobId]?.let { it.set(true); true } != true) cancelledJobs.add(jobId)
             result.success(null)
             return
@@ -138,6 +150,30 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             result.success(null)
             return
         }
+        if (call.method == "beginBackgroundExport") {
+            runCatching {
+                NativeMediaExportService.begin(
+                    context,
+                    call.argument<String>("taskId") ?: error("缺少导出任务 ID"),
+                )
+            }.fold(
+                onSuccess = { result.success(null) },
+                onFailure = { error -> result.error("media_export", error.message, null) },
+            )
+            return
+        }
+        if (call.method == "endBackgroundExport") {
+            runCatching {
+                NativeMediaExportService.end(
+                    context,
+                    call.argument<String>("taskId") ?: error("缺少导出任务 ID"),
+                )
+            }.fold(
+                onSuccess = { result.success(null) },
+                onFailure = { error -> result.error("media_export", error.message, null) },
+            )
+            return
+        }
         val supported = setOf("validateLocalInput", "muxHls", "validateOutput", "deliver", "deliverToDirectory", "checkDirectory", "checkDirectDirectory", "isDocumentWithinTree", "listDirectory", "listDirectDirectory", "createDirectory", "copyEntry", "stat", "sha256", "inspect", "inspectSamples", "scanMedia", "materialize", "rename", "move", "delete", "deleteOwnedSources", "copyVerified")
         if (call.method !in supported) { result.notImplemented(); return }
         val jobId = call.argument<String>("jobId") ?: "job-${System.nanoTime()}"
@@ -152,7 +188,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 }
                 return@execute
             }
-            activeCancellation = cancellation
+            operationCancellation.set(cancellation)
             try {
                 check(!cancellation.get()) { "导出已取消" }
                 val reservationId = call.argument<String>("mutationReservationId")
@@ -172,12 +208,12 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                         scope + MediaFileLeaseRegistry.Scope.source(source)
                     }
                     NativeMediaFileLeases.registry.mutate(exportScope) {
-                        execute(call, cancellation)
+                        executeWithHeavyGate(call, cancellation)
                     }
                 } else {
                     NativeMediaFileLeases.registry.acquireRead(readScope(call)).use {
                         NativeMediaFileLeases.registry.mutate(mutationScope(call)) {
-                            execute(call, cancellation)
+                            executeWithHeavyGate(call, cancellation)
                         }
                     }
                 }
@@ -185,11 +221,40 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             } catch (error: Exception) {
                 main.post { if (!disposed) fail(call, result, error) }
             } finally {
-                activeCancellation = null
+                operationCancellation.remove()
                 cancellations.remove(jobId)
             }
         }
     }
+
+    private fun executeWithHeavyGate(call: MethodCall, cancellation: AtomicBoolean): Any? {
+        val heavy = call.method in setOf(
+            "inspect",
+            "inspectSamples",
+            "muxHls",
+            "validateOutput",
+        )
+        return if (heavy) {
+            withHeavyMediaGate { execute(call, cancellation) }
+        } else {
+            execute(call, cancellation)
+        }
+    }
+
+    private fun <T> withHeavyMediaGate(block: () -> T): T {
+        heavyMediaGate.acquire()
+        return try {
+            block()
+        } finally {
+            heavyMediaGate.release()
+        }
+    }
+
+    private fun currentCancellation(): AtomicBoolean =
+        operationCancellation.get() ?: AtomicBoolean(false)
+
+    private fun isCurrentOperationActive(): Boolean =
+        !disposed && operationCancellation.get()?.get() != true
 
     private fun readScope(call: MethodCall): MediaFileLeaseRegistry.Scope {
         val raw = when (call.method) {
@@ -318,6 +383,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                     cancellation,
                     hlsAllowedRoots(call),
                     hlsResourcePaths(call).map { File(it).canonicalPath }.toSet(),
+                    call.argument<String>("jobId") ?: "export-${System.nanoTime()}",
                 )
                 mapOf("output" to output)
             }
@@ -430,8 +496,9 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
     fun dispose() {
         if (disposed) return
         disposed = true
+        progressChannel = null
+        NativeMediaExportService.stop(context)
         cancellations.values.forEach { it.set(true) }
-        activeCancellation?.set(true)
         // The pending result belongs to the old Flutter engine. Clear it
         // without calling back into an engine that is being detached.
         pendingDirectoryResult = null
@@ -545,6 +612,18 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         check(!cancelled.get() && !disposed) { "导出已取消" }
     }
 
+    private fun reportProgress(jobId: String, progress: Int) {
+        val channel = progressChannel ?: return
+        main.post {
+            if (!disposed) {
+                channel.invokeMethod(
+                    "exportProgress",
+                    mapOf("jobId" to jobId, "progress" to progress.coerceIn(0, 100)),
+                )
+            }
+        }
+    }
+
     private data class TrackSamples(
         val format: MediaFormat,
         val pts: MutableList<Long> = mutableListOf(),
@@ -568,6 +647,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         cancelled: AtomicBoolean,
         allowedRoots: List<File>,
         declaredResources: Set<String>,
+        jobId: String,
     ) {
         validateLocal(playlistPath)
         val output = File(outputPath).canonicalFile
@@ -628,7 +708,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             val normalized = writeTransformerPlaylist(segments, workDir)
             val allowed = (segments.flatMap { listOfNotNull(it.file, it.key, it.init, it.initKey) } + normalized)
                 .map { it.canonicalPath }.toSet()
-            val export = transformHls(normalized, temp, allowed, cancelled, inputTimeline)
+            val export = transformHls(normalized, temp, allowed, cancelled, inputTimeline, jobId)
             require(export.videoConversionProcess == ExportResult.CONVERSION_PROCESS_TRANSMUXED &&
                 export.audioConversionProcess == if (audioSegments == 0) ExportResult.CONVERSION_PROCESS_NA
                     else ExportResult.CONVERSION_PROCESS_TRANSMUXED) { "HLS 导出不允许转码" }
@@ -687,7 +767,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
 
     private fun transformHls(
         playlist: File, output: File, allowed: Set<String>, cancelled: AtomicBoolean,
-        inputTimeline: Map<String, Media3SampleTrace>,
+        inputTimeline: Map<String, Media3SampleTrace>, jobId: String,
     ): ExportResult {
         val thread = HandlerThread("site-lens-transformer").apply { start() }
         val handler = Handler(thread.looper)
@@ -695,12 +775,38 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         val terminal = AtomicBoolean(false)
         val export = AtomicReference<ExportResult?>(null)
         val failure = AtomicReference<Exception?>(null)
+        val progress = ProgressHolder()
+        var lastProgress = -1
         var transformer: Transformer? = null // Accessed only on application Looper.
         fun finish(value: ExportResult? = null, error: Exception? = null) {
             if (terminal.compareAndSet(false, true)) {
                 export.set(value)
                 failure.set(error)
+                if (value != null) reportProgress(jobId, 100)
                 settled.countDown()
+            }
+        }
+        val progressPoller = object : Runnable {
+            override fun run() {
+                if (terminal.get()) return
+                val active = transformer
+                if (active == null) {
+                    handler.postDelayed(this, PROGRESS_POLL_INTERVAL_MS)
+                    return
+                }
+                try {
+                    if (active.getProgress(progress) == Transformer.PROGRESS_STATE_AVAILABLE &&
+                        progress.progress != lastProgress
+                    ) {
+                        lastProgress = progress.progress
+                        reportProgress(jobId, progress.progress)
+                    }
+                    if (terminal.get()) return
+                    handler.postDelayed(this, PROGRESS_POLL_INTERVAL_MS)
+                } catch (error: Exception) {
+                    runCatching { active.cancel() }
+                    finish(error = error)
+                }
             }
         }
         handler.post {
@@ -735,6 +841,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 val composition = Composition.Builder(EditedMediaItemSequence.withAudioAndVideoFrom(listOf(item)))
                     .setTransmuxAudio(true).setTransmuxVideo(true).build()
                 created.start(composition, output.path)
+                handler.post(progressPoller)
             } catch (error: Exception) {
                 // start() can fail after acquiring resources; cancel on the same
                 // application Looper before notifying the worker to release files.
@@ -761,6 +868,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 }
             }
         } finally {
+            handler.removeCallbacks(progressPoller)
             thread.quitSafely()
             if (interrupted) Thread.currentThread().interrupt()
         }
@@ -1150,7 +1258,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
     private fun inspectSamples(source: String): Map<String, Any?> {
         stat(source)
         return withInspectionSource(source) { uri ->
-            val tracks = readSamples(uri, activeCancellation ?: AtomicBoolean(false), strict = false)
+            val tracks = readSamples(uri, currentCancellation(), strict = false)
             mapOf("tracks" to tracks.values.map { track ->
                 val format = track.format
                 fun integer(key: String): Int? = if (format.containsKey(key)) format.getInteger(key) else null
@@ -1181,7 +1289,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         val file = File(path).canonicalFile
         if (!file.isFile || file.length() <= 0L) return false
         require(nativeValidatePath(file.path, filesRoot.path)) { "输出路径越界" }
-        val cancelled = activeCancellation ?: error("输出检查缺少任务所有权")
+        val cancelled = operationCancellation.get() ?: error("输出检查缺少任务所有权")
         checkActive(cancelled)
         val container = Media3ExportValidation.inspect(file) { checkActive(cancelled) }
         val tracks = readSamples(Uri.fromFile(file), cancelled)
@@ -1229,7 +1337,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             output.use {
                 val buffer = ByteArray(128 * 1024)
                 while (true) {
-                    check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                    check(isCurrentOperationActive()) { "导出已取消" }
                     val read = input.read(buffer)
                     if (read < 0) break
                     it.write(buffer, 0, read)
@@ -1245,7 +1353,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         openTargetInput().use { input ->
             val buffer = ByteArray(128 * 1024)
             while (true) {
-                check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                check(isCurrentOperationActive()) { "导出已取消" }
                 val read = input.read(buffer)
                 if (read < 0) break
                 actual.update(buffer, 0, read)
@@ -1266,7 +1374,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             NativeMediaFileLeases.registry.acquireRead(MediaFileLeaseRegistry.Scope.source(source))
         return reader.use {
             if (reuseExistingVerified && verifyExistingMediaCopy(target, { sourceStream(source) }, {
-                    check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                    check(isCurrentOperationActive()) { "导出已取消" }
                 })) return@use target.path
             require(!target.exists()) { "目标目录存在同名文件" }
             require(!temporary.exists()) { "临时文件已存在，请先清理" }
@@ -1277,7 +1385,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 sourceStream(source).use { input -> temporary.outputStream().use { output ->
                     val buffer = ByteArray(128 * 1024)
                     while (true) {
-                        check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                        check(isCurrentOperationActive()) { "导出已取消" }
                         val read = input.read(buffer)
                         if (read < 0) break
                         output.write(buffer, 0, read)
@@ -1290,14 +1398,14 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 temporary.inputStream().use { input ->
                     val buffer = ByteArray(128 * 1024)
                     while (true) {
-                        check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                        check(isCurrentOperationActive()) { "导出已取消" }
                         val read = input.read(buffer)
                         if (read < 0) break
                         actual.update(buffer, 0, read)
                     }
                 }
                 require(actual.digest().contentEquals(expected.digest())) { "复制文件校验失败" }
-                check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                check(isCurrentOperationActive()) { "导出已取消" }
                 check(!target.exists() && temporary.renameTo(target)) { "无法发布复制文件" }
                 target.path
             } finally { if (temporary.exists()) temporary.delete() }
@@ -1322,7 +1430,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             require(nativeValidatePath(target.path, directRoot!!.path)) { "媒体文件越界" }
             if (target.exists()) {
                 val same = verifyExistingMediaCopy(target, { sourceStream(sourcePath) }, {
-                    check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                    check(isCurrentOperationActive()) { "导出已取消" }
                 })
                 if (same && reuseExistingIfSameSize) return target.path
                 if (failOnConflict) error("目标文件同名但内容不同")
@@ -1402,7 +1510,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 output.use {
                     val buffer = ByteArray(128 * 1024)
                     while (true) {
-                        check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                        check(isCurrentOperationActive()) { "导出已取消" }
                         val read = input.read(buffer)
                         if (read < 0) break
                         it.write(buffer, 0, read)
@@ -1418,7 +1526,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             context.contentResolver.openInputStream(outputTarget)!!.use { input ->
                 val buffer = ByteArray(128 * 1024)
                 while (true) {
-                    check(!disposed && activeCancellation?.get() != true) { "导出已取消" }
+                    check(isCurrentOperationActive()) { "导出已取消" }
                     val read = input.read(buffer)
                     if (read < 0) break
                     written.update(buffer, 0, read)
@@ -2029,7 +2137,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
         try {
             while (true) {
-                checkActive(activeCancellation ?: AtomicBoolean(false))
+                checkActive(currentCancellation())
                 if (System.nanoTime() >= deadline) error("媒体检查超时")
                 try { return future.get(50, TimeUnit.MILLISECONDS) }
                 catch (_: java.util.concurrent.TimeoutException) { /* Check cancellation/deadline. */ }
@@ -2044,7 +2152,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
 
     private fun preserveInspectionControl(error: Exception) {
         if (error.message == "媒体检查超时") throw error
-        checkActive(activeCancellation ?: AtomicBoolean(false))
+        checkActive(currentCancellation())
     }
 
     private fun inspect(source: String): Map<String, Any?> {
@@ -2117,7 +2225,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                 }
             }
             metadata["thumbnailPath"] = thumbnail.takeIf { it.isFile && it.length() > 0 }?.path
-            checkActive(activeCancellation ?: AtomicBoolean(false))
+            checkActive(currentCancellation())
             metadata
         }
     }
@@ -2149,7 +2257,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
                     val buffer = ByteArray(INSPECTION_COPY_BUFFER_BYTES)
                     var copied = 0L
                     while (true) {
-                        checkActive(activeCancellation ?: AtomicBoolean(false))
+                        checkActive(currentCancellation())
                         val count = input.read(buffer)
                         if (count < 0) break
                         require(count > 0) { "媒体文件读取无进展" }
