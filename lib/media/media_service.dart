@@ -33,16 +33,23 @@ class MediaErrorCode {
 }
 
 String? mediaEpisodeLabel(String value) {
+  final number = mediaEpisodeNumber(value);
+  return number == null ? null : '第$number集';
+}
+
+int? mediaEpisodeNumber(String value) {
   final match = RegExp(
-    r'(?:第\s*(\d+)\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*(\d+)\b)',
+    r'(?:第\s*(\d+)\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*(\d+)\b|\bS\s*\d+\s*E\s*(\d+)\b)',
     caseSensitive: false,
   ).firstMatch(value);
   final route = RegExp(
     r'(?:vodplay|play)/[0-9]+-[0-9]+-([0-9]+)(?:[./?#]|$)',
     caseSensitive: false,
   ).firstMatch(value);
-  final number = match?.group(1) ?? match?.group(2) ?? route?.group(1);
-  return number == null ? null : '第${int.parse(number)}集';
+  final raw =
+      match?.group(1) ?? match?.group(2) ?? match?.group(3) ?? route?.group(1);
+  final number = raw == null ? null : int.tryParse(raw);
+  return number != null && number > 0 ? number : null;
 }
 
 String mediaTitleForEpisode(String title, int episodeNumber) {
@@ -118,28 +125,102 @@ List<MediaTask> mediaPlaylistForTasks(
       )
       .toList();
   if (!items.any((task) => task.id == current.id) &&
-      (current.state == MediaTaskState.completed ||
-          current.state == MediaTaskState.playable)) {
+      mediaTaskIsPlayable(current)) {
     items.add(current);
   }
-  int? episode(MediaTask task) {
-    if (task.episodeNumber != null) return task.episodeNumber;
-    final match = RegExp(r'(\d+)').firstMatch(task.episodeLabel ?? '');
-    return match == null ? null : int.tryParse(match.group(1)!);
-  }
+  return sortMediaTasksByEpisode(items);
+}
 
-  items.sort((left, right) {
-    final a = episode(left);
-    final b = episode(right);
-    if (a != null && b != null && a != b) return a.compareTo(b);
-    if (a != null && b == null) return -1;
-    if (a == null && b != null) return 1;
-    final title = left.displayName.toLowerCase().compareTo(
-      right.displayName.toLowerCase(),
-    );
-    return title == 0 ? left.updatedAt.compareTo(right.updatedAt) : title;
-  });
+/// Builds a playlist from an already scoped folder snapshot.
+///
+/// The caller owns the scope: this is intentionally different from
+/// [mediaPlaylistForTasks], which groups tasks by series identity for playback
+/// launched outside a folder. A physical media folder may contain more than
+/// one series, and a task folder is the user's explicit playlist boundary.
+List<MediaTask> mediaPlaylistForFolder(
+  Iterable<MediaTask> tasks,
+  MediaTask current, {
+  bool playableOnly = true,
+}) {
+  final items = tasks
+      .where((task) => !playableOnly || mediaTaskIsPlayable(task))
+      .toList();
+  if (!items.any((task) => task.id == current.id) &&
+      (!playableOnly || mediaTaskIsPlayable(current))) {
+    items.add(current);
+  }
+  return sortMediaTasksByEpisode(items);
+}
+
+bool mediaTaskIsPlayable(MediaTask task) =>
+    task.state == MediaTaskState.completed ||
+    task.state == MediaTaskState.playable;
+
+int? mediaEpisodeNumberForTask(MediaTask task) {
+  final typed = task.episodeNumber;
+  if (typed != null && typed > 0) return typed;
+  for (final value in <String?>[
+    task.episodeLabel,
+    task.episodeFileName,
+    task.displayName,
+    task.displayTitle,
+    task.sourceUrl.toString(),
+  ]) {
+    final number = value == null ? null : mediaEpisodeNumber(value);
+    if (number != null) return number;
+  }
+  return null;
+}
+
+List<MediaTask> sortMediaTasksByEpisode(Iterable<MediaTask> tasks) {
+  final items = tasks.toList();
+  items.sort(compareMediaTasksByEpisode);
   return List.unmodifiable(items);
+}
+
+int compareMediaTasksByEpisode(MediaTask left, MediaTask right) {
+  if (left.id == right.id) return 0;
+  final leftEpisode = mediaEpisodeNumberForTask(left);
+  final rightEpisode = mediaEpisodeNumberForTask(right);
+  if (leftEpisode != null &&
+      rightEpisode != null &&
+      leftEpisode != rightEpisode) {
+    return leftEpisode.compareTo(rightEpisode);
+  }
+  if (leftEpisode != null) return -1;
+  if (rightEpisode != null) return 1;
+
+  final name = _naturalMediaNameCompare(left.displayName, right.displayName);
+  if (name != 0) return name;
+  final source = left.sourceUrl.toString().compareTo(
+    right.sourceUrl.toString(),
+  );
+  if (source != 0) return source;
+  final cache = left.cacheKey.compareTo(right.cacheKey);
+  if (cache != 0) return cache;
+  return left.id.compareTo(right.id);
+}
+
+int _naturalMediaNameCompare(String left, String right) {
+  final leftParts = RegExp(r'\d+|\D+').allMatches(left.toLowerCase());
+  final rightParts = RegExp(r'\d+|\D+').allMatches(right.toLowerCase());
+  final leftValues = leftParts.map((match) => match.group(0)!).toList();
+  final rightValues = rightParts.map((match) => match.group(0)!).toList();
+  for (
+    var index = 0;
+    index < leftValues.length && index < rightValues.length;
+    index++
+  ) {
+    final leftValue = leftValues[index];
+    final rightValue = rightValues[index];
+    final leftNumber = int.tryParse(leftValue);
+    final rightNumber = int.tryParse(rightValue);
+    final comparison = leftNumber != null && rightNumber != null
+        ? leftNumber.compareTo(rightNumber)
+        : leftValue.compareTo(rightValue);
+    if (comparison != 0) return comparison;
+  }
+  return leftValues.length.compareTo(rightValues.length);
 }
 
 String _mediaPlaylistGroupKey(MediaTask task) {
@@ -1115,11 +1196,13 @@ class MediaTaskStore extends ChangeNotifier {
         totalBytes != null && totalBytes < bytesDownloaded) {
       throw RangeError('媒体任务进度无效');
     }
-    final nextTotal = totalBytes ??
+    final nextTotal =
+        totalBytes ??
         (task.totalBytes != null && task.totalBytes! >= bytesDownloaded
             ? task.totalBytes
             : null);
-    if (task.bytesDownloaded == bytesDownloaded && task.totalBytes == nextTotal) {
+    if (task.bytesDownloaded == bytesDownloaded &&
+        task.totalBytes == nextTotal) {
       return task;
     }
     final next = task.copyWith(

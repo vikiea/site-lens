@@ -771,6 +771,119 @@ void main() {
     expect(playlist.map((task) => task.episodeLabel), ['第1集', '第2集']);
   });
 
+  test('folder playlists sort episode numbers instead of filenames', () {
+    final store = MediaTaskStore();
+    final tenth = store.create(
+      candidate(
+        id: 'episode-10',
+        title: '系列 - 第10集',
+        url: 'https://cdn.example/episode-10.mp4',
+      ),
+    );
+    final first = store.create(
+      candidate(
+        id: 'episode-1',
+        title: '系列 - 第1集',
+        url: 'https://cdn.example/episode-1.mp4',
+      ),
+    );
+    final second = store.create(
+      candidate(
+        id: 'episode-2',
+        title: '系列 - 第2集',
+        url: 'https://cdn.example/episode-2.mp4',
+      ),
+    );
+    for (final task in [tenth, first, second]) {
+      store.transition(task.id, MediaTaskState.downloading);
+      store.transition(task.id, MediaTaskState.completed);
+      store.transition(task.id, MediaTaskState.playable);
+    }
+
+    expect(mediaEpisodeNumber('系列 - 第10集'), 10);
+    final current = store.task(tenth.id)!;
+    final playlist = mediaPlaylistForFolder(store.tasks, current);
+    expect(playlist.map((task) => task.episodeLabel), ['第1集', '第2集', '第10集']);
+    expect(playlist.indexWhere((task) => task.id == current.id), 2);
+  });
+
+  test('folder playlist does not add tasks outside the supplied folder', () {
+    final store = MediaTaskStore();
+    final first = store.create(
+      candidate(
+        id: 'folder-a-1',
+        title: '系列甲 - 第1集',
+        url: 'https://cdn.example/folder-a-1.mp4',
+      ),
+      batchDirectory: '文件夹甲',
+    );
+    final second = store.create(
+      candidate(
+        id: 'folder-a-2',
+        title: '系列甲 - 第2集',
+        url: 'https://cdn.example/folder-a-2.mp4',
+      ),
+      batchDirectory: '文件夹甲',
+    );
+    final foreign = store.create(
+      candidate(
+        id: 'folder-b-1',
+        title: '系列乙 - 第1集',
+        url: 'https://cdn.example/folder-b-1.mp4',
+      ),
+      batchDirectory: '文件夹乙',
+    );
+    for (final task in [first, second, foreign]) {
+      store.transition(task.id, MediaTaskState.downloading);
+      store.transition(task.id, MediaTaskState.completed);
+      store.transition(task.id, MediaTaskState.playable);
+    }
+
+    final playlist = mediaPlaylistForFolder([
+      store.task(first.id)!,
+      store.task(second.id)!,
+    ], store.task(second.id)!);
+    expect(playlist.map((task) => task.episodeLabel), ['第1集', '第2集']);
+    expect(playlist.map((task) => task.id), isNot(contains(foreign.id)));
+  });
+
+  test('unknown episode names remain after known numeric episodes', () {
+    final store = MediaTaskStore();
+    final unknown = store.create(
+      candidate(
+        id: 'special',
+        title: '系列 - 特别篇',
+        url: 'https://cdn.example/special.mp4',
+      ),
+    );
+    final tenth = store.create(
+      candidate(
+        id: 'tenth',
+        title: '系列 - 第10集',
+        url: 'https://cdn.example/tenth.mp4',
+      ),
+    );
+    final first = store.create(
+      candidate(
+        id: 'first',
+        title: '系列 - 第1集',
+        url: 'https://cdn.example/first.mp4',
+      ),
+    );
+    for (final task in [unknown, tenth, first]) {
+      store.transition(task.id, MediaTaskState.downloading);
+      store.transition(task.id, MediaTaskState.completed);
+      store.transition(task.id, MediaTaskState.playable);
+    }
+
+    final playlist = mediaPlaylistForFolder([
+      store.task(unknown.id)!,
+      store.task(tenth.id)!,
+      store.task(first.id)!,
+    ], store.task(first.id)!);
+    expect(playlist.map(mediaEpisodeNumberForTask), [1, 10, null]);
+  });
+
   test(
     'media playlist isolates same-title tasks from another source origin',
     () {

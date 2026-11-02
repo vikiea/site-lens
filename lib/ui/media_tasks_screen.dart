@@ -237,6 +237,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   double _speedBeforeLongPress = 1;
   late int _playlistIndex;
   final _playlistRetained = <String>{};
+  Future<void>? _playlistSwitch;
 
   bool get _canControl =>
       !_closing &&
@@ -416,7 +417,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     } else if (widget.playlist.isEmpty) {
       _showGestureHint('当前没有可切换的集数');
     } else {
-      unawaited(_switchPlaylist(offset));
+      _queuePlaylistSwitch(offset);
     }
     _scheduleHide();
   }
@@ -610,6 +611,8 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
       return;
     }
     final targetIndex = _playlistIndex + offset;
+    final previousTask = widget.playlist[_playlistIndex];
+    final previousPositionMs = _session.positionMs;
     try {
       final next = await _openPlaylistTask(widget.playlist[targetIndex]);
       if (!mounted || _closing) {
@@ -625,8 +628,65 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
       );
       _scheduleHide();
     } catch (error) {
+      await _restorePlaylistTask(previousTask, previousPositionMs);
       if (mounted) showError(context, error);
     }
+  }
+
+  Future<void> _restorePlaylistTask(MediaTask task, int positionMs) async {
+    NativePlaybackSession? restoredSession;
+    try {
+      var restored = await _openPlaylistTask(task);
+      restoredSession = restored;
+      if (positionMs > 0 && mounted && !_closing) {
+        restored = await widget.app.nativeMedia.seek(
+          Duration(milliseconds: positionMs),
+          sessionId: restored.id,
+        );
+      }
+      if (!mounted || _closing) {
+        await widget.app.nativeMedia.close(sessionId: restored.id);
+        return;
+      }
+      setState(() => _session = restored);
+      _scheduleHide();
+    } catch (_) {
+      final session = restoredSession;
+      if (session != null && session.id.isNotEmpty) {
+        try {
+          await widget.app.nativeMedia.close(sessionId: session.id);
+        } catch (_) {
+          // The native service may already have stopped after a failed open.
+        }
+      }
+      if (!mounted || _closing) return;
+      setState(
+        () => _session = NativePlaybackSession(
+          id: '',
+          taskId: task.id,
+          candidateId: task.candidateId,
+          state: NativePlaybackState.failed,
+          errorCode: '播放切换失败，原媒体无法恢复',
+        ),
+      );
+    }
+  }
+
+  void _queuePlaylistSwitch(int offset) {
+    final previous = _playlistSwitch;
+    late final Future<void> scheduled;
+    scheduled =
+        () async {
+          try {
+            await previous;
+          } catch (_) {
+            // A failed switch must not block later requests in the same player.
+          }
+          await _switchPlaylist(offset);
+        }().whenComplete(() {
+          if (identical(_playlistSwitch, scheduled)) _playlistSwitch = null;
+        });
+    _playlistSwitch = scheduled;
   }
 
   Future<void> _showPlaylist() async {
@@ -668,7 +728,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
                       ? () => Navigator.of(sheetContext).pop()
                       : () {
                           Navigator.of(sheetContext).pop();
-                          unawaited(_switchPlaylist(index - _playlistIndex));
+                          _queuePlaylistSwitch(index - _playlistIndex);
                         },
                 ),
               );
@@ -1002,7 +1062,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
                           color: Colors.white,
                           icon: const Icon(Icons.skip_previous),
                           onPressed: _playlistIndex > 0
-                              ? () => _switchPlaylist(-1)
+                              ? () => _queuePlaylistSwitch(-1)
                               : null,
                         ),
                         IconButton(
@@ -1045,7 +1105,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
                           color: Colors.white,
                           icon: const Icon(Icons.skip_next),
                           onPressed: _playlistIndex < widget.playlist.length - 1
-                              ? () => _switchPlaylist(1)
+                              ? () => _queuePlaylistSwitch(1)
                               : null,
                         ),
                         IconButton(
@@ -1072,6 +1132,8 @@ Future<void> openMediaTaskPlayer(
   AppController app,
   MediaTask task, {
   bool preferExported = false,
+  Iterable<MediaTask>? playlistTasks,
+  bool playlistPlayableOnly = true,
 }) async {
   app.mediaTasks.retain(task.id);
   final prioritize =
@@ -1079,7 +1141,13 @@ Future<void> openMediaTaskPlayer(
       task.state == MediaTaskState.paused;
   if (prioritize) app.mediaDownloads.setTaskPriority(task.id, 100);
   try {
-    final playlist = mediaPlaylistForTasks(app.mediaTasks.tasks, task);
+    final playlist = playlistTasks == null
+        ? mediaPlaylistForTasks(app.mediaTasks.tasks, task)
+        : mediaPlaylistForFolder(
+            playlistTasks,
+            task,
+            playableOnly: playlistPlayableOnly,
+          );
     final playlistIndex = playlist.indexWhere((item) => item.id == task.id);
     final artifact = preferExported ? app.mediaLibrary.item(task.id) : null;
     final document = Uri.tryParse(artifact?.location ?? '');
@@ -1527,6 +1595,12 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
         ),
       );
     }
+    result.sort(
+      (left, right) => compareMediaTasksByEpisode(
+        app.mediaLibrary.presentationTask(left),
+        app.mediaLibrary.presentationTask(right),
+      ),
+    );
     return result;
   }
 
@@ -1694,7 +1768,17 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
         final task =
             app.mediaTasks.referenceTask(item.taskId) ??
             app.mediaLibrary.presentationTask(item);
-        await openMediaTaskPlayer(context, app, task, preferExported: true);
+        final folderPlaylist = _visiblePhysicalItems().map(
+          app.mediaLibrary.presentationTask,
+        );
+        await openMediaTaskPlayer(
+          context,
+          app,
+          task,
+          preferExported: true,
+          playlistTasks: folderPlaylist,
+          playlistPlayableOnly: false,
+        );
       case 'rescan':
         await _rescan();
       case 'cast':
@@ -3816,7 +3900,15 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   }
 
   Future<void> _play(MediaTask task) async {
-    await openMediaTaskPlayer(context, widget.app, task);
+    final folderPlaylist = widget.app.mediaTasks.tasks.where(
+      (item) => _organization.folderFor(item.id) == _browser.folderId,
+    );
+    await openMediaTaskPlayer(
+      context,
+      widget.app,
+      task,
+      playlistTasks: folderPlaylist,
+    );
   }
 
   Future<void> _togglePause(MediaTask task) async {
@@ -4070,9 +4162,11 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   @override
   Widget build(BuildContext context) {
     final allTasks = widget.app.mediaTasks.tasks;
-    final visibleTasks = allTasks
-        .where((task) => _organization.folderFor(task.id) == _browser.folderId)
-        .toList();
+    final visibleTasks = sortMediaTasksByEpisode(
+      allTasks.where(
+        (task) => _organization.folderFor(task.id) == _browser.folderId,
+      ),
+    );
     final folders = _browser.folders;
     final expandedRoot = _browser.folderId == null;
     final selectionTasks = expandedRoot ? allTasks : visibleTasks;
