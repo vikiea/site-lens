@@ -267,6 +267,74 @@ void main() {
   });
 
   test(
+    'structured task cache identity survives CDN and document generations',
+    () {
+      final first = candidate(
+        id: 'structured-first',
+        url: 'https://edge-wifi.example/live/index.m3u8?token=one&line=54',
+        sourceUrl: 'https://site.example/video/42/ep-1',
+        hostId: 7,
+        generation: 3,
+        seriesKey: 'series:42',
+        episodeNumber: 1,
+        representationRank: 1,
+        qualityLabel: '720p',
+        audioLabel: '原声',
+      );
+      final later = candidate(
+        id: 'structured-later',
+        url: 'https://edge-cell.example/live/index.m3u8?token=two&line=54',
+        sourceUrl: 'https://site.example/video/42/ep-1',
+        hostId: 8,
+        generation: 4,
+        seriesKey: 'series:42',
+        episodeNumber: 1,
+        representationRank: 1,
+        qualityLabel: '720p',
+        audioLabel: '原声',
+      );
+      final store = MediaTaskStore();
+
+      expect(store.cacheKey(first), store.cacheKey(later));
+    },
+  );
+
+  test('queued structured task rebinds its authorization context', () {
+    final first = candidate(
+      id: 'queued-old',
+      url: 'https://edge-wifi.example/episode/1.mp4?token=old',
+      sourceUrl: 'https://site.example/watch/series-42/episode-1',
+      hostId: 7,
+      generation: 3,
+      seriesKey: 'series:42',
+      episodeNumber: 1,
+      qualityLabel: '720p',
+      audioLabel: '原声',
+    );
+    final later = candidate(
+      id: 'queued-new',
+      url: 'https://edge-cell.example/episode/1.mp4?token=new',
+      sourceUrl: 'https://site.example/watch/series-42/episode-1',
+      hostId: 8,
+      generation: 4,
+      seriesKey: 'series:42',
+      episodeNumber: 1,
+      qualityLabel: '720p',
+      audioLabel: '原声',
+    );
+    final store = MediaTaskStore();
+    final task = store.create(first);
+    final rebound = store.create(later);
+
+    expect(rebound.id, task.id);
+    expect(rebound.candidateId, later.id);
+    expect(rebound.hostId, later.hostId);
+    expect(rebound.generation, later.generation);
+    expect(rebound.cacheKey, task.cacheKey);
+    expect(rebound.resourceKey, task.resourceKey);
+  });
+
+  test(
     'durable resource catalog converges task rows by resource identity',
     () async {
       final db = AppDatabase(NativeDatabase.memory());
@@ -709,20 +777,17 @@ void main() {
     expect(await File(migratedArtifact.location).readAsBytes(), [4, 5, 6]);
   });
 
-  test(
-    'legacy cache identity stays stable at its persisted directory',
-    () {
-      final store = MediaTaskStore();
-      final task = store.create(
-        candidate(title: '系统带我攻略弟弟（漫剧版） - 第1集'),
-        batchDirectory: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
-      );
+  test('legacy cache identity stays stable at its persisted directory', () {
+    final store = MediaTaskStore();
+    final task = store.create(
+      candidate(title: '系统带我攻略弟弟（漫剧版） - 第1集'),
+      batchDirectory: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
+    );
 
-      expect(task.batchDirectory, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
-      expect(task.storageDirectoryName, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
-      expect(mediaFolderDisplayName(task.batchDirectory!), '系统带我攻略弟弟（漫剧版）');
-    },
-  );
+    expect(task.batchDirectory, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
+    expect(task.storageDirectoryName, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
+    expect(mediaFolderDisplayName(task.batchDirectory!), '系统带我攻略弟弟（漫剧版）');
+  });
 
   test('batch directory survives media task persistence and restore', () async {
     final db = AppDatabase(NativeDatabase.memory());
@@ -1124,6 +1189,72 @@ void main() {
       ),
     );
   });
+
+  test('structured media identity survives a CDN authority change', () {
+    final first = candidate(
+      url: 'https://edge-wifi.example/live/index.m3u8?token=one&line=54',
+      sourceUrl: 'https://site.example/video/42/ep-1',
+      seriesKey: 'series:42',
+      episodeNumber: 1,
+      representationRank: 1,
+      qualityLabel: '720p',
+      audioLabel: '原声',
+    );
+    final second = candidate(
+      id: 'cdn-cell',
+      url: 'https://edge-cell.example/live/index.m3u8?token=two&line=54',
+      sourceUrl: 'https://site.example/video/42/ep-1',
+      seriesKey: 'series:42',
+      episodeNumber: 1,
+      representationRank: 1,
+      qualityLabel: '720p',
+      audioLabel: '原声',
+    );
+
+    expect(mediaCandidatesEquivalent(first, second), isTrue);
+    expect(
+      mediaResourceKeyForCandidate(first),
+      mediaResourceKeyForCandidate(second),
+    );
+  });
+
+  test(
+    'structured media identity rejects another episode or representation',
+    () {
+      final first = candidate(
+        url: 'https://edge.example/live/index.m3u8?line=54&token=one',
+        sourceUrl: 'https://site.example/video/42/ep-1',
+        seriesKey: 'series:42',
+        episodeNumber: 1,
+        representationRank: 1,
+        qualityLabel: '720p',
+        audioLabel: '原声',
+      );
+      final otherEpisode = candidate(
+        id: 'episode-2',
+        url: 'https://edge.example/live/index.m3u8?line=54&token=two',
+        sourceUrl: 'https://site.example/video/42/ep-2',
+        seriesKey: 'series:42',
+        episodeNumber: 2,
+        representationRank: 1,
+        qualityLabel: '720p',
+        audioLabel: '原声',
+      );
+      final otherQuality = candidate(
+        id: 'quality-1080',
+        url: 'https://edge.example/live/index.m3u8?line=55&token=three',
+        sourceUrl: 'https://site.example/video/42/ep-1',
+        seriesKey: 'series:42',
+        episodeNumber: 1,
+        representationRank: 2,
+        qualityLabel: '1080p',
+        audioLabel: '原声',
+      );
+
+      expect(mediaCandidatesEquivalent(first, otherEpisode), isFalse);
+      expect(mediaCandidatesEquivalent(first, otherQuality), isFalse);
+    },
+  );
 
   test('line parameters remain distinct display identities', () {
     final first = Uri.parse(

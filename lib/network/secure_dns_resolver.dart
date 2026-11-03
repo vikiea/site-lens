@@ -87,6 +87,16 @@ class SecureDnsResolver extends ChangeNotifier {
     }
   }
 
+  /// Invalidates resolver state after a transport change. The next DIRECT
+  /// request must observe the active network's DNS policy instead of reusing
+  /// an address selected on Wi-Fi, cellular, or a VPN/TUN route.
+  Future<void> clearCache() async {
+    _providerEpoch++;
+    _publish(SecureDnsResolution.idle(_provider, _providerEpoch));
+    final clear = _clearCache;
+    if (clear != null) await clear();
+  }
+
   Future<List<InternetAddress>> resolve(String hostname) async {
     final literal = InternetAddress.tryParse(hostname);
     if (literal != null) {

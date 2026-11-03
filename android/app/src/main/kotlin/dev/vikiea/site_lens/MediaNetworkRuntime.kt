@@ -1,8 +1,6 @@
 package dev.vikiea.site_lens
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -18,7 +16,6 @@ class MediaNetworkRuntime(
     private val channel: MethodChannel,
 ) : MethodChannel.MethodCallHandler {
     private val context = appContext
-    private val connectivity = appContext.getSystemService(ConnectivityManager::class.java)
     private val userAgent = WebSettings.getDefaultUserAgent(appContext)
     private val main = Handler(Looper.getMainLooper())
     private val transfers = MediaTransferQueue(transferExecutor)
@@ -57,7 +54,7 @@ class MediaNetworkRuntime(
                 } else SystemMediaNetwork.configuration(uri, attempt = attempt)
                 // This is only a route hint. The connecting transport still
                 // validates DNS for the DIRECT entry actually being used.
-                val vpn = allowsProxyFakeIp(uri)
+                val routeAllowsFakeIp = isSystemDnsRouteAllowed(uri, attempt)
                 val document = call.argument<String>("document")
                     ?.trim()
                     ?.takeIf { it.isNotEmpty() }
@@ -68,7 +65,7 @@ class MediaNetworkRuntime(
                 } else null
                 mapOf(
                     "proxy" to proxy,
-                    "vpn" to vpn,
+                    "routeAllowsFakeIp" to routeAllowsFakeIp,
                     "userAgent" to userAgent,
                     "cookie" to cookie,
                 )
@@ -87,9 +84,9 @@ class MediaNetworkRuntime(
             var selectedRoute = "unknown"
             val transfer = ResumableMediaTransfer(
                 connectForAttempt = { uri, attempt ->
-                    val vpn = allowsProxyFakeIp(uri)
+                    val routeAllowsFakeIp = isSystemDnsRouteAllowed(uri, attempt)
                     selectedRoute = "unknown"
-                    SystemMediaNetwork.openConnection(uri, allowProxyFakeIp = vpn, attempt = attempt,
+                    SystemMediaNetwork.openConnection(uri, allowProxyFakeIp = routeAllowsFakeIp, attempt = attempt,
                         onSelectedRoute = { selectedRoute = it })
                 },
                 routeForConnection = { selectedRoute },
@@ -111,14 +108,15 @@ class MediaNetworkRuntime(
         result.error(code, error.message ?: "媒体连接失败，已保留缓存，可重试", details)
     }
 
-    /** Never resolve origin DNS while selecting a route, including PAC fallbacks. */
-    private fun allowsProxyFakeIp(uri: URI): Boolean {
-        val directRoute = runCatching { SystemMediaNetwork.hasDirectRoute(uri) }
-            .getOrDefault(false)
-        // This is only a capability hint. The selected DIRECT connection
-        // performs the real DNS-range check inside openConnection().
-        return directRoute
-    }
+    /**
+     * Returns a route capability without resolving the origin. The actual
+     * DIRECT connection resolves through the active system DNS only after PAC
+     * has selected DIRECT, then validates public or Fake-IP answers.
+     */
+    private fun isSystemDnsRouteAllowed(uri: URI, attempt: Int): Boolean =
+        runCatching {
+            SystemMediaNetwork.directDnsContainsFakeIpForAttempt(uri, attempt)
+        }.getOrDefault(false)
 
     private fun transferFile(call: MethodCall, transfer: ResumableMediaTransfer, job: String) {
             val url = URI(call.argument<String>("url") ?: error("缺少媒体地址"))

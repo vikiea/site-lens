@@ -64,8 +64,8 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
                 val transfer = ResumableMediaTransfer(
                     cancelled = { isObsolete() || SystemClock.elapsedRealtime() >= deadline },
                     connectForAttempt = { uri, attempt ->
-                        val vpn = allowsProxyFakeIp(uri)
-                        SystemMediaNetwork.openConnection(uri, allowProxyFakeIp = vpn, attempt = attempt)
+                        val routeAllowsFakeIp = isSystemDnsRouteAllowed(uri, attempt)
+                        SystemMediaNetwork.openConnection(uri, allowProxyFakeIp = routeAllowsFakeIp, attempt = attempt)
                     },
                 )
                 ownedTransfer = transfer
@@ -199,15 +199,10 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
         }
     }
 
-    private fun allowsProxyFakeIp(uri: URI): Boolean {
-        val directRoute = runCatching { SystemMediaNetwork.hasDirectRoute(uri) }
-            .getOrDefault(false)
-        if (!directRoute) return false
-        // The actual DIRECT candidate performs the DNS-range check inside
-        // openConnection(); do not resolve the origin while a proxy candidate
-        // may still be tried first.
-        return directRoute
-    }
+    private fun isSystemDnsRouteAllowed(uri: URI, attempt: Int): Boolean =
+        runCatching {
+            SystemMediaNetwork.directDnsContainsFakeIpForAttempt(uri, attempt)
+        }.getOrDefault(false)
 
     companion object {
         private val transfers = ConcurrentHashMap<String, ResumableMediaTransfer>()

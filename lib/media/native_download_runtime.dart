@@ -89,6 +89,12 @@ class NativeDownloadRuntime {
       }) ??
       const <String, Object?>{};
 
+  /// Requeues active Android workers after a Wi-Fi, cellular, VPN or proxy
+  /// transition while preserving partial files and resume metadata.
+  Future<Map<String, Object?>> networkChanged() async =>
+      await _channel.invokeMapMethod<String, Object?>('networkChanged') ??
+      const <String, Object?>{};
+
   Future<String?> reserveMutation(String taskId, List<String> paths) async =>
       _channel.invokeMethod<String>('reserveMutation', {
         'taskId': taskId,

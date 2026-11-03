@@ -588,6 +588,7 @@ class MediaTaskStore extends ChangeNotifier {
   final _writeFailures = <String, (Object, StackTrace)>{};
   final _aliases = <String, String>{};
   final _authorizationKeys = <String, String>{};
+  final _logicalKeys = <String, String>{};
   String _resolveId(String id) {
     var current = id;
     final seen = <String>{};
@@ -633,6 +634,8 @@ class MediaTaskStore extends ChangeNotifier {
       if (authorizationKey != null) {
         _authorizationKeys[canonicalId] = authorizationKey;
       }
+      final logicalKey = _logicalKeys.remove(task.id);
+      if (logicalKey != null) _logicalKeys[canonicalId] = logicalKey;
       _tasks[canonicalId] = (persisted ?? current!).copyWith(id: canonicalId);
       _byCacheKey[task.cacheKey] = canonicalId;
     });
@@ -800,25 +803,47 @@ class MediaTaskStore extends ChangeNotifier {
     validator.validate(candidate);
     final canonicalId = _resolveId(taskId);
     final current = task(canonicalId) ?? (throw StateError('媒体任务不存在'));
-    if (candidate.id == current.candidateId) return current;
+    if (candidate.id == current.candidateId &&
+        candidate.hostId == current.hostId &&
+        candidate.generation == current.generation &&
+        mediaDocumentIdentity(candidate.sourceUrl) ==
+            mediaDocumentIdentity(current.sourceUrl)) {
+      return current;
+    }
     if (current.state == MediaTaskState.downloading ||
         current.state == MediaTaskState.playable ||
         current.state == MediaTaskState.completed ||
         !canDelete(canonicalId)) {
       throw StateError('媒体任务正在使用，请稍后重新选择媒体');
     }
-    if (candidate.hostId != current.hostId ||
-        candidate.generation != current.generation ||
-        candidate.sourceUrl.removeFragment() !=
-            current.sourceUrl.removeFragment() ||
-        !allowAuthorizationRefresh && cacheKey(candidate) != current.cacheKey) {
+    final sameDocument =
+        mediaDocumentIdentity(candidate.sourceUrl) ==
+        mediaDocumentIdentity(current.sourceUrl);
+    final logicalKey = mediaCandidateLogicalIdentity(candidate);
+    final previousLogicalKey = _logicalKeys[canonicalId];
+    if (allowAuthorizationRefresh &&
+        previousLogicalKey != null &&
+        previousLogicalKey != logicalKey) {
       throw StateError(MediaErrorCode.staleGeneration);
     }
-    final next = current.copyWith(candidateId: candidate.id);
+    if (!allowAuthorizationRefresh &&
+        (candidate.hostId != current.hostId ||
+            candidate.generation != current.generation ||
+            !sameDocument ||
+            cacheKey(candidate) != current.cacheKey)) {
+      throw StateError(MediaErrorCode.staleGeneration);
+    }
+    final next = current.copyWith(
+      candidateId: candidate.id,
+      hostId: allowAuthorizationRefresh ? candidate.hostId : null,
+      generation: allowAuthorizationRefresh ? candidate.generation : null,
+      sourceUrl: allowAuthorizationRefresh ? candidate.sourceUrl : null,
+    );
     _tasks[canonicalId] = next;
     _authorizationKeys[canonicalId] = mediaCandidateAuthorizationKey(
       candidate.mediaUrl,
     );
+    _logicalKeys[canonicalId] = logicalKey;
     _saveTask(next);
     return next;
   }
@@ -831,8 +856,13 @@ class MediaTaskStore extends ChangeNotifier {
     // Candidate IDs are observation IDs and can change when a page re-reports
     // the same stream. Use the normalized media identity so repeated sniffing
     // and app restores converge on one task.
-    final input =
-        '${candidate.hostId}|${candidate.generation}|${mediaCandidateGroupKey(candidate.mediaUrl)}|$quality|$audio';
+    final structured =
+        candidate.seriesKey?.trim().isNotEmpty == true &&
+        candidate.episodeNumber != null;
+    final identity = structured
+        ? mediaCandidateLogicalIdentity(candidate)
+        : '${candidate.hostId}|${candidate.generation}|${mediaCandidateGroupKey(candidate.mediaUrl)}';
+    final input = '$identity|$quality|$audio';
     return sha256.convert(utf8.encode(input)).toString();
   }
 
@@ -852,15 +882,18 @@ class MediaTaskStore extends ChangeNotifier {
       final authorizationKey = mediaCandidateAuthorizationKey(
         candidate.mediaUrl,
       );
+      final logicalKey = mediaCandidateLogicalIdentity(candidate);
       existing = _tasks.values
           .where(
             (task) =>
                 task.state == MediaTaskState.reauthorize &&
-                task.hostId == candidate.hostId &&
-                task.generation == candidate.generation &&
-                task.sourceUrl.removeFragment() ==
-                    candidate.sourceUrl.removeFragment() &&
-                _authorizationKeys[task.id] == authorizationKey,
+                mediaDocumentIdentity(task.sourceUrl) ==
+                    mediaDocumentIdentity(candidate.sourceUrl) &&
+                (_logicalKeys[task.id] == logicalKey ||
+                    (_logicalKeys[task.id] == null &&
+                        task.hostId == candidate.hostId &&
+                        task.generation == candidate.generation &&
+                        _authorizationKeys[task.id] == authorizationKey)),
           )
           .firstOrNull;
       existingId = existing?.id;
@@ -873,6 +906,22 @@ class MediaTaskStore extends ChangeNotifier {
       );
     }
     if (existing != null) {
+      if (existing.state == MediaTaskState.queued ||
+          existing.state == MediaTaskState.paused) {
+        final needsRebind =
+            existing.candidateId != candidate.id ||
+            existing.hostId != candidate.hostId ||
+            existing.generation != candidate.generation ||
+            mediaDocumentIdentity(existing.sourceUrl) !=
+                mediaDocumentIdentity(candidate.sourceUrl);
+        return needsRebind
+            ? rebindCandidate(
+                existing.id,
+                candidate,
+                allowAuthorizationRefresh: true,
+              )
+            : existing;
+      }
       if (existing.state != MediaTaskState.cancelled &&
           existing.state != MediaTaskState.failed) {
         return existing;
@@ -890,9 +939,9 @@ class MediaTaskStore extends ChangeNotifier {
       _saveTask(retry);
       return retry;
     }
-    // The cache identity is already unique for one host/generation/media
-    // selection. Deriving the row identity from it makes two stores racing to
-    // enqueue the same candidate converge on one SQLite row as well.
+    // Deriving the row identity from the logical selection makes two stores
+    // racing to enqueue the same structured candidate converge even when the
+    // page has moved to another CDN authority or WebView generation.
     final id = 'media_$key';
     final task = MediaTask(
       id: id,
@@ -912,6 +961,7 @@ class MediaTaskStore extends ChangeNotifier {
     );
     _tasks[id] = task;
     _authorizationKeys[id] = mediaCandidateAuthorizationKey(candidate.mediaUrl);
+    _logicalKeys[id] = mediaCandidateLogicalIdentity(candidate);
     _byCacheKey[key] = id;
     _saveTask(task);
     return task;
@@ -994,6 +1044,7 @@ class MediaTaskStore extends ChangeNotifier {
     }
     final repaired = <MediaTask>[];
     final authorizationKeys = <String, String>{};
+    final logicalKeys = <String, String>{};
     for (final task in persisted) {
       final candidate = await db!.mediaCandidate(task.candidateId);
       final missingTitle =
@@ -1040,6 +1091,9 @@ class MediaTaskStore extends ChangeNotifier {
       authorizationKeys[next.id] = mediaCandidateAuthorizationKey(
         candidate?.mediaUrl ?? task.sourceUrl,
       );
+      if (candidate != null) {
+        logicalKeys[next.id] = mediaCandidateLogicalIdentity(candidate);
+      }
       if (next.displayTitle != task.displayTitle ||
           next.batchDirectory != task.batchDirectory ||
           next.localRef != task.localRef ||
@@ -1060,6 +1114,9 @@ class MediaTaskStore extends ChangeNotifier {
     _authorizationKeys
       ..clear()
       ..addAll(authorizationKeys);
+    _logicalKeys
+      ..clear()
+      ..addAll(logicalKeys);
     _byCacheKey
       ..clear()
       ..addEntries(repaired.map((task) => MapEntry(task.cacheKey, task.id)));
@@ -1294,6 +1351,7 @@ class MediaTaskStore extends ChangeNotifier {
     await db?.deleteMediaTask(canonicalId);
     _tasks.remove(canonicalId);
     _authorizationKeys.remove(canonicalId);
+    _logicalKeys.remove(canonicalId);
     _writes.remove(canonicalId);
     _writeFailures.remove(canonicalId);
     _aliases.removeWhere((key, value) => key == taskId || value == canonicalId);
@@ -2037,6 +2095,58 @@ class MediaDownloadService {
 
   set maxConcurrency(int value) {
     _transferScheduler.maxActive = value;
+  }
+
+  /// Rebuilds only active Dart transports after the OS network changes. The
+  /// partial files and task rows remain authoritative; a stale signed URL is
+  /// allowed to fail into the normal reauthorization state rather than being
+  /// replaced without page evidence.
+  Future<void> recoverAfterNetworkChange() async {
+    try {
+      await native?.networkChanged();
+    } catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.native-network-recovery',
+        context: 'networkChanged',
+        stack: stack,
+      );
+    }
+    final ids = _active.keys.toList(growable: false);
+    if (ids.isEmpty) return;
+    final pending = <Future<MediaTask>>[];
+    for (final id in ids) {
+      final run = _running[id];
+      if (run != null) pending.add(run);
+      _active[id]?.cancel();
+    }
+    if (pending.isNotEmpty) {
+      try {
+        await Future.wait(pending, eagerError: false);
+      } catch (_) {
+        // Each task records its own failure; recovery should continue for the
+        // remaining tasks after one transport reports an error.
+      }
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    for (final id in ids) {
+      final task = tasks.task(id);
+      if (task == null || task.state != MediaTaskState.paused) continue;
+      final candidate = await tasks.db?.mediaCandidate(task.candidateId);
+      if (candidate == null) continue;
+      unawaited(() async {
+        try {
+          await start(task, candidate);
+        } catch (error, stack) {
+          AppErrorLogger.capture(
+            error,
+            module: 'media.network-recovery',
+            context: id,
+            stack: stack,
+          );
+        }
+      }());
+    }
   }
 
   Future<void> _transferNative(
@@ -3389,15 +3499,7 @@ class MediaDownloadService {
             .convert(utf8.encode(_resumeContentIdentity(remote)))
             .toString();
         resumeNames.add('resume_$resumeKey.part');
-        keys.add(
-          sha256
-              .convert(
-                utf8.encode(
-                  playlist.resolve(reference).removeFragment().toString(),
-                ),
-              )
-              .toString(),
-        );
+        keys.add(resumeKey);
       }
     }
     final existingKeys = resources.keys.toSet();
@@ -3840,7 +3942,7 @@ class MediaDownloadService {
       MediaErrorCode.authorizationRequired => '下载地址需要重新授权',
       MediaErrorCode.diskFull => '设备存储空间不足',
       MediaErrorCode.cancelled => '下载已取消',
-      _ => '网络连接中断，已保留已下载内容，可重试',
+      _ => '网络已切换，正在重新建立媒体连接；已保留已下载内容，可重试',
     };
   }
 }

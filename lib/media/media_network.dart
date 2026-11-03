@@ -18,6 +18,11 @@ class MediaNetwork {
   static final _progressByChannel =
       <(BinaryMessenger, String), Map<String, void Function(int)>>{};
   static int _nextJob = 0;
+  static int _networkEpoch = 0;
+
+  /// Invalidates transport context after Wi-Fi, cellular, VPN, or proxy
+  /// changes. The epoch is process-local and is never part of media identity.
+  static void networkChanged() => _networkEpoch++;
 
   (BinaryMessenger, String) get _channelKey =>
       (_channel.binaryMessenger, _channel.name);
@@ -71,6 +76,7 @@ class MediaNetwork {
         'jobId': jobId,
         'url': url.toString(),
         'document': document.toString(),
+        'networkEpoch': _networkEpoch,
         'path': destination.path,
         'maxBytes': maxBytes,
         if (headers != null && headers.isNotEmpty) 'headers': headers,
@@ -134,13 +140,14 @@ class MediaNetwork {
       {
         'url': uri.toString(),
         'attempt': attempt,
+        'networkEpoch': _networkEpoch,
         if (document != null) 'document': document.toString(),
       },
     );
     if (value == null) throw StateError('无法读取系统代理设置，请重试');
     return MediaNetworkRoute(
       proxy: value['proxy'] as String? ?? 'DIRECT',
-      allowProxyFakeIp: value['vpn'] == true,
+      allowProxyFakeIp: value['routeAllowsFakeIp'] == true,
       userAgent:
           value['userAgent'] as String? ?? MediaNetworkRoute.defaultUserAgent,
       cookie: media ? value['cookie'] as String? : null,

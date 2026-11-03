@@ -1,8 +1,5 @@
 package dev.vikiea.site_lens
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -11,7 +8,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.content.pm.ServiceInfo
 import android.view.Surface
 import androidx.core.content.ContextCompat
 import androidx.media3.common.AudioAttributes
@@ -24,6 +20,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import java.io.Closeable
@@ -134,7 +131,13 @@ class NativeMediaSessionService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
-        ensureForeground()
+        val notificationProvider = DefaultMediaNotificationProvider.Builder(applicationContext)
+            .setNotificationId(ID)
+            .setChannelId(CHANNEL)
+            .setChannelName(R.string.site_lens_media_channel_name)
+            .build()
+            .apply { setSmallIcon(android.R.drawable.ic_media_play) }
+        setMediaNotificationProvider(notificationProvider)
         stopping = false
         engineReleased = false
         synchronized(pendingLock) { instance = this }
@@ -212,9 +215,17 @@ class NativeMediaSessionService : MediaSessionService() {
             .setCallback(mediaSessionCallback)
             .setPeriodicPositionUpdateEnabled(true)
             .build()
+        // Register the session with MediaSessionService so Media3 owns the
+        // notification lifecycle and embeds this session's platform token in
+        // every notification update.
+        addSession(mediaSession)
         restorable = readRestorable()
         if (restorable != null) state = "restorable"
-        setShowNotificationForIdlePlayer(SHOW_NOTIFICATION_FOR_IDLE_PLAYER_AFTER_STOP_OR_ERROR)
+        // The service is started with startForegroundService even when a
+        // restored item is paused. ALWAYS makes Media3 publish the real
+        // session notification immediately, so Android's foreground-service
+        // deadline is met without a second placeholder notification.
+        setShowNotificationForIdlePlayer(SHOW_NOTIFICATION_FOR_IDLE_PLAYER_ALWAYS)
         drainPending()
     }
 
@@ -224,30 +235,6 @@ class NativeMediaSessionService : MediaSessionService() {
             error.errorCode == PlaybackException.ERROR_CODE_TIMEOUT ||
             error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
             error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
-
-    /** Android 14 requires a foreground service to promote itself promptly.
-     * MediaSessionService will subsequently update the media notification, but
-     * this small placeholder closes the startForeground timing window while
-     * the player and session are being constructed.
-     */
-    private fun ensureForeground() {
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL, "Site Lens 媒体播放", NotificationManager.IMPORTANCE_LOW),
-        )
-        val notification = Notification.Builder(this, CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentTitle("Site Lens")
-            .setContentText("媒体播放准备中")
-            .setOngoing(true)
-            .setCategory(Notification.CATEGORY_TRANSPORT)
-            .build()
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
-        } else {
-            startForeground(ID, notification)
-        }
-    }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = mediaSession
 
@@ -533,7 +520,10 @@ class NativeMediaSessionService : MediaSessionService() {
     private fun releaseMediaEngine() {
         if (engineReleased) return
         engineReleased = true
-        if (::mediaSession.isInitialized) mediaSession.release()
+        if (::mediaSession.isInitialized) {
+            if (isSessionAdded(mediaSession)) removeSession(mediaSession)
+            mediaSession.release()
+        }
         if (::player.isInitialized) player.release()
     }
 

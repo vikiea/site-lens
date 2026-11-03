@@ -520,7 +520,12 @@ class ControlledHttp {
         host,
         port,
         cancel: cancel,
-        resolve: resolve,
+        // When the OS route intentionally owns DNS (OpenClash gateway
+        // Fake-IP, VPN/TUN, or another intercepting route), Secure DNS would
+        // bypass that route and return the real origin address. Let the active
+        // system route resolve the origin in that case; proxy connections only
+        // resolve the proxy endpoint above.
+        resolve: route.allowProxyFakeIp ? InternetAddress.lookup : resolve,
         allowLocal: allowLocal,
         allowProxyFakeIp: route.allowProxyFakeIp,
         timeout:

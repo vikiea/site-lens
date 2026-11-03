@@ -998,6 +998,125 @@ String mediaCandidateAuthorizationKey(Uri url) {
   return clean.replace(queryParameters: retained).toString();
 }
 
+/// Identity of the page that authorized a media observation. Query parameters
+/// that commonly carry a short-lived page token are excluded, while the
+/// origin and path remain part of the authorization boundary.
+String mediaDocumentIdentity(Uri url) {
+  final clean = url.removeFragment();
+  const volatile = {
+    'auth',
+    'auth_key',
+    'expires',
+    'expire',
+    'exp',
+    'hmac',
+    'sig',
+    'sign',
+    'signature',
+    't',
+    'time',
+    'timestamp',
+    'token',
+    'via',
+    'via_bm',
+  };
+  final retained = <String, String>{};
+  for (final entry in clean.queryParameters.entries) {
+    if (!volatile.contains(entry.key.toLowerCase())) {
+      retained[entry.key] = entry.value;
+    }
+  }
+  return clean.replace(queryParameters: retained).toString();
+}
+
+/// URL identity used when a page supplies structured episode/representation
+/// metadata. CDN authority is a locator and may change with the active route;
+/// path and non-authorization selectors remain content identity.
+String mediaCandidateLocatorIdentity(Uri url) {
+  final clean = Uri(
+    scheme: cleanScheme(url.scheme),
+    path: url.path,
+    queryParameters: _retainedMediaQuery(url),
+  );
+  return clean.toString();
+}
+
+String cleanScheme(String value) => value.trim().toLowerCase();
+
+Map<String, String> _retainedMediaQuery(Uri url) {
+  const volatile = {
+    'auth',
+    'auth_key',
+    'expires',
+    'expire',
+    'exp',
+    'hmac',
+    'sig',
+    'sign',
+    'signature',
+    't',
+    'time',
+    'timestamp',
+    'token',
+    'via',
+    'via_bm',
+  };
+  return <String, String>{
+    for (final entry in url.removeFragment().queryParameters.entries)
+      if (!volatile.contains(entry.key.toLowerCase())) entry.key: entry.value,
+  };
+}
+
+/// Stable logical identity for a selected stream. Structured metadata is
+/// required before the CDN authority is ignored; legacy candidates retain the
+/// existing host-sensitive identity and therefore remain fail-closed.
+String mediaCandidateLogicalIdentity(MediaCandidate candidate) {
+  final structured =
+      candidate.seriesKey?.trim().isNotEmpty == true &&
+      candidate.episodeNumber != null;
+  final locator = structured
+      ? mediaCandidateLocatorIdentity(candidate.mediaUrl)
+      : mediaCandidateAuthorizationKey(candidate.mediaUrl);
+  return [
+    mediaDocumentIdentity(candidate.sourceUrl),
+    candidate.effectiveMime,
+    candidate.seriesKey?.trim() ?? '',
+    candidate.episodeNumber?.toString() ?? '',
+    candidate.representationRank.toString(),
+    candidate.qualityLabel?.trim().toLowerCase() ?? '',
+    candidate.audioLabel?.trim().toLowerCase() ?? '',
+    locator,
+  ].join('\u0000');
+}
+
+/// Compares two observations as one logical media resource while keeping
+/// authorization context current. A structured candidate may move between
+/// CDN hosts; an unstructured legacy candidate must keep the old host-sensitive
+/// comparison.
+bool mediaCandidatesEquivalent(MediaCandidate left, MediaCandidate right) {
+  final leftStructured =
+      left.seriesKey?.trim().isNotEmpty == true && left.episodeNumber != null;
+  final rightStructured =
+      right.seriesKey?.trim().isNotEmpty == true && right.episodeNumber != null;
+  if (leftStructured != rightStructured) return false;
+  if (left.effectiveMime != right.effectiveMime ||
+      mediaDocumentIdentity(left.sourceUrl) !=
+          mediaDocumentIdentity(right.sourceUrl)) {
+    return false;
+  }
+  if (left.seriesKey?.trim() != right.seriesKey?.trim() ||
+      left.episodeNumber != right.episodeNumber ||
+      left.representationRank != right.representationRank ||
+      left.qualityLabel?.trim().toLowerCase() !=
+          right.qualityLabel?.trim().toLowerCase() ||
+      left.audioLabel?.trim().toLowerCase() !=
+          right.audioLabel?.trim().toLowerCase()) {
+    return false;
+  }
+  return mediaCandidateLogicalIdentity(left) ==
+      mediaCandidateLogicalIdentity(right);
+}
+
 /// UI/session identity for a media resource. HLS providers frequently put a
 /// fresh signature on every observation; all signed variants of one playlist
 /// still represent the same selectable stream, while the full URL remains on
@@ -1185,10 +1304,7 @@ class MediaCandidate {
 /// deliberately excluded so a later page observation can join the same
 /// resource without reusing the signed URL itself.
 String mediaResourceKeyForCandidate(MediaCandidate candidate) {
-  final input = [
-    candidate.effectiveMime,
-    mediaCandidateGroupKey(candidate.mediaUrl),
-  ].join('|');
+  final input = mediaCandidateLogicalIdentity(candidate);
   return sha256.convert(utf8.encode(input)).toString();
 }
 
@@ -1359,6 +1475,9 @@ class MediaTask {
   MediaTask copyWith({
     String? id,
     String? candidateId,
+    int? hostId,
+    int? generation,
+    Uri? sourceUrl,
     MediaTaskState? state,
     DateTime? updatedAt,
     String? resourceKey,
@@ -1375,9 +1494,9 @@ class MediaTask {
   }) => MediaTask(
     id: id ?? this.id,
     candidateId: candidateId ?? this.candidateId,
-    hostId: hostId,
-    generation: generation,
-    sourceUrl: sourceUrl,
+    hostId: hostId ?? this.hostId,
+    generation: generation ?? this.generation,
+    sourceUrl: sourceUrl ?? this.sourceUrl,
     cacheKey: cacheKey,
     resourceKey: resourceKey ?? this.resourceKey,
     state: state ?? this.state,

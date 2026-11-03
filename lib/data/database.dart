@@ -1556,7 +1556,7 @@ class AppDatabase extends GeneratedDatabase {
 
   Future<String> saveMediaTask(MediaTask task) => transaction(() async {
     const update =
-        'candidate_id=excluded.candidate_id,state=excluded.state,updated_at=excluded.updated_at,display_title=excluded.display_title,batch_directory=excluded.batch_directory,episode_label=excluded.episode_label,series_key=excluded.series_key,episode_number=excluded.episode_number,bytes_downloaded=excluded.bytes_downloaded,total_bytes=excluded.total_bytes,error_code=excluded.error_code,error_reason=excluded.error_reason,local_ref=excluded.local_ref';
+        'candidate_id=excluded.candidate_id,host_id=excluded.host_id,generation=excluded.generation,source_url=excluded.source_url,state=excluded.state,updated_at=excluded.updated_at,display_title=excluded.display_title,batch_directory=excluded.batch_directory,episode_label=excluded.episode_label,series_key=excluded.series_key,episode_number=excluded.episode_number,bytes_downloaded=excluded.bytes_downloaded,total_bytes=excluded.total_bytes,error_code=excluded.error_code,error_reason=excluded.error_reason,local_ref=excluded.local_ref';
     try {
       await customStatement(
         'INSERT INTO media_tasks(id,candidate_id,host_id,generation,source_url,cache_key,resource_key,state,updated_at,display_title,batch_directory,episode_label,series_key,episode_number,bytes_downloaded,total_bytes,error_code,error_reason,local_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '

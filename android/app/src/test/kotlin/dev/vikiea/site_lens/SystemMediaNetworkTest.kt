@@ -95,6 +95,56 @@ class SystemMediaNetworkTest {
     }
 
     @Test
+    fun fakeIpCapabilityIsGrantedOnlyWhenSystemDnsActuallyReturnsFakeIp() {
+        val target = URI("https://cdn.example/a")
+        val direct = selector { listOf(Proxy.NO_PROXY) }
+        assertEquals(
+            true,
+            SystemMediaNetwork.directDnsContainsFakeIp(
+                target,
+                selector = direct,
+                resolve = { arrayOf(InetAddress.getByName("198.18.0.7")) },
+            ),
+        )
+        assertEquals(
+            false,
+            SystemMediaNetwork.directDnsContainsFakeIp(
+                target,
+                selector = direct,
+                resolve = { arrayOf(InetAddress.getByName("8.8.8.8")) },
+            ),
+        )
+    }
+
+    @Test
+    fun fakeIpCapabilityDoesNotResolveOriginBeforeProxyAttempt() {
+        val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7890))
+        val target = URI("https://cdn.example/a")
+        var resolutions = 0
+        val policy = selector { listOf(proxy, Proxy.NO_PROXY) }
+        assertEquals(
+            false,
+            SystemMediaNetwork.directDnsContainsFakeIpForAttempt(
+                target,
+                attempt = 0,
+                selector = policy,
+                resolve = { resolutions++; arrayOf(InetAddress.getByName("198.18.0.7")) },
+            ),
+        )
+        assertEquals(0, resolutions)
+        assertEquals(
+            true,
+            SystemMediaNetwork.directDnsContainsFakeIpForAttempt(
+                target,
+                attempt = 1,
+                selector = policy,
+                resolve = { resolutions++; arrayOf(InetAddress.getByName("198.18.0.7")) },
+            ),
+        )
+        assertEquals(1, resolutions)
+    }
+
+    @Test
     fun fakeIpRouteHintRequiresConfirmedVpnAndDirectEntry() {
         assertEquals(true, SystemMediaNetwork.fakeIpRouteEligible(true, true, true))
         assertEquals(true, SystemMediaNetwork.fakeIpRouteEligible(false, false, true))

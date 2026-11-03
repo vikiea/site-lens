@@ -819,6 +819,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
                 final current = state.map((e) => e.name).join(',');
                 if (current != previous) {
                   previous = current;
+                  MediaNetwork.networkChanged();
+                  unawaited(secureDnsResolver.clearCache().catchError((_) {}));
+                  unawaited(mediaDownloads.recoverAfterNetworkChange());
                   cancel('网络发生变化，请重新检测；旧结果不参与推荐');
                 }
               });
@@ -1318,18 +1321,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<MediaCandidate> mediaCandidateForRetry(MediaTask task) async {
     final session = hosts.sessions[task.hostId];
     final stored = await db.mediaCandidate(task.candidateId);
-    if (session != null &&
-        !session.disposed &&
-        session.generation == task.generation &&
-        stored != null) {
-      for (final candidate in hosts.mediaCandidatesForHost(
-        task.hostId,
-        generation: task.generation,
-      )) {
-        if (candidate.sourceUrl.removeFragment() !=
-                task.sourceUrl.removeFragment() ||
-            mediaCandidateAuthorizationKey(candidate.mediaUrl) !=
-                mediaCandidateAuthorizationKey(stored.mediaUrl)) {
+    if (session != null && !session.disposed && stored != null) {
+      for (final candidate in hosts.mediaCandidatesForHost(task.hostId)) {
+        if (!mediaCandidatesEquivalent(stored, candidate)) {
           continue;
         }
         final authorized = hosts.authorizeMediaCandidate(
@@ -1344,7 +1338,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         );
         return authorized;
       }
-      throw StateError('媒体资源已变化，请返回播放页重新选择媒体');
+      throw StateError('当前页面尚未重新授权媒体，请保持播放页并重试');
     }
     if (task.state == MediaTaskState.reauthorize) {
       throw StateError('下载地址已失效或被拒绝，请返回播放页刷新并重新选择媒体后下载');
@@ -1381,9 +1375,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
     final current = hosts.authorizeMediaCandidate(task.hostId, candidate.id);
     if (current.generation != task.generation ||
-        current.sourceUrl.removeFragment() != task.sourceUrl.removeFragment() ||
-        mediaCandidateAuthorizationKey(current.mediaUrl) !=
-            mediaCandidateAuthorizationKey(candidate.mediaUrl)) {
+        mediaDocumentIdentity(current.sourceUrl) !=
+            mediaDocumentIdentity(task.sourceUrl)) {
       throw StateError('媒体资源已变化，请返回播放页重新选择媒体');
     }
     return current;

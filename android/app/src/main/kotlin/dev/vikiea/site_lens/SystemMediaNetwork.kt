@@ -64,6 +64,36 @@ object SystemMediaNetwork {
     fun hasDirectRoute(uri: URI, selector: ProxySelector? = ProxySelector.getDefault()): Boolean =
         proxies(uri, selector).any { it.type() == Proxy.Type.DIRECT }
 
+    /**
+     * Detects whether the active system DNS intentionally returns a Mihomo /
+     * OpenClash Fake-IP for a DIRECT route. This is a capability probe, not a
+     * replacement for the connection-time address validation.
+     */
+    fun directDnsContainsFakeIp(
+        uri: URI,
+        selector: ProxySelector? = ProxySelector.getDefault(),
+        resolve: (String) -> Array<InetAddress> = InetAddress::getAllByName,
+    ): Boolean {
+        if (!hasDirectRoute(uri, selector)) return false
+        return resolve(uri.host).any(::fakeIp)
+    }
+
+    /**
+     * Checks DNS ownership only after the PAC order for this attempt selects a
+     * DIRECT route. Proxy-first attempts never resolve the origin here.
+     */
+    fun directDnsContainsFakeIpForAttempt(
+        uri: URI,
+        attempt: Int = 0,
+        selector: ProxySelector? = ProxySelector.getDefault(),
+        resolve: (String) -> Array<InetAddress> = InetAddress::getAllByName,
+    ): Boolean {
+        val selected = proxies(uri, selector)
+        val first = selected[Math.floorMod(attempt, selected.size)]
+        if (first.type() != Proxy.Type.DIRECT) return false
+        return resolve(uri.host).any(::fakeIp)
+    }
+
     fun fakeIpRouteEligible(
         vpnTransport: Boolean,
         explicitlyNotVpn: Boolean?,

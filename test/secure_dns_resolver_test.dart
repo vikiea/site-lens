@@ -111,6 +111,26 @@ void main() {
     expect(resolver.providerEpoch, 2);
   });
 
+  test(
+    'network invalidation clears native DNS cache and advances the epoch',
+    () async {
+      final runtime = _FakeRuntime();
+      final resolver = SecureDnsResolver(
+        api: runtime,
+        androidEnabled: true,
+        systemLookup: (_) async => [InternetAddress('192.0.2.1')],
+        clearCache: runtime.clearSecureDnsCache,
+      );
+      final before = resolver.providerEpoch;
+
+      await resolver.clearCache();
+
+      expect(runtime.clearCalls, 1);
+      expect(resolver.providerEpoch, before + 1);
+      expect(resolver.resolution.status, SecureDnsResolutionStatus.idle);
+    },
+  );
+
   test('provider switches invalidate a late secure DNS result', () async {
     final runtime = _BlockingRuntime();
     final resolver = SecureDnsResolver(

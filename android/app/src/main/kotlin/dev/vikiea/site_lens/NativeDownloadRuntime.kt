@@ -61,6 +61,7 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
                         configureConcurrency(call)
                         null
                     }
+                    "networkChanged" -> networkChanged()
                     "reserveMutation" -> reserveMutation(call)
                     "releaseMutation" -> {
                         releaseMutation(call.argument<String>("reservationId"))
@@ -131,6 +132,35 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
             Context.MODE_PRIVATE,
         ).edit().putInt(NativeMediaDownloadWorker.CONCURRENCY_KEY, value).apply()
         NativeMediaDownloadWorker.configureMaxConcurrency(value)
+    }
+
+    /**
+     * Rebuild active WorkManager transfers after a route change. Cancelling a
+     * running worker invokes its abort hook and leaves the partial plus resume
+     * metadata in place; the replacement worker then creates a fresh
+     * connection pool and reuses those bytes under the current system route.
+     */
+    private fun networkChanged(): Map<String, Any?> {
+        val requeued = mutableListOf<String>()
+        repository.all().forEach { record ->
+            if (record.paused || record.cancelled || record.workId == null) return@forEach
+            val final = NativeMediaDownloadWorker.finalFile(context, record)
+            if (final.isFile && final.length() > 0L) return@forEach
+            val workId = runCatching { UUID.fromString(record.workId) }.getOrNull()
+                ?: return@forEach
+            val info = runCatching {
+                workManager.getWorkInfoById(workId).get(15, TimeUnit.SECONDS)
+            }.getOrNull()
+            val state = info?.state
+            if (state != WorkInfo.State.RUNNING &&
+                state != WorkInfo.State.ENQUEUED &&
+                state != WorkInfo.State.BLOCKED
+            ) return@forEach
+            workManager.cancelWorkById(workId).result.get(30, TimeUnit.SECONDS)
+            enqueue(record)
+            requeued += record.taskId
+        }
+        return mapOf("requeued" to requeued)
     }
 
     private fun enqueue(record: NativeMediaTaskRepository.Record): Map<String, Any?> {

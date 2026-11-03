@@ -36,12 +36,18 @@ class NativeMediaContractTests(unittest.TestCase):
         stop = NATIVE_MEDIA.split('private fun stopLocalPlayer()', 1)[1].split('private fun ensureTexture(', 1)[0]
         self.assertLess(stop.index('media.release()'), stop.index('fileLease?.close()'))
 
-    def test_native_media_session_service_owns_background_player_and_promotes_foreground(self):
+    def test_native_media_session_service_owns_background_player_and_media3_notification(self):
         self.assertIn('class NativeMediaSessionService : MediaSessionService()', NATIVE_SESSION)
         for token in (
             'MediaSession.Builder(this, player)',
             'override fun onGetSession',
-            'startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)',
+            'DefaultMediaNotificationProvider.Builder(applicationContext)',
+            '.setNotificationId(ID)',
+            '.setChannelId(CHANNEL)',
+            'setMediaNotificationProvider(notificationProvider)',
+            'addSession(mediaSession)',
+            'if (isSessionAdded(mediaSession)) removeSession(mediaSession)',
+            'SHOW_NOTIFICATION_FOR_IDLE_PLAYER_ALWAYS',
             'setHandleAudioBecomingNoisy(true)',
             'private var userPaused = false',
             'userPaused -> "paused"',
@@ -49,6 +55,21 @@ class NativeMediaContractTests(unittest.TestCase):
             '"backend" to "media_session"',
         ):
             self.assertIn(token, NATIVE_SESSION)
+        self.assertNotIn('媒体播放准备中', NATIVE_SESSION)
+
+    def test_native_network_recovery_requeues_workers_without_pre_route_dns(self):
+        runtime = (ANDROID / "NativeDownloadRuntime.kt").read_text()
+        worker = (ANDROID / "NativeMediaDownloadWorker.kt").read_text()
+        media_network = (ANDROID / "MediaNetworkRuntime.kt").read_text()
+        self.assertIn('"networkChanged" -> networkChanged()', runtime)
+        self.assertIn('cancelWorkById(workId)', runtime)
+        self.assertIn('enqueue(record)', runtime)
+        self.assertIn('ownedTransfer?.abort()', worker)
+        self.assertIn('partial plus resume', runtime)
+        self.assertIn('isSystemDnsRouteAllowed(uri, attempt)', worker)
+        self.assertIn('isSystemDnsRouteAllowed(uri, attempt)', media_network)
+        self.assertNotIn('hasDirectRoute(uri)', worker)
+        self.assertNotIn('hasDirectRoute(uri)', media_network)
         self.assertIn('NativeMediaSessionService.detachSurface(context)', NATIVE_MEDIA)
         self.assertIn('serviceSessionId = null', NATIVE_MEDIA)
         for token in (
