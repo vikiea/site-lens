@@ -132,7 +132,21 @@ class BrowserMediaService : Service() {
         super.onDestroy()
     }
 
-    private data class Owner(val token: String, var title: String, var playing: Boolean, var canSkip: Boolean, val command: (String) -> Unit)
+    data class WebOwnerSnapshot(
+        val token: String,
+        val title: String,
+        val playing: Boolean,
+        val canSkip: Boolean,
+        val command: (String) -> Unit,
+    )
+
+    private data class Owner(
+        val token: String,
+        var title: String,
+        var playing: Boolean,
+        var canSkip: Boolean,
+        val command: (String) -> Unit,
+    )
     companion object {
         private const val CHANNEL = "site-lens-browser-media"
         private const val ID = 24001
@@ -162,6 +176,40 @@ class BrowserMediaService : Service() {
             if (!owns(token)) return
             owner = null
             context.stopService(Intent(context, BrowserMediaService::class.java))
+        }
+
+        fun suspendForNative(context: Context): WebOwnerSnapshot? {
+            val active = owner ?: return null
+            val snapshot = WebOwnerSnapshot(
+                active.token,
+                active.title,
+                active.playing,
+                active.canSkip,
+                active.command,
+            )
+            runCatching { active.command("pause") }
+            owner = null
+            context.stopService(Intent(context, BrowserMediaService::class.java))
+            return snapshot.takeIf { it.playing }
+        }
+
+        fun restoreAfterNative(context: Context, snapshot: WebOwnerSnapshot) {
+            if (owner != null) return
+            owner = Owner(
+                snapshot.token,
+                snapshot.title,
+                playing = true,
+                canSkip = snapshot.canSkip,
+                command = snapshot.command,
+            )
+            try {
+                context.startForegroundService(
+                    Intent(context, BrowserMediaService::class.java)
+                        .putExtra("owner", snapshot.token),
+                )
+            } catch (_: Exception) {
+                owner = null
+            }
         }
     }
 }

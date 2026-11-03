@@ -124,28 +124,63 @@ void main() {
     );
   });
 
-  test('media route carries the source document for cookie fallback', () async {
-    const channel = MethodChannel('test/media_network_document');
+  test(
+    'media route carries the source document and only an opaque context',
+    () async {
+      const channel = MethodChannel('test/media_network_document');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      final target = Uri.parse('https://cdn.example/segment.ts');
+      final document = Uri.parse('https://site.example/watch/42');
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        expect(call.method, 'route');
+        final arguments = call.arguments as Map;
+        expect(arguments['url'], target.toString());
+        expect(arguments['document'], document.toString());
+        expect(arguments['attempt'], 2);
+        return const <String, Object?>{
+          'proxy': 'DIRECT',
+          'userAgent': 'WebView',
+          'requestContextId': 'mrc_page_context',
+        };
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+      final route = await MediaNetwork(channel: channel)
+          .route(target, attempt: 2, document: document);
+      expect(route.requestContextId, 'mrc_page_context');
+    },
+  );
+
+  test('native transfer carries the opaque page request context id', () async {
+    const channel = MethodChannel('test/media_network_context');
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    final target = Uri.parse('https://cdn.example/segment.ts');
+    final target = Uri.parse('https://cdn.example/index.m3u8');
     final document = Uri.parse('https://site.example/watch/42');
     messenger.setMockMethodCallHandler(channel, (call) async {
-      expect(call.method, 'route');
-      final arguments = call.arguments as Map;
-      expect(arguments['url'], target.toString());
-      expect(arguments['document'], document.toString());
-      expect(arguments['attempt'], 2);
-      return const <String, Object?>{
-        'proxy': 'DIRECT',
-        'userAgent': 'WebView',
-        'cookie': 'sid=page',
-      };
+      if (call.method == 'route') {
+        return const <String, Object?>{
+          'proxy': 'DIRECT',
+          'routeKind': 'vpn_tun_fake_ip',
+          'fakeIpAllowed': true,
+          'requestContextId': 'mrc_test_context',
+        };
+      }
+      if (call.method == 'transferFile') {
+        expect((call.arguments as Map)['requestContextId'], 'mrc_test_context');
+        return null;
+      }
+      return null;
     });
     addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
 
-    final route = await MediaNetwork(channel: channel)
-        .route(target, attempt: 2, document: document);
-    expect(route.cookie, 'sid=page');
+    await MediaNetwork(channel: channel).transferFile(
+      target,
+      document,
+      File('/unused/context.part'),
+      1024,
+      Cancellation(),
+    );
   });
 }

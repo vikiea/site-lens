@@ -375,6 +375,10 @@ class BrowserMediaController(
     }
     private fun updateNotification() {
         if (disposed) return
+        if (MediaPlaybackOwner.nativeIsActive()) {
+            stopService()
+            return
+        }
         if (!allowed) { stopService(); return }
         if (navigationPending) return
         val expectedOwner = ownerToken

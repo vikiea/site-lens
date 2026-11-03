@@ -1,5 +1,8 @@
 package dev.vikiea.site_lens
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.InetAddress
@@ -11,6 +14,38 @@ import java.net.URI
 
 /** Resolve only the OS policy: an unusable proxy must not silently become DIRECT. */
 object SystemMediaNetwork {
+    enum class RouteKind(val wireName: String) {
+        PUBLIC_DIRECT("public_direct"),
+        HTTP_PROXY("http_proxy"),
+        VPN_TUN_FAKE_IP("vpn_tun_fake_ip"),
+        ROUTER_FAKE_IP("router_fake_ip"),
+        UNKNOWN("unknown"),
+    }
+
+    enum class DnsOwner(val wireName: String) {
+        SECURE_DNS("secure_dns"),
+        SYSTEM_DNS("system_dns"),
+        PROXY("proxy"),
+        UNKNOWN("unknown"),
+    }
+
+    data class RouteInfo(
+        val kind: RouteKind,
+        val dnsOwner: DnsOwner,
+        val fakeIpAllowed: Boolean,
+    )
+
+    fun fakeIpRouteKind(vpnTransport: Boolean): RouteKind =
+        if (vpnTransport) RouteKind.VPN_TUN_FAKE_IP else RouteKind.ROUTER_FAKE_IP
+
+    fun routerFakeIpEligible(
+        networkValidated: Boolean,
+        wifiCellularOrEthernet: Boolean,
+        privateDns: Boolean,
+        directRoute: Boolean,
+    ): Boolean =
+        networkValidated && wifiCellularOrEthernet && privateDns && directRoute
+
     private fun validateWebUri(uri: URI) {
         require(uri.scheme in listOf("http", "https") && !uri.host.isNullOrBlank() && uri.userInfo == null) {
             "媒体地址无效"
@@ -94,6 +129,60 @@ object SystemMediaNetwork {
         return resolve(uri.host).any(::fakeIp)
     }
 
+    fun routeInfo(
+        context: Context,
+        uri: URI,
+        attempt: Int = 0,
+        selector: ProxySelector? = ProxySelector.getDefault(),
+        resolve: (String) -> Array<InetAddress> = InetAddress::getAllByName,
+    ): RouteInfo {
+        val selected = proxies(uri, selector)
+        val first = selected[Math.floorMod(attempt, selected.size)]
+        if (first.type() == Proxy.Type.HTTP) {
+            return RouteInfo(RouteKind.HTTP_PROXY, DnsOwner.PROXY, false)
+        }
+        val addresses = resolve(uri.host)
+        val manager = context.getSystemService(ConnectivityManager::class.java)
+        val network = manager?.activeNetwork
+        val capabilities = network?.let(manager::getNetworkCapabilities)
+        val linkProperties = network?.let(manager::getLinkProperties)
+        val fake = addresses.any(::fakeIp)
+        val vpn = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+        if (fake) {
+            val routerTrusted = routerFakeIpEligible(
+                networkValidated = capabilities?.hasCapability(
+                    NetworkCapabilities.NET_CAPABILITY_VALIDATED,
+                ) == true,
+                wifiCellularOrEthernet = capabilities?.let {
+                    it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                        it.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                        it.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+                } == true,
+                privateDns = linkProperties?.dnsServers?.isNotEmpty() == true &&
+                    linkProperties.dnsServers.all(::privateDnsAddress),
+                directRoute = first.type() == Proxy.Type.DIRECT,
+            )
+            if (vpn || routerTrusted) {
+                return RouteInfo(fakeIpRouteKind(vpn), DnsOwner.SYSTEM_DNS, true)
+            }
+            return RouteInfo(RouteKind.UNKNOWN, DnsOwner.SYSTEM_DNS, false)
+        }
+        require(addresses.isNotEmpty() && addresses.all(::publicAddress)) {
+            "DNS 包含本机/私网媒体地址；请检查系统代理或 VPN 设置"
+        }
+        return RouteInfo(RouteKind.PUBLIC_DIRECT, DnsOwner.SYSTEM_DNS, false)
+    }
+
+    private fun privateDnsAddress(address: InetAddress): Boolean {
+        val bytes = address.address.map { it.toInt() and 255 }
+        if (bytes.size == 4) {
+            return (bytes[0] == 10) ||
+                (bytes[0] == 172 && bytes[1] in 16..31) ||
+                (bytes[0] == 192 && bytes[1] == 168)
+        }
+        return bytes.isNotEmpty() && (bytes[0] and 0xfe) == 0xfc
+    }
+
     fun fakeIpRouteEligible(
         vpnTransport: Boolean,
         explicitlyNotVpn: Boolean?,
@@ -160,6 +249,7 @@ object SystemMediaNetwork {
         val selected = proxies(uri, selector)
         var lastIo: IOException? = null
         var lastPolicy: IllegalArgumentException? = null
+        var proxyAttempted = false
         // The transfer retry budget advances PAC candidates after a network
         // failure. Never resolve the origin merely because DIRECT is a later
         // fallback; check its DNS only when that route is actually selected.
@@ -167,6 +257,7 @@ object SystemMediaNetwork {
             val proxy = selected[(attempt + offset) % selected.size]
             try {
                 if (proxy.type() == Proxy.Type.DIRECT) {
+                    if (proxyAttempted) break
                     // DIRECT owns origin DNS, so validate every answer locally.
                     // An HTTP proxy owns origin resolution; forcing local DNS
                     // here breaks split-DNS and proxy-only hostnames.
@@ -175,6 +266,7 @@ object SystemMediaNetwork {
                         publicAddress(it) || allowProxyFakeIp && fakeIp(it)
                     }) { "DNS 包含本机/私网媒体地址；请检查系统代理或 VPN 设置" }
                 }
+                proxyAttempted = true
                 return open(uri, proxy).also {
                     onSelectedRoute(if (proxy.type() == Proxy.Type.HTTP) "http_proxy" else "direct")
                     it.connectTimeout = 15000

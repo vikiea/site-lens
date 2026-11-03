@@ -476,6 +476,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     private val mainHandler = Handler(Looper.getMainLooper())
     private val viewLifetime = WebViewLifetime(
         post = { task -> mainHandler.post { task() } },
+        postDelayed = { delay, task -> mainHandler.postDelayed({ task() }, delay) },
         destroy = { finishDispose() },
     )
     private val popupProbes = mutableMapOf<WebView, () -> Unit>()
@@ -492,9 +493,12 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     }
 
     fun releasePlatformView(viewId: Int) {
-        if (viewLifetime.release(viewId)) {
-            (platformView.parent as? ViewGroup)?.removeView(platformView)
-        }
+        // Flutter owns the platform-view detach transaction. Removing the
+        // view synchronously from this callback can race WebView's pending
+        // SurfaceControl completion callback on Android 16/WebView 156. The
+        // lifetime barrier removes it only after the platform-view callback
+        // has returned and the pending transactions have drained.
+        viewLifetime.release(viewId)
     }
 
     /// Policy owned by Dart; the host only enforces it. `applyPreferences` keeps a
@@ -969,6 +973,15 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
                 val requestGeneration = generation
                 val requestEpoch = eventEpoch
                 if (!available) return null
+                if (!request.isForMainFrame && isMediaRequest(request)) {
+                    MediaRequestContextRegistry.record(
+                        hostId = id,
+                        generation = requestGeneration,
+                        sourceUrl = lastKnownUrl ?: request.url.toString(),
+                        mediaUrl = request.url.toString(),
+                        rawHeaders = request.requestHeaders,
+                    )
+                }
                 // Keep the top-level document available so a bad or stale
                 // snapshot cannot strand the user on a blank page. Subresources
                 // are synchronously rejected from the in-memory snapshot.
@@ -1277,6 +1290,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
 
     fun revoke() {
         if (!available) return
+        MediaRequestContextRegistry.clearHost(id)
         accepting = false; generation++; expectedUrl = null; leasedOrigin = null; pageError = null
         fallbackNavigationPreparing = false
         entryFollowing = false; entryHops = 0; entryNavigation = null; entryArmed = false
@@ -1572,6 +1586,7 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
     }
 
     fun dispose(force: Boolean) {
+        MediaRequestContextRegistry.clearHost(id)
         if (destroyed) return
         if (rendererGone) { disposeAfterRendererGone(webView); return }
         if (!viewLifetime.closing) {
@@ -1589,7 +1604,9 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         }
         // Flutter may still own the AndroidView. Revoke authority immediately,
         // but keep the provider alive until its platform-view dispose callback.
-        if (force) runCatching { (platformView.parent as? ViewGroup)?.removeView(platformView) }
+        // Forced engine cleanup still goes through WebViewLifetime's delayed
+        // barrier. Removing the platform view synchronously here can race a
+        // pending Android 16/WebView SurfaceControl completion callback.
         viewLifetime.close(force)
     }
 

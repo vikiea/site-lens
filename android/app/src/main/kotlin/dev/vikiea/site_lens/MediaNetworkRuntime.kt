@@ -49,25 +49,35 @@ class MediaNetworkRuntime(
             val outcome = runCatching {
                 val uri = URI(call.argument<String>("url") ?: error("缺少媒体地址"))
                 val attempt = call.argument<Int>("attempt") ?: 0
+                val networkEpoch = call.argument<Int>("networkEpoch") ?: 0
                 val proxy = if (call.method == "probeRoute") {
                     SystemMediaNetwork.probeConfiguration(uri, attempt = attempt)
                 } else SystemMediaNetwork.configuration(uri, attempt = attempt)
                 // This is only a route hint. The connecting transport still
                 // validates DNS for the DIRECT entry actually being used.
-                val routeAllowsFakeIp = isSystemDnsRouteAllowed(uri, attempt)
+                val routeInfo = runCatching {
+                    SystemMediaNetwork.routeInfo(context, uri, attempt)
+                }.getOrElse {
+                    SystemMediaNetwork.RouteInfo(
+                        SystemMediaNetwork.RouteKind.UNKNOWN,
+                        SystemMediaNetwork.DnsOwner.UNKNOWN,
+                        false,
+                    )
+                }
                 val document = call.argument<String>("document")
                     ?.trim()
                     ?.takeIf { it.isNotEmpty() }
                     ?.also { SystemMediaNetwork.validateTarget(URI(it)) }
-                val cookie = if (call.method == "route") {
-                    AndroidCookieReader.get(uri.toString())
-                        ?: document?.let(AndroidCookieReader::get)
-                } else null
                 mapOf(
                     "proxy" to proxy,
-                    "routeAllowsFakeIp" to routeAllowsFakeIp,
+                    "routeAllowsFakeIp" to routeInfo.fakeIpAllowed,
+                    "fakeIpAllowed" to routeInfo.fakeIpAllowed,
+                    "routeKind" to routeInfo.kind.wireName,
+                    "dnsOwner" to routeInfo.dnsOwner.wireName,
+                    "networkEpoch" to networkEpoch,
+                    "requestContextId" to MediaRequestContextRegistry
+                        .latest(uri.toString(), document?.toString().orEmpty())?.id,
                     "userAgent" to userAgent,
-                    "cookie" to cookie,
                 )
             }
             main.post { outcome.fold(
@@ -114,9 +124,8 @@ class MediaNetworkRuntime(
      * has selected DIRECT, then validates public or Fake-IP answers.
      */
     private fun isSystemDnsRouteAllowed(uri: URI, attempt: Int): Boolean =
-        runCatching {
-            SystemMediaNetwork.directDnsContainsFakeIpForAttempt(uri, attempt)
-        }.getOrDefault(false)
+        runCatching { SystemMediaNetwork.routeInfo(context, uri, attempt).fakeIpAllowed }
+            .getOrDefault(false)
 
     private fun transferFile(call: MethodCall, transfer: ResumableMediaTransfer, job: String) {
             val url = URI(call.argument<String>("url") ?: error("缺少媒体地址"))
@@ -129,6 +138,12 @@ class MediaNetworkRuntime(
             require(output.name.endsWith(".part")) { "媒体缓存目标无效" }
             val maxBytes = call.argument<Number>("maxBytes")?.toLong() ?: 0L
             require(maxBytes in 1..(2L * 1024 * 1024 * 1024)) { "媒体大小上限无效" }
+            val contextId = call.argument<String>("requestContextId")
+            val contextHeaders = MediaRequestContextRegistry.get(contextId)
+                ?: MediaRequestContextRegistry.latest(
+                    call.argument<String>("url").orEmpty(),
+                    call.argument<String>("document").orEmpty(),
+                )
             val requestHeaders = (call.argument<Map<*, *>>("headers") ?: emptyMap<Any?, Any?>())
                 .mapNotNull { (key, value) ->
                     val name = key?.toString()?.trim()?.lowercase()
@@ -138,6 +153,8 @@ class MediaNetworkRuntime(
                     ) name!! to text else null
                 }
                 .toMap()
+                .toMutableMap()
+                .also { it.putAll(contextHeaders?.headers.orEmpty()) }
             var lastProgressAt: Long? = null
             transfer.transfer(url, document, output, userAgent, maxBytes = maxBytes,
                 requestHeaders = requestHeaders,

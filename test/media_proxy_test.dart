@@ -97,7 +97,7 @@ void main() {
         routes.add(uri);
         return MediaNetworkRoute(
           proxy: 'PROXY 127.0.0.1:${proxy.port}',
-          cookie: uri.host == 'one.example' ? 'one=secret' : null,
+          requestContextId: uri.host == 'one.example' ? 'ctx-one' : null,
         );
       },
     );
@@ -118,11 +118,11 @@ void main() {
     expect(await file.readAsBytes(), [1, 2, 3, 4]);
     expect(routes.map((uri) => uri.host), ['one.example', 'two.example']);
     expect(ranged, ['bytes=2-', 'bytes=2-']);
-    expect(cookies, ['one=secret', null]);
+    expect(cookies, [null, null]);
   });
 
   test(
-    'media route supplies only the target cookie for each request',
+    'media route never copies credentials into Dart transport requests',
     () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       addTearDown(() => server.close(force: true));
@@ -137,7 +137,7 @@ void main() {
         allowLocal: true,
         mediaRoute: (uri) async {
           expect(uri, target);
-          return const MediaNetworkRoute(cookie: 'sid=ephemeral');
+          return const MediaNetworkRoute(requestContextId: 'ctx-ephemeral');
         },
       );
       await client.fetch(
@@ -147,7 +147,7 @@ void main() {
         cancel: Cancellation(),
         mediaRequest: true,
       );
-      expect(cookie, 'sid=ephemeral');
+      expect(cookie, isNull);
     },
   );
 
@@ -192,7 +192,7 @@ void main() {
         expect(uri, target);
         expect(attempt, 0);
         expect(source, document);
-        return const MediaNetworkRoute(cookie: 'sid=page');
+        return const MediaNetworkRoute(requestContextId: 'ctx-page');
       },
     );
     await client.fetch(
@@ -202,7 +202,7 @@ void main() {
       cancel: Cancellation(),
       mediaRequest: true,
     );
-    expect(cookie, 'sid=page');
+    expect(cookie, isNull);
   });
 
   test(

@@ -56,6 +56,9 @@ class NativeMediaSessionService : MediaSessionService() {
     private var engineReleased = false
     private var fileLease: Closeable? = null
     private var restorable: RestorableState? = null
+    private var playerGeneration = 0L
+    private var playerListener: Player.Listener? = null
+    private var ownerGeneration: Long? = null
     private val positionHandler = Handler(Looper.getMainLooper())
     private val mediaSessionCallback = object : MediaSession.Callback {
         override fun onConnect(
@@ -153,56 +156,7 @@ class NativeMediaSessionService : MediaSessionService() {
             true,
         )
         player.setHandleAudioBecomingNoisy(true)
-        player.addListener(object : Player.Listener {
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_READY) sourceRetryCount = 0
-                syncState()
-            }
-            override fun onIsPlayingChanged(isPlaying: Boolean) = syncState()
-            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-                if (NativeMediaSessionPolicy.isExplicitPlayWhenReadyChange(reason)) {
-                    userPaused = !playWhenReady
-                }
-                syncState()
-            }
-            override fun onPlayerError(error: PlaybackException) {
-                // ExoPlayer reports elapsed-realtime timestamps. An error
-                // posted by the previous item after a rapid switch must not
-                // retry or fail the newly opened media item.
-                if (sessionId == null || error.timestampMs < mediaOpenedAtElapsedMs) {
-                    syncState()
-                    return
-                }
-                val recoverable = isRecoverableSourceError(error)
-                if (recoverable && sourceRetryCount == 0 && sessionId != null) {
-                    sourceRetryCount++
-                    state = "preparing"
-                    publish()
-                    retrySourcePlayback()
-                    return
-                }
-                state = "failed"
-                lastError = buildString {
-                    append(error.errorCodeName)
-                    append(": ").append(error.message ?: "播放失败")
-                    append("; recoverable=").append(recoverable)
-                    append("; mediaItem=")
-                        .append(player.currentMediaItem?.localConfiguration?.uri?.scheme ?: "none")
-                    error.cause?.let {
-                        append("; cause=").append(it.javaClass.simpleName)
-                        append(":").append(it.message ?: "")
-                    }
-                }
-                NativeCrashStore.append(
-                    this@NativeMediaSessionService,
-                    module = "media.session",
-                    message = "后台媒体播放失败",
-                    details = lastError + "\n" + error.stackTraceToString(),
-                    contextValue = "session=${sessionId ?: "unknown"}",
-                )
-                publish()
-            }
-        })
+        installPlayerListener(playerGeneration)
         val open = PendingIntent.getActivity(
             this,
             0,
@@ -229,6 +183,67 @@ class NativeMediaSessionService : MediaSessionService() {
         drainPending()
     }
 
+    private fun installPlayerListener(generation: Long) {
+        playerListener?.let(player::removeListener)
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (generation != playerGeneration) return
+                if (playbackState == Player.STATE_READY) sourceRetryCount = 0
+                syncState()
+            }
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (generation == playerGeneration) syncState()
+            }
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (generation != playerGeneration) return
+                if (NativeMediaSessionPolicy.isExplicitPlayWhenReadyChange(reason)) {
+                    userPaused = !playWhenReady
+                }
+                syncState()
+            }
+            override fun onPlayerError(error: PlaybackException) {
+                if (generation != playerGeneration) return
+                // ExoPlayer reports elapsed-realtime timestamps. An error
+                // posted by the previous item after a rapid switch must not
+                // retry or fail the newly opened media item.
+                if (sessionId == null || error.timestampMs < mediaOpenedAtElapsedMs) {
+                    syncState()
+                    return
+                }
+                val recoverable = isRecoverableSourceError(error)
+                if (recoverable && sourceRetryCount == 0 && sessionId != null) {
+                    sourceRetryCount++
+                    state = "preparing"
+                    publish()
+                    retrySourcePlayback(generation)
+                    return
+                }
+                state = "failed"
+                lastError = buildString {
+                    append(error.errorCodeName)
+                    append(": ").append(error.message ?: "播放失败")
+                    append("; recoverable=").append(recoverable)
+                    append("; mediaItem=")
+                        .append(player.currentMediaItem?.localConfiguration?.uri?.scheme ?: "none")
+                    error.cause?.let {
+                        append("; cause=").append(it.javaClass.simpleName)
+                        append(":").append(it.message ?: "")
+                    }
+                }
+                NativeCrashStore.append(
+                    this@NativeMediaSessionService,
+                    module = "media.session",
+                    message = "后台媒体播放失败",
+                    details = lastError + "\n" + error.stackTraceToString(),
+                    contextValue = "session=${sessionId ?: "unknown"}",
+                )
+                publish()
+            }
+        }
+        playerListener = listener
+        player.addListener(listener)
+    }
+
     private fun isRecoverableSourceError(error: PlaybackException): Boolean =
         error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
             error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
@@ -238,7 +253,8 @@ class NativeMediaSessionService : MediaSessionService() {
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = mediaSession
 
-    private fun retrySourcePlayback() {
+    private fun retrySourcePlayback(generation: Long) {
+        if (generation != playerGeneration) return
         player.playWhenReady = !userPaused
         player.prepare()
     }
@@ -260,12 +276,15 @@ class NativeMediaSessionService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        playerGeneration++
         stopPositionPersistence()
         persistCurrentState()
         cancelPending()
         releaseMediaEngine()
         fileLease?.close()
         fileLease = null
+        ownerGeneration?.let { MediaPlaybackOwner.nativeStopped(applicationContext, it) }
+        ownerGeneration = null
         synchronized(pendingLock) {
             if (instance === this) instance = null
         }
@@ -383,6 +402,7 @@ class NativeMediaSessionService : MediaSessionService() {
         val nextLease = NativeMediaFileLeases.registry.acquireRead(leaseScope)
         var installedLease = false
         try {
+            ownerGeneration = MediaPlaybackOwner.nativeStarted(applicationContext)
             stopPlayerOnly()
             fileLease?.close()
             fileLease = nextLease
@@ -394,6 +414,8 @@ class NativeMediaSessionService : MediaSessionService() {
             mediaMime = request.mime
             mediaIsHls = request.hls
             mediaOpenedAtElapsedMs = SystemClock.elapsedRealtime()
+            playerGeneration++
+            installPlayerListener(playerGeneration)
             title = request.title.ifBlank { "Site Lens" }.take(512)
             speed = 1f
             lastError = null
@@ -466,6 +488,7 @@ class NativeMediaSessionService : MediaSessionService() {
     }
 
     private fun stopPlayerOnly() {
+        playerGeneration++
         player.stop()
         player.clearMediaItems()
         userPaused = false
@@ -489,6 +512,8 @@ class NativeMediaSessionService : MediaSessionService() {
         releaseMediaEngine()
         fileLease?.close()
         fileLease = null
+        ownerGeneration?.let { MediaPlaybackOwner.nativeStopped(applicationContext, it) }
+        ownerGeneration = null
         stopSelf()
         return stopped
     }
@@ -499,6 +524,7 @@ class NativeMediaSessionService : MediaSessionService() {
         persistCurrentState()
         restorable = readRestorable()
         state = "stopped"
+        playerGeneration++
         player.stop()
         player.clearMediaItems()
         sessionId = null
@@ -514,6 +540,8 @@ class NativeMediaSessionService : MediaSessionService() {
         releaseMediaEngine()
         fileLease?.close()
         fileLease = null
+        ownerGeneration?.let { MediaPlaybackOwner.nativeStopped(applicationContext, it) }
+        ownerGeneration = null
         stopSelf()
     }
 

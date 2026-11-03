@@ -60,6 +60,35 @@ class NativeCrashContractTests(unittest.TestCase):
         self.assertIn("postDelayed", body)
         self.assertIn("probeDestroyed", body)
 
+    def test_forced_host_cleanup_uses_the_platform_view_release_barrier(self):
+        dispose = block(self.host, "fun dispose(force: Boolean)")
+        self.assertNotIn("parent as? ViewGroup)?.removeView(platformView)", dispose)
+        self.assertIn("viewLifetime.close(force)", dispose)
+        lifetime = (SOURCE / "WebViewLifetime.kt").read_text()
+        self.assertIn("postDelayed", lifetime)
+        self.assertIn("PLATFORM_RELEASE_TIMEOUT_MS", lifetime)
+        self.assertIn("owner = null", lifetime)
+
+    def test_native_media_callbacks_are_bound_to_player_generation(self):
+        media = (SOURCE / "NativeMediaSessionService.kt").read_text()
+        self.assertIn("installPlayerListener(playerGeneration)", media)
+        self.assertIn("if (generation != playerGeneration) return", media)
+        self.assertIn("retrySourcePlayback(generation)", media)
+        self.assertIn("playerGeneration++", media)
+        preserve = media.split("private fun stopAndPreserveRestorable", 1)[1].split(
+            "private fun releaseMediaEngine", 1
+        )[0]
+        self.assertIn("playerGeneration++", preserve)
+
+    def test_media_route_keeps_credentials_in_native_context_only(self):
+        runtime = (SOURCE / "MediaNetworkRuntime.kt").read_text()
+        dart_route = (ROOT / "lib/network/transport.dart").read_text()
+        dart_media = (ROOT / "lib/media/media_network.dart").read_text()
+        self.assertNotIn('"cookie" to', runtime)
+        self.assertNotIn("final String? cookie", dart_route)
+        self.assertNotIn("route.cookie", dart_route)
+        self.assertNotIn("cookie:", dart_media)
+
     def test_event_url_does_not_use_a_webview_getter(self):
         body = block(self.host, "private fun event")
         self.assertNotIn("webView.url", body)
@@ -162,6 +191,25 @@ class NativeCrashContractTests(unittest.TestCase):
         self.assertIn("output.write(bytes)", body)
         for forbidden in ("bufferedReader", "readText", "String(bytes", "readNBytes"):
             self.assertNotIn(forbidden, body)
+
+    def test_tombstone_pull_tool_preserves_binary_and_records_digest(self):
+        tool = (ROOT / "tool/pull_native_tombstone.py").read_text()
+        self.assertIn('"exec-out", "run-as"', tool)
+        self.assertIn("write_bytes", tool)
+        self.assertIn("sha256", tool)
+        self.assertIn("dumpsys", tool)
+        self.assertIn("dropbox-native-crash", tool)
+        self.assertIn("/data/tombstones/tombstone_*.pb", tool)
+        self.assertIn('"adb", "-s", args.device, "pull"', tool)
+        self.assertIn("verified_tombstone", tool)
+        self.assertIn("verified_tombstone_text", tool)
+        self.assertIn("matchedTextSource", tool)
+        self.assertIn("matchedTimestamp", tool)
+        self.assertIn("returncode != 0", tool)
+        self.assertIn("dropbox_records", tool)
+        self.assertIn("runAsError", tool)
+        self.assertIn('"decoded": False', tool)
+        self.assertNotIn("decode(\"utf-8\")", tool.split("target.write_bytes", 1)[1].split("copied.append", 1)[0])
 
     def test_fatal_file_is_synced_before_stream_close(self):
         body = block(self.store, "private fun appendRow")

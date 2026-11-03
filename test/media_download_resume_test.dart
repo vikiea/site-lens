@@ -266,6 +266,46 @@ void main() {
     },
   );
 
+  test(
+    'HLS 403 refreshes the current logical candidate and keeps partial bytes',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-auth-refresh-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final oldCandidate = _candidate(
+        Uri.parse('https://cdn.example/index.m3u8?token=old'),
+      );
+      final freshCandidate = MediaCandidate(
+        id: 'hls-auth-refresh-new',
+        hostId: oldCandidate.hostId,
+        generation: oldCandidate.generation + 1,
+        sourceUrl: oldCandidate.sourceUrl,
+        mediaUrl: Uri.parse('https://cdn.example/index.m3u8?token=new'),
+        title: oldCandidate.title,
+        mime: oldCandidate.mime,
+        source: oldCandidate.source,
+      );
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final task = store.create(oldCandidate);
+      final http = _RotatingHlsHttp(changed: false);
+      final service = MediaDownloadService(
+        tasks: store,
+        http: http,
+        refreshAuthorization: (_, _) async {
+          http.refreshed = true;
+          return freshCandidate;
+        },
+      );
+
+      final result = await service.start(task, oldCandidate);
+
+      expect(result.state, MediaTaskState.playable);
+      expect(store.task(task.id)!.candidateId, freshCandidate.id);
+      expect(http.offsets, [0, 2]);
+    },
+  );
+
   for (final failure in [
     const TlsException('TLS body interrupted'),
     const HttpException('Connection closed before full header was received'),
@@ -418,6 +458,7 @@ void main() {
               cancel, {
               void Function(int bytesWritten)? onProgress,
               Map<String, String>? headers,
+              String? requestContextId,
             }) async {
               observed = headers;
               await destination.writeAsString(

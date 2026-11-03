@@ -226,6 +226,19 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
             MediaNetwork().route(uri, attempt: attempt),
       ),
       authorize: _authorizeMediaDownload,
+      refreshAuthorization: (task, candidate) async {
+        try {
+          return await mediaCandidateForRetry(task);
+        } catch (error, stack) {
+          AppErrorLogger.capture(
+            error,
+            module: 'media.authorization-refresh',
+            context: task.id,
+            stack: stack,
+          );
+          rethrow;
+        }
+      },
       tlsTransferWithHeaders: Platform.isAndroid
           ? MediaNetwork().transferFile
           : null,

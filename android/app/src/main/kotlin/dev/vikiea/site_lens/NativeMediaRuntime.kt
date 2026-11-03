@@ -31,6 +31,7 @@ import java.io.File
 import java.io.Closeable
 import java.util.UUID
 import java.net.InetAddress
+import java.net.URI
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import kotlin.math.roundToInt
@@ -368,8 +369,11 @@ class NativeMediaRuntime(
                 if (!cookie.isNullOrBlank()) put("Cookie", cookie)
             }
             val secureDnsProvider = call.argument<String>("secureDnsProvider")?.trim().orEmpty()
+            val routeOwnsDns = runCatching {
+                SystemMediaNetwork.routeInfo(context, URI(uri.toString())).fakeIpAllowed
+            }.getOrDefault(false)
             val http: DataSource.Factory = if (
-                secureDnsProvider.isNotBlank() && secureDnsProvider != "off"
+                secureDnsProvider.isNotBlank() && secureDnsProvider != "off" && !routeOwnsDns
             ) {
                 val client = OkHttpClient.Builder()
                     .dns(object : Dns {

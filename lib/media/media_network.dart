@@ -53,6 +53,7 @@ class MediaNetwork {
     Cancellation cancel, {
     void Function(int bytesWritten)? onProgress,
     Map<String, String>? headers,
+    String? requestContextId,
   }) async {
     if (!_nativeAvailable) throw UnsupportedError('需要 Android 媒体传输');
     cancel.check();
@@ -72,11 +73,25 @@ class MediaNetwork {
       }
     });
     try {
+      var contextId = requestContextId;
+      try {
+        contextId ??= (await _route(
+          url,
+          attempt: 0,
+          media: true,
+          document: document,
+        )).requestContextId;
+      } catch (_) {
+        // The transfer channel performs its own route selection. Context
+        // discovery is best effort so a page without observed auth headers
+        // keeps the existing transport behavior.
+      }
       await _channel.invokeMethod<void>('transferFile', {
         'jobId': jobId,
         'url': url.toString(),
         'document': document.toString(),
         'networkEpoch': _networkEpoch,
+        ...?contextId == null ? null : {'requestContextId': contextId},
         'path': destination.path,
         'maxBytes': maxBytes,
         if (headers != null && headers.isNotEmpty) 'headers': headers,
@@ -147,10 +162,16 @@ class MediaNetwork {
     if (value == null) throw StateError('无法读取系统代理设置，请重试');
     return MediaNetworkRoute(
       proxy: value['proxy'] as String? ?? 'DIRECT',
-      allowProxyFakeIp: value['routeAllowsFakeIp'] == true,
+      allowProxyFakeIp:
+          value['fakeIpAllowed'] == true || value['routeAllowsFakeIp'] == true,
+      routeKind: value['routeKind'] as String? ?? 'unknown',
+      dnsOwner: value['dnsOwner'] as String? ?? 'unknown',
+      fakeIpAllowed:
+          value['fakeIpAllowed'] == true || value['routeAllowsFakeIp'] == true,
+      networkEpoch: (value['networkEpoch'] as num?)?.toInt() ?? _networkEpoch,
+      requestContextId: value['requestContextId'] as String?,
       userAgent:
           value['userAgent'] as String? ?? MediaNetworkRoute.defaultUserAgent,
-      cookie: media ? value['cookie'] as String? : null,
     );
   }
 }

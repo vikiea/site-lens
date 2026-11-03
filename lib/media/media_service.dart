@@ -810,7 +810,8 @@ class MediaTaskStore extends ChangeNotifier {
             mediaDocumentIdentity(current.sourceUrl)) {
       return current;
     }
-    if (current.state == MediaTaskState.downloading ||
+    if ((current.state == MediaTaskState.downloading &&
+            !allowAuthorizationRefresh) ||
         current.state == MediaTaskState.playable ||
         current.state == MediaTaskState.completed ||
         !canDelete(canonicalId)) {
@@ -1996,7 +1997,20 @@ typedef NativeTlsTransferWithHeaders = Future<void> Function(
   Cancellation cancellation, {
   void Function(int bytesWritten)? onProgress,
   Map<String, String>? headers,
+  String? requestContextId,
 });
+
+typedef MediaAuthorizationRefresh = Future<MediaCandidate?> Function(
+  MediaTask task,
+  MediaCandidate candidate,
+);
+
+class MediaAuthorizationRequiredException extends StateError {
+  MediaAuthorizationRequiredException([this.status = 403])
+    : super('媒体下载需要重新授权 HTTP $status：请返回播放页刷新并重新选择媒体；如网页通过代理播放，请保持相同代理后重试');
+
+  final int status;
+}
 
 class MediaBatchDownloadRequest {
   const MediaBatchDownloadRequest({
@@ -2048,6 +2062,7 @@ class MediaDownloadService {
     ControlledHttp? http,
     this.native,
     this.authorize,
+    this.refreshAuthorization,
     this.tlsTransfer,
     this.tlsTransferWithHeaders,
     this.resourceCoordinator,
@@ -2071,6 +2086,7 @@ class MediaDownloadService {
   final NativeDownloadRuntime? native;
   final MediaCandidate Function(MediaTask task, MediaCandidate candidate)?
   authorize;
+  final MediaAuthorizationRefresh? refreshAuthorization;
   Future<void> Function(MediaTask task)? onCompleted;
   final _active = <String, Cancellation>{};
   final _running = <String, Future<MediaTask>>{};
@@ -2168,6 +2184,7 @@ class MediaDownloadService {
         cancel,
         onProgress: onProgress,
         headers: headers,
+        requestContextId: null,
       );
     }
     final legacy = tlsTransfer;
@@ -2937,6 +2954,49 @@ class MediaDownloadService {
     Map<String, String> manifestHeaders = const {},
     Map<String, String> resourceHeaders = const {},
   }) async {
+    var currentCandidate = candidate;
+    var currentManifestHeaders = manifestHeaders;
+    var currentResourceHeaders = resourceHeaders;
+    for (
+      var authorizationAttempt = 0;
+      authorizationAttempt < 2;
+      authorizationAttempt++
+    ) {
+      try {
+        return await _startHlsAttempt(
+          task,
+          currentCandidate,
+          maxBytes: maxBytes,
+          cancel: cancel,
+          manifestHeaders: currentManifestHeaders,
+          resourceHeaders: currentResourceHeaders,
+        );
+      } on MediaAuthorizationRequiredException {
+        final refresh = refreshAuthorization;
+        if (refresh == null || authorizationAttempt == 1) rethrow;
+        final refreshed = await refresh(task, currentCandidate);
+        if (refreshed == null) rethrow;
+        tasks.rebindCandidate(
+          task.id,
+          refreshed,
+          allowAuthorizationRefresh: true,
+        );
+        currentCandidate = refreshed;
+        currentManifestHeaders = refreshed.manifestHeaders;
+        currentResourceHeaders = refreshed.resourceHeaders;
+      }
+    }
+    throw MediaAuthorizationRequiredException();
+  }
+
+  Future<MediaTask> _startHlsAttempt(
+    MediaTask task,
+    MediaCandidate candidate, {
+    required int maxBytes,
+    required Cancellation cancel,
+    Map<String, String> manifestHeaders = const {},
+    Map<String, String> resourceHeaders = const {},
+  }) async {
     var current = tasks.task(task.id) ?? task;
     Directory? staging;
     try {
@@ -3143,6 +3203,10 @@ class MediaDownloadService {
       }
       return current;
     } catch (error, stack) {
+      if (_isAuthorizationFailure(error)) {
+        if (error is MediaAuthorizationRequiredException) rethrow;
+        throw MediaAuthorizationRequiredException();
+      }
       _fail(task.id, error, stack, 'hls');
       rethrow;
     } finally {
@@ -3151,6 +3215,17 @@ class MediaDownloadService {
       _active.remove(task.id);
       _hlsSeekTargets.remove(task.id);
     }
+  }
+
+  bool _isAuthorizationFailure(Object error) {
+    if (error is MediaAuthorizationRequiredException) return true;
+    if (error is PlatformException && error.code == 'media_authorization') {
+      return true;
+    }
+    final text = error.toString().toLowerCase();
+    return text.contains('http 401') ||
+        text.contains('http 403') ||
+        text.contains('需要重新授权');
   }
 
   List<({Uri uri, int durationMs})> _hlsSegmentPlan(List<String> lines) {
@@ -3206,9 +3281,7 @@ class MediaDownloadService {
       );
       if (response.status < 200 || response.status >= 300) {
         if (response.status == 401 || response.status == 403) {
-          throw StateError(
-            'HLS 清单 HTTP ${response.status}：下载地址已失效或被服务器拒绝，请返回播放页刷新并重新选择媒体；如网页通过代理播放，请保持相同代理后重试',
-          );
+          throw MediaAuthorizationRequiredException(response.status);
         }
         throw StateError('HLS 清单 HTTP ${response.status}');
       }
@@ -3638,6 +3711,11 @@ class MediaDownloadService {
           headers: headers,
         );
         return;
+      } on StateError catch (error) {
+        if (_isAuthorizationFailure(error)) {
+          throw MediaAuthorizationRequiredException();
+        }
+        rethrow;
       }
     }
     await _downloadFileDart(
@@ -3738,7 +3816,7 @@ class MediaDownloadService {
           continue;
         }
         if (response.status == 401 || response.status == 403) {
-          throw StateError('媒体下载需要重新授权 HTTP ${response.status}');
+          throw MediaAuthorizationRequiredException(response.status);
         }
         if (_retryableMediaStatus(response.status)) {
           throw HttpException('媒体服务器暂时不可用 HTTP ${response.status}');
@@ -3818,6 +3896,11 @@ class MediaDownloadService {
               allowNativeFallback: false,
             );
             return;
+          } on StateError catch (error) {
+            if (_isAuthorizationFailure(error)) {
+              throw MediaAuthorizationRequiredException();
+            }
+            rethrow;
           }
         }
         throw lastError;

@@ -411,17 +411,28 @@ class MediaNetworkRoute {
   const MediaNetworkRoute({
     this.proxy = 'DIRECT',
     this.allowProxyFakeIp = false,
+    this.routeKind = 'unknown',
+    this.dnsOwner = 'unknown',
+    this.fakeIpAllowed = false,
+    this.networkEpoch = 0,
+    this.requestContextId,
     this.userAgent = defaultUserAgent,
-    this.cookie,
   });
 
   static const defaultUserAgent =
       'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
   final String proxy;
+
+  /// Compatibility alias retained for existing transport callers. New code
+  /// should use [fakeIpAllowed] and [routeKind].
   final bool allowProxyFakeIp;
+  final String routeKind;
+  final String dnsOwner;
+  final bool fakeIpAllowed;
+  final int networkEpoch;
+  final String? requestContextId;
   final String userAgent;
-  final String? cookie;
 }
 
 /// Owns one connection pool at a time. A redirect can change the OS/PAC route
@@ -705,9 +716,6 @@ class ControlledHttp {
             if (document.scheme == 'http' || document.scheme == 'https') {
               request.headers.set('origin', document.origin);
             }
-            if (route.cookie != null && route.cookie!.isNotEmpty) {
-              request.headers.set(HttpHeaders.cookieHeader, route.cookie!);
-            }
           }
           if (body != null) request.write(body);
           response = await request.close().timeout(timeout);
@@ -821,9 +829,6 @@ class ControlledHttp {
         request.headers.set(HttpHeaders.refererHeader, document.toString());
         if (document.scheme == 'http' || document.scheme == 'https') {
           request.headers.set('origin', document.origin);
-        }
-        if (route.cookie != null && route.cookie!.isNotEmpty) {
-          request.headers.set(HttpHeaders.cookieHeader, route.cookie!);
         }
       }
       final response = await request.close().timeout(timeout);

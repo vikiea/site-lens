@@ -40,6 +40,26 @@ class SystemMediaNetworkTest {
     }
 
     @Test
+    fun unavailableProxyNeverSilentlyFallsBackToDirect() {
+        val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7890))
+        val policy = selector { listOf(proxy, Proxy.NO_PROXY) }
+        val target = URI("https://cdn.example/a")
+        val visited = mutableListOf<Proxy>()
+        assertThrows(IOException::class.java) {
+            SystemMediaNetwork.openConnection(
+                target,
+                selector = policy,
+                open = { _, selected ->
+                    visited.add(selected)
+                    if (selected == proxy) throw IOException("proxy unavailable")
+                    error("DIRECT must not be attempted")
+                },
+            )
+        }
+        assertEquals(listOf(proxy), visited)
+    }
+
+    @Test
     fun retryAdvancesPacProxyAndOnlySelectedDirectChecksDns() {
         val first = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7890))
         val second = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7891))
@@ -167,6 +187,27 @@ class SystemMediaNetworkTest {
         assertEquals(true, SystemMediaNetwork.routerFakeIpRouteAllowed(true, true))
         assertEquals(false, SystemMediaNetwork.routerFakeIpRouteAllowed(false, true))
         assertEquals(false, SystemMediaNetwork.routerFakeIpRouteAllowed(true, false))
+    }
+
+    @Test
+    fun fakeIpRouteKindDistinguishesVpnTunFromGatewayDns() {
+        assertEquals(
+            SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP,
+            SystemMediaNetwork.fakeIpRouteKind(true),
+        )
+        assertEquals(
+            SystemMediaNetwork.RouteKind.ROUTER_FAKE_IP,
+            SystemMediaNetwork.fakeIpRouteKind(false),
+        )
+    }
+
+    @Test
+    fun routerFakeIpRequiresValidatedPrivateDnsOnDirectRoute() {
+        assertEquals(true, SystemMediaNetwork.routerFakeIpEligible(true, true, true, true))
+        assertEquals(false, SystemMediaNetwork.routerFakeIpEligible(false, true, true, true))
+        assertEquals(false, SystemMediaNetwork.routerFakeIpEligible(true, false, true, true))
+        assertEquals(false, SystemMediaNetwork.routerFakeIpEligible(true, true, false, true))
+        assertEquals(false, SystemMediaNetwork.routerFakeIpEligible(true, true, true, false))
     }
 
     private fun selector(select: (URI) -> List<Proxy>) = object : ProxySelector() {

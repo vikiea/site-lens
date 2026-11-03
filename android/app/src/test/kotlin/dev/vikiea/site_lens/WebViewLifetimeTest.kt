@@ -5,11 +5,20 @@ import org.junit.Test
 
 class WebViewLifetimeTest {
     private val queued = ArrayDeque<() -> Unit>()
+    private val delayed = ArrayDeque<() -> Unit>()
     private var destroys = 0
-    private val lifetime = WebViewLifetime({ queued.addLast(it) }, { destroys++ })
+    private val lifetime = WebViewLifetime(
+        post = { queued.addLast(it) },
+        postDelayed = { _, task -> delayed.addLast(task) },
+        destroy = { destroys++ },
+    )
 
     private fun drain() {
         while (queued.isNotEmpty()) queued.removeFirst().invoke()
+    }
+
+    private fun fireDelayed() {
+        while (delayed.isNotEmpty()) delayed.removeFirst().invoke()
     }
 
     @Test fun closeWaitsForFlutterReleaseAndLeavesTheCallback() {
@@ -18,6 +27,7 @@ class WebViewLifetimeTest {
         drain()
         assertTrue(lifetime.closing)
         assertEquals(0, destroys)
+        assertEquals(1, delayed.size)
         assertTrue(lifetime.release(7))
         assertEquals(0, destroys)
         drain()
@@ -52,6 +62,16 @@ class WebViewLifetimeTest {
         lifetime.close()
         lifetime.close(force = true)
         assertEquals(0, destroys)
+        drain()
+        assertEquals(1, destroys)
+    }
+
+    @Test fun missingFlutterReleaseUsesBoundedOwnerTimeout() {
+        lifetime.acquire(3)
+        lifetime.close()
+        drain()
+        assertEquals(0, destroys)
+        fireDelayed()
         drain()
         assertEquals(1, destroys)
     }
