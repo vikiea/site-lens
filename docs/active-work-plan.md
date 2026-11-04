@@ -52,8 +52,7 @@ alpha14 或 v0.6 设备验收。
   alpha20 `4ccd2eb`/vc153 路由恢复与原生播放生命周期；
   alpha21 `fa1781f`/vc154 导出队列与原生生命周期——**有 tag、vc154 已占、
   Release 取消（45m40s 超时）、同一提交 Verify 三次均 cancelled，没有产物**；
-  注意 `version-code/154-*` 和 `155-*` 本地 `git tag -l` 为空，只存在于远端，
-  要 `git ls-remote --tags origin` 才能核对（本地按 tag 名查会误判"未占用"）；
+  注意 versionCode tag 以远端为准：本地 clone 可能缺最新几个，git tag -l 查不到不代表未占用，必须 git ls-remote --tags origin 核对（本机 2026-11-04 fetch 后 150–155 齐全，属本机状态，不是仓库事实）；
   alpha22 `2c37cf2`/vc155 导出可用性监听同步关闭（与 alpha21 只差 +24/−9）。
 - 有 tag、versionCode 已占但没有 Release 产物的版本：`v0.5.0.alpha12`(vc121)、
   `v0.5.0.alpha13`(vc122)、`v0.6.0.alpha2`(vc135)、`v0.6.0.alpha21`(vc154)。
