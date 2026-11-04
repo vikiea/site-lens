@@ -78,6 +78,17 @@ The official plugin contains general-purpose Skills. Site Lens uses these select
 
 These Skills are advisory. The project-specific `site-lens-ui` and `site-lens-validation` Skills, `AGENTS.md`, and the existing Make targets define the final UI and verification rules.
 
+### Project Skill documents
+
+The project Skills use progressive disclosure. `.agents/skills/site-lens-ui/SKILL.md` and `.agents/skills/site-lens-validation/SKILL.md` are routers: read the matching reference under `references/` only when its topic is in scope, and do not restate a rule that already lives elsewhere.
+
+- Every file under a Skill's `references/` directory must be linked from that Skill's `SKILL.md`.
+- Each reference opens with a `# Title` heading and a `Read this when ...` line describing its scope.
+- The UI token snapshot exists only in `.agents/skills/site-lens-ui/references/tokens.md`; keep it aligned with `lib/ui/app_theme.dart` and the focused UI tests.
+- `python3 tool/check_ui_tokens.py` enforces the token contract and the router/reference structure, `python3 tool/test_ui_tokens.py` covers the checker's regression cases, and `make check` runs both.
+
+When adding, renaming, or removing a reference, update the router table and run the two commands above in the same change.
+
 The following workflows are intentionally not automatic:
 
 - `flutter-add-integration-test`: Site Lens already has a combined integration suite and a database-safe Android acceptance runner. Do not add a second Flutter Driver/`flutter drive` entry point.

@@ -7,36 +7,39 @@ description: Choose and run the smallest sufficient Site Lens validation level f
 
 Use this skill for implementation, bug fixes, UI changes, test changes, tooling changes, and release preparation in this repository.
 
+## Non-negotiables
+
+- Never report the requested level as passed when a required stage was skipped; a successful lower level does not imply that a higher level passed.
+- Preserve the runner's nonzero exit code and include the missing evidence in the report.
+- A cache hit is not a device or release gate.
+- An `IP:PORT` endpoint gets one ADB server restart, one `adb connect`, and one preflight retry; a second failure stops and asks for the correct port.
+- An unchecked or stale manual evidence file is never device evidence.
+- Do not download release assets during routine validation.
+- Do not report a stopped or timed-out run as passed.
+
 ## Workflow
 
 1. Inspect the current worktree, including staged, unstaged, and untracked paths.
-2. Read [references/validation-matrix.md](references/validation-matrix.md) and classify the change by behavior first, then by path.
+2. Read the [validation matrix](references/validation-matrix.md) and classify by behavior first, then by path.
 3. Select the smallest sufficient level from L0 through L4. Escalate when the change crosses WebView, navigation, scripts, permissions, persistence, Pigeon, native code, media, device lifecycle, or release identity.
-4. Run `python3 tool/verify_level.py --auto` unless a user explicitly selects a level. Use `--device IP:PORT` for Android validation.
-5. For emulator validation, run `make emulator-check EMULATOR_AVD=<avd-name>` or `python3 tool/check_emulator.py --avd <avd-name>` before acceptance. The check waits up to 45 seconds by default, accepts an explicit `--serial`, `--port`, `--memory-mb`, `--cores`, `--gpu`, `--adb`, `--emulator`, or `--log`, and does not install an APK or run tests. Read [references/emulator.md](references/emulator.md) before starting it, including the app-state and Flutter raster-crash diagnosis section when the app is absent, stuck on Splash, or the process dies in `libflutter.so`. Use the recommended bounded RAM/GPU profile and monitor ADB, boot state, test progress, emulator process, and host memory while the runner is active.
-6. Treat a skipped required stage as incomplete. Preserve the runner's nonzero exit code and include the missing evidence in the report.
-7. Report the selected level, reason, commands, cache hits, failures, emulator configuration, monitoring observations, and remaining gates. A successful lower level does not imply that a higher level passed.
-8. A passed manual evidence file may satisfy a required device stage when a developer has manually verified the checklist on a real device. Create it with `make manual-evidence-template`, approve every item with `make manual-evidence-approve`, and pass it using `--manual-evidence`. The runner must validate the evidence schema, requested level, changed paths, content fingerprint, and complete worktree fingerprint before accepting it; never treat an unchecked or stale file as device evidence.
+4. Run `python3 tool/verify_level.py --auto` unless the user explicitly selects a level, using `--device IP:PORT` for Android validation; flags, exit codes, and `.ci_cache` policy are in [validation commands](references/validation-commands.md).
+5. Run `make emulator-check EMULATOR_AVD=<avd-name>` or `python3 tool/check_emulator.py --avd <avd-name>` before emulator acceptance, and use the bounded profile and monitoring in [emulator profile](references/emulator-profile.md).
+6. When the app is absent, stuck on Splash, or the process dies in `libflutter.so`, read [emulator diagnosis](references/emulator-diagnosis.md) before restarting the emulator or ADB.
+7. Treat a skipped required stage as incomplete and carry the missing evidence into the report.
+8. When a developer has manually verified the checklist on a real device, use the contract in [manual evidence](references/manual-evidence.md) instead of replaying the device stage.
 
-## Android endpoint guard
+## Reporting
 
-For an `IP:PORT` device, the runner performs one `adb -s IP:PORT get-state` preflight before any build, install, backup, or test. If that preflight fails, restart the local ADB server exactly once with `adb kill-server` followed by `adb start-server`, run `adb connect IP:PORT` once to register the TCP transport, then retry `adb -s IP:PORT get-state` once. Do not call `adb disconnect`, repeat `adb connect`, wait for the device, retry installation, or replay the suite during this recovery step. If the second preflight fails, stop immediately and ask for the correct port. The same one-restart boundary applies when `make acceptance DEVICE=IP:PORT` is invoked directly, and the report must record whether recovery was attempted and whether the retry passed.
+Report the selected level, reason, commands, cache hits, failures, emulator configuration, monitoring observations, and remaining gates. Report whether Android endpoint recovery was attempted and whether the retry passed. For a GitHub Release, report the evidence described in [release evidence](references/release-evidence.md).
 
-## Commands and reports
+## Read on demand
 
-The unified entry point supports `--auto`, `--level L0..L4`, `--paths`, `--device`, `--report`, and `--cache-dir`. It prints a Markdown report and returns:
-
-- `0` when the requested level is complete;
-- `1` when a validation command fails;
-- `2` when required environment or evidence is unavailable;
-- `3` for an invalid runner request.
-
-The runner may reuse exact non-device L0-L2 evidence from `.ci_cache/` when the complete worktree, toolchain, command, and relevant environment fingerprints match. Device stages perform a current preflight and rerun their command; L3 and L4 always perform current critical checks. Do not treat cache hits as a substitute for a missing device or release gate.
-
-Keep the existing `make check`, `make acceptance`, and CI gates working. Complete the project's independent review requirement before committing; review does not by itself require the highest validation level.
-
-## Release artifact evidence
-
-For a routine GitHub Release, treat release completion as the combination of a successful `Release Site Lens` workflow and a published Release asset digest. Confirm both with `gh run view <run-id> --json status,conclusion,jobs` and `gh release view <tag> --json isDraft,isPrerelease,assets,url`; record the APK asset name and its `digest` value when available.
-
-Do not download the APK or checksum asset during routine validation. Download and locally verify assets only when the user explicitly requests it, a device installation is part of the current acceptance gate, the package/signature/version identity must be inspected, or the workflow/Release metadata shows an anomaly or lacks a digest.
+| Reference | Read when |
+| --- | --- |
+| [validation matrix](references/validation-matrix.md) | Classifying a change, escalating by path, or a required device stage cannot run |
+| [validation commands](references/validation-commands.md) | Running the entry point, interpreting exit codes, or reusing cached evidence |
+| [Android endpoint](references/android-endpoint.md) | Validating an `IP:PORT` device or recovering from a failed preflight |
+| [emulator profile](references/emulator-profile.md) | Starting, configuring, or monitoring an emulator |
+| [emulator diagnosis](references/emulator-diagnosis.md) | The app is absent, stuck on Splash, or crashing in the Flutter raster thread |
+| [manual evidence](references/manual-evidence.md) | A manual checklist must satisfy a required device stage |
+| [release evidence](references/release-evidence.md) | Reporting a GitHub Release or deciding whether to download assets |
