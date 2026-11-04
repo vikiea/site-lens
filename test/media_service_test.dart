@@ -1190,6 +1190,137 @@ void main() {
     );
   });
 
+  test('repeated query parameters keep every value in media identity', () {
+    const base = 'https://cdn.example/live/index.m3u8';
+    Uri url(String query) => Uri.parse('$base?$query');
+
+    // A repeated selector must stay distinguishable from a single value and
+    // from a different repetition; collapsing them merges two streams.
+    expect(
+      mediaCandidateKey(url('ep=1&ep=2')),
+      isNot(mediaCandidateKey(url('ep=2'))),
+    );
+    expect(
+      mediaCandidateKey(url('q=1&q=1')),
+      isNot(mediaCandidateKey(url('q=1'))),
+    );
+    expect(
+      mediaCandidateKey(url('q=1&q=2')),
+      isNot(mediaCandidateKey(url('q=1'))),
+    );
+    expect(
+      mediaCandidateKey(url('q=1&q=2')),
+      isNot(mediaCandidateKey(url('q=2&q=1'))),
+    );
+    expect(
+      mediaCandidateAuthorizationKey(url('ep=1&ep=2')),
+      isNot(mediaCandidateAuthorizationKey(url('ep=2'))),
+    );
+    expect(
+      mediaDocumentIdentity(url('ep=1&ep=2')),
+      isNot(mediaDocumentIdentity(url('ep=2'))),
+    );
+
+    // Authorization rotation still collapses while repeats are preserved.
+    expect(
+      mediaCandidateKey(url('ep=1&ep=2&t=1')),
+      mediaCandidateKey(url('ep=1&ep=2&t=2')),
+    );
+    expect(
+      mediaCandidateKey(url('ep=1&ep=2&sig=a')),
+      mediaCandidateKey(url('sig=b&ep=1&ep=2')),
+    );
+  });
+
+  test('single-valued media identity keeps its exact byte form', () {
+    const base = 'https://cdn.example/live/index.m3u8';
+    // A repeated-parameter fix must not re-encode URLs that only carry
+    // single-valued parameters.
+    expect(
+      mediaCandidateKey(Uri.parse('$base?line=1&rate=5')),
+      '$base?line=1&rate=5',
+    );
+    expect(
+      mediaCandidateKey(Uri.parse('$base?name=%E4%B8%AD&sig=x')),
+      '$base?name=%E4%B8%AD',
+    );
+    // `token` is volatile only for the page identity and authorization key.
+    expect(
+      mediaCandidateKey(Uri.parse('$base?token=one&v=720')),
+      '$base?token=one&v=720',
+    );
+    expect(
+      mediaCandidateAuthorizationKey(Uri.parse('$base?token=one&v=720')),
+      '$base?v=720',
+    );
+
+    // A query whose parameters are all volatile keeps its historical trailing
+    // `?`.
+    expect(mediaCandidateKey(Uri.parse(base)), base);
+    expect(mediaCandidateKey(Uri.parse('$base?t=one')), '$base?');
+    expect(mediaCandidateAuthorizationKey(Uri.parse('$base?t=one')), '$base?');
+  });
+
+  test('locator identity keeps repeated selectors but ignores the CDN route', () {
+    Uri url(String host, String query) =>
+        Uri.parse('https://$host:8443/live/index.m3u8?$query');
+
+    // A repeated selector must not collapse onto its last value; pinning the
+    // known limitation (the authority is dropped) as a literal would turn that
+    // limitation into a contract.
+    expect(
+      mediaCandidateLocatorIdentity(url('edge.example', 'ep=1&ep=2&sig=s1')),
+      isNot(mediaCandidateLocatorIdentity(url('edge.example', 'ep=2&sig=s1'))),
+    );
+    expect(
+      mediaCandidateLocatorIdentity(url('edge.example', 'q=1&q=1')),
+      isNot(mediaCandidateLocatorIdentity(url('edge.example', 'q=1'))),
+    );
+    // The known limitation still holds: two CDN routes of one path collapse.
+    expect(
+      mediaCandidateLocatorIdentity(url('edge-wifi.example', 'ep=1&ep=2')),
+      mediaCandidateLocatorIdentity(url('edge-cell.example', 'ep=1&ep=2')),
+    );
+    // A repeated authorization parameter must not change the locator, wherever
+    // it is written; the locator is built in one pass over retained selectors.
+    expect(
+      mediaCandidateLocatorIdentity(url('edge.example', 'sig=a&sig=b&ep=1')),
+      mediaCandidateLocatorIdentity(url('edge.example', 'ep=1&sig=a&sig=b')),
+    );
+    expect(
+      mediaCandidateLocatorIdentity(
+        url('edge.example', 'ep=1&ep=2&sig=s1&sig=s2'),
+      ),
+      mediaCandidateLocatorIdentity(url('edge.example', 'ep=1&ep=2')),
+    );
+    // An empty selector set keeps the historical authority-less bare path.
+    expect(
+      mediaCandidateLocatorIdentity(Uri.parse('https://cdn.example/a.m3u8')),
+      mediaCandidateLocatorIdentity(
+        Uri.parse('https://cdn.example/a.m3u8?sig=s1'),
+      ),
+      reason: 'an all-volatile query must not leave a bare ? in the locator',
+    );
+    // The bare path is also the byte form: no trailing `?` is left behind.
+    expect(
+      mediaCandidateLocatorIdentity(Uri.parse('https://cdn.example/a.m3u8')),
+      isNot(endsWith('?')),
+    );
+    expect(
+      mediaCandidateLocatorIdentity(
+        Uri.parse('https://cdn.example/a.m3u8?sig=s1'),
+      ),
+      isNot(endsWith('?')),
+    );
+    // Different paths of one CDN stay distinct.
+    expect(
+      mediaCandidateLocatorIdentity(Uri.parse('https://cdn.example/a.m3u8')),
+      isNot(
+        mediaCandidateLocatorIdentity(Uri.parse('https://cdn.example/b.m3u8')),
+      ),
+    );
+  });
+
   test('structured media identity survives a CDN authority change', () {
     final first = candidate(
       url: 'https://edge-wifi.example/live/index.m3u8?token=one&line=54',
