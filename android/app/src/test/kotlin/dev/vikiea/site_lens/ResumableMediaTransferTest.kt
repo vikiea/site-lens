@@ -14,9 +14,67 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class ResumableMediaTransferTest {
+    @Test
+    fun retryDelayUsesFailureCategoryAndPartialProgress() {
+        assertEquals(250L, ResumableMediaTransfer.retryDelayMillis("dns", 0L, 0))
+        assertEquals(100L, ResumableMediaTransfer.retryDelayMillis("connection_reset", 10L, 0))
+        assertEquals(300L, ResumableMediaTransfer.retryDelayMillis("connection_reset", 0L, 0))
+        assertEquals(5_000L, ResumableMediaTransfer.retryDelayMillis("io", 0L, 9))
+    }
+
+    @Test
+    fun certificateAndHostnameFailuresAreNotRetried() = fixture { root ->
+        val url = URL("https://cdn.example/video").toURI()
+        val attempts = mutableListOf<Int>()
+        val transfer = ResumableMediaTransfer(
+            connectForAttempt = { _, attempt ->
+                attempts += attempt
+                throw javax.net.ssl.SSLPeerUnverifiedException("hostname mismatch")
+            },
+        )
+        assertThrows(MediaTransferFailure::class.java) {
+            transfer.transfer(url, url, File(root, "video.part"), "test", maxAttempts = 5)
+        }
+        assertEquals(listOf(0), attempts)
+    }
+    @Test
+    fun remainingBudgetAndStrategyOffsetAreSharedWithCaller() = fixture { root ->
+        val url = URL("https://cdn.example/video").toURI()
+        val attempts = mutableListOf<Int>()
+        val starts = mutableListOf<Int>()
+        val transfer = ResumableMediaTransfer(
+            connectForAttempt = { _, attempt ->
+                attempts += attempt
+                FailingResponseCodeConnection()
+            },
+            onAttemptStarted = { starts += it },
+        )
+        val error = assertThrows(MediaTransferFailure::class.java) {
+            transfer.transfer(url, url, File(root, "video.part"), "test", maxAttempts = 2, startAttempt = 3)
+        }
+        assertEquals(listOf(3, 4), attempts)
+        assertEquals(listOf(1, 2), starts)
+        assertEquals(2, error.attemptsUsed)
+        assertEquals(2, error.diagnostics()["attemptsUsed"])
+    }
+
+    @Test
+    fun authorizationFailureReportsConsumedBudget() = fixture { root ->
+        val url = URL("https://cdn.example/video").toURI()
+        val transfer = ResumableMediaTransfer(connect = {
+            FakeConnection(403, emptyMap(), ByteArrayInputStream(byteArrayOf()))
+        })
+        val error = assertThrows(MediaAuthorizationException::class.java) {
+            transfer.transfer(url, url, File(root, "video.part"), "test", maxAttempts = 3, startAttempt = 2)
+        }
+        assertEquals(1, error.attemptsUsed)
+        assertEquals(403, error.statusCode)
+    }
+
     @Test
     fun headerFailureDiagnosticsContainNoSignedUrlOrProviderMessage() = fixture { root ->
         val url = URL("https://cdn.example/video?auth_key=private-signature").toURI()
@@ -27,7 +85,7 @@ class ResumableMediaTransferTest {
         } catch (failure: MediaTransferFailure) {
             assertEquals("response_headers", failure.phase)
             assertEquals("cdn.example", failure.host)
-            assertEquals(3, failure.attempt)
+            assertEquals(7, failure.attempt)
             assertEquals("direct", failure.route)
             assertEquals(false, failure.cookiePresent)
             assertEquals(0L, failure.bytesWritten)
@@ -66,6 +124,7 @@ class ResumableMediaTransferTest {
         val partial = File(root, "video.part")
         ResumableMediaTransfer(connect = { responses.removeFirst() }).transfer(
             url, URL("https://site.example/watch").toURI(), partial, "test",
+            requestHeaders = mapOf("authorization" to "secret", "x-cdn-auth" to "cdn-secret"),
             requestCookies = { uri ->
                 lookedUp.add(uri.host)
                 if (uri.host == "cdn.example") "cdn=secret" else null
@@ -74,6 +133,9 @@ class ResumableMediaTransferTest {
         assertEquals(listOf("cdn.example", "other.example"), lookedUp)
         assertEquals("cdn=secret", first.properties["Cookie"])
         assertNull(second.properties["Cookie"])
+        assertEquals("secret", first.properties["authorization"])
+        assertNull(second.properties["authorization"])
+        assertNull(second.properties["x-cdn-auth"])
         assertArrayEquals(byteArrayOf(1, 2), partial.readBytes())
         assertEquals(false, File(partial.path + ".resume").readText().contains("secret"))
     }
@@ -244,7 +306,7 @@ class ResumableMediaTransferTest {
             failed = true
         }
         assertEquals(true, failed)
-        assertEquals(4, requests)
+        assertEquals(8, requests)
     }
 
     @Test

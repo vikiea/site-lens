@@ -75,6 +75,21 @@ internal object NativeMediaSessionPolicy {
             phase != LifecyclePhase.STOPPING &&
             phase != LifecyclePhase.RELEASED
 
+    fun acceptsServiceDispatch(
+        stopping: Boolean,
+        engineReleased: Boolean,
+        phase: LifecyclePhase,
+    ): Boolean =
+        !stopping &&
+            !engineReleased &&
+            phase != LifecyclePhase.STOPPING &&
+            phase != LifecyclePhase.RELEASED
+
+    fun shouldRequeueAfterRelease(
+        retryOnRelease: Boolean,
+        explicitStopInProgress: Boolean,
+    ): Boolean = retryOnRelease && !explicitStopInProgress
+
     fun acceptsSurfaceBinding(
         requestedSessionId: String?,
         activeSessionId: String?,

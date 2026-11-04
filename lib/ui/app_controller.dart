@@ -229,7 +229,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       authorize: _authorizeMediaDownload,
       refreshAuthorization: (task, candidate) async {
         try {
-          return await mediaCandidateForRetry(task);
+          return await mediaCandidateForRetry(task, resetRetryBudget: false);
         } catch (error, stack) {
           AppErrorLogger.capture(
             error,
@@ -240,8 +240,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           rethrow;
         }
       },
-      tlsTransferWithHeaders: Platform.isAndroid
-          ? MediaNetwork().transferFile
+      policyTransfer: Platform.isAndroid
+          ? MediaNetwork().transferFileWithPolicy
           : null,
       resourceCoordinator: mediaResourceCoordinator,
     );
@@ -1348,7 +1348,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       updateSettings({'playerVerticalGesture': value.name});
 
   /// Retry with current document authorization instead of a captured row's URL.
-  Future<MediaCandidate> mediaCandidateForRetry(MediaTask task) async {
+  Future<MediaCandidate> mediaCandidateForRetry(
+    MediaTask task, {
+    bool resetRetryBudget = true,
+  }) async {
+    if (resetRetryBudget) mediaDownloads.resetRetryBudget(task.id);
     final session = hosts.sessions[task.hostId];
     final stored = await db.mediaCandidate(task.candidateId);
     if (session != null && !session.disposed && stored != null) {

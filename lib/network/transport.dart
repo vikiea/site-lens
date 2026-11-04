@@ -405,6 +405,26 @@ class FetchFileResponse {
   final bool appended;
 }
 
+/// Native transfer accounting and the final response URL. Both are transient;
+/// redirected HLS manifests need the latter to resolve relative resources.
+class MediaTransferResult {
+  const MediaTransferResult({required this.attemptsUsed, this.finalUrl});
+
+  final int attemptsUsed;
+  final Uri? finalUrl;
+}
+
+final Object _mediaSingleAttemptKey = Object();
+
+Future<T> withSingleMediaTransportAttempt<T>(Future<T> Function() action) =>
+    runZoned(
+      action,
+      zoneValues: <Object?, Object?>{_mediaSingleAttemptKey: true},
+    );
+
+bool get _singleMediaTransportAttempt =>
+    Zone.current[_mediaSingleAttemptKey] == true;
+
 /// Ephemeral OS routing for media downloads and site probes. GM requests keep
 /// their direct-only policy and never read browser cookies.
 class MediaNetworkRoute {
@@ -414,6 +434,9 @@ class MediaNetworkRoute {
     this.routeKind = 'unknown',
     this.dnsOwner = 'unknown',
     this.fakeIpAllowed = false,
+    this.proxyConfigured = false,
+    this.preferVpnTun = false,
+    this.directAllowed = true,
     this.networkEpoch = 0,
     this.requestContextId,
     this.userAgent = defaultUserAgent,
@@ -430,6 +453,9 @@ class MediaNetworkRoute {
   final String routeKind;
   final String dnsOwner;
   final bool fakeIpAllowed;
+  final bool proxyConfigured;
+  final bool preferVpnTun;
+  final bool directAllowed;
   final int networkEpoch;
   final String? requestContextId;
   final String userAgent;
@@ -512,6 +538,12 @@ class ControlledHttp {
       ),
     );
     cancel.check();
+    if (mediaRequest && route.routeKind == 'vpn_tun_fake_ip') {
+      // Dart sockets cannot be atomically bound to the Android VPN Network
+      // snapshot used by the route probe. Hand this hop to native OkHttp,
+      // which uses Network.socketFactory and rechecks the VPN before connect.
+      throw const SocketException('VPN/TUN 媒体连接需要原生路由');
+    }
     client.findProxy = (_) => route.proxy;
     client.connectionFactory = (target, host, port) {
       // HttpClient owns CONNECT and verified TLS inside a proxy tunnel.
@@ -582,7 +614,9 @@ class ControlledHttp {
       // connection may need one fresh client and the next PAC route before it
       // can complete; route resolution errors still surface immediately from
       // _fetch rather than consuming this extra budget.
-      return await task.timeout(timeout * _maxTransportAttempts);
+      return await task.timeout(
+        timeout * (_singleMediaTransportAttempt ? 1 : _maxTransportAttempts),
+      );
     } on TimeoutException {
       requestCancel.cancel();
       rethrow;
@@ -677,7 +711,11 @@ class ControlledHttp {
       throw StateError('不支持 HTTP 方法');
     }
     _validateHeaders(headers);
-    final retryableMethod = const {'GET', 'HEAD', 'OPTIONS'}.contains(method);
+    final retryableMethod =
+        !mediaRequest && const {'GET', 'HEAD', 'OPTIONS'}.contains(method);
+    final maxTransportAttempts = _singleMediaTransportAttempt
+        ? 1
+        : _maxTransportAttempts;
     var currentRouteAttempt = routeAttempt;
     for (var redirects = 0; redirects <= 5; redirects++) {
       cancel.check();
@@ -724,13 +762,13 @@ class ControlledHttp {
           rethrow;
         } on SocketException {
           if (!retryableMethod ||
-              transportAttempt + 1 >= _maxTransportAttempts) {
+              transportAttempt + 1 >= maxTransportAttempts) {
             rethrow;
           }
           currentRouteAttempt++;
         } on TimeoutException {
           if (!retryableMethod ||
-              transportAttempt + 1 >= _maxTransportAttempts) {
+              transportAttempt + 1 >= maxTransportAttempts) {
             rethrow;
           }
           currentRouteAttempt++;

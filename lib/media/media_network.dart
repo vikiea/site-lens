@@ -55,7 +55,36 @@ class MediaNetwork {
     Map<String, String>? headers,
     String? requestContextId,
   }) async {
+    await transferFileWithPolicy(
+      url,
+      document,
+      destination,
+      maxBytes,
+      cancel,
+      onProgress: onProgress,
+      headers: headers,
+      requestContextId: requestContextId,
+      maxAttempts: 8,
+      startAttempt: 0,
+    );
+  }
+
+  Future<MediaTransferResult> transferFileWithPolicy(
+    Uri url,
+    Uri document,
+    File destination,
+    int maxBytes,
+    Cancellation cancel, {
+    void Function(int bytesWritten)? onProgress,
+    Map<String, String>? headers,
+    String? requestContextId,
+    required int maxAttempts,
+    required int startAttempt,
+  }) async {
     if (!_nativeAvailable) throw UnsupportedError('需要 Android 媒体传输');
+    if (maxAttempts < 1 || startAttempt < 0) {
+      throw RangeError('媒体传输重试预算无效');
+    }
     cancel.check();
     final jobId = 'tls_${DateTime.now().microsecondsSinceEpoch}_${_nextJob++}';
     final callbacks = _progressHandlers();
@@ -77,7 +106,7 @@ class MediaNetwork {
       try {
         contextId ??= (await _route(
           url,
-          attempt: 0,
+          attempt: startAttempt,
           media: true,
           document: document,
         )).requestContextId;
@@ -86,22 +115,30 @@ class MediaNetwork {
         // discovery is best effort so a page without observed auth headers
         // keeps the existing transport behavior.
       }
-      await _channel.invokeMethod<void>('transferFile', {
-        'jobId': jobId,
-        'url': url.toString(),
-        'document': document.toString(),
-        'networkEpoch': _networkEpoch,
-        ...?contextId == null ? null : {'requestContextId': contextId},
-        'path': destination.path,
-        'maxBytes': maxBytes,
-        if (headers != null && headers.isNotEmpty) 'headers': headers,
-      });
-    } on PlatformException catch (error) {
+      final result = await _channel.invokeMapMethod<String, Object?>(
+        'transferFile',
+        {
+          'jobId': jobId,
+          'url': url.toString(),
+          'document': document.toString(),
+          'networkEpoch': _networkEpoch,
+          ...?contextId == null ? null : {'requestContextId': contextId},
+          'path': destination.path,
+          'maxBytes': maxBytes,
+          'maxAttempts': maxAttempts,
+          'startAttempt': startAttempt,
+          if (headers != null && headers.isNotEmpty) 'headers': headers,
+        },
+      );
+      final used = result?['attemptsUsed'];
+      final finalUrl = result?['finalUrl'];
       cancel.check();
-      if (error.code == 'media_authorization') {
-        throw StateError('媒体下载需要重新授权 HTTP 403');
-      }
-      rethrow;
+      return MediaTransferResult(
+        attemptsUsed: used is int && used >= 1 && used <= maxAttempts
+            ? used
+            : maxAttempts,
+        finalUrl: finalUrl is String ? Uri.tryParse(finalUrl) : null,
+      );
     } finally {
       active = false;
       callbacks.remove(jobId);
@@ -110,7 +147,6 @@ class MediaNetwork {
         _channel.setMethodCallHandler(null);
       }
     }
-    cancel.check();
   }
 
   Future<MediaNetworkRoute> route(
@@ -168,6 +204,9 @@ class MediaNetwork {
       dnsOwner: value['dnsOwner'] as String? ?? 'unknown',
       fakeIpAllowed:
           value['fakeIpAllowed'] == true || value['routeAllowsFakeIp'] == true,
+      proxyConfigured: value['proxyConfigured'] == true,
+      preferVpnTun: value['preferVpnTun'] == true,
+      directAllowed: value['directAllowed'] != false,
       networkEpoch: (value['networkEpoch'] as num?)?.toInt() ?? _networkEpoch,
       requestContextId: value['requestContextId'] as String?,
       userAgent:

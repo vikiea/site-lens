@@ -2000,6 +2000,75 @@ typedef NativeTlsTransferWithHeaders = Future<void> Function(
   String? requestContextId,
 });
 
+/// A native call may consume only the granted remaining attempts. Failures
+/// report `attemptsUsed` in PlatformException.details, including HTTP 401/403.
+typedef NativeTlsTransferWithPolicy = Future<MediaTransferResult> Function(
+  Uri url,
+  Uri document,
+  File destination,
+  int maxBytes,
+  Cancellation cancellation, {
+  void Function(int bytesWritten)? onProgress,
+  Map<String, String>? headers,
+  String? requestContextId,
+  required int maxAttempts,
+  required int startAttempt,
+});
+
+class MediaRetryPolicy {
+  const MediaRetryPolicy({this.maxAttempts = 4}) : assert(maxAttempts > 0);
+
+  final int maxAttempts;
+}
+
+class MediaRetryBudgetExhausted extends StateError {
+  MediaRetryBudgetExhausted() : super('媒体自动恢复暂未成功，请手动重试');
+}
+
+class MediaRetryBudget {
+  MediaRetryBudget(this.maxAttempts);
+
+  int maxAttempts;
+  int attemptsUsed = 0;
+  Object? lastError;
+
+  int get remaining => maxAttempts - attemptsUsed;
+  bool get exhausted => remaining <= 0;
+
+  void check() {
+    if (exhausted) throw lastError ?? MediaRetryBudgetExhausted();
+  }
+
+  int claim() {
+    check();
+    return attemptsUsed++;
+  }
+
+  void consume(int used) => attemptsUsed += used.clamp(0, remaining);
+
+  void extend([int amount = 2]) {
+    if (amount > 0) maxAttempts += amount;
+  }
+}
+
+/// Stable slots bridge authorization/CDN rebinding without changing cache keys.
+/// URL aliases also share a budget when a resource occurs in several slots.
+class MediaRetryBudgets {
+  MediaRetryBudgets(this.maxAttempts);
+
+  final int maxAttempts;
+  final _slots = <String, MediaRetryBudget>{};
+  final _resources = <String, MediaRetryBudget>{};
+
+  MediaRetryBudget resource(String slot, String identity) {
+    final budget =
+        _resources[identity] ?? _slots[slot] ?? MediaRetryBudget(maxAttempts);
+    _resources[identity] = budget;
+    _slots[slot] = budget;
+    return budget;
+  }
+}
+
 typedef MediaAuthorizationRefresh = Future<MediaCandidate?> Function(
   MediaTask task,
   MediaCandidate candidate,
@@ -2065,6 +2134,8 @@ class MediaDownloadService {
     this.refreshAuthorization,
     this.tlsTransfer,
     this.tlsTransferWithHeaders,
+    this.policyTransfer,
+    this.retryPolicy = const MediaRetryPolicy(),
     this.resourceCoordinator,
     this.progressElapsed,
     this.onProgressNotification,
@@ -2075,6 +2146,8 @@ class MediaDownloadService {
   final ControlledHttp http;
   final NativeTlsTransfer? tlsTransfer;
   final NativeTlsTransferWithHeaders? tlsTransferWithHeaders;
+  final NativeTlsTransferWithPolicy? policyTransfer;
+  final MediaRetryPolicy retryPolicy;
   final MediaResourceCoordinator? resourceCoordinator;
   final Duration Function()? progressElapsed;
   void Function(String taskId, String title, int bytes, int? totalBytes)?
@@ -2089,6 +2162,7 @@ class MediaDownloadService {
   final MediaAuthorizationRefresh? refreshAuthorization;
   Future<void> Function(MediaTask task)? onCompleted;
   final _active = <String, Cancellation>{};
+  final _activeRetryBudgets = <String, MediaRetryBudgets>{};
   final _running = <String, Future<MediaTask>>{};
   final _controls = <String, Future<void>>{};
   final _stopping = <String>{};
@@ -2105,7 +2179,9 @@ class MediaDownloadService {
       >{};
 
   bool get _hasNativeTransfer =>
-      tlsTransfer != null || tlsTransferWithHeaders != null;
+      policyTransfer != null ||
+      tlsTransfer != null ||
+      tlsTransferWithHeaders != null;
 
   int get maxConcurrency => _transferScheduler.maxActive;
 
@@ -2129,6 +2205,12 @@ class MediaDownloadService {
       );
     }
     final ids = _active.keys.toList(growable: false);
+    final retryBudgets = Map<String, MediaRetryBudgets>.of(_activeRetryBudgets);
+    for (final budget in retryBudgets.values) {
+      for (final slot in budget._slots.values) {
+        slot.extend();
+      }
+    }
     if (ids.isEmpty) return;
     final pending = <Future<MediaTask>>[];
     for (final id in ids) {
@@ -2152,7 +2234,7 @@ class MediaDownloadService {
       if (candidate == null) continue;
       unawaited(() async {
         try {
-          await start(task, candidate);
+          await start(task, candidate, retryBudgets: retryBudgets[id]);
         } catch (error, stack) {
           AppErrorLogger.capture(
             error,
@@ -2165,38 +2247,98 @@ class MediaDownloadService {
     }
   }
 
-  Future<void> _transferNative(
+  /// User initiated retry starts a fresh retry circuit while keeping cache
+  /// bytes, validators, leases, and the logical media identity intact.
+  void resetRetryBudget(String taskId) {
+    _activeRetryBudgets.remove(tasks.resolveTaskId(taskId));
+  }
+
+  Future<Uri> _transferNative(
     Uri url,
     Uri document,
     File destination,
     int maxBytes,
     Cancellation cancel, {
+    required MediaRetryBudget budget,
     void Function(int bytesWritten)? onProgress,
     Map<String, String> headers = const {},
-  }) {
-    final withHeaders = tlsTransferWithHeaders;
-    if (withHeaders != null) {
-      return withHeaders(
-        url,
-        document,
-        destination,
-        maxBytes,
-        cancel,
-        onProgress: onProgress,
-        headers: headers,
-        requestContextId: null,
+  }) async {
+    cancel.check();
+    budget.check();
+    final granted = budget.remaining;
+    try {
+      final policy = policyTransfer;
+      if (policy != null) {
+        final response = await policy(
+          url,
+          document,
+          destination,
+          maxBytes,
+          cancel,
+          onProgress: onProgress,
+          headers: headers,
+          requestContextId: null,
+          maxAttempts: granted,
+          startAttempt: budget.attemptsUsed,
+        );
+        final used = response.attemptsUsed;
+        budget.consume(used >= 1 && used <= granted ? used : granted);
+        cancel.check();
+        return response.finalUrl ?? url;
+      }
+      // Compatibility callbacks cannot be given a policy. A successful mock
+      // represents one call; an unaccounted failure consumes the whole grant.
+      final withHeaders = tlsTransferWithHeaders;
+      if (withHeaders != null) {
+        await withHeaders(
+          url,
+          document,
+          destination,
+          maxBytes,
+          cancel,
+          onProgress: onProgress,
+          headers: headers,
+          requestContextId: null,
+        );
+      } else {
+        final legacy = tlsTransfer;
+        if (legacy == null) throw StateError('原生媒体传输不可用');
+        await legacy(
+          url,
+          document,
+          destination,
+          maxBytes,
+          cancel,
+          onProgress: onProgress,
+        );
+      }
+      budget.consume(1);
+      cancel.check();
+      return url;
+    } on PlatformException catch (error) {
+      final details = error.details;
+      final raw = details is Map ? details['attemptsUsed'] : null;
+      final used = raw is int ? raw : null;
+      budget.consume(
+        used != null && used >= 1 && used <= granted ? used : granted,
       );
+      cancel.check();
+      final failure = _isAuthorizationFailure(error)
+          ? MediaAuthorizationRequiredException()
+          : error;
+      budget.lastError = failure;
+      throw failure;
+    } on Cancelled {
+      rethrow;
+    } catch (error) {
+      budget.consume(granted);
+      cancel.check();
+      final failure = _isAuthorizationFailure(error)
+          ? MediaAuthorizationRequiredException()
+          : error;
+      budget.lastError = failure;
+      throw failure;
     }
-    final legacy = tlsTransfer;
-    if (legacy == null) throw StateError('原生媒体传输不可用');
-    return legacy(
-      url,
-      document,
-      destination,
-      maxBytes,
-      cancel,
-      onProgress: onProgress,
-    );
   }
 
   ({Map<String, String> manifest, Map<String, String> resource})
@@ -2853,6 +2995,7 @@ class MediaDownloadService {
     MediaTask task,
     MediaCandidate candidate, {
     int maxBytes = 2 * 1024 * 1024 * 1024,
+    MediaRetryBudgets? retryBudgets,
   }) => _launch(
     task,
     (id) => _control(id, (id) async {
@@ -2863,6 +3006,12 @@ class MediaDownloadService {
           : authorize!(currentTask, candidate);
       _validateTaskCandidate(currentTask, authorized);
       final requestContext = _requestContextFor(id, authorized);
+      final budgets =
+          retryBudgets ??
+          _activeRetryBudgets.putIfAbsent(
+            id,
+            () => MediaRetryBudgets(retryPolicy.maxAttempts),
+          );
       _dartTasks.add(id);
       final cancel = Cancellation();
       _active[id] = cancel;
@@ -2880,6 +3029,7 @@ class MediaDownloadService {
             maxBytes: maxBytes,
             manifestHeaders: requestContext.manifest,
             resourceHeaders: requestContext.resource,
+            retryBudgets: budgets,
           );
         }
         var current = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
@@ -2897,6 +3047,10 @@ class MediaDownloadService {
           document: authorized.sourceUrl,
           maxBytes: maxBytes,
           headers: requestContext.resource,
+          retryBudget: budgets.resource(
+            'direct:$id',
+            _resumeContentIdentity(authorized.mediaUrl),
+          ),
           onProgress: (bytes) => _reportTaskProgress(id, bytes),
         );
         cancel.check();
@@ -2936,6 +3090,7 @@ class MediaDownloadService {
             latest.state == MediaTaskState.reauthorize ||
             latest.state == MediaTaskState.cancelled) {
           onTaskNotificationDone?.call(id);
+          _activeRetryBudgets.remove(id);
         }
       }
     }),
@@ -2953,6 +3108,7 @@ class MediaDownloadService {
     required Cancellation cancel,
     Map<String, String> manifestHeaders = const {},
     Map<String, String> resourceHeaders = const {},
+    required MediaRetryBudgets retryBudgets,
   }) async {
     var currentCandidate = candidate;
     var currentManifestHeaders = manifestHeaders;
@@ -2970,10 +3126,14 @@ class MediaDownloadService {
           cancel: cancel,
           manifestHeaders: currentManifestHeaders,
           resourceHeaders: currentResourceHeaders,
+          retryBudgets: retryBudgets,
         );
       } on MediaAuthorizationRequiredException {
         final refresh = refreshAuthorization;
         if (refresh == null || authorizationAttempt == 1) rethrow;
+        for (final slot in retryBudgets._slots.values) {
+          slot.extend();
+        }
         final refreshed = await refresh(task, currentCandidate);
         if (refreshed == null) rethrow;
         tasks.rebindCandidate(
@@ -2996,6 +3156,7 @@ class MediaDownloadService {
     required Cancellation cancel,
     Map<String, String> manifestHeaders = const {},
     Map<String, String> resourceHeaders = const {},
+    required MediaRetryBudgets retryBudgets,
   }) async {
     var current = tasks.task(task.id) ?? task;
     Directory? staging;
@@ -3023,6 +3184,10 @@ class MediaDownloadService {
         document: candidate.sourceUrl,
         staging: staging,
         headers: manifestHeaders,
+        retryBudget: retryBudgets.resource(
+          'manifest:${_resumeContentIdentity(playlistUri)}',
+          _resumeContentIdentity(playlistUri),
+        ),
       );
       playlistUri = fetched.url;
       var playlistText = fetched.text;
@@ -3035,6 +3200,10 @@ class MediaDownloadService {
           document: candidate.sourceUrl,
           staging: staging,
           headers: manifestHeaders,
+          retryBudget: retryBudgets.resource(
+            'manifest:${_resumeContentIdentity(variant)}',
+            _resumeContentIdentity(variant),
+          ),
         );
         playlistUri = fetched.url;
         playlistText = fetched.text;
@@ -3095,6 +3264,10 @@ class MediaDownloadService {
               resourceKind: line.startsWith('#EXT-X-KEY:') ? 'key' : 'map',
               ownerId: task.id,
               headers: resourceHeaders,
+              retryBudget: retryBudgets.resource(
+                'resource:${_resumeContentIdentity(playlistUri.resolve(raw))}',
+                _resumeContentIdentity(playlistUri.resolve(raw)),
+              ),
               onProgress: (bytes) =>
                   _reportTaskProgress(task.id, totalBytes + bytes),
             );
@@ -3133,6 +3306,10 @@ class MediaDownloadService {
               resourceKind: 'seek-segment',
               ownerId: task.id,
               headers: resourceHeaders,
+              retryBudget: retryBudgets.resource(
+                'resource:${_resumeContentIdentity(target.uri)}',
+                _resumeContentIdentity(target.uri),
+              ),
               onProgress: (bytes) =>
                   _reportTaskProgress(task.id, totalBytes + bytes),
             );
@@ -3151,6 +3328,10 @@ class MediaDownloadService {
           resourceKind: 'segment',
           ownerId: task.id,
           headers: resourceHeaders,
+          retryBudget: retryBudgets.resource(
+            'resource:${_resumeContentIdentity(playlistUri.resolve(trimmed))}',
+            _resumeContentIdentity(playlistUri.resolve(trimmed)),
+          ),
           onProgress: (bytes) =>
               _reportTaskProgress(task.id, totalBytes + bytes),
         );
@@ -3268,6 +3449,7 @@ class MediaDownloadService {
     Cancellation cancel, {
     required Uri document,
     required Directory staging,
+    required MediaRetryBudget retryBudget,
     Map<String, String> headers = const {},
   }) async {
     try {
@@ -3278,6 +3460,8 @@ class MediaDownloadService {
         cancel: cancel,
         headers: headers,
         maxBytes: 16 * 1024 * 1024,
+        maxAttempts: 3,
+        retryBudget: retryBudget,
       );
       if (response.status < 200 || response.status >= 300) {
         if (response.status == 401 || response.status == 403) {
@@ -3287,25 +3471,48 @@ class MediaDownloadService {
       }
       return (url: response.url, text: utf8.decode(response.bytes));
     } catch (error) {
-      if (!_hasNativeTransfer || !_isMediaNetworkError(error)) rethrow;
+      if (!_hasNativeTransfer || !_isMediaNetworkError(error)) {
+        rethrow;
+      }
+      if (retryBudget.exhausted) retryBudget.extend();
       final key = sha256
           .convert(utf8.encode(_resumeContentIdentity(url)))
           .toString();
       final partial = File('${staging.path}/.playlist_$key.part');
       try {
-        await _transferNative(
+        final finalUrl = await _transferNative(
           url,
           document,
           partial,
           16 * 1024 * 1024,
           cancel,
+          budget: retryBudget,
           headers: headers,
         );
         cancel.check();
         if (!await partial.exists() || await partial.length() == 0) {
           throw StateError('HLS 清单响应为空');
         }
-        return (url: url, text: await partial.readAsString());
+        return (url: finalUrl, text: await partial.readAsString());
+      } on PlatformException catch (nativeError) {
+        if (!_isRetryableNativeHeaderFailure(nativeError)) {
+          rethrow;
+        }
+        if (retryBudget.exhausted) retryBudget.extend();
+        final response = await _fetchMediaWithRetry(
+          url,
+          connect: const {'*'},
+          document: document,
+          cancel: cancel,
+          headers: headers,
+          maxBytes: 16 * 1024 * 1024,
+          maxAttempts: 3,
+          retryBudget: retryBudget,
+        );
+        if (response.status < 200 || response.status >= 300) {
+          throw StateError('HLS 清单 HTTP ${response.status}');
+        }
+        return (url: response.url, text: utf8.decode(response.bytes));
       } finally {
         for (final suffix in ['', '.resume', '.resume.tmp']) {
           final file = File('${partial.path}$suffix');
@@ -3381,6 +3588,7 @@ class MediaDownloadService {
     required Uri document,
     required String resourceKind,
     required String ownerId,
+    required MediaRetryBudget retryBudget,
     Map<String, String> headers = const {},
     void Function(int bytesWritten)? onProgress,
   }) async {
@@ -3461,6 +3669,7 @@ class MediaDownloadService {
           document: document,
           maxBytes: min(64 * 1024 * 1024, maxBytes),
           headers: headers,
+          retryBudget: retryBudget,
           onProgress: onProgress,
         ),
       );
@@ -3481,6 +3690,7 @@ class MediaDownloadService {
               document: document,
               maxBytes: min(64 * 1024 * 1024, maxBytes),
               headers: headers,
+              retryBudget: retryBudget,
               onProgress: onProgress,
             ),
           );
@@ -3677,12 +3887,12 @@ class MediaDownloadService {
     File partial,
     Cancellation cancel, {
     required Uri document,
+    required MediaRetryBudget retryBudget,
     required int maxBytes,
     Map<String, String> headers = const {},
     void Function(int bytesWritten)? onProgress,
   }) async {
-    final nativeResume = File('${partial.path}.resume');
-    if (_hasNativeTransfer && await nativeResume.exists()) {
+    if (_hasNativeTransfer && await File('${partial.path}.resume').exists()) {
       try {
         await _transferNative(
           url,
@@ -3690,6 +3900,7 @@ class MediaDownloadService {
           partial,
           maxBytes,
           cancel,
+          budget: retryBudget,
           onProgress: onProgress,
           headers: headers,
         );
@@ -3697,6 +3908,7 @@ class MediaDownloadService {
         return;
       } on PlatformException catch (error) {
         if (!_isRetryableNativeHeaderFailure(error)) rethrow;
+        if (retryBudget.exhausted) retryBudget.extend();
         // The native transport has already exhausted its own bounded retry
         // budget. A clean response-header failure with no flushed bytes can
         // safely switch back to Dart, which resolves the media route again.
@@ -3709,6 +3921,7 @@ class MediaDownloadService {
           onProgress: onProgress,
           allowNativeFallback: false,
           headers: headers,
+          retryBudget: retryBudget,
         );
         return;
       } on StateError catch (error) {
@@ -3727,6 +3940,7 @@ class MediaDownloadService {
       onProgress: onProgress,
       headers: headers,
       allowNativeFallback: true,
+      retryBudget: retryBudget,
     );
   }
 
@@ -3735,6 +3949,7 @@ class MediaDownloadService {
     File partial,
     Cancellation cancel, {
     required Uri document,
+    required MediaRetryBudget retryBudget,
     required int maxBytes,
     void Function(int bytesWritten)? onProgress,
     Map<String, String> headers = const {},
@@ -3747,6 +3962,7 @@ class MediaDownloadService {
     var attempt = 0;
     while (true) {
       cancel.check();
+      retryBudget.claim();
       final metadata = await _resumeState(partial);
       final validator = metadata['validator'] as String?;
       var offset = await partial.exists() ? await partial.length() : 0;
@@ -3808,7 +4024,7 @@ class MediaDownloadService {
           await partial.writeAsBytes(const [], flush: true);
           await _deleteResumeState(partial);
           lastError = StateError('媒体 Range 已失效，重新下载');
-          if (attempt >= 3) throw lastError;
+          if (retryBudget.exhausted) throw lastError;
           await Future<void>.delayed(
             Duration(milliseconds: 100 * (1 << attempt)),
           );
@@ -3855,7 +4071,7 @@ class MediaDownloadService {
         lastError = error;
       }
       cancel.check();
-      if (attempt < 3) {
+      if (!retryBudget.exhausted) {
         await Future<void>.delayed(
           Duration(milliseconds: 100 * (1 << attempt)),
         );
@@ -3864,6 +4080,7 @@ class MediaDownloadService {
         if (allowNativeFallback &&
             (lastError is TlsException || lastError is SocketException) &&
             _hasNativeTransfer) {
+          if (retryBudget.exhausted) retryBudget.extend();
           // Android can recover CDN connections that reset before Dart reports
           // a TLS error. Bridge the Dart sidecar into Android's format before
           // handing over the same flushed prefix.
@@ -3875,6 +4092,7 @@ class MediaDownloadService {
               partial,
               maxBytes,
               cancel,
+              budget: retryBudget,
               onProgress: onProgress,
               headers: headers,
             );
@@ -3882,6 +4100,7 @@ class MediaDownloadService {
             return;
           } on PlatformException catch (error) {
             if (!_isRetryableNativeHeaderFailure(error)) rethrow;
+            if (retryBudget.exhausted) retryBudget.extend();
             // The native response-header retry also failed without writing
             // content. Re-enter the Dart path once, with native fallback
             // disabled so the recovery remains finite.
@@ -3894,6 +4113,7 @@ class MediaDownloadService {
               onProgress: onProgress,
               headers: headers,
               allowNativeFallback: false,
+              retryBudget: retryBudget,
             );
             return;
           } on StateError catch (error) {
@@ -3949,12 +4169,19 @@ class MediaDownloadService {
     required Set<String> connect,
     required Uri document,
     required Cancellation cancel,
+    required MediaRetryBudget retryBudget,
     Map<String, String> headers = const {},
     int maxBytes = 1024 * 1024,
+    int maxAttempts = 4,
   }) async {
     Object? lastError;
-    for (var attempt = 0; attempt < 3; attempt++) {
+    var attempt = 0;
+    while (true) {
+      if (attempt >= maxAttempts) {
+        throw lastError ?? const SocketException('媒体连接失败');
+      }
       cancel.check();
+      retryBudget.claim();
       try {
         final response = await http.fetch(
           url,
@@ -3966,7 +4193,7 @@ class MediaDownloadService {
           maxBytes: maxBytes,
           routeAttempt: attempt,
         );
-        if (!_retryableMediaStatus(response.status) || attempt == 2) {
+        if (!_retryableMediaStatus(response.status)) {
           return response;
         }
         lastError = StateError('媒体服务器暂时不可用 HTTP ${response.status}');
@@ -3983,13 +4210,15 @@ class MediaDownloadService {
       } on HttpException catch (error) {
         lastError = error;
       }
-      if (attempt < 2) {
+      if (!retryBudget.exhausted && attempt + 1 < maxAttempts) {
         await Future<void>.delayed(
           Duration(milliseconds: 250 * (1 << attempt)),
         );
+        attempt++;
+      } else {
+        throw lastError;
       }
     }
-    throw lastError ?? const SocketException('媒体连接失败');
   }
 
   static bool _retryableMediaStatus(int status) =>

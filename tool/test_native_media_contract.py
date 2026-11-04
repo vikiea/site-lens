@@ -12,8 +12,10 @@ SERVICE = (ANDROID / "BrowserMediaService.kt").read_text()
 LIFECYCLE = (ROOT / "web_assets/media_lifecycle.js").read_text()
 TRANSFER = (ANDROID / "ResumableMediaTransfer.kt").read_text()
 DOWNLOAD_RUNTIME = (ANDROID / "NativeDownloadRuntime.kt").read_text()
+DOWNLOAD_WORKER = (ANDROID / "NativeMediaDownloadWorker.kt").read_text()
 NATIVE_MEDIA = (ANDROID / "NativeMediaRuntime.kt").read_text()
 NATIVE_SESSION = (ANDROID / "NativeMediaSessionService.kt").read_text()
+NATIVE_DART = (ROOT / "lib/media/native_media_runtime.dart").read_text()
 AUTH_REFRESH = (ANDROID / "NativeMediaAuthRefreshService.kt").read_text()
 NATIVE_EXPORT = (ANDROID / "NativeExportRuntime.kt").read_text()
 NATIVE_LEASES = (ANDROID / "NativeMediaFileLeases.kt").read_text()
@@ -66,8 +68,8 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn('enqueue(record)', runtime)
         self.assertIn('ownedTransfer?.abort()', worker)
         self.assertIn('partial plus resume', runtime)
-        self.assertIn('isSystemDnsRouteAllowed(uri, attempt)', worker)
-        self.assertIn('isSystemDnsRouteAllowed(uri, attempt)', media_network)
+        self.assertIn('openMediaConnection(applicationContext, uri, attempt)', worker)
+        self.assertIn('openMediaConnection(context, uri, attempt)', media_network)
         self.assertNotIn('hasDirectRoute(uri)', worker)
         self.assertNotIn('hasDirectRoute(uri)', media_network)
         self.assertIn('NativeMediaSessionService.detachSurface(context)', NATIVE_MEDIA)
@@ -88,6 +90,63 @@ class NativeMediaContractTests(unittest.TestCase):
             'private fun start(', 1
         )[0]
         self.assertNotIn('NativeMediaSessionService.stop(context)', replacement)
+        self.assertIn('openRequestId++', replacement)
+        self.assertIn('requestId != openRequestId', NATIVE_MEDIA)
+        self.assertIn('serviceSessionId = null', NATIVE_MEDIA)
+
+    def test_replacement_open_survives_service_release_but_explicit_stop_cancels(self):
+        for token in (
+            'retryOnRelease = true',
+            'explicitStopInProgress',
+            'markExplicitStop()',
+            'requeuePending(',
+            'shouldRequeueAfterRelease',
+            'instance == null && pending.isNotEmpty()',
+            'val retryOnRelease: Boolean',
+            'action.retryOnRelease',
+            'val isCurrent: () -> Boolean = { true }',
+            'check(request.isCurrent())',
+        ):
+            self.assertIn(token, NATIVE_SESSION)
+
+    def test_native_media_service_enters_foreground_before_media3_setup(self):
+        on_create = NATIVE_SESSION.split('override fun onCreate()', 1)[1].split(
+            'private fun installPlayerListener', 1
+        )[0]
+        self.assertLess(
+            on_create.index('startForegroundImmediately()'),
+            on_create.index('DefaultMediaNotificationProvider.Builder'),
+        )
+        for token in (
+            'startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)',
+            '原生媒体会话',
+            'NotificationCompat.Builder(this, CHANNEL)',
+            'super.onStartCommand(intent, flags, startId)',
+        ):
+            self.assertIn(token, NATIVE_SESSION)
+
+    def test_native_download_retry_budget_is_persisted_and_non_retryable_tls_stops(self):
+        for token in (
+            'const val MAX_NETWORK_ATTEMPTS = 8',
+            'retryIfBudgetAllows',
+            'transferAttempts < MAX_NETWORK_ATTEMPTS',
+            'runAttemptCount < MAX_NETWORK_ATTEMPTS',
+            'error.retryable()',
+            'TLS 证书或主机名校验失败，已停止重试',
+        ):
+            self.assertIn(token, DOWNLOAD_WORKER)
+        self.assertNotIn('} else if (runAttemptCount < 1) Result.retry()', DOWNLOAD_WORKER)
+
+    def test_dart_open_is_invalidated_by_stop_and_dispose(self):
+        for token in (
+            'int _openGeneration = 0',
+            'int _beginOpen() => ++_openGeneration',
+            "throw StateError('原生媒体请求已过期')",
+            'final requestGeneration = _beginOpen()',
+            '_ensureOpenCurrent(requestGeneration)',
+            '_openGeneration++;',
+        ):
+            self.assertIn(token, NATIVE_DART)
 
     def test_native_media_session_persists_recoverable_state_without_autoplay(self):
         for token in (

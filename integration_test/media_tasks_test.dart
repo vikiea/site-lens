@@ -432,6 +432,73 @@ void main() {
     }
   });
 
+  testWidgets(
+    'native MediaSession replaces playlist episodes without stopping the service',
+    (tester) async {
+      final support = await getApplicationSupportDirectory();
+      final root = await Directory(
+        '${support.path}/media-session-playlist-${DateTime.now().microsecondsSinceEpoch}',
+      ).create();
+      final tasks = MediaTaskStore(directoryProvider: () async => root);
+      final firstCandidate = MediaCandidate(
+        id: 'media-session-playlist-first',
+        hostId: 1,
+        generation: 1,
+        sourceUrl: Uri.parse('https://example.org/watch/1'),
+        mediaUrl: Uri.parse('https://example.org/1.mp4'),
+        title: 'Episode 1',
+        mime: 'video/mp4',
+        source: MediaCandidateSource.dom,
+      );
+      final secondCandidate = MediaCandidate(
+        id: 'media-session-playlist-second',
+        hostId: 1,
+        generation: 1,
+        sourceUrl: Uri.parse('https://example.org/watch/2'),
+        mediaUrl: Uri.parse('https://example.org/2.mp4'),
+        title: 'Episode 2',
+        mime: 'video/mp4',
+        source: MediaCandidateSource.dom,
+      );
+      final firstTask = tasks.create(firstCandidate);
+      final secondTask = tasks.create(secondCandidate);
+      final player = NativeMediaRuntime();
+      try {
+        final firstFile = await File('${root.path}/episode-1.mp4')
+            .writeAsBytes(base64Decode(videoFixtureBase64));
+        final secondFile = await File('${root.path}/episode-2.mp4')
+            .writeAsBytes(base64Decode(videoFixtureBase64));
+        final first = await player.openLocal(
+          firstTask,
+          firstFile,
+          autoPlay: false,
+        );
+        expect(first.taskId, firstTask.id);
+        final second = await player.openLocal(
+          secondTask,
+          secondFile,
+          autoPlay: false,
+        );
+        expect(second.taskId, secondTask.id);
+        expect(second.state, NativePlaybackState.paused);
+        final restoredFirst = await player.openLocal(
+          firstTask,
+          firstFile,
+          autoPlay: false,
+        );
+        expect(restoredFirst.taskId, firstTask.id);
+        expect(restoredFirst.state, NativePlaybackState.paused);
+        debugPrint(
+          'MEDIA_SESSION_PLAYLIST_SWITCH_PASS firstSecondFirst=true serviceReused=true',
+        );
+      } finally {
+        await player.close();
+        await player.dispose();
+        if (await root.exists()) await root.delete(recursive: true);
+      }
+    },
+  );
+
   testWidgets('HLS starts native playback before the download completes', (
     tester,
   ) async {

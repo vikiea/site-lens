@@ -1,7 +1,6 @@
 package dev.vikiea.site_lens
 
 import android.content.Context
-import android.net.ConnectivityManager
 import android.util.Log
 import android.os.Handler
 import android.os.Looper
@@ -11,7 +10,6 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.net.URI
 import java.util.concurrent.Executors
-import java.util.concurrent.ConcurrentHashMap
 import java.io.File
 
 class MediaNetworkRuntime(
@@ -22,8 +20,6 @@ class MediaNetworkRuntime(
     private val userAgent = WebSettings.getDefaultUserAgent(appContext)
     private val main = Handler(Looper.getMainLooper())
     private val transfers = MediaTransferQueue(transferExecutor)
-    private val routeCache = ConcurrentHashMap<String, CachedRoute>()
-    @Volatile private var routeCacheEpoch = -1
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         if (call.method == "cancelTransfer") {
@@ -55,28 +51,34 @@ class MediaNetworkRuntime(
                 val uri = URI(call.argument<String>("url") ?: error("缺少媒体地址"))
                 val attempt = call.argument<Int>("attempt") ?: 0
                 val networkEpoch = call.argument<Int>("networkEpoch") ?: 0
-                val proxy = if (call.method == "probeRoute") {
-                    SystemMediaNetwork.probeConfiguration(uri, attempt = attempt)
-                } else SystemMediaNetwork.configuration(uri, attempt = attempt)
-                // This is only a route hint. The connecting transport still
-                // validates DNS for the DIRECT entry actually being used.
-                val routeInfo = cachedRouteInfo(uri, attempt, networkEpoch) ?: run {
-                    SystemMediaNetwork.RouteInfo(
-                        SystemMediaNetwork.RouteKind.UNKNOWN,
-                        SystemMediaNetwork.DnsOwner.UNKNOWN,
-                        false,
-                    )
-                }
+                val plan = if (call.method == "probeRoute") null
+                    else SystemMediaNetwork.routePlan(context, uri, attempt)
+                val routeInfo = plan?.info ?: SystemMediaNetwork.RouteInfo(
+                    SystemMediaNetwork.RouteKind.UNKNOWN, SystemMediaNetwork.DnsOwner.UNKNOWN, false,
+                )
+                val strategy = routeInfo.kind
+                val proxy = plan?.let(SystemMediaNetwork::configuration)
+                    ?: SystemMediaNetwork.probeConfiguration(uri, attempt = attempt)
                 val document = call.argument<String>("document")
                     ?.trim()
                     ?.takeIf { it.isNotEmpty() }
                     ?.also { SystemMediaNetwork.validateTarget(URI(it)) }
                 mapOf(
                     "proxy" to proxy,
-                    "routeAllowsFakeIp" to routeInfo.fakeIpAllowed,
-                    "fakeIpAllowed" to routeInfo.fakeIpAllowed,
-                    "routeKind" to routeInfo.kind.wireName,
+                    "routeAllowsFakeIp" to (
+                        strategy == SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP ||
+                            strategy == SystemMediaNetwork.RouteKind.ROUTER_FAKE_IP
+                    ),
+                    "fakeIpAllowed" to (
+                        strategy == SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP ||
+                            strategy == SystemMediaNetwork.RouteKind.ROUTER_FAKE_IP
+                    ),
+                    "routeKind" to strategy.wireName,
                     "dnsOwner" to routeInfo.dnsOwner.wireName,
+                    "proxyConfigured" to routeInfo.proxyConfigured,
+                    "preferVpnTun" to routeInfo.preferVpnTun,
+                    "directAllowed" to routeInfo.directAllowed,
+                    "dnsClass" to routeInfo.dnsClass,
                     "networkEpoch" to networkEpoch,
                     "requestContextId" to MediaRequestContextRegistry
                         .latest(uri.toString(), document?.toString().orEmpty())?.id,
@@ -98,12 +100,9 @@ class MediaNetworkRuntime(
             val networkEpoch = call.argument<Int>("networkEpoch") ?: 0
             val transfer = ResumableMediaTransfer(
                 connectForAttempt = { uri, attempt ->
-                    val routeAllowsFakeIp = cachedRouteInfo(uri, attempt, networkEpoch)
-                        ?.fakeIpAllowed
-                        ?: isSystemDnsRouteAllowed(uri, attempt)
-                    selectedRoute = "unknown"
-                    SystemMediaNetwork.openConnection(uri, allowProxyFakeIp = routeAllowsFakeIp, attempt = attempt,
-                        onSelectedRoute = { selectedRoute = it })
+                    SystemMediaNetwork.openMediaConnection(context, uri, attempt) { info ->
+                        selectedRoute = info.kind.wireName
+                    }
                 },
                 routeForConnection = { selectedRoute },
                 onAttempt = { diagnostics ->
@@ -115,7 +114,7 @@ class MediaNetworkRuntime(
             )
             transfers.submit(job, transfer::abort, { transferFile(call, transfer, job) }) { outcome ->
                 main.post { outcome.fold(
-                    onSuccess = { result.success(null) },
+                    onSuccess = { result.success(mapOf("attemptsUsed" to transfer.attemptsUsed)) },
                     onFailure = { failTransfer(result, it) },
                 ) }
             }
@@ -126,57 +125,16 @@ class MediaNetworkRuntime(
 
     private fun failTransfer(result: MethodChannel.Result, error: Throwable) {
         val code = if (error is MediaAuthorizationException) "media_authorization" else "media_transfer"
-        val details = (error as? MediaTransferFailure)?.diagnostics()
-        result.error(code, error.message ?: "媒体连接失败，已保留缓存，可重试", details)
-    }
-
-    /**
-     * Returns a route capability without resolving the origin. The actual
-     * DIRECT connection resolves through the active system DNS only after PAC
-     * has selected DIRECT, then validates public or Fake-IP answers.
-     */
-    private fun isSystemDnsRouteAllowed(uri: URI, attempt: Int, networkEpoch: Int): Boolean =
-        runCatching { cachedRouteInfo(uri, attempt, networkEpoch)?.fakeIpAllowed == true }
-            .getOrDefault(false)
-
-    private fun isSystemDnsRouteAllowed(uri: URI, attempt: Int): Boolean =
-        isSystemDnsRouteAllowed(uri, attempt, routeCacheEpoch)
-
-    private fun cachedRouteInfo(
-        uri: URI,
-        attempt: Int,
-        networkEpoch: Int,
-    ): SystemMediaNetwork.RouteInfo? {
-        if (routeCacheEpoch != networkEpoch) {
-            routeCache.clear()
-            routeCacheEpoch = networkEpoch
+        val details = when (error) {
+            is MediaTransferFailure -> error.diagnostics()
+            is MediaAuthorizationException -> mapOf(
+                "attemptsUsed" to error.attemptsUsed, "httpStatus" to error.statusCode,
+            )
+            else -> null
         }
-        // PAC rules may vary by path. Read the current selector for this URL
-        // before sharing a capability between segments on the same CDN.
-        val proxy = runCatching {
-            SystemMediaNetwork.configuration(uri, attempt = attempt)
-        }.getOrElse { "unknown" }
-        val manager = context.getSystemService(ConnectivityManager::class.java)
-        val network = manager?.activeNetwork
-        val capabilities = network?.let(manager::getNetworkCapabilities)
-        val links = network?.let(manager::getLinkProperties)
-        val key = "$networkEpoch|$network|${capabilities?.hashCode()}|${links?.hashCode()}|${uri.scheme}|${uri.host}|${uri.port}|$attempt|$proxy"
-        val now = SystemClock.elapsedRealtime()
-        val cached = routeCache[key]
-        if (cached != null && now - cached.createdAt < ROUTE_CACHE_TTL_MS) {
-            return cached.info
-        }
-        val info = runCatching {
-            SystemMediaNetwork.routeInfo(context, uri, attempt)
-        }.getOrNull() ?: return null
-        routeCache[key] = CachedRoute(now, info)
-        return info
+        result.error(code, if (error is MediaAuthorizationException) "下载地址需要重新授权"
+            else "媒体连接失败，已保留缓存，可重试", details)
     }
-
-    private data class CachedRoute(
-        val createdAt: Long,
-        val info: SystemMediaNetwork.RouteInfo,
-    )
 
     private fun transferFile(call: MethodCall, transfer: ResumableMediaTransfer, job: String) {
             val url = URI(call.argument<String>("url") ?: error("缺少媒体地址"))
@@ -208,6 +166,8 @@ class MediaNetworkRuntime(
                 .also { it.putAll(contextHeaders?.headers.orEmpty()) }
             var lastProgressAt: Long? = null
             transfer.transfer(url, document, output, userAgent, maxBytes = maxBytes,
+                maxAttempts = call.argument<Int>("maxAttempts") ?: 5,
+                startAttempt = call.argument<Int>("startAttempt") ?: 0,
                 requestHeaders = requestHeaders,
                 requestCookies = { target ->
                     AndroidCookieReader.get(target.toString())
@@ -231,6 +191,5 @@ class MediaNetworkRuntime(
     companion object {
         private val executor = Executors.newSingleThreadExecutor()
         private val transferExecutor = Executors.newFixedThreadPool(2)
-        private const val ROUTE_CACHE_TTL_MS = 3_000L
     }
 }

@@ -109,6 +109,7 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
             if (state == "downloading" || state == "completed") return status(taskId)
         }
         if (existing != null) stop(taskId, false)
+        repository.setAttemptsUsed(taskId, 0)
         val record = NativeMediaTaskRepository.Record(
             taskId = taskId,
             candidateId = call.argument<String>("candidateId") ?: "",
@@ -422,6 +423,7 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
             repository.save(record.copy(paused = false, cancelled = false))
             return status(taskId)
         }
+        repository.setAttemptsUsed(taskId, 0)
         return enqueue(record.copy(paused = false, cancelled = false))
     }
 

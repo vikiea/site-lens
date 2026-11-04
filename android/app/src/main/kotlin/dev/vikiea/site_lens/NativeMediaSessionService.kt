@@ -1,8 +1,11 @@
 package dev.vikiea.site_lens
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -10,6 +13,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.view.Surface
 import androidx.core.content.ContextCompat
+import androidx.core.app.NotificationCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -53,6 +57,7 @@ class NativeMediaSessionService : MediaSessionService() {
     private var sourceRetryCount = 0
     private var userPaused = false
     private var stopping = false
+    private var releaseWasExplicitStop = false
     private var engineReleased = false
     private var playerReleased = false
     private var mediaSessionReleased = false
@@ -140,6 +145,11 @@ class NativeMediaSessionService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        // Media3 publishes the controllable notification after the player and
+        // session are built. Android's foreground-service deadline starts at
+        // startForegroundService(), so publish a concrete placeholder first;
+        // Media3 then replaces it on the same notification/session ID.
+        startForegroundImmediately()
         val notificationProvider = DefaultMediaNotificationProvider.Builder(applicationContext)
             .setNotificationId(ID)
             .setChannelId(CHANNEL)
@@ -148,11 +158,15 @@ class NativeMediaSessionService : MediaSessionService() {
             .apply { setSmallIcon(android.R.drawable.ic_media_play) }
         setMediaNotificationProvider(notificationProvider)
         stopping = false
+        releaseWasExplicitStop = false
         engineReleased = false
         playerReleased = false
         mediaSessionReleased = false
         lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.READY
-        synchronized(pendingLock) { instance = this }
+        synchronized(pendingLock) {
+            instance = this
+            explicitStopInProgress = false
+        }
         player = ExoPlayer.Builder(
             this,
             DefaultRenderersFactory(this).setEnableDecoderFallback(true),
@@ -190,6 +204,52 @@ class NativeMediaSessionService : MediaSessionService() {
         // deadline is met without a second placeholder notification.
         setShowNotificationForIdlePlayer(SHOW_NOTIFICATION_FOR_IDLE_PLAYER_ALWAYS)
         drainPending()
+    }
+
+    private fun startForegroundImmediately() {
+        val manager = getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL,
+                    getString(R.string.site_lens_media_channel_name),
+                    NotificationManager.IMPORTANCE_LOW,
+                ),
+            )
+        }
+        val open = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(this, CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentTitle("Site Lens")
+            .setContentText("原生媒体会话")
+            .setContentIntent(open)
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+        } else {
+            startForeground(ID, notification)
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // A start request can arrive after the previous service instance has
+        // entered its release barrier. Drain only from a live instance; the
+        // retiring instance leaves pending actions for onDestroy() to hand
+        // over to its replacement.
+        // MediaSessionService must see the original intent first so Android
+        // media-button commands reach Media3's session callback.
+        super.onStartCommand(intent, flags, startId)
+        if (acceptsDispatch()) drainPending()
+        return START_NOT_STICKY
     }
 
     private fun installPlayerListener(generation: Long) {
@@ -299,7 +359,6 @@ class NativeMediaSessionService : MediaSessionService() {
         playerGeneration++
         stopPositionPersistence()
         persistCurrentState()
-        cancelPending()
         runCatching {
             releaseMediaEngine()
         }.onFailure { error ->
@@ -325,10 +384,39 @@ class NativeMediaSessionService : MediaSessionService() {
         fileLease = null
         ownerGeneration?.let { MediaPlaybackOwner.nativeStopped(applicationContext, it) }
         ownerGeneration = null
-        synchronized(pendingLock) {
-            if (instance === this) instance = null
+        val restartForPending = synchronized(pendingLock) {
+            val restart = instance === this && pending.isNotEmpty()
+            if (instance === this) {
+                instance = null
+                explicitStopInProgress = false
+            }
+            restart
         }
         super.onDestroy()
+        if (restartForPending) {
+            operationHandler.post {
+                val shouldStart = synchronized(pendingLock) {
+                    instance == null && pending.isNotEmpty()
+                }
+                if (shouldStart) {
+                    runCatching {
+                        ContextCompat.startForegroundService(
+                            applicationContext,
+                            Intent(applicationContext, NativeMediaSessionService::class.java),
+                        )
+                    }.onFailure { error ->
+                        cancelPending()
+                        NativeCrashStore.append(
+                            applicationContext,
+                            module = "media.session",
+                            message = error.message ?: "无法重启原生媒体服务",
+                            details = error.stackTraceToString(),
+                            contextValue = "operation=restart_pending",
+                        )
+                    }
+                }
+            }
+        }
     }
 
     private fun syncState() {
@@ -551,6 +639,7 @@ class NativeMediaSessionService : MediaSessionService() {
 
     private fun stopAndRelease(): Map<String, Any?> {
         if (engineReleased && fileLease == null && ownerGeneration == null) return snapshot()
+        markExplicitStop()
         if (!stopping) {
             stopping = true
             lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.STOPPING
@@ -583,6 +672,7 @@ class NativeMediaSessionService : MediaSessionService() {
 
     private fun stopAndPreserveRestorable() {
         if (engineReleased || stopping) return
+        markExplicitStop()
         stopping = true
         lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.STOPPING
         playerGeneration++
@@ -716,6 +806,7 @@ class NativeMediaSessionService : MediaSessionService() {
         val autoPlay: Boolean = true,
         val surface: Surface?,
         val surfaceBindingId: String? = null,
+        val isCurrent: () -> Boolean = { true },
         val callback: (Result<Map<String, Any?>>) -> Unit,
     )
 
@@ -743,24 +834,27 @@ class NativeMediaSessionService : MediaSessionService() {
             val generation: Long,
             val action: (NativeMediaSessionService) -> Unit,
             val cancel: () -> Unit,
+            val retryOnRelease: Boolean,
         )
 
         private val pendingLock = Any()
         private val pending = ArrayDeque<PendingAction>()
         private var pendingGeneration = 0L
+        private var explicitStopInProgress = false
 
         fun registerObserver(observer: (Map<String, Any?>) -> Unit) {
             observers.add(observer)
-            instance?.let { service -> observer(service.snapshot()) }
+            instance?.takeIf { it.acceptsDispatch() }?.let { service -> observer(service.snapshot()) }
         }
 
         fun unregisterObserver(observer: (Map<String, Any?>) -> Unit) {
             observers.remove(observer)
         }
 
-        fun owns(session: String?): Boolean = session != null && instance?.sessionId == session
+        fun owns(session: String?): Boolean =
+            session != null && instance?.takeIf { it.acceptsDispatch() }?.sessionId == session
 
-        fun hasActiveSession(): Boolean = instance?.sessionId != null
+        fun hasActiveSession(): Boolean = instance?.takeIf { it.acceptsDispatch() }?.sessionId != null
 
         fun hasRestorableState(context: Context): Boolean =
             context.getSharedPreferences("native_media_session_state", Context.MODE_PRIVATE)
@@ -779,6 +873,7 @@ class NativeMediaSessionService : MediaSessionService() {
                 context,
                 action = { service ->
                     callbackResult(request.callback) {
+                        check(request.isCurrent()) { "原生媒体请求已过期" }
                         val snapshot = service.open(request)
                         request.surface?.let { surface ->
                             service.attachSurface(surface, request.sessionId, request.surfaceBindingId)
@@ -791,6 +886,7 @@ class NativeMediaSessionService : MediaSessionService() {
                         Result.failure(IllegalStateException("媒体服务已停止")),
                     )
                 },
+                retryOnRelease = true,
             )
         }
 
@@ -834,7 +930,9 @@ class NativeMediaSessionService : MediaSessionService() {
 
         fun stop(context: Context, callback: (Boolean) -> Unit = {}) {
             cancelPending()
-            val service = synchronized(pendingLock) { instance }
+            val service = synchronized(pendingLock) {
+                instance?.takeIf { it.acceptsDispatch() }
+            }
             if (service != null) {
                 service.enqueue(
                     action = {
@@ -895,18 +993,21 @@ class NativeMediaSessionService : MediaSessionService() {
             context: Context,
             action: (NativeMediaSessionService) -> Unit,
             cancel: () -> Unit = {},
+            retryOnRelease: Boolean = false,
         ) {
             var service: NativeMediaSessionService? = null
             var shouldStart = false
             synchronized(pendingLock) {
-                service = instance
+                service = instance?.takeIf { it.acceptsDispatch() }
                 if (service == null) {
-                    pending.addLast(PendingAction(pendingGeneration, action, cancel))
+                    pending.addLast(
+                        PendingAction(pendingGeneration, action, cancel, retryOnRelease),
+                    )
                     shouldStart = true
                 }
             }
             service?.let {
-                it.enqueue(action, cancel)
+                it.enqueue(action, cancel, retryOnRelease)
                 return
             }
             if (!shouldStart) return
@@ -930,7 +1031,11 @@ class NativeMediaSessionService : MediaSessionService() {
                 val active = synchronized(pendingLock) {
                     instance === service && action.generation == pendingGeneration
                 }
-                if (active) service.enqueue(action.action, action.cancel) else action.cancel()
+                if (active) {
+                    service.enqueue(action.action, action.cancel, action.retryOnRelease)
+                } else {
+                    action.cancel()
+                }
             }
         }
 
@@ -943,15 +1048,71 @@ class NativeMediaSessionService : MediaSessionService() {
             }
             cancelled.forEach { action -> runCatching { action.cancel() } }
         }
+
+        private fun requeuePending(
+            action: (NativeMediaSessionService) -> Unit,
+            cancel: () -> Unit,
+            retryOnRelease: Boolean,
+            releaseWasExplicitStop: Boolean,
+        ): Boolean {
+            var shouldStart = false
+            val cancelImmediately = synchronized(pendingLock) {
+                if (!NativeMediaSessionPolicy.shouldRequeueAfterRelease(
+                        retryOnRelease = retryOnRelease,
+                        explicitStopInProgress = explicitStopInProgress || releaseWasExplicitStop,
+                    )
+                ) {
+                    true
+                } else {
+                    pending.addLast(
+                        PendingAction(pendingGeneration, action, cancel, retryOnRelease),
+                    )
+                    shouldStart = instance == null
+                    false
+                }
+            }
+            if (cancelImmediately) cancel()
+            return shouldStart
+        }
     }
 
     private fun enqueue(
         action: (NativeMediaSessionService) -> Unit,
         cancel: () -> Unit = {},
+        retryOnRelease: Boolean = false,
     ) {
         val run: () -> Unit = {
             if (stopping || engineReleased) {
-                cancel()
+                if (retryOnRelease) {
+                    val shouldStart = requeuePending(
+                        action,
+                        cancel,
+                        retryOnRelease,
+                        releaseWasExplicitStop,
+                    )
+                    if (shouldStart) {
+                        runCatching {
+                            ContextCompat.startForegroundService(
+                                applicationContext,
+                                Intent(
+                                    applicationContext,
+                                    NativeMediaSessionService::class.java,
+                                ),
+                            )
+                        }.onFailure { error ->
+                            cancelPending()
+                            NativeCrashStore.append(
+                                applicationContext,
+                                module = "media.session",
+                                message = error.message ?: "无法重启原生媒体服务",
+                                details = error.stackTraceToString(),
+                                contextValue = "operation=restart_late_pending",
+                            )
+                        }
+                    }
+                } else {
+                    cancel()
+                }
             } else {
                 runCatching { action(this) }
                     .onFailure { error ->
@@ -969,4 +1130,18 @@ class NativeMediaSessionService : MediaSessionService() {
         }
         if (Looper.myLooper() == Looper.getMainLooper()) run() else operationHandler.post(run)
     }
+
+    private fun markExplicitStop() {
+        releaseWasExplicitStop = true
+        synchronized(pendingLock) {
+            if (instance === this) explicitStopInProgress = true
+        }
+        cancelPending()
+    }
+
+    private fun acceptsDispatch(): Boolean = NativeMediaSessionPolicy.acceptsServiceDispatch(
+        stopping = stopping,
+        engineReleased = engineReleased,
+        phase = lifecyclePhase,
+    )
 }

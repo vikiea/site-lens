@@ -63,10 +63,20 @@ class NativeMediaTaskRepository(context: Context) {
         .mapNotNull(::read)
         .toList()
 
+    fun attemptsUsed(taskId: String): Int = prefs.getInt("$taskId.networkAttempts", 0)
+
+    fun setAttemptsUsed(taskId: String, attempts: Int) {
+        require(attempts >= 0)
+        check(prefs.edit().putInt("$taskId.networkAttempts", attempts).commit()) {
+            "无法保存媒体重试状态"
+        }
+    }
+
     fun remove(taskId: String) {
         val edit = prefs.edit()
         for (suffix in listOf("downloadId", "candidateId", "generation", "url", "sourceUrl",
-            "title", "seriesDirectory", "paused", "cancelled", "workId", "resourceKey", "known")) {
+            "title", "seriesDirectory", "paused", "cancelled", "workId", "resourceKey", "known",
+            "networkAttempts")) {
             edit.remove("$taskId.$suffix")
         }
         check(edit.commit()) { "无法删除下载状态" }

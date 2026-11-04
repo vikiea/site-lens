@@ -154,6 +154,51 @@ class NativeMediaSessionPolicyTest {
         )
     }
 
+    @Test fun serviceDispatchWaitsForAReplacementAfterReleaseStarts() {
+        assertTrue(
+            NativeMediaSessionPolicy.acceptsServiceDispatch(
+                stopping = false,
+                engineReleased = false,
+                phase = NativeMediaSessionPolicy.LifecyclePhase.ACTIVE,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.acceptsServiceDispatch(
+                stopping = true,
+                engineReleased = false,
+                phase = NativeMediaSessionPolicy.LifecyclePhase.STOPPING,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.acceptsServiceDispatch(
+                stopping = false,
+                engineReleased = true,
+                phase = NativeMediaSessionPolicy.LifecyclePhase.RELEASED,
+            ),
+        )
+    }
+
+    @Test fun replacementActionsSurviveReleaseButExplicitStopCancelsThem() {
+        assertTrue(
+            NativeMediaSessionPolicy.shouldRequeueAfterRelease(
+                retryOnRelease = true,
+                explicitStopInProgress = false,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.shouldRequeueAfterRelease(
+                retryOnRelease = true,
+                explicitStopInProgress = true,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.shouldRequeueAfterRelease(
+                retryOnRelease = false,
+                explicitStopInProgress = false,
+            ),
+        )
+    }
+
     @Test fun surfaceBindingRequiresTheCurrentSessionAndActiveLifecycle() {
         assertTrue(
             NativeMediaSessionPolicy.acceptsSurfaceBinding(

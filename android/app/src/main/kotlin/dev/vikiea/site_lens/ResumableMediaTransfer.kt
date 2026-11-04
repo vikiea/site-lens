@@ -20,11 +20,15 @@ class MediaTransferFailure(
     val cookiePresent: Boolean,
     val reason: String,
     cause: Throwable,
+    val attemptsUsed: Int = attempt + 1,
 ) : IOException("媒体连接失败，已保留缓存，可重试", cause) {
+    fun retryable(): Boolean = reason !in setOf("certificate", "hostname")
+
     fun diagnostics(): Map<String, Any> = mapOf(
         "phase" to phase, "host" to host, "attempt" to attempt,
         "offset" to offset, "bytesWritten" to bytesWritten,
         "route" to route, "cookiePresent" to cookiePresent, "reason" to reason,
+        "attemptsUsed" to attemptsUsed,
     )
 }
 
@@ -40,7 +44,10 @@ class ResumableMediaTransfer(
         if (it.usingProxy()) "http_proxy" else "direct"
     },
     private val onAttempt: (Map<String, Any>) -> Unit = {},
+    private val onAttemptStarted: (Int) -> Unit = {},
 ) {
+    var attemptsUsed: Int = 0
+        private set
     private val aborted = AtomicBoolean(false)
     @Volatile private var connection: HttpURLConnection? = null
     @Synchronized fun abort() { aborted.set(true); connection?.disconnect() }
@@ -58,15 +65,23 @@ class ResumableMediaTransfer(
         requestCookies: (URI) -> String? = { null },
         requestHeaders: Map<String, String> = emptyMap(),
         onProgress: (Long, Long?) -> Unit = { _, _ -> },
+        maxAttempts: Int = 8,
+        startAttempt: Int = 0,
     ): Long {
+        require(maxAttempts > 0 && startAttempt >= 0) { "媒体重试预算无效" }
+        val availableAttempts = maxAttempts
+        attemptsUsed = 0
         val metadataFile = File(partial.path + ".resume")
         val identity = MessageDigest.getInstance("SHA-256").digest(stableIdentity(url).toByteArray())
             .joinToString("") { "%02x".format(it) }
         var failure: IOException? = null
         val routeAttempts = mutableMapOf<String, Int>()
-        repeat(4) { attempt ->
+        for (localAttempt in 0 until availableAttempts) {
+            val attempt = startAttempt + localAttempt
             val startedAt = System.nanoTime()
             checkActive()
+            attemptsUsed = localAttempt + 1
+            onAttemptStarted(attemptsUsed)
             var failedUri = url
             var failurePhase = "route"
             var failureOffset = 0L
@@ -96,7 +111,7 @@ class ResumableMediaTransfer(
                             failedUri = uri
                             val routeKey = uri.toString()
                             val current = connect?.invoke(uri)
-                                ?: connectForAttempt(uri, routeAttempts[routeKey] ?: 0)
+                                ?: connectForAttempt(uri, routeAttempts[routeKey] ?: startAttempt)
                             failureRoute = routeForConnection(current)
                             connection = current
                             current.instanceFollowRedirects = false
@@ -105,7 +120,8 @@ class ResumableMediaTransfer(
                             current.setRequestProperty("Accept-Encoding", "identity")
                             current.setRequestProperty("User-Agent", userAgent)
                             current.setRequestProperty("Accept", "*/*")
-                            requestHeaders.forEach { (name, value) ->
+                            // A CDN redirect cannot inherit origin credentials.
+                            if (sameOrigin(url, uri)) requestHeaders.forEach { (name, value) ->
                                 current.setRequestProperty(name, value)
                             }
                             current.setRequestProperty("Referer", source.toString())
@@ -145,7 +161,15 @@ class ResumableMediaTransfer(
                             metadataFile.delete()
                             throw IOException("媒体 Range 已失效")
                         }
-                        if (status == 401 || status == 403) throw MediaAuthorizationException()
+                        if (status == 401 || status == 403) {
+                            throw MediaAuthorizationException(attemptsUsed, status)
+                        }
+                        if (status == 407 && failureRoute == "http_proxy") {
+                            throw MediaRouteIOException(
+                                "proxy_connect_status",
+                                IOException("代理 CONNECT 被拒绝"),
+                            )
+                        }
                         if (status == 408 || status == 425 || status == 429 || status >= 500) {
                             throw IOException("媒体服务器暂时不可用 HTTP $status")
                         }
@@ -234,14 +258,21 @@ class ResumableMediaTransfer(
                 checkActive()
                 // Never serialize provider messages, URLs, query parameters,
                 // proxy addresses or cookies through the diagnostics channel.
+                val classified = if (error is MediaRouteIOException) {
+                    error
+                } else {
+                    SystemMediaNetwork.classifyTransportFailure(
+                        error,
+                        proxyRoute = failureRoute == "http_proxy",
+                    )
+                }
                 val text = error.message.orEmpty().lowercase()
                 val reason = when {
-                    error is java.net.UnknownHostException -> "dns"
-                    error is java.net.SocketTimeoutException -> "timeout"
-                    error is javax.net.ssl.SSLException -> "tls"
+                    classified is MediaRouteIOException && classified.category != "io" ->
+                        classified.category
                     "reset" in text -> "connection_reset"
                     "closed" in text -> "connection_closed"
-                    else -> "io"
+                    else -> (classified as? MediaRouteIOException)?.category ?: "io"
                 }
                 failure = MediaTransferFailure(
                     phase = failurePhase,
@@ -253,9 +284,10 @@ class ResumableMediaTransfer(
                     cookiePresent = cookiePresent,
                     reason = reason,
                     cause = error,
+                    attemptsUsed = attemptsUsed,
                 )
                 val routeKey = failedUri.toString()
-                routeAttempts[routeKey] = (routeAttempts[routeKey] ?: 0) + 1
+                routeAttempts[routeKey] = (routeAttempts[routeKey] ?: startAttempt) + 1
             } finally {
                 connection?.disconnect(); connection = null
                 runCatching {
@@ -270,10 +302,40 @@ class ResumableMediaTransfer(
                     ))
                 }
             }
-            if (attempt < 3) Thread.sleep(100L shl attempt)
+            val currentFailure = checkNotNull(failure)
+            if (!currentFailure.retryable()) break
+            if (localAttempt + 1 < availableAttempts) {
+                Thread.sleep(
+                    retryDelayMillis(
+                        reason = currentFailure.reason,
+                        bytesWritten = currentFailure.bytesWritten,
+                        attempt = localAttempt,
+                    ),
+                )
+            }
         }
         throw failure ?: IOException("媒体连接失败")
     }
+
+    companion object {
+        fun retryDelayMillis(reason: String?, bytesWritten: Long, attempt: Int): Long {
+            val base = when (reason) {
+                "dns", "proxy_connect", "proxy_connect_status", "timeout" -> 250L
+                "connection_reset", "connection_closed" -> if (bytesWritten > 0L) 100L else 300L
+                "tls" -> 500L
+                else -> if (bytesWritten > 0L) 150L else 400L
+            }
+            return (base shl attempt.coerceIn(0, 4)).coerceAtMost(5_000L)
+        }
+    }
+
+    private fun sameOrigin(first: URI, second: URI): Boolean =
+        first.scheme.equals(second.scheme, ignoreCase = true) &&
+            first.host.equals(second.host, ignoreCase = true) &&
+            effectivePort(first) == effectivePort(second)
+
+    private fun effectivePort(uri: URI): Int =
+        if (uri.port != -1) uri.port else if (uri.scheme == "https") 443 else 80
 
     private fun stableIdentity(uri: URI): String {
         // Keep this list aligned with MediaDownloadService._resumeContentIdentity.
@@ -291,4 +353,7 @@ class ResumableMediaTransfer(
     }
 }
 
-class MediaAuthorizationException : IllegalStateException("下载地址需要重新授权")
+class MediaAuthorizationException(
+    val attemptsUsed: Int = 1,
+    val statusCode: Int = 403,
+) : IllegalStateException("下载地址需要重新授权")

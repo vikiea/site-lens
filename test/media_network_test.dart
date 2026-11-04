@@ -164,6 +164,9 @@ void main() {
           'proxy': 'DIRECT',
           'routeKind': 'vpn_tun_fake_ip',
           'fakeIpAllowed': true,
+          'proxyConfigured': true,
+          'preferVpnTun': true,
+          'directAllowed': true,
           'requestContextId': 'mrc_test_context',
         };
       }
@@ -182,5 +185,33 @@ void main() {
       1024,
       Cancellation(),
     );
+  });
+
+  test('media route preserves explicit dual-route capabilities', () async {
+    const channel = MethodChannel('test/media_network_route_capabilities');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final target = Uri.parse('https://cdn.example/segment.ts');
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'route');
+      return const <String, Object?>{
+        'proxy': 'DIRECT',
+        'routeKind': 'vpn_tun_fake_ip',
+        'dnsOwner': 'system_dns',
+        'fakeIpAllowed': true,
+        'proxyConfigured': true,
+        'preferVpnTun': true,
+        'directAllowed': true,
+        'networkEpoch': 7,
+      };
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    final route = await MediaNetwork(channel: channel).route(target);
+    expect(route.routeKind, 'vpn_tun_fake_ip');
+    expect(route.proxyConfigured, isTrue);
+    expect(route.preferVpnTun, isTrue);
+    expect(route.directAllowed, isTrue);
+    expect(route.networkEpoch, 7);
   });
 }

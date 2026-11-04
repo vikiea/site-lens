@@ -3,6 +3,8 @@ package dev.vikiea.site_lens
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.Network
+import javax.net.SocketFactory
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.InetAddress
@@ -11,6 +13,26 @@ import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.ProxySelector
 import java.net.URI
+import java.net.ProtocolException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import java.security.cert.CertificateException
+import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLPeerUnverifiedException
+import javax.net.ssl.SSLProtocolException
+import okhttp3.ConnectionPool
+import okhttp3.Dns
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import java.io.ByteArrayInputStream
+import java.io.InputStream
+
+class MediaRouteIOException(
+    val category: String,
+    cause: IOException,
+) : IOException("媒体路由 $category", cause)
 
 /** Resolve only the OS policy: an unusable proxy must not silently become DIRECT. */
 object SystemMediaNetwork {
@@ -33,6 +55,10 @@ object SystemMediaNetwork {
         val kind: RouteKind,
         val dnsOwner: DnsOwner,
         val fakeIpAllowed: Boolean,
+        val proxyConfigured: Boolean = false,
+        val preferVpnTun: Boolean = false,
+        val directAllowed: Boolean = false,
+        val dnsClass: String = "unknown",
     )
 
     fun fakeIpRouteKind(vpnTransport: Boolean): RouteKind =
@@ -129,48 +155,151 @@ object SystemMediaNetwork {
         return resolve(uri.host).any(::fakeIp)
     }
 
+    data class RoutePlan(
+        val info: RouteInfo,
+        val proxy: Proxy,
+        val addresses: List<InetAddress> = emptyList(),
+        val network: Network? = null,
+    )
+
     fun routeInfo(
         context: Context,
         uri: URI,
         attempt: Int = 0,
-        selector: ProxySelector? = ProxySelector.getDefault(),
-        resolve: (String) -> Array<InetAddress> = InetAddress::getAllByName,
-    ): RouteInfo {
-        val selected = proxies(uri, selector)
-        val first = selected[Math.floorMod(attempt, selected.size)]
-        if (first.type() == Proxy.Type.HTTP) {
-            return RouteInfo(RouteKind.HTTP_PROXY, DnsOwner.PROXY, false)
-        }
-        val addresses = resolve(uri.host)
+    ): RouteInfo = routePlan(context, uri, attempt).info
+
+    /** One snapshot for the proxy, system DNS, and socket owner of this hop. */
+    fun routePlan(context: Context, uri: URI, attempt: Int = 0): RoutePlan {
+        val selected = proxies(uri)
         val manager = context.getSystemService(ConnectivityManager::class.java)
         val network = manager?.activeNetwork
         val capabilities = network?.let(manager::getNetworkCapabilities)
-        val linkProperties = network?.let(manager::getLinkProperties)
-        val fake = addresses.any(::fakeIp)
+        val links = network?.let(manager::getLinkProperties)
         val vpn = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
-        if (fake) {
-            val routerTrusted = routerFakeIpEligible(
-                networkValidated = capabilities?.hasCapability(
-                    NetworkCapabilities.NET_CAPABILITY_VALIDATED,
-                ) == true,
-                wifiCellularOrEthernet = capabilities?.let {
-                    it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
-                        it.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
-                        it.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
-                } == true,
-                privateDns = linkProperties?.dnsServers?.isNotEmpty() == true &&
-                    linkProperties.dnsServers.all(::privateDnsAddress),
-                directRoute = first.type() == Proxy.Type.DIRECT,
-            )
-            if (vpn || routerTrusted) {
-                return RouteInfo(fakeIpRouteKind(vpn), DnsOwner.SYSTEM_DNS, true)
-            }
-            return RouteInfo(RouteKind.UNKNOWN, DnsOwner.SYSTEM_DNS, false)
+        val routerTrusted = routerFakeIpEligible(
+            capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true,
+            capabilities?.let {
+                it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                    it.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                    it.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+            } == true,
+            links?.dnsServers?.isNotEmpty() == true && links.dnsServers.all(::privateDnsAddress),
+            selected.none { it.type() == Proxy.Type.HTTP },
+        )
+        return planFor(uri, selected, vpn, routerTrusted, attempt) { host ->
+            network?.getAllByName(host) ?: InetAddress.getAllByName(host)
+        }.copy(network = network)
+    }
+
+    /** Pure policy. HTTP proxies own origin DNS unless VPN Fake-IP is proven. */
+    fun planFor(
+        uri: URI,
+        selected: List<Proxy>,
+        vpnTransport: Boolean,
+        routerTrusted: Boolean,
+        attempt: Int = 0,
+        resolve: (String) -> Array<InetAddress> = InetAddress::getAllByName,
+    ): RoutePlan {
+        validateTarget(uri)
+        check(selected.isNotEmpty() && selected.all {
+            it.type() == Proxy.Type.HTTP || it.type() == Proxy.Type.DIRECT
+        }) { "系统代理没有可用路由" }
+        val http = selected.filter { it.type() == Proxy.Type.HTTP }
+        fun proxyPlan(index: Int, dnsClass: String = "proxy"): RoutePlan = RoutePlan(
+            RouteInfo(RouteKind.HTTP_PROXY, DnsOwner.PROXY, false,
+                proxyConfigured = true, dnsClass = dnsClass),
+            http[Math.floorMod(index, http.size)],
+        )
+        if (http.isNotEmpty() && !vpnTransport) return proxyPlan(attempt)
+        // When both HTTP proxy and VPN/TUN are present, odd attempts are the
+        // proxy fallback. Do not resolve the origin on that attempt: the
+        // proxy owns remote DNS and proxy-only hostnames must never leak to
+        // the local resolver.
+        if (http.isNotEmpty() && vpnTransport && attempt % 2 != 0) {
+            return proxyPlan(attempt / 2)
         }
+        val addresses = try {
+            resolve(uri.host).toList()
+        } catch (error: IOException) {
+            if (http.isNotEmpty()) return proxyPlan(attempt, "unknown")
+            throw error
+        }
+        val onlyFakeIp = addresses.isNotEmpty() && addresses.all(::fakeIp)
+        if (onlyFakeIp && vpnTransport) {
+            return RoutePlan(
+                RouteInfo(RouteKind.VPN_TUN_FAKE_IP, DnsOwner.SYSTEM_DNS, true,
+                    proxyConfigured = http.isNotEmpty(), preferVpnTun = true,
+                    directAllowed = true, dnsClass = "fake_ip"),
+                Proxy.NO_PROXY, addresses,
+            )
+        }
+        if (http.isNotEmpty()) return proxyPlan(attempt,
+            if (addresses.all(::publicAddress)) "public" else "blocked")
+        if (onlyFakeIp && routerTrusted) return RoutePlan(
+            RouteInfo(RouteKind.ROUTER_FAKE_IP, DnsOwner.SYSTEM_DNS, true,
+                directAllowed = true, dnsClass = "fake_ip"),
+            Proxy.NO_PROXY, addresses,
+        )
         require(addresses.isNotEmpty() && addresses.all(::publicAddress)) {
             "DNS 包含本机/私网媒体地址；请检查系统代理或 VPN 设置"
         }
-        return RouteInfo(RouteKind.PUBLIC_DIRECT, DnsOwner.SYSTEM_DNS, false)
+        return RoutePlan(
+            RouteInfo(RouteKind.PUBLIC_DIRECT, DnsOwner.SYSTEM_DNS, false,
+                directAllowed = true, dnsClass = "public"),
+            Proxy.NO_PROXY, addresses,
+        )
+    }
+
+    fun configuration(plan: RoutePlan): String = renderConfiguration(listOf(plan.proxy), 0)
+
+    fun openMediaConnection(
+        context: Context,
+        uri: URI,
+        attempt: Int,
+        onRoute: (RouteInfo) -> Unit = {},
+    ): HttpURLConnection {
+        val plan = routePlan(context, uri, attempt)
+        onRoute(plan.info)
+        val vpn = plan.info.kind == RouteKind.VPN_TUN_FAKE_IP
+        val manager = context.getSystemService(ConnectivityManager::class.java)
+        return openOkHttpConnection(
+            uri, plan.proxy, plan.addresses.takeIf { it.isNotEmpty() },
+            socketFactory = if (vpn) plan.network?.socketFactory else null,
+            beforeConnect = {
+                if (vpn && (plan.network == null || manager?.activeNetwork != plan.network ||
+                    manager.getNetworkCapabilities(plan.network)
+                        ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) != true)) {
+                    throw MediaRouteIOException("route_changed", IOException("媒体网络已变化"))
+                }
+            },
+        )
+    }
+
+    fun strategyForAttempt(info: RouteInfo, attempt: Int): RouteKind {
+        if (info.preferVpnTun && info.proxyConfigured) {
+            return if (Math.floorMod(attempt, 2) == 0) {
+                RouteKind.VPN_TUN_FAKE_IP
+            } else {
+                RouteKind.HTTP_PROXY
+            }
+        }
+        return info.kind
+    }
+
+    fun configurationForStrategy(
+        uri: URI,
+        strategy: RouteKind,
+        attempt: Int = 0,
+        selector: ProxySelector? = ProxySelector.getDefault(),
+    ): String {
+        val selected = proxies(uri, selector)
+        if (strategy != RouteKind.HTTP_PROXY) {
+            check(strategy != RouteKind.UNKNOWN) { "无法确认媒体路由" }
+            return "DIRECT"
+        }
+        val http = selected.filter { it.type() == Proxy.Type.HTTP }
+        check(http.isNotEmpty()) { "系统代理没有可用 HTTP 代理" }
+        return renderConfiguration(http, attempt)
     }
 
     private fun privateDnsAddress(address: InetAddress): Boolean {
@@ -241,34 +370,64 @@ object SystemMediaNetwork {
         uri: URI,
         allowProxyFakeIp: Boolean = false,
         attempt: Int = 0,
+        preferredRoute: RouteKind? = null,
         selector: ProxySelector? = ProxySelector.getDefault(),
         resolve: (String) -> Array<InetAddress> = InetAddress::getAllByName,
-        open: (URI, Proxy) -> HttpURLConnection = { target, proxy -> target.toURL().openConnection(proxy) as HttpURLConnection },
+        open: ((URI, Proxy) -> HttpURLConnection)? = null,
         onSelectedRoute: (String) -> Unit = {},
     ): HttpURLConnection {
         val selected = proxies(uri, selector)
+        val http = selected.filter { it.type() == Proxy.Type.HTTP }
+        val candidates = when (preferredRoute) {
+            RouteKind.HTTP_PROXY -> http
+            RouteKind.PUBLIC_DIRECT,
+            RouteKind.VPN_TUN_FAKE_IP,
+            RouteKind.ROUTER_FAKE_IP -> listOf(Proxy.NO_PROXY)
+            else -> selected
+        }
+        if (candidates.isEmpty()) throw IOException("系统代理没有可用路由")
         var lastIo: IOException? = null
         var lastPolicy: IllegalArgumentException? = null
         var proxyAttempted = false
+        val confirmedFakeIpDirect = allowProxyFakeIp &&
+            preferredRoute in setOf(RouteKind.VPN_TUN_FAKE_IP, RouteKind.ROUTER_FAKE_IP)
         // The transfer retry budget advances PAC candidates after a network
         // failure. Never resolve the origin merely because DIRECT is a later
         // fallback; check its DNS only when that route is actually selected.
-        for (offset in selected.indices) {
-            val proxy = selected[(attempt + offset) % selected.size]
+        for (offset in candidates.indices) {
+            val proxy = candidates[(attempt + offset) % candidates.size]
             try {
                 if (proxy.type() == Proxy.Type.DIRECT) {
+                    val explicitDirect = preferredRoute == RouteKind.PUBLIC_DIRECT ||
+                        preferredRoute == RouteKind.VPN_TUN_FAKE_IP ||
+                        preferredRoute == RouteKind.ROUTER_FAKE_IP
                     if (proxyAttempted) break
+                    if (http.isNotEmpty() && !explicitDirect) continue
                     // DIRECT owns origin DNS, so validate every answer locally.
                     // An HTTP proxy owns origin resolution; forcing local DNS
                     // here breaks split-DNS and proxy-only hostnames.
                     val addresses = resolve(uri.host)
                     require(addresses.isNotEmpty() && addresses.all {
-                        publicAddress(it) || allowProxyFakeIp && fakeIp(it)
+                        if (preferredRoute == RouteKind.VPN_TUN_FAKE_IP ||
+                            preferredRoute == RouteKind.ROUTER_FAKE_IP) {
+                            confirmedFakeIpDirect && fakeIp(it)
+                        } else {
+                            publicAddress(it) || confirmedFakeIpDirect && fakeIp(it)
+                        }
                     }) { "DNS 包含本机/私网媒体地址；请检查系统代理或 VPN 设置" }
+                    proxyAttempted = true
+                    return (open?.invoke(uri, proxy) ?: openOkHttpConnection(uri, proxy, addresses.toList())).also {
+                        onSelectedRoute(preferredRoute?.wireName ?: "direct")
+                        it.connectTimeout = 15000
+                        it.readTimeout = 20000
+                    }
                 }
                 proxyAttempted = true
-                return open(uri, proxy).also {
-                    onSelectedRoute(if (proxy.type() == Proxy.Type.HTTP) "http_proxy" else "direct")
+                return (open?.invoke(uri, proxy) ?: openOkHttpConnection(uri, proxy)).also {
+                    onSelectedRoute(
+                        preferredRoute?.wireName
+                            ?: if (proxy.type() == Proxy.Type.HTTP) "http_proxy" else "direct",
+                    )
                     it.connectTimeout = 15000
                     it.readTimeout = 20000
                 }
@@ -280,4 +439,168 @@ object SystemMediaNetwork {
         }
         throw lastPolicy ?: lastIo ?: IOException("系统代理没有可用路由")
     }
+
+    private fun openOkHttpConnection(
+        uri: URI,
+        proxy: Proxy,
+        validatedAddresses: List<InetAddress>? = null,
+        socketFactory: SocketFactory? = null,
+        beforeConnect: () -> Unit = {},
+    ): HttpURLConnection {
+        val builder = OkHttpClient.Builder()
+            .proxy(proxy)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .retryOnConnectionFailure(false)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .callTimeout(0, TimeUnit.MILLISECONDS)
+            .connectionPool(ConnectionPool(0, 1, TimeUnit.MILLISECONDS))
+        if (validatedAddresses != null) {
+            builder.dns(object : Dns {
+                override fun lookup(hostname: String): List<InetAddress> {
+                    if (!hostname.equals(uri.host, ignoreCase = true)) {
+                        throw UnknownHostException("媒体 DNS 主机不匹配")
+                    }
+                    return validatedAddresses
+                }
+            })
+        }
+        if (socketFactory != null) builder.socketFactory(socketFactory)
+        val client = builder.build()
+        return OkHttpMediaConnection(uri, client, proxy.type() == Proxy.Type.HTTP, beforeConnect)
+    }
+
+    fun classifyTransportFailure(error: IOException, proxyRoute: Boolean): IOException {
+        if (error is MediaRouteIOException) return error
+        val category = when {
+            error is UnknownHostException -> "dns"
+            error is SocketTimeoutException -> "timeout"
+            error is SSLPeerUnverifiedException -> {
+                if (error.message.orEmpty().lowercase().contains("hostname")) "hostname" else "certificate"
+            }
+            error is SSLHandshakeException -> {
+                val chain = generateSequence(error as Throwable?) { it.cause }.toList()
+                when {
+                    chain.any { it is CertificateException } -> "certificate"
+                    error.message.orEmpty().lowercase().contains("hostname") -> "hostname"
+                    else -> "tls_handshake"
+                }
+            }
+            error is SSLProtocolException -> "tls_handshake"
+            proxyRoute && error.message.orEmpty().lowercase().let {
+                it.contains("authenticate with proxy") ||
+                    it.contains("unexpected response code for connect") ||
+                    it.contains("proxy connect") && it.contains("response")
+            } -> "proxy_connect_status"
+            proxyRoute && error is ProtocolException -> "proxy_connect"
+            proxyRoute && error.message.orEmpty().lowercase().contains("connect") -> "proxy_connect"
+            else -> "io"
+        }
+        return MediaRouteIOException(category, error)
+    }
+}
+
+private class OkHttpMediaConnection(
+    uri: URI,
+    private val client: OkHttpClient,
+    private val proxyRoute: Boolean,
+    private val beforeConnect: () -> Unit,
+) : HttpURLConnection(uri.toURL()) {
+    private val stateLock = Any()
+    @Volatile private var cancelled = false
+    private val requestProperties = linkedMapOf<String, String>()
+    private var call: okhttp3.Call? = null
+    private var response: Response? = null
+
+    override fun connect() {
+        synchronized(stateLock) {
+            if (cancelled) throw IOException("媒体连接已取消")
+            if (response != null) return
+        }
+        beforeConnect()
+        val request = Request.Builder()
+            .url(url)
+            .get()
+            .apply { requestProperties.forEach { (name, value) -> header(name, value) } }
+            .build()
+        val nextCall = client.newCall(request)
+        synchronized(stateLock) {
+            if (cancelled) {
+                nextCall.cancel()
+                throw IOException("媒体连接已取消")
+            }
+            call = nextCall
+        }
+        try {
+            val received = nextCall.execute()
+            synchronized(stateLock) {
+                if (cancelled) {
+                    received.close()
+                    throw IOException("媒体连接已取消")
+                }
+                response = received
+            }
+        } catch (error: IOException) {
+            throw SystemMediaNetwork.classifyTransportFailure(error, proxyRoute)
+        }
+    }
+
+    override fun disconnect() {
+        val activeCall: okhttp3.Call?
+        val activeResponse: Response?
+        synchronized(stateLock) {
+            cancelled = true
+            activeCall = call
+            activeResponse = response
+            call = null
+            response = null
+        }
+        activeCall?.cancel()
+        activeResponse?.close()
+        client.connectionPool.evictAll()
+        client.dispatcher.executorService.shutdown()
+    }
+
+    override fun usingProxy(): Boolean = proxyRoute
+
+    override fun getResponseCode(): Int {
+        connect()
+        return response!!.code
+    }
+
+    override fun getInputStream(): InputStream {
+        connect()
+        return response?.body?.byteStream() ?: ByteArrayInputStream(ByteArray(0))
+    }
+
+    override fun getErrorStream(): InputStream? = runCatching {
+        connect()
+        response?.body?.byteStream()
+    }.getOrNull()
+
+    override fun getHeaderField(name: String): String? {
+        connect()
+        return response?.header(name)
+    }
+
+    override fun getHeaderFieldKey(position: Int): String? {
+        connect()
+        return response?.headers?.names()?.toList()?.getOrNull(position)
+    }
+
+    override fun getContentLengthLong(): Long {
+        connect()
+        return response?.body?.contentLength() ?: -1L
+    }
+
+    override fun setRequestProperty(key: String, value: String?) {
+        if (value == null) requestProperties.remove(key) else requestProperties[key] = value
+    }
+
+    override fun addRequestProperty(key: String, value: String?) {
+        if (value != null) requestProperties[key] = value
+    }
+
+    override fun getRequestProperty(key: String): String? = requestProperties[key]
 }

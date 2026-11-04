@@ -21,6 +21,15 @@ class NativeMediaRuntime {
   Stream<NativePlaybackSession> get states => _states.stream;
   NativePlaybackSession? _active;
   NativePlaybackSession? get active => _active;
+  int _openGeneration = 0;
+
+  int _beginOpen() => ++_openGeneration;
+
+  void _ensureOpenCurrent(int generation) {
+    if (generation != _openGeneration) {
+      throw StateError('原生媒体请求已过期');
+    }
+  }
 
   Future<({double brightness, double volume})> levels() async {
     try {
@@ -83,6 +92,7 @@ class NativeMediaRuntime {
       generation: generation,
       sourceUrl: sourceUrl,
     );
+    final requestGeneration = _beginOpen();
     final raw = await _invokeMap('open', {
       'sessionId': sessionId,
       'candidateId': candidate.id,
@@ -92,6 +102,7 @@ class NativeMediaRuntime {
       'title': candidate.title,
       'secureDnsProvider': secureDnsProvider,
     });
+    _ensureOpenCurrent(requestGeneration);
     return _decode(raw ?? const <String, Object?>{});
   }
 
@@ -100,9 +111,11 @@ class NativeMediaRuntime {
     File file, {
     bool autoPlay = true,
   }) async {
+    final requestGeneration = _beginOpen();
     if (!await file.exists() || await file.length() == 0) {
       throw StateError('本地缓存不存在');
     }
+    _ensureOpenCurrent(requestGeneration);
     final isHls =
         file.path.toLowerCase().endsWith('.m3u8') ||
         file.path.toLowerCase().endsWith('.m3u');
@@ -121,6 +134,7 @@ class NativeMediaRuntime {
         // and let the native side report the specific missing resource.
       }
     }
+    _ensureOpenCurrent(requestGeneration);
     final raw = await _invokeMap('openLocal', {
       'sessionId': 'play_${task.id}_${DateTime.now().microsecondsSinceEpoch}',
       'taskId': task.id,
@@ -132,6 +146,7 @@ class NativeMediaRuntime {
       'partial': partial,
       'resourcePaths': resourcePaths,
     });
+    _ensureOpenCurrent(requestGeneration);
     return _decode(raw ?? const <String, Object?>{});
   }
 
@@ -163,9 +178,11 @@ class NativeMediaRuntime {
 
   /// SAF files are read through their granted URI, without a second MP4 copy.
   Future<NativePlaybackSession> openDocument(MediaTask task, Uri uri) async {
+    final requestGeneration = _beginOpen();
     if (uri.scheme != 'content' || uri.host.isEmpty) {
       throw const FormatException('本地媒体地址无效');
     }
+    _ensureOpenCurrent(requestGeneration);
     final raw = await _invokeMap('openLocal', {
       'sessionId': 'play_${task.id}_${DateTime.now().microsecondsSinceEpoch}',
       'taskId': task.id,
@@ -174,6 +191,7 @@ class NativeMediaRuntime {
       'mime': 'video/mp4',
       'title': task.displayName,
     });
+    _ensureOpenCurrent(requestGeneration);
     return _decode(raw ?? const <String, Object?>{});
   }
 
@@ -181,10 +199,15 @@ class NativeMediaRuntime {
       _command('play', _sessionArgument(sessionId));
   Future<NativePlaybackSession> pause({String? sessionId}) =>
       _command('pause', _sessionArgument(sessionId));
-  Future<NativePlaybackSession> stop({String? sessionId}) =>
-      _command('stop', _sessionArgument(sessionId));
-  Future<NativePlaybackSession> close({String? sessionId}) =>
-      _command('close', _sessionArgument(sessionId));
+  Future<NativePlaybackSession> stop({String? sessionId}) {
+    _openGeneration++;
+    return _command('stop', _sessionArgument(sessionId));
+  }
+
+  Future<NativePlaybackSession> close({String? sessionId}) {
+    _openGeneration++;
+    return _command('close', _sessionArgument(sessionId));
+  }
 
   Map<String, Object?> _sessionArgument(String? sessionId) => {
     if ((sessionId ?? _active?.id)?.isNotEmpty ?? false)
@@ -292,6 +315,7 @@ class NativeMediaRuntime {
   }
 
   Future<void> dispose() async {
+    _openGeneration++;
     await _states.close();
     _channel.setMethodCallHandler(null);
   }

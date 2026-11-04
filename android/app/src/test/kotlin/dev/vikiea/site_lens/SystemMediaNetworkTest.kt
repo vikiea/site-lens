@@ -4,6 +4,7 @@ import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.InetAddress
 import java.net.HttpURLConnection
+import java.net.ProtocolException
 import java.net.Proxy
 import java.net.ProxySelector
 import java.net.SocketAddress
@@ -11,6 +12,8 @@ import java.net.URI
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
+import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLPeerUnverifiedException
 
 class SystemMediaNetworkTest {
     @Test
@@ -33,9 +36,9 @@ class SystemMediaNetworkTest {
         assertEquals(connection, open(0))
         assertEquals(0, resolutions)
         assertEquals(listOf(proxy), visited)
-        // An unsafe DIRECT fallback is skipped without opening a connection.
+        // An HTTP proxy configuration skips DIRECT without resolving it.
         assertEquals(connection, open(1))
-        assertEquals(1, resolutions)
+        assertEquals(0, resolutions)
         assertEquals(listOf(proxy, proxy), visited)
     }
 
@@ -60,7 +63,7 @@ class SystemMediaNetworkTest {
     }
 
     @Test
-    fun retryAdvancesPacProxyAndOnlySelectedDirectChecksDns() {
+    fun retryAdvancesHttpProxyCandidatesWithoutAddingDirect() {
         val first = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7890))
         val second = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7891))
         val policy = selector { listOf(first, second, Proxy.NO_PROXY) }
@@ -80,8 +83,8 @@ class SystemMediaNetworkTest {
                 },
             )
         }
-        assertEquals(listOf(first, second, Proxy.NO_PROXY), visited)
-        assertEquals(1, resolutions)
+        assertEquals(listOf(first, second, first), visited)
+        assertEquals(0, resolutions)
     }
 
     @Test
@@ -107,11 +110,26 @@ class SystemMediaNetworkTest {
         val actual = SystemMediaNetwork.openConnection(
             target,
             allowProxyFakeIp = true,
+            preferredRoute = SystemMediaNetwork.RouteKind.ROUTER_FAKE_IP,
             selector = selector { listOf(Proxy.NO_PROXY) },
             resolve = { arrayOf(InetAddress.getByName("198.18.0.7")) },
             open = { _, _ -> connection },
         )
         assertEquals(connection, actual)
+    }
+
+    @Test
+    fun legacyDirectEntryDoesNotTreatFakeIpAsPublicWithoutConfirmedRoute() {
+        val target = URI("https://cdn.example/a")
+        assertThrows(IllegalArgumentException::class.java) {
+            SystemMediaNetwork.openConnection(
+                target,
+                allowProxyFakeIp = true,
+                selector = selector { listOf(Proxy.NO_PROXY) },
+                resolve = { arrayOf(InetAddress.getByName("198.18.0.7")) },
+                open = { _, _ -> error("fake-ip DIRECT must remain closed") },
+            )
+        }
     }
 
     @Test
@@ -198,6 +216,145 @@ class SystemMediaNetworkTest {
         assertEquals(
             SystemMediaNetwork.RouteKind.ROUTER_FAKE_IP,
             SystemMediaNetwork.fakeIpRouteKind(false),
+        )
+    }
+
+    @Test
+    fun vpnTunFakeIpIsPreferredWhenHttpProxyAndVpnAreBothPresent() {
+        val info = SystemMediaNetwork.RouteInfo(
+            SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP,
+            SystemMediaNetwork.DnsOwner.SYSTEM_DNS,
+            fakeIpAllowed = true,
+            proxyConfigured = true,
+            preferVpnTun = true,
+            directAllowed = true,
+        )
+        assertEquals(SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP,
+            SystemMediaNetwork.strategyForAttempt(info, 0))
+        assertEquals(SystemMediaNetwork.RouteKind.HTTP_PROXY,
+            SystemMediaNetwork.strategyForAttempt(info, 1))
+        assertEquals(SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP,
+            SystemMediaNetwork.strategyForAttempt(info, 2))
+    }
+
+    @Test
+    fun routePlanAlternatesVpnTunAndHttpProxyWithoutResolvingOriginForProxy() {
+        val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7890))
+        val target = URI("https://cdn.example/a")
+        val fake = arrayOf(InetAddress.getByName("198.18.0.7"))
+        var resolutions = 0
+        val tun = SystemMediaNetwork.planFor(
+            target,
+            listOf(proxy),
+            vpnTransport = true,
+            routerTrusted = false,
+            attempt = 0,
+            resolve = { resolutions++; fake },
+        )
+        assertEquals(SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP, tun.info.kind)
+        assertEquals(Proxy.NO_PROXY, tun.proxy)
+        assertEquals(listOf(fake[0]), tun.addresses)
+        assertEquals(1, resolutions)
+        val http = SystemMediaNetwork.planFor(
+            target,
+            listOf(proxy),
+            vpnTransport = true,
+            routerTrusted = false,
+            attempt = 1,
+            resolve = { resolutions++; fake },
+        )
+        assertEquals(SystemMediaNetwork.RouteKind.HTTP_PROXY, http.info.kind)
+        assertEquals(proxy, http.proxy)
+        assertEquals(1, resolutions)
+    }
+
+    @Test
+    fun routePlanAllowsPublicDirectOnlyWhenNoProxyIsConfigured() {
+        val target = URI("https://cdn.example/a")
+        val plan = SystemMediaNetwork.planFor(
+            target,
+            listOf(Proxy.NO_PROXY),
+            vpnTransport = false,
+            routerTrusted = false,
+            resolve = { arrayOf(InetAddress.getByName("8.8.8.8")) },
+        )
+        assertEquals(SystemMediaNetwork.RouteKind.PUBLIC_DIRECT, plan.info.kind)
+        assertEquals(true, plan.info.directAllowed)
+        assertEquals(Proxy.NO_PROXY, plan.proxy)
+    }
+
+    @Test
+    fun httpProxyStrategyNeverAddsDirectCandidate() {
+        val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7890))
+        val target = URI("https://cdn.example/a")
+        val visited = mutableListOf<Proxy>()
+        assertThrows(IOException::class.java) {
+            SystemMediaNetwork.openConnection(
+                target,
+                preferredRoute = SystemMediaNetwork.RouteKind.HTTP_PROXY,
+                selector = selector { listOf(proxy, Proxy.NO_PROXY) },
+                open = { _, selected ->
+                    visited += selected
+                    throw IOException("proxy unavailable")
+                },
+            )
+        }
+        assertEquals(listOf(proxy), visited)
+    }
+
+    @Test
+    fun explicitVpnTunStrategyUsesDirectFakeIpAndKeepsHostUnresolved() {
+        val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7890))
+        val target = URI("https://cdn.example/a")
+        val visited = mutableListOf<Proxy>()
+        var resolutions = 0
+        val connection = object : HttpURLConnection(target.toURL()) {
+            override fun connect() = Unit
+            override fun disconnect() = Unit
+            override fun usingProxy() = false
+        }
+        val actual = SystemMediaNetwork.openConnection(
+            target,
+            allowProxyFakeIp = true,
+            preferredRoute = SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP,
+            selector = selector { listOf(proxy) },
+            resolve = { resolutions++; arrayOf(InetAddress.getByName("198.18.0.7")) },
+            open = { _, selected -> visited += selected; connection },
+        )
+        assertEquals(connection, actual)
+        assertEquals(listOf(Proxy.NO_PROXY), visited)
+        assertEquals(1, resolutions)
+    }
+
+    @Test
+    fun transportFailuresExposeSafeRouteCategories() {
+        assertEquals(
+            "proxy_connect",
+            (SystemMediaNetwork.classifyTransportFailure(
+                ProtocolException("proxy CONNECT failed"),
+                proxyRoute = true,
+            ) as MediaRouteIOException).category,
+        )
+        assertEquals(
+            "tls_handshake",
+            (SystemMediaNetwork.classifyTransportFailure(
+                SSLHandshakeException("handshake failed"),
+                proxyRoute = true,
+            ) as MediaRouteIOException).category,
+        )
+        assertEquals(
+            "hostname",
+            (SystemMediaNetwork.classifyTransportFailure(
+                SSLPeerUnverifiedException("Hostname cdn.example not verified"),
+                proxyRoute = true,
+            ) as MediaRouteIOException).category,
+        )
+        assertEquals(
+            "proxy_connect_status",
+            (SystemMediaNetwork.classifyTransportFailure(
+                IOException("Failed to authenticate with proxy"),
+                proxyRoute = true,
+            ) as MediaRouteIOException).category,
         )
     }
 

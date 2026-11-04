@@ -33,6 +33,16 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
             val current = repository.read(taskId)
             return isStopped || current == null || current.workId != id.toString() || current.paused || current.cancelled
         }
+        fun retryIfBudgetAllows(reason: String): Result {
+            val transferAttempts = repository.attemptsUsed(taskId)
+            return if (transferAttempts < MAX_NETWORK_ATTEMPTS &&
+                runAttemptCount < MAX_NETWORK_ATTEMPTS
+            ) {
+                Result.retry()
+            } else {
+                failure("network_exhausted", reason)
+            }
+        }
         val initial = repository.read(taskId) ?: return Result.failure()
         configureMaxConcurrency(
             applicationContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
@@ -43,7 +53,7 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
                 foregroundInfo(initial, 0L, null, "等待下载"),
             ).get(15, TimeUnit.SECONDS)
         } catch (_: Exception) {
-            return Result.retry()
+            return retryIfBudgetAllows("后台下载服务暂不可用，已保留缓存")
         }
         val acquired = try {
             downloadSlots.tryAcquire(30, TimeUnit.SECONDS)
@@ -51,7 +61,7 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
             Thread.currentThread().interrupt()
             false
         }
-        if (!acquired) return Result.retry()
+        if (!acquired) return retryIfBudgetAllows("下载资源暂时繁忙，已保留缓存")
         try {
             return withFileLock(applicationContext, taskId) {
                 if (isObsolete()) return@withFileLock Result.failure()
@@ -61,12 +71,13 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
                 if (finalFile.isFile && finalFile.length() > 0L) {
                     return@withFileLock success(finalFile)
                 }
+                val attemptsUsed = repository.attemptsUsed(taskId)
                 val transfer = ResumableMediaTransfer(
                     cancelled = { isObsolete() || SystemClock.elapsedRealtime() >= deadline },
                     connectForAttempt = { uri, attempt ->
-                        val routeAllowsFakeIp = isSystemDnsRouteAllowed(uri, attempt)
-                        SystemMediaNetwork.openConnection(uri, allowProxyFakeIp = routeAllowsFakeIp, attempt = attempt)
+                        SystemMediaNetwork.openMediaConnection(applicationContext, uri, attempt)
                     },
+                    onAttemptStarted = { used -> repository.setAttemptsUsed(taskId, attemptsUsed + used) },
                 )
                 ownedTransfer = transfer
                 transfers[taskId] = transfer
@@ -80,6 +91,12 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
                         sourceUrl,
                         partial,
                         android.webkit.WebSettings.getDefaultUserAgent(applicationContext),
+                        // WorkManager owns the outer retry loop. One worker
+                        // invocation consumes one route attempt, so a later
+                        // retry can observe a new network epoch and strategy
+                        // while the persisted budget bounds failed attempts.
+                        maxAttempts = 1,
+                        startAttempt = attemptsUsed,
                         requestCookies = { uri ->
                             runCatching {
                                 AndroidCookieReader.get(uri.toString())
@@ -118,7 +135,9 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
                             )
                         }.getOrDefault(mapOf("state" to "waiting_execution"))
                         when (refreshed["state"] as? String) {
-                            "refreshed" -> return@withFileLock Result.retry()
+                            "refreshed" -> return@withFileLock retryIfBudgetAllows(
+                                "媒体授权已刷新，等待重新连接",
+                            )
                             "waiting_execution" -> return@withFileLock failure(
                                 "waiting_execution",
                                 refreshed["reason"]?.toString() ?: "等待系统允许后台授权刷新",
@@ -127,11 +146,19 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
                     }
                     failure("reauthorize", "下载地址需要重新授权")
                 } catch (error: InterruptedIOException) {
-                    if (isObsolete()) Result.failure() else Result.retry()
+                    if (isObsolete()) Result.failure()
+                    else retryIfBudgetAllows("媒体连接被中断，已保留缓存")
                 } catch (error: IOException) {
                     if (isObsolete()) Result.failure()
-                    else if (runAttemptCount < 4) Result.retry()
-                    else failure("network", "网络连接中断，已保留已下载内容，可重试")
+                    else if (error is MediaTransferFailure) {
+                        if (error.retryable()) {
+                            retryIfBudgetAllows("网络连接中断，已保留已下载内容，可重试")
+                        } else {
+                            failure("network", "TLS 证书或主机名校验失败，已停止重试")
+                        }
+                    } else {
+                        retryIfBudgetAllows("网络连接中断，已保留已下载内容，可重试")
+                    }
                 } catch (error: Exception) {
                     failure("download_failed", error.message ?: "媒体下载失败")
                 } finally {
@@ -199,12 +226,8 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
         }
     }
 
-    private fun isSystemDnsRouteAllowed(uri: URI, attempt: Int): Boolean =
-        runCatching {
-            SystemMediaNetwork.directDnsContainsFakeIpForAttempt(uri, attempt)
-        }.getOrDefault(false)
-
     companion object {
+        const val MAX_NETWORK_ATTEMPTS = 8
         private val transfers = ConcurrentHashMap<String, ResumableMediaTransfer>()
         const val PREFERENCES = "site_lens_native_downloads"
         const val CONCURRENCY_KEY = "max_concurrency"
