@@ -43,7 +43,16 @@ class ExportNotifyingMediaTaskStore extends MediaTaskStore {
     sync: true,
   );
   final _references = <String, int>{};
+  final _availabilityListeners = <VoidCallback>{};
   Stream<MediaTaskAvailabilityEvent> get availabilityEvents => _events.stream;
+
+  void addAvailabilityListener(VoidCallback listener) {
+    _availabilityListeners.add(listener);
+  }
+
+  void removeAvailabilityListener(VoidCallback listener) {
+    _availabilityListeners.remove(listener);
+  }
 
   void _emit(String taskId, MediaTaskAvailabilityEventKind kind) {
     final id = resolveTaskId(taskId);
@@ -56,6 +65,9 @@ class ExportNotifyingMediaTaskStore extends MediaTaskStore {
         canDelete: canDelete(id),
       ),
     );
+    for (final listener in List<VoidCallback>.of(_availabilityListeners)) {
+      listener();
+    }
   }
 
   @override
@@ -93,6 +105,7 @@ class ExportNotifyingMediaTaskStore extends MediaTaskStore {
 
   @override
   void dispose() {
+    _availabilityListeners.clear();
     _events.close();
     super.dispose();
   }
@@ -148,9 +161,8 @@ class MediaExportQueue extends ChangeNotifier {
   }) : _now = now ?? DateTime.now {
     tasks.addListener(wake);
     if (tasks is ExportNotifyingMediaTaskStore) {
-      _availabilitySubscription = (tasks as ExportNotifyingMediaTaskStore)
-          .availabilityEvents
-          .listen((_) => wake());
+      _availabilityStore = tasks as ExportNotifyingMediaTaskStore;
+      _availabilityStore!.addAvailabilityListener(wake);
     }
   }
 
@@ -162,7 +174,7 @@ class MediaExportQueue extends ChangeNotifier {
   final void Function(String taskId, Object error, StackTrace stack)? onError;
   final DateTime Function() _now;
   final _jobs = <String, _ExportJob>{};
-  StreamSubscription<MediaTaskAvailabilityEvent>? _availabilitySubscription;
+  ExportNotifyingMediaTaskStore? _availabilityStore;
   Future<void>? _restoring;
   Future<void>? _running;
   final _accepting = <Future<void>>{};
@@ -417,16 +429,19 @@ class MediaExportQueue extends ChangeNotifier {
       _closed = true;
       _timer?.cancel();
       tasks.removeListener(wake);
-      await _availabilitySubscription?.cancel();
+      _availabilityStore?.removeAvailabilityListener(wake);
       for (final job in _jobs.values) {
         if (!job.result.isCompleted) {
           job.result.completeError(StateError('媒体导出队列已关闭，作业已保留'));
         }
       }
     }
-    await _restoring;
-    await Future.wait(_accepting.toList());
-    await _running;
+    final restoring = _restoring;
+    if (restoring != null) await restoring;
+    final accepting = _accepting.toList();
+    if (accepting.isNotEmpty) await Future.wait(accepting);
+    final running = _running;
+    if (running != null) await running;
   }
 
   @override
