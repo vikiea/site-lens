@@ -940,29 +940,7 @@ String inferMediaMime(Uri url) {
 String mediaCandidateKey(Uri url) {
   final clean = url.removeFragment();
   if (clean.queryParameters.isEmpty) return clean.toString();
-  const volatile = {
-    'auth',
-    'auth_key',
-    'expires',
-    'expire',
-    'exp',
-    'hmac',
-    'sig',
-    'sign',
-    'signature',
-    't',
-    'time',
-    'timestamp',
-    'via',
-    'via_bm',
-  };
-  final retained = <String, String>{};
-  for (final entry in clean.queryParameters.entries) {
-    if (!volatile.contains(entry.key.toLowerCase())) {
-      retained[entry.key] = entry.value;
-    }
-  }
-  return clean.replace(queryParameters: retained).toString();
+  return _mediaIdentityQuery(clean, _volatileMediaQuery);
 }
 
 /// Identity used only while refreshing an expired authorization URL for an
@@ -972,30 +950,7 @@ String mediaCandidateKey(Uri url) {
 String mediaCandidateAuthorizationKey(Uri url) {
   final clean = url.removeFragment();
   if (clean.queryParameters.isEmpty) return clean.toString();
-  const volatile = {
-    'auth',
-    'auth_key',
-    'expires',
-    'expire',
-    'exp',
-    'hmac',
-    'sig',
-    'sign',
-    'signature',
-    't',
-    'time',
-    'timestamp',
-    'via',
-    'via_bm',
-    'token',
-  };
-  final retained = <String, String>{};
-  for (final entry in clean.queryParameters.entries) {
-    if (!volatile.contains(entry.key.toLowerCase())) {
-      retained[entry.key] = entry.value;
-    }
-  }
-  return clean.replace(queryParameters: retained).toString();
+  return _mediaIdentityQuery(clean, _authorizationVolatileQuery);
 }
 
 /// Identity of the page that authorized a media observation. Query parameters
@@ -1003,68 +958,87 @@ String mediaCandidateAuthorizationKey(Uri url) {
 /// origin and path remain part of the authorization boundary.
 String mediaDocumentIdentity(Uri url) {
   final clean = url.removeFragment();
-  const volatile = {
-    'auth',
-    'auth_key',
-    'expires',
-    'expire',
-    'exp',
-    'hmac',
-    'sig',
-    'sign',
-    'signature',
-    't',
-    'time',
-    'timestamp',
-    'token',
-    'via',
-    'via_bm',
-  };
-  final retained = <String, String>{};
-  for (final entry in clean.queryParameters.entries) {
-    if (!volatile.contains(entry.key.toLowerCase())) {
-      retained[entry.key] = entry.value;
-    }
-  }
-  return clean.replace(queryParameters: retained).toString();
+  return _mediaIdentityQuery(clean, _documentVolatileQuery);
 }
 
 /// URL identity used when a page supplies structured episode/representation
 /// metadata. CDN authority is a locator and may change with the active route;
 /// path and non-authorization selectors remain content identity.
 String mediaCandidateLocatorIdentity(Uri url) {
-  final clean = Uri(
-    scheme: cleanScheme(url.scheme),
-    path: url.path,
-    queryParameters: _retainedMediaQuery(url),
-  );
-  return clean.toString();
+  final withoutFragment = url.removeFragment();
+  // Built in one pass so neither a Map round-trip nor the presence of a
+  // repeated volatile parameter can leak into the locator: the result depends
+  // only on the retained selectors, in first-seen order.
+  final retained = [
+    for (final entry in withoutFragment.queryParametersAll.entries)
+      if (!_documentVolatileQuery.contains(entry.key.toLowerCase()))
+        for (final value in entry.value)
+          '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(value)}',
+  ];
+  return Uri(
+    scheme: cleanScheme(withoutFragment.scheme),
+    path: withoutFragment.path,
+    query: retained.isEmpty ? null : retained.join('&'),
+  ).toString();
 }
 
 String cleanScheme(String value) => value.trim().toLowerCase();
 
-Map<String, String> _retainedMediaQuery(Uri url) {
-  const volatile = {
-    'auth',
-    'auth_key',
-    'expires',
-    'expire',
-    'exp',
-    'hmac',
-    'sig',
-    'sign',
-    'signature',
-    't',
-    'time',
-    'timestamp',
-    'token',
-    'via',
-    'via_bm',
-  };
-  return <String, String>{
-    for (final entry in url.removeFragment().queryParameters.entries)
-      if (!volatile.contains(entry.key.toLowerCase())) entry.key: entry.value,
-  };
+/// Query parameters that a page or CDN rotates for every observation. They
+/// carry authorization, never content selection.
+const _volatileMediaQuery = {
+  'auth',
+  'auth_key',
+  'expires',
+  'expire',
+  'exp',
+  'hmac',
+  'sig',
+  'sign',
+  'signature',
+  't',
+  'time',
+  'timestamp',
+  'via',
+  'via_bm',
+};
+
+/// Volatile parameters for page identity; a page token rotates as well.
+const _documentVolatileQuery = {..._volatileMediaQuery, 'token'};
+
+/// Volatile parameters for an expired-task authorization refresh, which
+/// already pins page, host and generation context.
+const _authorizationVolatileQuery = {..._volatileMediaQuery, 'token'};
+
+/// Rebuilds [url] with volatile query parameters removed while keeping every
+/// remaining parameter, including repeated names.
+String _mediaIdentityQuery(Uri url, Set<String> volatile) {
+  final kept = <MapEntry<String, List<String>>>[
+    for (final entry in url.queryParametersAll.entries)
+      if (!volatile.contains(entry.key.toLowerCase()))
+        MapEntry(entry.key, entry.value),
+  ];
+  final hasRepeated = kept.any((entry) => entry.value.length > 1);
+  if (!hasRepeated) {
+    return url
+        .replace(
+          queryParameters: {
+            for (final entry in kept) entry.key: entry.value.first,
+          },
+        )
+        .toString();
+  }
+  // A repeated parameter keeps every value in first-seen order so that a
+  // repeated content selector stays distinguishable from a single value.
+  return url
+      .replace(
+        query: [
+          for (final entry in kept)
+            for (final value in entry.value)
+              '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(value)}',
+        ].join('&'),
+      )
+      .toString();
 }
 
 /// Stable logical identity for a selected stream. Structured metadata is
