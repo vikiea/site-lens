@@ -1,14 +1,21 @@
 # 原生后台播放与系统控制子计划
 
-日期：2026-10-23。代码基线为 `145ab61` 之后的修复检查点；本计划尚未启用原生后台播放。
-网页 `BrowserMediaService` 的通过证据不等于本计划完成。原生后台当前仍未启用。
+日期：2026-10-23（2026-11-04 对齐到 `v0.6.0.alpha22` / `2c37cf2`）。早期代码基线为
+`145ab61` 之后的修复检查点；B1 的 Media3 `MediaSessionService` 自 v0.5.0.alpha1
+（`16da0a8`，2026-10-25）起已落地，B0 剩余项、B2/B3 与设备验收仍未完成。
+网页 `BrowserMediaService` 的通过证据不等于本计划完成。
 
 ## 已确认的实现边界
 
-- 当前 `NativeMediaRuntime` 在 Activity 内创建 ExoPlayer、持有 Flutter texture；
-  `MainActivity.cleanUpFlutterEngine` 调用 `dispose()`，播放器随之释放。
-- `NativeMediaPlayerScreen.dispose` 会 close 会话并释放 task 引用。通知外壳即使
-  存活，也无法改变这一所有权关系；不能把转发 Activity 闭包的 Service 当作后台播放器。
+- 原生下载/本地缓存路径由 `NativeMediaSessionService`（Media3 `MediaSessionService`）
+  在 application context 创建并持有 ExoPlayer、`MediaSession` 与前台服务生命周期；
+  Flutter Activity 只持临时 surface，`MediaPlaybackOwner`/`NativeMediaRuntime` 负责
+  页面侧接管与命令桥，Activity/Engine detach 后播放器仍存活。
+- 页面退出时先 command-bridge `close`：`NativeMediaPlayerScreen.dispose`
+  （`lib/ui/media_tasks_screen.dart:835-846`）→ `_close()`（同文件 `:788-795`）→
+  `nativeMedia.close()` → `NativeMediaSessionService.kt:530` 的 `"stop", "close" ->
+  stopAndRelease()`，即页面销毁会释放原生会话。是否满足"引擎/Activity 重建后仍
+  在后台播放与系统控制"只能靠 v0.6 设备证据判定，当前待补。
 - 文件缓存和导出目录仍按既有独立所有权处理，不创建第二份播放缓存，不搬迁媒体字节。
 - 当前标签后台开关仍只描述网页策略。原生后台开关/默认值需在真实服务接入时集中到
   AppSettings/SettingsRepository，不能通过修改网页开关语义悄悄影响已有设置。
@@ -46,7 +53,8 @@
   缓存清单并取得 task/path 许可，再停止 Dart/native writer，等待 flush，最后在
   同一许可内删除原生与 Dart 缓存并释放 reservation。Dart 回归覆盖许可拒绝、
   活跃 writer 和原生任务；当前尚缺 Android 设备上的实际 reservation/Engine
-  detach 证据。
+  detach 证据。现状（2026-11-04）：代码与 Dart 回归已完成，Android 设备证据只能
+  记"待补"，不能记为通过。
 - [ ] Flutter 其余 File/Directory 变更继续收口到原生一次性操作，尤其写入发布、
   Engine 消失后的恢复记录和跨进程边界；不能只查 heldIDs。
 - [ ] 原生操作完成但 Engine 未收到结果时的持久恢复记录和设备证明。
@@ -72,17 +80,24 @@
 
 ## B1 服务持有播放器与界面重建
 
-- [ ] 使用 Media3 `MediaSessionService` 持有 application-context ExoPlayer 和
+- [x] 使用 Media3 `MediaSessionService` 持有 application-context ExoPlayer 和
   `MediaSession`；Flutter/Activity 只持有 surface 与命令桥，不保留在服务中的 Activity 闭包。
+  已由 `NativeMediaSessionService`（`16da0a8`，v0.5.0.alpha1）实现；alpha19–22 又改
+  `MediaPlaybackOwner`/`NativeMediaRuntime`/`NativeMediaSessionService`。
 - [ ] 开始播放时原生先取得读租约、验证输入，再返回成功；切换时新输入先取得租约，
   旧输入在播放器确认释放后退租。停止、错误、取消和服务销毁有统一屏障。
-- [ ] 页面退出 detach surface，显式停止才关闭会话。重建 Engine 可只读查询当前
+- [ ] 页面退出 detach surface，显式停止才关闭会话（现状与目标不一致：dispose 会
+  发 `close`，见上方实现边界；设备行为待补）。重建 Engine 可只读查询当前
   session/epoch/task/catalog/position；DB 未初始化时，原生变更 guard 仍有效。
 - [ ] 通知点击回到实际当前会话，重新 attach texture，保留 seek/倍速/位置；旧页面
   的迟到 close/detach 不得停止或解绑新的会话。
 - [ ] Media3 管理通知、前台服务和音频焦点。未申请权限、服务启动被系统限制或通知
   渠道被禁用时给出具体有效状态，不假设服务启动成功，也不在后台重复尝试启动。
 - [ ] 停止清理通知和租约；暂停不丢会话，但不承诺无限驻留或绕过系统省电限制。
+
+复选框状态：只有首项 `[x]`（代码落地）；其余各项即使代码已存在，也因缺 v0.6
+设备证据保持 `[ ]`，不能把实现存在当作验收通过。v0.6.0.alpha15–22 在
+`docs/validation/` 没有任何设备记录。
 
 退出条件：Activity/Flutter detach 后仍由服务播放并受系统控制，重接界面准确；
 上述变更互斥覆盖原生和 Flutter 所有实际写入入口。
@@ -122,6 +137,11 @@ player/lease 供重试，在读者结束无法确认时不提前退租。B0.1 �
 当前 API 36 / WebView 155 真机完成上述原生读者定向及完整验收，并恢复正常包与
 本机备份数据库。已完成证据按源码变化复用；原生读者通过和 B0.1 本地回归不替代
 Engine detach 恢复记录和服务后台生命周期验收。
+
+- 2026-11-04 对齐：B1 的 `MediaSessionService` 所有权已在 v0.5.0.alpha1 落地，
+  v0.6.0.alpha19–22 又改原生播放/网络/路由/导出队列；这些版本的设备证据均待补
+  （`docs/validation/` 无 v0.6 记录）。B0 剩余写入发布、Engine detach 恢复与
+  B2/B3 仍未完成。
 
 Media3 服务参考：<https://developer.android.com/media/media3/session/background-playback>。
 当前只把该契约用作实现目标，未把官方能力当成本应用已完成的证据。

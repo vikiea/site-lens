@@ -1,12 +1,18 @@
 # 当前修复与验收台账
 
-更新日期：2026-10-24。当前活动分支为 `codex/browser-startup-dock`，基线为
-`ff65357` / `v0.4.0.alpha14`。该测试版已发布，GitHub 分配的 Android
-`versionCode` 为 92；发布状态以对应 GitHub workflow 与 Release 最终记录为准。
-alpha14 收拢了冷启动异步恢复、浏览快捷浮条、更新页、透明度行和 codec 读取的
-改动。此前 alpha11–alpha13 的代理、缩略图、剧集身份、网页媒体控制、WebView
-消息通道生命周期及原生文件租约记录仍是各自基线的历史证据，不能改写成 alpha14
-设备验收。
+更新日期：2026-11-04。当前基线为 `main@b5462aa` / `v0.6.0.alpha22`，GitHub
+分配的 Android `versionCode` 为 155；当前没有活动功能分支（所有分支已合入
+main，`git branch --no-merged main` 为空）。发布状态以对应 GitHub workflow 与
+Release 最终记录为准。alpha14 及更早的代理、缩略图、剧集身份、网页媒体控制、
+WebView 消息通道生命周期及原生文件租约记录仍是各自基线的历史证据，不能改写成
+alpha14 或 v0.6 设备验收。
+
+### 版本序列说明
+
+仓库内 `v0.4.0`、`v0.5.0`、`v0.6.0` 三段 alpha 序列并存，任何 "alphaN" 都必须
+写全 semver（如 `v0.6.0.alpha22`），不能只写裸 alphaN。`docs/validation/` 内的
+裸 alphaN 一律指 `v0.4.0` 序列（例：`2026-10-24-alpha19-真机模拟器代理验证报告.md`
+对应 `v0.4.0.alpha19 / 4098037`）；v0.6 设备证据为 0 条，见下文待补清单。
 
 本文件维护当前状态和下一步；既有计划与报告保留各自的历史基线。
 设计确认、实现、独立审查、本地验证、设备验收和发布分别取证。
@@ -14,20 +20,67 @@ alpha14 收拢了冷启动异步恢复、浏览快捷浮条、更新页、透明
 
 ## 当前基线与活动队列
 
-### 已发布，alpha14 设备验收待补
+### 待补验收（最高优先级：v0.6.0 设备证据）
+
+- v0.6.0 全序列（alpha15–alpha22）在 `docs/validation/` 中没有任何设备验收记录
+  （`ls docs/validation | grep v0.6` 为空）。已发布只证明 Release workflow 完成
+  构建与上传；`release.yml` 只跑 `tool/check.sh`（L1），不含 L3/设备阶段，不能把
+  Release 成功当作设备通过。
+- 重点补验收提交（均改原生播放/导出/网络/更新生命周期）：d15a9e3（alpha18，
+  后台导出与播放稳定）、241a9e1（alpha19，网络切换播放恢复）、4ccd2eb（alpha20，
+  路由恢复与原生播放生命周期）、fa1781f（alpha21，导出队列与原生生命周期）、
+  2c37cf2（alpha22，导出可用性监听同步关闭）。
+- 建议断言：飞行模式/切网播放恢复、后台导出进度与通知、引擎被杀后任务状态、
+  双播放器所有权仲裁（WebView vs native）、通知点击回会话。
+- `docs/validation/browser-startup-settings-manual.md` 基线仍绑在 `v0.4.0.alpha13`，
+  S/D/U/C/A 全项待补；需改写为 `v0.6.0.alpha22` 包 + commit `2c37cf2`。
+- `plan-completion-matrix.md` 行 06（本地 HLS remux/MP4 交付与 SAF，pending
+  的是 remux 后真机播放）、行 07（真实接收端播放）、行 08（跨模块回归与 L0–L4
+  交付证据，设备验收未跑）仍未关闭；该文档自称 historical，不再代表 v0.6 现状。
+
+### v0.6.0 发布实况（alpha15–alpha22，2026-11-02 → 2026-11-04）
+
+- 发布模式在 alpha19 变化：alpha15–18 先提交独立 `chore(release): prepare vX`
+  再打 tag；alpha19–22 把版本号写进 fix 提交本身，tag 直接打在 fix 提交上。
+- alpha15 `6c64e37`/vc148 ← `499f84f` perf(media) 缓存目录导航与缩略图；
+  alpha16 `254ef1f`/vc149 ← `d15fb0f` 缓存失效边界；
+  alpha17 `99fb40e`/vc150 ← `f2b4957` 文件夹播放与剧集排序；
+  alpha18 `f237a53`/vc151 ← `d15a9e3` 后台导出与播放稳定（唯一 Release body
+  含验证证据段的版本：822 项 Flutter、40 项 JS、33 项 native contract；设备
+  阶段无 DEVICE 未完成）；
+  alpha19 `241a9e1`/vc152 网络切换播放恢复；
+  alpha20 `4ccd2eb`/vc153 路由恢复与原生播放生命周期；
+  alpha21 `fa1781f`/vc154 导出队列与原生生命周期——**有 tag、vc154 已占、
+  Release 取消（45m40s 超时）、同一提交 Verify 三次均 cancelled，没有产物**；
+  注意 `version-code/154-*` 和 `155-*` 本地 `git tag -l` 为空，只存在于远端，
+  要 `git ls-remote --tags origin` 才能核对（本地按 tag 名查会误判"未占用"）；
+  alpha22 `2c37cf2`/vc155 导出可用性监听同步关闭（与 alpha21 只差 +24/−9）。
+- 有 tag、versionCode 已占但没有 Release 产物的版本：`v0.5.0.alpha12`(vc121)、
+  `v0.5.0.alpha13`(vc122)、`v0.6.0.alpha2`(vc135)、`v0.6.0.alpha21`(vc154)。
+  版本号永久占用，不能按"tag 即有产物"推断。
+- alpha15/16/17/19/20/22 的 Release body 均为模板，无验证命令/退出码。tag 提交
+  上的 Verify 不全是成功：alpha15 在 `v0.6.0.alpha15` 分支上只有一个 Verify run
+  `41466283476`（attempt 1，14:53:44Z → 17:32:51Z，跨度 2h39m07s，含排队/等待，
+  不代表实际执行耗时）被 cancelled；同一提交在 main 上的 run `41466266814`
+  success（14:53:38Z → 15:03:29Z，约 9m51s）。alpha21 三次 run 均 cancelled。
+  其余 alpha16/17/18/19/20/22 的 tag Verify 为 success。Release 成功或 tag
+  Verify 成功都只说明 CI 检查通过，不能替代 L3/设备验收。
+- 上述版本在仓库内都没有设备验收记录，设备结论一律待补。
+
+### 历史基线：v0.4.0.alpha14（2026-10-24）
 
 - 已实现：首页和保存标签 metadata 优先发布、规则 isolate 与精确选择缓存、
   媒体恢复 readiness fence、非 WebView 页吸边浏览浮条、菜单遮挡保护、更新页
   渠道/版本同行、透明度同行，以及 codec 自动读取和从首次成功结果起算的五分钟
   缓存。启动不宣称量化耗时提升。
 - 本地检查、Android JVM 测试、debug/正式 APK 身份和独立审查已在 alpha14
-  发布前完成。`validation/browser-startup-settings-manual.md` 的 S/D/U/C/A 项仍需
+  发布前完成。`docs/validation/browser-startup-settings-manual.md` 的 S/D/U/C/A 项仍需
   使用当前测试包逐项验收；alpha13 或更早的设备批次不能替代该结果。
 - 2026-10-24 已切换到 Android API 36 / WebView 155 真机完成本轮 L3 验收。
   alpha14 人工清单与本轮自动化证据分别保留。真机可用时优先使用真机；断开后
   才考虑模拟器，并先复核主机内存余量，不复用历史模拟器启动结果。
 
-### 2026-10-24 本轮优化与运行错误修复
+### 2026-10-24 本轮优化与运行错误修复（v0.4.0.alpha14→alpha19 历史证据）
 
 - 全局浏览浮条收起后可见宽度为原来的三分之一；保留六点标记和 48dp 手势
   目标，左右贴边的外侧直角、内侧圆角。媒体管理和软件更新分别使用一个面板；
@@ -47,7 +100,9 @@ alpha14 收拢了冷启动异步恢复、浏览快捷浮条、更新页、透明
 - 真机新增 DLNA 本机路由监听与完整文件响应断言通过；真实非同址接收设备和
   电视投屏仍需对应接收端证据。首次调试附加出现瞬态控件/GlobalKey 异常；明确
   指定调试包与入口重新附加后热重载成功，运行态错误读取为空，原日志保留。
-- 当前仅为本地未提交修复与真机验证，没有新的提交、推送、标签或发布。
+- 该检查点当时仅为本地未提交修复与真机验证，没有新的提交、推送、标签或发布；
+  此后已发 v0.4.0.alpha15–19、v0.5.0 全部 23 个 alpha 与 v0.6.0.alpha1–22（见上节）。
+  本节 36 成功/0 失败等结果只属于 v0.4.0.alpha19 基线，不是 v0.6 证据。
 
 ### 可按源码影响复用的证据
 
@@ -62,9 +117,13 @@ alpha14 收拢了冷启动异步恢复、浏览快捷浮条、更新页、透明
 
 ### 待实现的独立子计划
 
-- `native-background-playback-plan.md`：B0 仍缺 Dart writer 停止/许可/原子发布和
-  Engine 丢失恢复；随后才是 B1 原生服务持有 ExoPlayer/MediaSession、B2 通知和
-  锁屏传输控制、B3 进程恢复。网页 `BrowserMediaService` 不是原生后台播放器。
+- `native-background-playback-plan.md`：B0.1 下载删除的跨调用原生 reservation 已
+  接入（Dart 回归通过），Android 设备上的 reservation/Engine detach 证据待补；
+  B0 其余写入发布与 Engine 丢失恢复待接入。B1 的 Media3 `MediaSessionService`
+  自 v0.5.0.alpha1（`16da0a8`，2026-10-25）起持有 application-context ExoPlayer
+  与 `MediaSession`，alpha19–22 又改 `MediaPlaybackOwner`/`NativeMediaRuntime`/
+  `NativeMediaSessionService`，设备验收待补。B2 原生队列/通知控制、B3 进程恢复
+  仍未完成。网页 `BrowserMediaService` 不是原生后台播放器。
 - `streaming-and-settings-plan.md`：P0–P8 依次覆盖确定的网页实际播放身份与三个
   工程前置、Android 单写入共享缓存和迁移、观看保存入口、部分缓存 DataSource
   与按需 seek、后台补齐、受限同 profile 授权刷新、幂等 MP4、完整资源 DLNA/
@@ -76,6 +135,8 @@ alpha14 收拢了冷启动异步恢复、浏览快捷浮条、更新页、透明
 - 连续滚动/转场像素、长期内存，API 34 以下、API 34+ 非 Vulkan 或其他 GPU，
   旧 Token 升级迁移、iOS、真实 SAF provider 和真实 DLNA receiver 仍待对应
   设备或接收端证据。每个范围保持独立，不由本地静态检查或其它设备结果推导。
+- v0.6.0.alpha18–22 新增的边界同样待补设备证据：引擎被杀后导出中断、网络切换
+  播放恢复、路由恢复、导出队列并发与可用性监听关闭。
 
 ## 2026-10-23 合并后继续验证
 
@@ -198,6 +259,10 @@ alpha14 收拢了冷启动异步恢复、浏览快捷浮条、更新页、透明
 
 ## 能力状态
 
+下表能力证据主体停在 v0.4/v0.5 检查点；v0.6.0.alpha18–22 的后台导出、网络切换
+恢复、路由恢复、导出队列串行化与监听关闭已发布但未逐项入表，设备验收见上文
+「待补验收」。
+
 | 目标 | 实现与已有证据 | 当前边界与下一步 |
 | --- | --- | --- |
 | 依赖、内置 Kotlin、Media3、HCPP、只读诊断 | 已在既有基线实现；依赖与平台边界见 `media3-hcpp-diagnostics.md` | 真实旧 Token 升级保留、API 34 以下/非 Vulkan/iOS 等矩阵仍缺设备证据；不重复全量依赖升级 |
@@ -214,7 +279,7 @@ alpha14 收拢了冷启动异步恢复、浏览快捷浮条、更新页、透明
 | 旧导航回调误伤新页面 | 新导航与历史准备在异步回复前退休旧 Navigation/Page；普通主框架网络及 HTTP 错误复用完整文档 URL 归属判断。新增两项接线契约拒绝旧实现、两项 policy 正反例通过；原生累计 85 项、7 项真机导航与八页真实绑定通过，窄修复独立复审 APPROVE | 当前目标与重定向真实失败仍会报错。错误回调无导航 ID，同一 URL 的 ABA 归属无法仅靠 URL 区分，未宣称解决该平台边界；新窄修复引用定向证据，不把此前完整 32 项当作其后重新全量执行 |
 | 候选写入/清理竞态 | DOM 和 registerMedia 均先持久化后发布，clear 撤销在途发布，销毁排空写入；held-write/失败写入/GM clear 回归通过，独立审查通过 | 合入新基线后复核本地契约；持久记录不等于当前页面授权 |
 | 网页后台播放与通知控制 | Android 16 定向断言、API 34 历史完整套件及 alpha12 合并后的 API 36 完整/代理批次均验证当前剧上下集、暂停/恢复和停止，推荐播放器不被切集；停止修复为移除重复 custom skip，并在收起通知前确认目标会话结束 | 当前 API 36 各批次正常包和本机备份数据库恢复成功；旧设备的历史独立备份继续保留，不把网页路径当原生后台服务 |
-| 原生播放器后台播放与上下集 | 当前播放器仍由 Activity/Flutter 引擎持有；网页 BrowserMediaService 不承担它。native 文件租约及变更互斥的 JVM 回归保留；alpha12 API 36 完整批次已证明无 Dart retain 的暂停读者拒绝破坏操作、HLS 子文件保护和停止释放 | 按 `native-background-playback-plan.md` B0–B3 执行；只将已覆盖的 B0 原生读者设备项完成，Flutter writer 握手、服务所有权、队列/通知和重建恢复仍未启用 |
+| 原生播放器后台播放与上下集 | 自 v0.5.0.alpha1（`16da0a8`，2026-10-25）起由 `NativeMediaSessionService`（Media3 `MediaSessionService`）持 application-context ExoPlayer、`MediaSession` 与前台服务，Activity/Flutter 引擎 detach 后仍存活；网页 `BrowserMediaService` 只承担网页路径。native 文件租约及变更互斥的 JVM 回归保留；alpha12 API 36 完整批次已证明无 Dart retain 的暂停读者拒绝破坏操作、HLS 子文件保护和停止释放 | 按 `native-background-playback-plan.md` B0–B3 执行；B0.1 Android reservation/Engine detach 设备证据、B2 原生队列/通知、B3 进程恢复仍待补；v0.6.0.alpha19–22 的 native 改动需补设备验收 |
 | 网页观看保存、共享索引与边下边播 | Q1–Q27 设计已确认，`streaming-and-settings-plan.md` 的 P0–P8 尚未完成 | 先补结构化实际播放证据、单写入迁移、部分缓存 DataSource 和原 profile 后台授权刷新前置；不拿候选数量或完整缓存播放代替 |
 | DLNA | 现有完整资源受限 relay、协议与租约实现保留 | 真实接收端播放/seek 未完成；部分缓存投屏仍不在首版范围 |
 
@@ -379,14 +444,17 @@ alpha14 收拢了冷启动异步恢复、浏览快捷浮条、更新页、透明
   这不是新测试版发布或新 versionCode 分配。
 - 定向媒体 runner 在预检阶段报告旧端点不可用，且禁用重复 ADB 恢复；未备份、
   未安装、未修改手机数据。Dart MCP 未发现运行中的 DTD/App，不能执行热重载。
-- B0 仍欠 Flutter 直接文件变更的原生原子操作接入、完整独立复审及真机证据；
-  B1 服务持有播放器、B2 原生队列及观看保存 P0–P8 保持未完成，不启用通知外壳替代。
+- 该检查点 B0 仍欠 Flutter 直接文件变更的原生原子操作接入、完整独立复审及真机
+  证据；B2 原生队列及观看保存 P0–P8 当时未完成，不启用通知外壳替代。B1 服务
+  持有播放器已在 v0.5.0.alpha1（`16da0a8`）落地，此处描述为当时状态。
 
 - B0.2 Android 库操作接入：整组副本回收/库删除的原子许可、部分 I/O 失败回执、
   暂停读者拒绝后的副本字段保留、本地目录校验复制与移动、Inspector/HLS 读租约。
   32 项媒体库回归、99 项 JVM、23 项接线契约通过；
   首轮有两个旧测试替身遗漏新方法，修正替身后重跑通过。相关真机用例已扩充，
-  尚无设备结果。B0.1 下载 writer 停止握手、最终发布和 Engine 丢失结果恢复未完成。
+  尚无设备结果。该检查点 B0.1 下载 writer 停止握手、最终发布和 Engine 丢失结果
+  恢复未完成；后续已接入跨调用 reservation，Android 设备证据仍待补（见
+  `native-background-playback-plan.md`）。
 
 - B0.2 独立复审 APPROVE；补充共享 MP4 新缓存引用保存失败时的同进程重试
   guard，移动源删除失败的回滚与双故障恢复记录，以及 target 外部丢失时不得
@@ -418,13 +486,15 @@ alpha14 收拢了冷启动异步恢复、浏览快捷浮条、更新页、透明
 - 当前端点 ADB 预检失败，未备份、未安装或改变手机数据。该端点一次恢复额度
   已使用，不重复连接或重启 ADB；收到新端点后继续当前网络与 B0 媒体定向验收。
 - 最新缓存删除清单抽取草稿经分析器和 89 项媒体/媒体库定向测试通过，
-  `make check` 的 557 项 Flutter 及 JS/Python 契约通过。它尚未完成
-  B0.1 原生许可内停止 Dart writer 的握手，不把清单抽取当作该能力完成。
+  `make check` 的 557 项 Flutter 及 JS/Python 契约通过。该检查点尚未完成
+  B0.1 原生许可内停止 Dart writer 的握手；后续已接入 reservation，Android 设备
+  证据仍待补，不把清单抽取当作该能力完成。
 
 - 当前窄修复将 `MediaDownloadService.delete` 的 Dart 排他许可提前到取消 writer
   和 native cancel 之前；active writer 回归覆盖“持有读引用时拒绝删除、释放后
   cancel 但等待 flush、再删除缓存与任务”的顺序，59 项媒体服务定向测试通过。
-  该修复不替代跨引擎的 native mutation callback/Engine detach 握手，B0.1 仍未完成。
+  该修复不替代跨引擎的 native mutation callback/Engine detach 握手，B0.1 的
+  Android reservation/Engine detach 设备证据仍未完成。
 - 当前工作区重新构建了 `build/android-acceptance/ui77-current-product/`：debug/release
   均为 `0.4.0.alpha10+88`，正式包证书校验通过。该目录标注 dirty worktree，
   没有提交、推送或新发版；当前无线调试端点未通过 ADB 预检，
@@ -434,7 +504,8 @@ alpha14 收拢了冷启动异步恢复、浏览快捷浮条、更新页、透明
   LinkProperties.isPrivateDnsActive 作为有效状态，Settings 配置读取失败保持未知，
   不以 provider 配置推断解析成功。未发起域名探测或写入系统设置。
 - 最终窄审接受本轮检查点；Private DNS 增量 APPROVE，删除清单的文件/目录
-  执行顺序与旧版存在差异，不宣称严格顺序等价。B0.1 完整原生许可握手仍未完成。
+  执行顺序与旧版存在差异，不宣称严格顺序等价。B0.1 完整原生许可握手当时未完成；
+  后续已接入 reservation，Android 设备证据仍待补。
 - 最终自动验证选择 L3：本地全部通过（559 项 Flutter、分析器和 JS/Python
   契约），设备阶段缺可用端点，返回 2。原生编译和 99 项 JVM 全部通过；
   debug/release 均重新构建为 `0.4.0.alpha10+88` 并校验包名与正式证书。
@@ -519,5 +590,7 @@ alpha14 收拢了冷启动异步恢复、浏览快捷浮条、更新页、透明
   boot 成功、WebView 124.0.6367.219，但安装前 swap 仅 947.5 MiB；按同一
   阈值关闭模拟器，无测试包安装、无应用数据变更，不计为设备验收。
   当前产品源码与上一轮正式签名重打包的文件摘要仍完全一致，包摘要亦匹配。
-  连续三轮的设备可用性/内存阻塞复核后，目标保留全部范围并标记 blocked；
-  恢复条件为可用真机连接或足以支撑模拟器验收的主机内存余量。
+  连续三轮的设备可用性/内存阻塞复核后，该检查点保留全部范围并标记 blocked。
+  此后已发布 v0.4.0.alpha15–19、v0.5.0 全部 23 个 alpha 与 v0.6.0.alpha1–22，
+  当前没有 blocked 发布；设备验收按上文 v0.6 待补清单执行，恢复条件为可用真机
+  连接或足以支撑模拟器验收的主机内存余量。
