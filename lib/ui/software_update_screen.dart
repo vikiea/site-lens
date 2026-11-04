@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -253,10 +254,9 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
                   ),
                   if (_controller.release!.body.trim().isNotEmpty) ...[
                     const SizedBox(height: 12),
-                    Text(
-                      _controller.release!.body.trim(),
-                      maxLines: 12,
-                      overflow: TextOverflow.ellipsis,
+                    _ReleaseChangelog(
+                      body: _controller.release!.body.trim(),
+                      onOpenLink: _openUrl,
                     ),
                   ],
                   const SizedBox(height: 14),
@@ -505,7 +505,7 @@ class _UpdateGitHubTokenEntryState extends State<_UpdateGitHubTokenEntry> {
       _configured == null
           ? '读取安全存储中…'
           : _configured == true
-          ? '已配置，稳定版和测试版优先使用 API'
+          ? '已配置，优先使用API下载更新'
           : '未配置，将优先尝试匿名 API，失败后解析发布页',
     ),
     trailing: _busy
@@ -520,6 +520,57 @@ class _UpdateGitHubTokenEntryState extends State<_UpdateGitHubTokenEntry> {
           ),
     onTap: _busy ? null : _edit,
   );
+}
+
+class _ReleaseChangelog extends StatelessWidget {
+  const _ReleaseChangelog({required this.body, required this.onOpenLink});
+
+  final String body;
+  final Future<void> Function(Uri) onOpenLink;
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    return SizedBox(
+      key: const ValueKey('release-changelog'),
+      height: 240,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border.all(color: SiteLensColors.of(context).divider),
+          borderRadius: BorderRadius.circular(SiteLensMetrics.inputRadius),
+        ),
+        child: Markdown(
+          data: body,
+          selectable: true,
+          padding: const EdgeInsets.all(12),
+          onTapLink: (text, href, title) {
+            final uri = href == null ? null : Uri.tryParse(href);
+            if (uri != null &&
+                (uri.scheme == 'https' || uri.scheme == 'http')) {
+              unawaited(onOpenLink(uri));
+            }
+          },
+          styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+            p: textTheme.bodyMedium,
+            a: textTheme.bodyMedium?.copyWith(
+              color: Theme.of(context).colorScheme.primary,
+              decoration: TextDecoration.underline,
+            ),
+            code: textTheme.bodySmall,
+            blockquote: textTheme.bodyMedium,
+            blockquoteDecoration: BoxDecoration(
+              border: Border(
+                left: BorderSide(
+                  color: SiteLensColors.of(context).sectionLabel,
+                  width: 3,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Own the input for the whole route lifetime, including its exit animation.

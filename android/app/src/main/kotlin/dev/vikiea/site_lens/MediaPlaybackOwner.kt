@@ -20,14 +20,20 @@ object MediaPlaybackOwner {
         return generation
     }
 
-    @Synchronized
     fun nativeStopped(context: Context, generation: Long) {
-        if (!nativeActive || activeGeneration != generation) return
-        nativeActive = false
-        activeGeneration = null
-        val snapshot = suspendedWeb
-        suspendedWeb = null
-        if (snapshot != null) BrowserMediaService.restoreAfterNative(context, snapshot)
+        synchronized(this) {
+            if (!nativeActive || activeGeneration != generation) return
+            nativeActive = false
+            activeGeneration = null
+            val previous = suspendedWeb
+            suspendedWeb = null
+            // Keep the ownership check and WebView restoration under the same
+            // monitor as nativeStarted(). A newer native session cannot start
+            // between clearing this session and restoring the Web session.
+            if (previous != null && !nativeActive) {
+                BrowserMediaService.restoreAfterNative(context, previous)
+            }
+        }
     }
 
     @Synchronized

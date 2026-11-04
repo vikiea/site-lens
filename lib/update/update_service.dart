@@ -313,6 +313,57 @@ class UpdateDownload {
   }
 }
 
+typedef NativeUpdateEventHandler = void Function(
+  String method,
+  Map<String, Object?> arguments,
+);
+
+class NativeUpdateSnapshot {
+  const NativeUpdateSnapshot({
+    required this.state,
+    this.tagName,
+    this.sha256,
+    this.received = 0,
+    this.total = 0,
+    this.path,
+    this.pausedByUser = false,
+    this.etag,
+    this.lastModified,
+    this.error,
+    this.openUpdateRoute = false,
+  });
+
+  final String state;
+  final String? tagName;
+  final String? sha256;
+  final int received;
+  final int total;
+  final String? path;
+  final bool pausedByUser;
+  final String? etag;
+  final String? lastModified;
+  final String? error;
+  final bool openUpdateRoute;
+}
+
+abstract interface class UpdateDownloadBackend {
+  void setEventHandler(NativeUpdateEventHandler? handler);
+
+  Future<UpdateDownload> startDownload(
+    ReleaseInfo release, {
+    void Function(int received, int? total)? onProgress,
+    void Function()? onVerifying,
+  });
+
+  Future<NativeUpdateSnapshot?> query();
+
+  Future<void> delete(ReleaseInfo release);
+
+  Future<void> deleteStale(String keepTag);
+
+  Future<NativeUpdateSnapshot?> pause();
+}
+
 class _StopSignal {
   bool stopped = false;
   bool byUser = true;
@@ -886,6 +937,240 @@ class MethodChannelUpdatePlatform implements UpdatePlatform {
   }
 }
 
+/// Android's durable update service bridge. The service owns all transfer
+/// bytes; this object only binds Flutter callbacks to the durable state.
+class MethodChannelUpdateBackend implements UpdateDownloadBackend {
+  MethodChannelUpdateBackend({MethodChannel? channel})
+    : _channel = channel ?? const MethodChannel('site_lens/update') {
+    _channel.setMethodCallHandler(_handleMethodCall);
+  }
+
+  final MethodChannel _channel;
+  NativeUpdateEventHandler? _eventHandler;
+  _NativeUpdateBinding? _binding;
+
+  @override
+  void setEventHandler(NativeUpdateEventHandler? handler) {
+    _eventHandler = handler;
+  }
+
+  @override
+  Future<UpdateDownload> startDownload(
+    ReleaseInfo release, {
+    void Function(int received, int? total)? onProgress,
+    void Function()? onVerifying,
+  }) async {
+    final previous = _binding;
+    if (previous != null && !previous.done.isCompleted) {
+      throw StateError('已有更新下载正在进行');
+    }
+    final binding = _NativeUpdateBinding(
+      release: release,
+      onProgress: onProgress,
+      onVerifying: onVerifying,
+    );
+    _binding = binding;
+    try {
+      final snapshot = _snapshot(
+        await _channel.invokeMethod<Object?>(
+          'startDownload',
+          _releaseArgs(release),
+        ),
+      );
+      await _applySnapshot(binding, snapshot);
+      return UpdateDownload(
+        done: binding.done.future,
+        stop: (byUser) {
+          if (!byUser) {
+            // Flutter engine teardown must leave the native transfer alive.
+            _binding = null;
+            return;
+          }
+          unawaited(_pause(binding));
+        },
+      );
+    } catch (_) {
+      if (identical(_binding, binding)) _binding = null;
+      rethrow;
+    }
+  }
+
+  @override
+  Future<NativeUpdateSnapshot?> query() async {
+    final snapshot = _snapshot(
+      await _channel.invokeMethod<Object?>('queryDownload'),
+    );
+    if (snapshot.openUpdateRoute) {
+      _eventHandler?.call('openUpdateRoute', const <String, Object?>{});
+    }
+    return snapshot.state == 'idle' ? null : snapshot;
+  }
+
+  @override
+  Future<void> delete(ReleaseInfo release) async {
+    await _channel.invokeMethod<void>('deleteDownload', {
+      'tagName': release.tagName,
+      'apkName': release.apkName,
+      'sha256': release.sha256,
+    });
+    final binding = _binding;
+    _binding = null;
+    if (binding != null && !binding.done.isCompleted) {
+      binding.done.completeError(const FormatException('更新下载已删除'));
+    }
+  }
+
+  @override
+  Future<void> deleteStale(String keepTag) async {
+    await _channel.invokeMethod<void>('deleteStaleDownloads', {
+      'keepTag': keepTag,
+    });
+  }
+
+  @override
+  Future<NativeUpdateSnapshot?> pause() async {
+    final snapshot = _snapshot(
+      await _channel.invokeMethod<Object?>('pauseDownload'),
+    );
+    return snapshot.state == 'idle' ? null : snapshot;
+  }
+
+  Future<void> _pause(_NativeUpdateBinding binding) async {
+    if (!identical(_binding, binding) || binding.done.isCompleted) return;
+    try {
+      final snapshot = _snapshot(
+        await _channel.invokeMethod<Object?>('pauseDownload'),
+      );
+      await _applySnapshot(binding, snapshot);
+    } catch (error, stack) {
+      if (!binding.done.isCompleted) binding.done.completeError(error, stack);
+      if (identical(_binding, binding)) _binding = null;
+    }
+  }
+
+  Future<Object?> _handleMethodCall(MethodCall call) async {
+    final arguments = _mapArguments(call.arguments);
+    if (call.method == 'openUpdateRoute') {
+      _eventHandler?.call(call.method, arguments);
+      return null;
+    }
+    if (call.method != 'nativeUpdateProgress' &&
+        call.method != 'nativeUpdateState') {
+      throw MissingPluginException();
+    }
+    final binding = _binding;
+    if (binding != null &&
+        (arguments['tagName'] == null ||
+            arguments['tagName'] == binding.release.tagName)) {
+      try {
+        await _applySnapshot(binding, _snapshot(arguments));
+      } catch (error, stack) {
+        if (!binding.done.isCompleted) binding.done.completeError(error, stack);
+        if (identical(_binding, binding)) _binding = null;
+      }
+    }
+    _eventHandler?.call(call.method, arguments);
+    return null;
+  }
+
+  Future<void> _applySnapshot(
+    _NativeUpdateBinding binding,
+    NativeUpdateSnapshot snapshot,
+  ) async {
+    final total = snapshot.total > 0 ? snapshot.total : null;
+    if (snapshot.state == 'downloading') {
+      binding.onProgress?.call(snapshot.received, total);
+      return;
+    }
+    if (snapshot.state == 'verifying') {
+      binding.onProgress?.call(snapshot.received, total);
+      binding.onVerifying?.call();
+      return;
+    }
+    if (snapshot.state == 'paused') {
+      if (!binding.done.isCompleted) {
+        binding.done.complete(
+          UpdateDownloadResult.paused(
+            UpdatePartial(
+              tagName: binding.release.tagName,
+              sha256: binding.release.sha256,
+              apkUrl: binding.release.apkUrl,
+              received: snapshot.received,
+              total: snapshot.total,
+              updatedAt: DateTime.now(),
+              etag: snapshot.etag,
+              lastModified: snapshot.lastModified,
+              pausedByUser: snapshot.pausedByUser,
+            ),
+          ),
+        );
+        if (identical(_binding, binding)) _binding = null;
+      }
+      return;
+    }
+    if (snapshot.state == 'transferred' || snapshot.state == 'ready') {
+      final path = snapshot.path;
+      if (path == null || path.isEmpty) {
+        throw const FormatException('更新服务未返回已下载文件');
+      }
+      if (!binding.done.isCompleted) {
+        binding.done.complete(UpdateDownloadResult.completed(File(path)));
+        if (identical(_binding, binding)) _binding = null;
+      }
+      return;
+    }
+    if (snapshot.state == 'failed') {
+      final error = FormatException(snapshot.error ?? '更新下载失败');
+      if (!binding.done.isCompleted) binding.done.completeError(error);
+      if (identical(_binding, binding)) _binding = null;
+      return;
+    }
+  }
+
+  static Map<String, Object?> _releaseArgs(ReleaseInfo release) => {
+    'tagName': release.tagName,
+    'sha256': release.sha256,
+    'apkUrl': release.apkUrl.toString(),
+    'apkName': release.apkName,
+    'apkSize': release.apkSize,
+  };
+
+  static NativeUpdateSnapshot _snapshot(Object? value) {
+    final map = _mapArguments(value);
+    return NativeUpdateSnapshot(
+      state: map['state'] as String? ?? 'idle',
+      tagName: map['tagName'] as String?,
+      sha256: map['sha256'] as String?,
+      received: (map['received'] as num?)?.toInt() ?? 0,
+      total: (map['total'] as num?)?.toInt() ?? 0,
+      path: map['path'] as String?,
+      pausedByUser: map['pausedByUser'] as bool? ?? false,
+      etag: map['etag'] as String?,
+      lastModified: map['lastModified'] as String?,
+      error: map['error'] as String?,
+      openUpdateRoute: map['openUpdateRoute'] as bool? ?? false,
+    );
+  }
+
+  static Map<String, Object?> _mapArguments(Object? value) {
+    if (value is! Map) return <String, Object?>{};
+    return value.map<String, Object?>((key, value) => MapEntry('$key', value));
+  }
+}
+
+class _NativeUpdateBinding {
+  _NativeUpdateBinding({
+    required this.release,
+    required this.onProgress,
+    required this.onVerifying,
+  });
+
+  final ReleaseInfo release;
+  final void Function(int received, int? total)? onProgress;
+  final void Function()? onVerifying;
+  final done = Completer<UpdateDownloadResult>();
+}
+
 /// The update engine: release checks, resumable downloads and installer
 /// handoff. It never owns UI state, so a download keeps running after the
 /// update page is gone.
@@ -903,6 +1188,7 @@ class UpdateService {
     Future<List<InternetAddress>> Function(String)? resolve,
     this.progressMinBytes = 256 * 1024,
     this.progressMinInterval = const Duration(milliseconds: 200),
+    UpdateDownloadBackend? nativeBackend,
   }) : _client =
            client ??
            GitHubReleaseClient(tokenLoader: tokenLoader, resolve: resolve),
@@ -914,7 +1200,12 @@ class UpdateService {
              Duration(seconds: 5),
              Duration(seconds: 10),
            ],
-       _clock = clock ?? DateTime.now;
+       _clock = clock ?? DateTime.now,
+       _nativeBackend =
+           nativeBackend ??
+           (Platform.isAndroid && client == null && platform == null
+               ? MethodChannelUpdateBackend()
+               : null);
 
   final GitHubReleaseClient _client;
   final Future<String?> Function()? tokenLoader;
@@ -933,6 +1224,7 @@ class UpdateService {
   final int progressMinBytes;
   final Duration progressMinInterval;
   final DateTime Function() _clock;
+  final UpdateDownloadBackend? _nativeBackend;
 
   static const _maxApkBytes = 512 * 1024 * 1024;
   static const _streamTimeout = Duration(seconds: 20);
@@ -943,6 +1235,12 @@ class UpdateService {
 
   Future<PackageInfo> get packageInfo async =>
       _info ??= await (packageInfoLoader?.call() ?? PackageInfo.fromPlatform());
+
+  UpdateDownloadBackend? get nativeBackend => _nativeBackend;
+
+  Future<NativeUpdateSnapshot?> rebindNative() async {
+    return _nativeBackend?.query();
+  }
 
   Future<UpdateCheckResult> checkForUpdate() async {
     final now = _clock();
@@ -1023,6 +1321,37 @@ class UpdateService {
     if (release.version.compareTo(current) <= 0) {
       throw const FormatException('暂无更新');
     }
+    final native = _nativeBackend;
+    if (native != null) {
+      if (restart) await native.delete(release);
+      final transfer = await native.startDownload(
+        release,
+        onProgress: onProgress,
+      );
+      final done = transfer.done.then((result) async {
+        if (!result.isCompleted) return result;
+        onVerifying?.call();
+        final partialFile = result.file!;
+        final directory = await _workDirectory();
+        final metaFile = _partialMetaFile(directory, release.tagName);
+        final partial = await _loadPartial(partialFile, metaFile);
+        final total =
+            partial?.total ??
+            (release.apkSize > 0
+                ? release.apkSize
+                : await partialFile.length());
+        final handoff = await _verifyAndHandoff(
+          release: release,
+          file: partialFile,
+          metaFile: metaFile,
+          received: await partialFile.length(),
+          total: total,
+        );
+        await platform.verifyApk(handoff, release);
+        return UpdateDownloadResult.completed(handoff);
+      });
+      return UpdateDownload(done: done, stop: transfer.stop);
+    }
     final directory = await _workDirectory();
     await directory.create(recursive: true);
     final file = _partialFile(directory, release.tagName);
@@ -1054,6 +1383,7 @@ class UpdateService {
 
   /// Removes the fragment and any verified APK for [release].
   Future<void> deleteDownload(ReleaseInfo release) async {
+    await _nativeBackend?.delete(release);
     final directory = await _workDirectory();
     await _discardPartial(
       _partialFile(directory, release.tagName),
@@ -1066,6 +1396,7 @@ class UpdateService {
 
   /// Removes fragments that do not belong to [keepTag].
   Future<void> deleteStalePartials(String keepTag) async {
+    await _nativeBackend?.deleteStale(keepTag);
     final directory = await _workDirectory();
     if (!await directory.exists()) return;
     for (final partial in await listPartials()) {
@@ -1236,7 +1567,7 @@ class UpdateService {
         final response = await _client.openApk(
           release,
           offset: received,
-          ifRange: etag,
+          ifRange: etag ?? lastModified,
         );
         if (response.statusCode == 416) {
           await response.stream.listen((_) {}).cancel();
@@ -1418,8 +1749,9 @@ class UpdateService {
     }
     final target = await _handoffFile(release);
     await target.parent.create(recursive: true);
-    await _deleteIfExists(target);
     final size = await file.length();
+    final samePath = file.absolute.path == target.absolute.path;
+    if (!samePath) await _deleteIfExists(target);
     // The marker goes first: a crash between the two leaves an orphan marker,
     // which [existingDownload] retires, instead of an unverifiable APK.
     final marker = await _readyMarkerFile(target);
@@ -1431,11 +1763,13 @@ class UpdateService {
       }),
       flush: true,
     );
-    try {
-      await file.rename(target.path);
-    } on FileSystemException {
-      await target.writeAsBytes(await file.readAsBytes(), flush: true);
-      await _deleteIfExists(file);
+    if (!samePath) {
+      try {
+        await file.rename(target.path);
+      } on FileSystemException {
+        await target.writeAsBytes(await file.readAsBytes(), flush: true);
+        await _deleteIfExists(file);
+      }
     }
     await _deleteIfExists(metaFile);
     return target;
@@ -1468,6 +1802,7 @@ class UpdateService {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    _nativeBackend?.setEventHandler(null);
     _client.close();
   }
 }

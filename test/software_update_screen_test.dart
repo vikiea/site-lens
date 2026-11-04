@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/ui/software_update_screen.dart';
 import 'package:site_lens/ui/glass_surface.dart';
@@ -204,6 +205,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
     expect(values[GitHubTokenStore.key], 'github_pat_widget_fixture');
+    expect(find.text('已配置，优先使用API下载更新'), findsOneWidget);
 
     await tester.tap(find.text('管理'));
     await tester.pumpAndSettle();
@@ -241,6 +243,51 @@ void main() {
     expect(find.text('下载更新'), findsNothing);
     expect(harness.server.assetRequests, 0);
   });
+
+  testWidgets(
+    'changelog renders Markdown in a fixed internally scrolling panel',
+    (tester) async {
+      final markdown =
+          '# 更新说明\n\n'
+          '- 第一项改进\n- 第二项改进\n\n'
+          '[发布详情](https://github.com/vikiea/site-lens/releases)\n\n'
+          '```text\n示例代码\n```\n\n'
+          '${List.generate(30, (index) => '第 $index 段详细说明。').join('\n\n')}\n\n'
+          '最后一段说明';
+      final controller = UpdateController(
+        service: UpdateService(
+          client: _ChangelogClient(markdown),
+          platform: FakeUpdatePlatform(supportsApkInstall: false),
+          packageInfoLoader: () async => fakePackageInfo('0.1.0'),
+          workDirectoryLoader: () async => work,
+          handoffDirectoryLoader: () async => handoff,
+        ),
+      );
+      addTearDown(controller.dispose);
+      await runReal(tester, controller.loadLocalState);
+      await tester.pumpWidget(screenApp(controller));
+      await tester.pumpAndSettle();
+      await runReal(tester, controller.check);
+      await tester.pumpAndSettle();
+      final panel = find.byKey(const ValueKey('release-changelog'));
+      expect(tester.getSize(panel).height, 240);
+      expect(find.byType(Markdown), findsOneWidget);
+      final rendered = tester.widget<Markdown>(find.byType(Markdown));
+      expect(rendered.data, markdown);
+      expect(rendered.selectable, isTrue);
+      final scrollable = find
+          .descendant(of: panel, matching: find.byType(Scrollable))
+          .first;
+      await tester.ensureVisible(panel);
+      final position = tester.state<ScrollableState>(scrollable).position;
+      expect(position.maxScrollExtent, greaterThan(240));
+      await tester.drag(scrollable, const Offset(0, -180));
+      await tester.pumpAndSettle();
+      expect(position.pixels, greaterThan(0));
+      expect(tester.getSize(panel).height, 240);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('renders the download lifecycle and installs from the page', (
     tester,
@@ -406,4 +453,27 @@ void main() {
       isFalse,
     );
   });
+}
+
+class _ChangelogClient extends GitHubReleaseClient {
+  _ChangelogClient(this.body);
+  final String body;
+
+  @override
+  Future<ReleaseInfo> fetchLatest({
+    UpdateChannel channel = UpdateChannel.stable,
+  }) async => ReleaseInfo(
+    tagName: 'v0.2.0',
+    version: const AppVersion(0, 2, 0),
+    body: body,
+    htmlUrl: Uri.parse(
+      'https://github.com/vikiea/site-lens/releases/tag/v0.2.0',
+    ),
+    apkUrl: Uri.parse(
+      'https://github.com/vikiea/site-lens/releases/download/v0.2.0/site-lens-v0.2.0.apk',
+    ),
+    apkName: 'site-lens-v0.2.0.apk',
+    apkSize: 4096,
+    sha256: 'a' * 64,
+  );
 }

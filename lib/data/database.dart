@@ -162,6 +162,15 @@ const _v20MediaDirectoryCacheTable =
     'root_id TEXT NOT NULL, directory TEXT NOT NULL, entries TEXT NOT NULL, '
     'updated_at INTEGER NOT NULL, PRIMARY KEY(root_id, directory))';
 
+const _v21MediaExportJobsTable =
+    'CREATE TABLE IF NOT EXISTS media_export_jobs('
+    'task_id TEXT PRIMARY KEY REFERENCES media_tasks(id) ON DELETE CASCADE, '
+    'deliver_to_directory INTEGER NOT NULL DEFAULT 1, '
+    'force_regenerate INTEGER NOT NULL DEFAULT 0, '
+    'attempts INTEGER NOT NULL DEFAULT 0, '
+    'state TEXT NOT NULL DEFAULT \'queued\', '
+    'next_attempt_at TEXT NOT NULL, last_error TEXT, updated_at TEXT NOT NULL)';
+
 const _v18MediaCandidateColumns = <(String, String)>[
   ('ALTER TABLE media_candidates ADD COLUMN series_key TEXT', 'series_key'),
   (
@@ -230,7 +239,7 @@ class AppDatabase extends GeneratedDatabase {
   static void Function(String step)? migrationDebugHook;
 
   @override
-  int get schemaVersion => 20;
+  int get schemaVersion => 21;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -259,6 +268,7 @@ class AppDatabase extends GeneratedDatabase {
         _v17MediaResourceOwnersTable,
         ..._v19MediaOperationsTables,
         _v20MediaDirectoryCacheTable,
+        _v21MediaExportJobsTable,
       ]) {
         await customStatement(sql);
       }
@@ -361,6 +371,7 @@ class AppDatabase extends GeneratedDatabase {
         }
       }
       if (from < 20) await customStatement(_v20MediaDirectoryCacheTable);
+      if (from < 21) await customStatement(_v21MediaExportJobsTable);
     },
     beforeOpen: (_) async {
       await customStatement('PRAGMA foreign_keys = ON');
@@ -1664,6 +1675,65 @@ class AppDatabase extends GeneratedDatabase {
             ),
           )
           .toList();
+
+  Future<List<Map<String, Object?>>> mediaExportJobs() async =>
+      (await customSelect(
+            'SELECT task_id,deliver_to_directory,force_regenerate,attempts,state,'
+            'next_attempt_at,last_error,updated_at FROM media_export_jobs '
+            'ORDER BY updated_at ASC',
+          ).get())
+          .map(
+            (row) => <String, Object?>{
+              'task_id': row.read<String>('task_id'),
+              'deliver_to_directory': row.read<int>('deliver_to_directory'),
+              'force_regenerate': row.read<int>('force_regenerate'),
+              'attempts': row.read<int>('attempts'),
+              'state': row.read<String>('state'),
+              'next_attempt_at': row.read<String>('next_attempt_at'),
+              'last_error': row.readNullable<String>('last_error'),
+              'updated_at': row.read<String>('updated_at'),
+            },
+          )
+          .toList();
+
+  Future<void> saveMediaExportJob({
+    required String taskId,
+    required bool deliverToDirectory,
+    required bool forceRegenerate,
+    required int attempts,
+    required String state,
+    required DateTime nextAttemptAt,
+    String? lastError,
+    DateTime? updatedAt,
+  }) async {
+    final now = (updatedAt ?? DateTime.now().toUtc()).toUtc();
+    await customStatement(
+      'INSERT INTO media_export_jobs('
+      'task_id,deliver_to_directory,force_regenerate,attempts,state,'
+      'next_attempt_at,last_error,updated_at) VALUES(?,?,?,?,?,?,?,?) '
+      'ON CONFLICT(task_id) DO UPDATE SET '
+      'deliver_to_directory=excluded.deliver_to_directory,'
+      'force_regenerate=excluded.force_regenerate,'
+      'attempts=excluded.attempts,state=excluded.state,'
+      'next_attempt_at=excluded.next_attempt_at,last_error=excluded.last_error,'
+      'updated_at=excluded.updated_at',
+      [
+        taskId,
+        deliverToDirectory ? 1 : 0,
+        forceRegenerate ? 1 : 0,
+        attempts,
+        state,
+        nextAttemptAt.toUtc().toIso8601String(),
+        lastError,
+        now.toIso8601String(),
+      ],
+    );
+  }
+
+  Future<void> deleteMediaExportJob(String taskId) => customStatement(
+    'DELETE FROM media_export_jobs WHERE task_id=?',
+    [taskId],
+  );
 
   Future<bool> saveWatchSave(WatchSave save) => transaction(() async {
     await customStatement(

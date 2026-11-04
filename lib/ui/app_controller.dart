@@ -40,6 +40,7 @@ import '../settings/settings_repository.dart';
 import '../settings/app_settings.dart';
 import '../filter/filter_service.dart';
 import '../media/media_service.dart';
+import '../media/media_export_queue.dart';
 import '../media/media_library.dart';
 import '../media/media_storage.dart';
 import '../media/dlna_service.dart';
@@ -181,7 +182,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         return shared;
       },
     );
-    mediaTasks = MediaTaskStore(
+    mediaTasks = ExportNotifyingMediaTaskStore(
       db: db,
       directoryProvider: mediaDirectoryProvider,
       resourceCoordinator: mediaResourceCoordinator,
@@ -287,6 +288,19 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     );
     mediaLibrary.mutationGuard = mediaStorage.ensureWritable;
     mediaLibrary.addListener(notifyMediaChanged);
+    mediaExportQueue = MediaExportQueue(
+      tasks: mediaTasks,
+      db: db,
+      execute: _performQueuedMediaExport,
+      onError: (taskId, error, stack) {
+        AppErrorLogger.capture(
+          error,
+          module: 'media.export',
+          context: 'queue:$taskId',
+          stack: stack,
+        );
+      },
+    );
     mediaDownloads.onCompleted = _autoConvertCompletedMedia;
     castSessions = CastSessionController(tasks: mediaTasks);
     mediaCast = DlnaCastController(
@@ -575,11 +589,12 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   late final NativeHosts hosts;
   late final FilterSnapshotStore filterSnapshots;
   late final FilterSourceManager filterSources;
-  late final MediaTaskStore mediaTasks;
+  late final ExportNotifyingMediaTaskStore mediaTasks;
   late final WatchSaveStore watchSaves;
   late final MediaDownloadService mediaDownloads;
   var _mediaRuntimeReady = false;
   late final Mp4ExportService mediaExports;
+  late final MediaExportQueue mediaExportQueue;
   late final MediaLibrary mediaLibrary;
   late final MediaStorageService mediaStorage;
   late final MediaOperationRunner mediaOperations;
@@ -779,6 +794,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
             StartupPhase.mediaLibraryRestore,
             mediaLibrary.restore,
           );
+          if (_disposed) return;
+          await mediaExportQueue.restore();
           if (_disposed) return;
           await mediaStorage.reconcileMigrationJournal();
           if (_disposed) return;
@@ -1446,7 +1463,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final file = await mediaTasks.cachedFile(task.id);
     if (file == null || !file.path.toLowerCase().endsWith('.m3u8')) return;
     try {
-      await exportMediaTask(task);
+      await mediaExportQueue.enqueueAutomatic(task.id);
     } catch (error, stack) {
       AppErrorLogger.capture(
         error,
@@ -1461,7 +1478,18 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     MediaTask task, {
     bool deliverToConfiguredDirectory = true,
     bool forceRegenerate = false,
-  }) async {
+  }) => mediaExportQueue.export(
+    task.id,
+    deliverToConfiguredDirectory: deliverToConfiguredDirectory,
+    forceRegenerate: forceRegenerate,
+  );
+
+  Future<MediaArtifact> _performQueuedMediaExport(
+    MediaExportRequest request,
+  ) async {
+    final task = request.task;
+    final deliverToConfiguredDirectory = request.deliverToConfiguredDirectory;
+    final forceRegenerate = request.forceRegenerate;
     _setMediaExportProgress(task.id, 0);
     var backgroundExportStarted = false;
     try {
@@ -1482,19 +1510,44 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           );
         }
       }
-      final artifactFuture = _exportingMedia.putIfAbsent(
-        task.id,
-        () => _prepareMediaArtifact(
-          task,
-          forceRegenerate: forceRegenerate,
-          onProgress: (progress) => _setMediaExportProgress(task.id, progress),
-        ),
-      );
-      final artifact = await artifactFuture;
+      final artifactFuture = request.preparedArtifact != null
+          ? Future<MediaArtifact>.value(request.preparedArtifact)
+          : _exportingMedia.putIfAbsent(
+              task.id,
+              () => _prepareMediaArtifact(
+                task,
+                forceRegenerate: forceRegenerate,
+                onProgress: (progress) =>
+                    _setMediaExportProgress(task.id, progress),
+              ),
+            );
+      late final MediaArtifact artifact;
+      try {
+        artifact = await artifactFuture;
+      } on StateError catch (error) {
+        final message = error.toString();
+        if (message.contains('媒体任务正在执行文件操作') ||
+            message.contains('媒体任务仍被播放、导出、投屏或管理占用')) {
+          throw const MediaExportDeferred();
+        }
+        rethrow;
+      }
       if (!deliverToConfiguredDirectory) return artifact;
-      await mediaTasks.withExclusive(task.id, () async {
-        await mediaLibrary.deliver(task.id, mp4ExportDirectory);
-      });
+      if (!mediaTasks.canDelete(task.id)) {
+        throw MediaExportDeferred(preparedArtifact: artifact);
+      }
+      try {
+        await mediaTasks.withExclusive(task.id, () async {
+          await mediaLibrary.deliver(task.id, mp4ExportDirectory);
+        });
+      } on StateError catch (error) {
+        final message = error.toString();
+        if (message.contains('媒体任务仍被播放、导出、投屏或管理占用') ||
+            message.contains('媒体正在播放、导出、投屏或管理中')) {
+          throw MediaExportDeferred(preparedArtifact: artifact);
+        }
+        rethrow;
+      }
       final delivered = mediaLibrary.item(task.id) ?? artifact;
       if (deleteMediaTaskAfterMp4Export) {
         // MediaArtifact owns the exported MP4 independently. Deleting through
@@ -3154,6 +3207,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         ? _persistSessions()
         : _sessionWrites;
     final mediaFlush = mediaTasks.flushAll();
+    final mediaExportFlush = mediaExportQueue.close();
     final watchSaveFlush = watchSaves.flush();
     WidgetsBinding.instance.removeObserver(this);
     _disposed = true;
@@ -3176,29 +3230,35 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
             onError: (Object _, StackTrace _) {},
           );
     final nativeDispose = _clearAndDisposeNativeMedia();
-    _shutdownFuture = Future.wait<void>([
-      flush,
-      mediaFlush,
-      watchSaveFlush,
-      (() async {
-        try {
-          await _initialization;
-        } catch (_) {}
-        try {
-          await _deferredStartup;
-        } catch (_) {}
-        await _waitForBrowserPreparation();
-        await mediaTasks.flushAll();
-      })(),
-      close,
-      nativeDispose,
-      stopCast,
-      if (_scriptToggleRun != null)
-        _scriptToggleRun!.then<void>(
-          (_) {},
-          onError: (Object _, StackTrace _) {},
-        ),
-    ]).then<void>((_) {}).whenComplete(settingsRepository.dispose);
+    _shutdownFuture =
+        Future.wait<void>([
+          flush,
+          mediaFlush,
+          watchSaveFlush,
+          (() async {
+            try {
+              await _initialization;
+            } catch (_) {}
+            try {
+              await _deferredStartup;
+            } catch (_) {}
+            await _waitForBrowserPreparation();
+            await mediaTasks.flushAll();
+          })(),
+          close,
+          nativeDispose,
+          stopCast,
+          mediaExportFlush,
+          if (_scriptToggleRun != null)
+            _scriptToggleRun!.then<void>(
+              (_) {},
+              onError: (Object _, StackTrace _) {},
+            ),
+        ]).then<void>((_) {}).whenComplete(() {
+          mediaExportQueue.dispose();
+          mediaTasks.dispose();
+          settingsRepository.dispose();
+        });
     unawaited(
       _shutdownFuture!.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
     );

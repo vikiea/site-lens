@@ -8,6 +8,39 @@ import 'package:site_lens/update/update_service.dart';
 
 import 'fake_update_platform.dart';
 
+class _ImmediateNativeUpdateBackend implements UpdateDownloadBackend {
+  _ImmediateNativeUpdateBackend(this.file);
+
+  final File file;
+
+  @override
+  void setEventHandler(NativeUpdateEventHandler? handler) {}
+
+  @override
+  Future<UpdateDownload> startDownload(
+    ReleaseInfo release, {
+    void Function(int received, int? total)? onProgress,
+    void Function()? onVerifying,
+  }) async => UpdateDownload(
+    done: Future<UpdateDownloadResult>.value(
+      UpdateDownloadResult.completed(file),
+    ),
+    stop: (_) {},
+  );
+
+  @override
+  Future<NativeUpdateSnapshot?> query() async => null;
+
+  @override
+  Future<void> delete(ReleaseInfo release) async {}
+
+  @override
+  Future<void> deleteStale(String keepTag) async {}
+
+  @override
+  Future<NativeUpdateSnapshot?> pause() async => null;
+}
+
 void main() {
   late Directory work;
   late Directory handoff;
@@ -641,6 +674,40 @@ void main() {
       final download = await service.startDownload(release);
       await expectLater(download.done, throwsFormatException);
       expect(server.assetRequests, 1);
+      await service.close();
+    },
+  );
+
+  test(
+    'native handoff survives when the service and installer share cache path',
+    () async {
+      final server = FakeAssetServer(bytes: fixtureBytes(8192));
+      final release = server.release();
+      final nativeFile = File(handoffPath(handoff, release.apkName));
+      await nativeFile.parent.create(recursive: true);
+      await nativeFile.writeAsBytes(fixtureBytes(8192), flush: true);
+      final service = UpdateService(
+        client: GitHubReleaseClient(
+          client: FakeUpdateHttpClient(server),
+          latestUri: Uri.parse(
+            'https://github.com/vikiea/site-lens/releases/latest',
+          ),
+        ),
+        platform: FakeUpdatePlatform(),
+        packageInfoLoader: () async => fakePackageInfo('0.1.0'),
+        workDirectoryLoader: () async => handoff,
+        handoffDirectoryLoader: () async => handoff,
+        nativeBackend: _ImmediateNativeUpdateBackend(nativeFile),
+      );
+
+      final download = await service.startDownload(release);
+      final result = await download.done;
+
+      expect(result.isCompleted, isTrue);
+      expect(result.file!.path, nativeFile.path);
+      expect(await nativeFile.exists(), isTrue);
+      expect(await sha256File(nativeFile), release.sha256);
+      expect(await File('${nativeFile.path}.json').exists(), isTrue);
       await service.close();
     },
   );

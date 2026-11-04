@@ -54,12 +54,18 @@ class NativeMediaSessionService : MediaSessionService() {
     private var userPaused = false
     private var stopping = false
     private var engineReleased = false
+    private var playerReleased = false
+    private var mediaSessionReleased = false
     private var fileLease: Closeable? = null
     private var restorable: RestorableState? = null
     private var playerGeneration = 0L
+    private var lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.READY
     private var playerListener: Player.Listener? = null
     private var ownerGeneration: Long? = null
+    private var attachedSurface: Surface? = null
+    private var attachedSurfaceBindingId: String? = null
     private val positionHandler = Handler(Looper.getMainLooper())
+    private val operationHandler = Handler(Looper.getMainLooper())
     private val mediaSessionCallback = object : MediaSession.Callback {
         override fun onConnect(
             session: MediaSession,
@@ -143,6 +149,9 @@ class NativeMediaSessionService : MediaSessionService() {
         setMediaNotificationProvider(notificationProvider)
         stopping = false
         engineReleased = false
+        playerReleased = false
+        mediaSessionReleased = false
+        lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.READY
         synchronized(pendingLock) { instance = this }
         player = ExoPlayer.Builder(
             this,
@@ -187,22 +196,22 @@ class NativeMediaSessionService : MediaSessionService() {
         playerListener?.let(player::removeListener)
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (generation != playerGeneration) return
+                if (!acceptsCallback(generation)) return
                 if (playbackState == Player.STATE_READY) sourceRetryCount = 0
                 syncState()
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (generation == playerGeneration) syncState()
+                if (acceptsCallback(generation)) syncState()
             }
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-                if (generation != playerGeneration) return
+                if (!acceptsCallback(generation)) return
                 if (NativeMediaSessionPolicy.isExplicitPlayWhenReadyChange(reason)) {
                     userPaused = !playWhenReady
                 }
                 syncState()
             }
             override fun onPlayerError(error: PlaybackException) {
-                if (generation != playerGeneration) return
+                if (!acceptsCallback(generation)) return
                 // ExoPlayer reports elapsed-realtime timestamps. An error
                 // posted by the previous item after a rapid switch must not
                 // retry or fail the newly opened media item.
@@ -254,9 +263,18 @@ class NativeMediaSessionService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = mediaSession
 
     private fun retrySourcePlayback(generation: Long) {
-        if (generation != playerGeneration) return
+        if (!acceptsCallback(generation)) return
         player.playWhenReady = !userPaused
         player.prepare()
+    }
+
+    private fun acceptsCallback(generation: Long): Boolean {
+        if (generation != playerGeneration) return false
+        return NativeMediaSessionPolicy.acceptsLifecycleCallback(
+            callbackGeneration = generation,
+            currentGeneration = playerGeneration,
+            phase = lifecyclePhase,
+        ) && sessionId != null && !stopping && !engineReleased
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -276,12 +294,34 @@ class NativeMediaSessionService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        stopping = true
+        lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.STOPPING
         playerGeneration++
         stopPositionPersistence()
         persistCurrentState()
         cancelPending()
-        releaseMediaEngine()
-        fileLease?.close()
+        runCatching {
+            releaseMediaEngine()
+        }.onFailure { error ->
+            NativeCrashStore.append(
+                this,
+                module = "media.session",
+                message = "原生媒体引擎释放失败",
+                details = error.stackTraceToString(),
+                contextValue = "operation=onDestroy",
+            )
+        }
+        runCatching {
+            fileLease?.close()
+        }.onFailure { error ->
+            NativeCrashStore.append(
+                this,
+                module = "media.session",
+                message = "原生媒体租约释放失败",
+                details = error.stackTraceToString(),
+                contextValue = "operation=onDestroy",
+            )
+        }
         fileLease = null
         ownerGeneration?.let { MediaPlaybackOwner.nativeStopped(applicationContext, it) }
         ownerGeneration = null
@@ -292,7 +332,7 @@ class NativeMediaSessionService : MediaSessionService() {
     }
 
     private fun syncState() {
-        if (state == "failed" || state == "stopped") return
+        if (state == "failed" || state == "stopped" || stopping || engineReleased) return
         state = when {
             userPaused -> "paused"
             player.playbackState == Player.STATE_ENDED -> "completed"
@@ -312,16 +352,18 @@ class NativeMediaSessionService : MediaSessionService() {
     }
 
     private fun snapshot(): Map<String, Any?> = mapOf(
+        // Media3 getters are not safe after release; terminal snapshots must
+        // remain observable without touching the retired player instance.
         "sessionId" to sessionId,
         "candidateId" to (candidateId ?: restorable?.candidateId),
         "taskId" to (taskId ?: restorable?.taskId),
         "state" to if (sessionId == null && restorable != null) "restorable" else state,
-        "positionMs" to if (sessionId != null) player.currentPosition.coerceAtLeast(0L)
+        "positionMs" to if (sessionId != null && !engineReleased) player.currentPosition.coerceAtLeast(0L)
         else restorable?.positionMs ?: 0L,
-        "durationMs" to if (sessionId != null) player.duration.coerceAtLeast(0L)
+        "durationMs" to if (sessionId != null && !engineReleased) player.duration.coerceAtLeast(0L)
         else restorable?.durationMs ?: 0L,
-        "videoWidth" to player.videoSize.width,
-        "videoHeight" to player.videoSize.height,
+        "videoWidth" to if (!engineReleased) player.videoSize.width else 0,
+        "videoHeight" to if (!engineReleased) player.videoSize.height else 0,
         "speed" to if (sessionId != null) speed else restorable?.speed ?: 1f,
         "userPaused" to if (sessionId != null) userPaused else restorable?.userPaused ?: true,
         "errorCode" to lastError,
@@ -372,6 +414,7 @@ class NativeMediaSessionService : MediaSessionService() {
     }
 
     private fun open(request: OpenRequest): Map<String, Any?> {
+        check(!stopping && !engineReleased) { "媒体服务正在关闭" }
         val uri = Uri.parse(request.uri)
         require(uri.scheme == "file" || uri.scheme == "content") { "本地媒体地址无效" }
         if (uri.scheme == "file") {
@@ -402,7 +445,9 @@ class NativeMediaSessionService : MediaSessionService() {
         val nextLease = NativeMediaFileLeases.registry.acquireRead(leaseScope)
         var installedLease = false
         try {
-            ownerGeneration = MediaPlaybackOwner.nativeStarted(applicationContext)
+            if (ownerGeneration == null) {
+                ownerGeneration = MediaPlaybackOwner.nativeStarted(applicationContext)
+            }
             stopPlayerOnly()
             fileLease?.close()
             fileLease = nextLease
@@ -415,6 +460,7 @@ class NativeMediaSessionService : MediaSessionService() {
             mediaIsHls = request.hls
             mediaOpenedAtElapsedMs = SystemClock.elapsedRealtime()
             playerGeneration++
+            lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.OPENING
             installPlayerListener(playerGeneration)
             title = request.title.ifBlank { "Site Lens" }.take(512)
             speed = 1f
@@ -442,6 +488,7 @@ class NativeMediaSessionService : MediaSessionService() {
             userPaused = !request.autoPlay
             player.playWhenReady = request.autoPlay
             player.prepare()
+            lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.ACTIVE
             startPositionPersistence()
             publish()
             return snapshot()
@@ -453,6 +500,7 @@ class NativeMediaSessionService : MediaSessionService() {
     }
 
     private fun command(method: String, args: Map<String, Any?>): Map<String, Any?> {
+        check(!stopping && !engineReleased) { "媒体服务正在关闭" }
         val requested = args["sessionId"] as? String
         require(sessionId != null && (requested.isNullOrBlank() || requested == sessionId)) {
             "播放会话已结束或已切换"
@@ -487,19 +535,34 @@ class NativeMediaSessionService : MediaSessionService() {
         return snapshot()
     }
 
-    private fun stopPlayerOnly() {
+    private fun stopPlayerOnly(
+        phaseAfter: NativeMediaSessionPolicy.LifecyclePhase =
+            NativeMediaSessionPolicy.LifecyclePhase.READY,
+    ) {
         playerGeneration++
+        detachSurfaceFromPlayer()
         player.stop()
         player.clearMediaItems()
+        lifecyclePhase = phaseAfter
         userPaused = false
         state = "stopped"
         lastError = null
     }
 
     private fun stopAndRelease(): Map<String, Any?> {
-        stopping = true
-        stopPositionPersistence()
-        stopPlayerOnly()
+        if (engineReleased && fileLease == null && ownerGeneration == null) return snapshot()
+        if (!stopping) {
+            stopping = true
+            lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.STOPPING
+            playerGeneration++
+            stopPositionPersistence()
+            persistCurrentState()
+        }
+        var releaseFailure: Throwable? = null
+        runCatching { releaseMediaEngine() }.onFailure { releaseFailure = it }
+        state = "stopped"
+        userPaused = false
+        lastError = null
         sessionId = null
         candidateId = null
         taskId = null
@@ -509,22 +572,25 @@ class NativeMediaSessionService : MediaSessionService() {
         clearRestorable()
         publish()
         val stopped = snapshot()
-        releaseMediaEngine()
         fileLease?.close()
         fileLease = null
         ownerGeneration?.let { MediaPlaybackOwner.nativeStopped(applicationContext, it) }
         ownerGeneration = null
         stopSelf()
+        releaseFailure?.let { throw it }
         return stopped
     }
 
     private fun stopAndPreserveRestorable() {
+        if (engineReleased || stopping) return
         stopping = true
+        lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.STOPPING
+        playerGeneration++
         stopPositionPersistence()
         persistCurrentState()
         restorable = readRestorable()
         state = "stopped"
-        playerGeneration++
+        detachSurfaceFromPlayer()
         player.stop()
         player.clearMediaItems()
         sessionId = null
@@ -547,16 +613,77 @@ class NativeMediaSessionService : MediaSessionService() {
 
     private fun releaseMediaEngine() {
         if (engineReleased) return
-        engineReleased = true
-        if (::mediaSession.isInitialized) {
-            if (isSessionAdded(mediaSession)) removeSession(mediaSession)
-            mediaSession.release()
+        detachSurfaceFromPlayer()
+        lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.STOPPING
+        playerGeneration++
+        var firstFailure: Throwable? = null
+        if (::player.isInitialized && !playerReleased) {
+            runCatching {
+                player.stop()
+                player.clearMediaItems()
+            }.onFailure { firstFailure = firstFailure ?: it }
         }
-        if (::player.isInitialized) player.release()
+        if (::mediaSession.isInitialized && !mediaSessionReleased) {
+            runCatching {
+                if (isSessionAdded(mediaSession)) removeSession(mediaSession)
+                mediaSession.release()
+                mediaSessionReleased = true
+            }.onFailure { firstFailure = firstFailure ?: it }
+        }
+        if (::player.isInitialized && !playerReleased) {
+            runCatching {
+                player.release()
+                playerReleased = true
+            }.onFailure { firstFailure = firstFailure ?: it }
+        }
+        engineReleased = mediaSessionReleased && playerReleased
+        if (engineReleased) lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.RELEASED
+        firstFailure?.let { throw it }
     }
 
-    private fun attachSurface(surface: Surface?) {
+    private fun detachSurfaceFromPlayer() {
+        if (!::player.isInitialized) {
+            attachedSurface = null
+            return
+        }
+        player.clearVideoSurface()
+        attachedSurface = null
+        attachedSurfaceBindingId = null
+    }
+
+    private fun attachSurface(
+        surface: Surface?,
+        requestedSessionId: String? = null,
+        requestedBindingId: String? = null,
+    ) {
+        if (stopping || engineReleased) return
+        if (surface == null) {
+            detachSurface(requestedSessionId, requestedBindingId)
+            return
+        }
+        if (!NativeMediaSessionPolicy.acceptsSurfaceBinding(
+                requestedSessionId = requestedSessionId,
+                activeSessionId = sessionId,
+                phase = lifecyclePhase,
+            )
+        ) return
+        if (surface === attachedSurface) return
+        detachSurfaceFromPlayer()
         player.setVideoSurface(surface)
+        attachedSurface = surface
+        attachedSurfaceBindingId = requestedBindingId
+    }
+
+    private fun detachSurface(
+        requestedSessionId: String? = null,
+        requestedBindingId: String? = null,
+    ): Boolean {
+        if (stopping || engineReleased || sessionId == null ||
+            (!requestedSessionId.isNullOrBlank() && requestedSessionId != sessionId) ||
+            (!requestedBindingId.isNullOrBlank() && requestedBindingId != attachedSurfaceBindingId)
+        ) return false
+        detachSurfaceFromPlayer()
+        return true
     }
 
     private fun isAppController(controllerInfo: MediaSession.ControllerInfo): Boolean =
@@ -588,6 +715,7 @@ class NativeMediaSessionService : MediaSessionService() {
         val hls: Boolean,
         val autoPlay: Boolean = true,
         val surface: Surface?,
+        val surfaceBindingId: String? = null,
         val callback: (Result<Map<String, Any?>>) -> Unit,
     )
 
@@ -652,7 +780,9 @@ class NativeMediaSessionService : MediaSessionService() {
                 action = { service ->
                     callbackResult(request.callback) {
                         val snapshot = service.open(request)
-                        request.surface?.let(service::attachSurface)
+                        request.surface?.let { surface ->
+                            service.attachSurface(surface, request.sessionId, request.surfaceBindingId)
+                        }
                         snapshot
                     }
                 },
@@ -677,18 +807,51 @@ class NativeMediaSessionService : MediaSessionService() {
             )
         }
 
-        fun attachSurface(context: Context, surface: Surface?) {
-            dispatch(context, action = { service -> service.attachSurface(surface) })
+        fun attachSurface(
+            context: Context,
+            surface: Surface?,
+            sessionId: String? = null,
+            bindingId: String? = null,
+        ) {
+            existing({ service -> service.attachSurface(surface, sessionId, bindingId) })
         }
 
-        fun detachSurface(context: Context) {
-            if (instance != null) instance?.attachSurface(null)
+        fun detachSurface(
+            context: Context,
+            sessionId: String? = null,
+            bindingId: String? = null,
+            callback: (Boolean) -> Unit = {},
+        ) {
+            existing(
+                { service ->
+                    val detached = service.detachSurface(sessionId, bindingId)
+                    callback(detached)
+                },
+                { callback(true) },
+                { callback(false) },
+            )
         }
 
-        fun stop(context: Context) {
+        fun stop(context: Context, callback: (Boolean) -> Unit = {}) {
             cancelPending()
-            instance?.stopAndRelease()
-                ?: context.stopService(Intent(context.applicationContext, NativeMediaSessionService::class.java))
+            val service = synchronized(pendingLock) { instance }
+            if (service != null) {
+                service.enqueue(
+                    action = {
+                        runCatching {
+                            it.stopAndRelease()
+                        }.onSuccess {
+                            callback(true)
+                        }.onFailure {
+                            callback(false)
+                        }
+                    },
+                    cancel = { callback(false) },
+                )
+            } else {
+                context.stopService(Intent(context.applicationContext, NativeMediaSessionService::class.java))
+                callback(true)
+            }
         }
 
         fun abandonRestorable(context: Context) {
@@ -716,6 +879,18 @@ class NativeMediaSessionService : MediaSessionService() {
             callback(runCatching(block))
         }
 
+        private fun existing(
+            action: (NativeMediaSessionService) -> Unit,
+            missing: () -> Unit = {},
+            cancel: () -> Unit = {},
+        ) {
+            val service = synchronized(pendingLock) { instance } ?: run {
+                missing()
+                return
+            }
+            service.enqueue(action, cancel)
+        }
+
         private fun dispatch(
             context: Context,
             action: (NativeMediaSessionService) -> Unit,
@@ -731,7 +906,7 @@ class NativeMediaSessionService : MediaSessionService() {
                 }
             }
             service?.let {
-                if (it.stopping) cancel() else action(it)
+                it.enqueue(action, cancel)
                 return
             }
             if (!shouldStart) return
@@ -755,7 +930,7 @@ class NativeMediaSessionService : MediaSessionService() {
                 val active = synchronized(pendingLock) {
                     instance === service && action.generation == pendingGeneration
                 }
-                if (active) action.action(service) else action.cancel()
+                if (active) service.enqueue(action.action, action.cancel) else action.cancel()
             }
         }
 
@@ -768,5 +943,30 @@ class NativeMediaSessionService : MediaSessionService() {
             }
             cancelled.forEach { action -> runCatching { action.cancel() } }
         }
+    }
+
+    private fun enqueue(
+        action: (NativeMediaSessionService) -> Unit,
+        cancel: () -> Unit = {},
+    ) {
+        val run: () -> Unit = {
+            if (stopping || engineReleased) {
+                cancel()
+            } else {
+                runCatching { action(this) }
+                    .onFailure { error ->
+                        runCatching {
+                            NativeCrashStore.append(
+                                this,
+                                module = "media.session",
+                                message = error.message ?: "原生媒体操作失败",
+                                details = error.stackTraceToString(),
+                                contextValue = "operation=serialized",
+                            )
+                        }
+                    }
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) run() else operationHandler.post(run)
     }
 }

@@ -58,16 +58,31 @@ class NativeMediaRuntime(
     private var fileLease: Closeable? = null
     private var serviceSessionId: String? = null
     private var serviceObserver: ((Map<String, Any?>) -> Unit)? = null
+    private var localGeneration = 0L
+    private var bridgeGeneration = 0L
+    private var disposed = false
+    private val bridgeId = UUID.randomUUID().toString()
+    private var serviceSurfaceBindingId: String? = null
 
     fun attach(channel: MethodChannel) {
+        serviceObserver?.let(NativeMediaSessionService::unregisterObserver)
+        disposed = false
+        val observerGeneration = ++bridgeGeneration
         this.channel = channel
         channel.setMethodCallHandler(this)
-        val observer: (Map<String, Any?>) -> Unit = { raw ->
+        val observer: (Map<String, Any?>) -> Unit = observer@{ raw ->
+            if (disposed || observerGeneration != bridgeGeneration) return@observer
             val active = raw["sessionId"] as? String
             if (active != null) {
                 serviceSessionId = active
+                serviceSurfaceBindingId = surfaceBindingId(active, observerGeneration)
                 ensureTexture()
-                NativeMediaSessionService.attachSurface(context, surface)
+                NativeMediaSessionService.attachSurface(
+                    context,
+                    surface,
+                    active,
+                    serviceSurfaceBindingId,
+                )
                 val snapshot = raw.toMutableMap().apply { this["textureId"] = textureEntry?.id() }
                 channel.invokeMethod("state", snapshot)
             } else if (raw["restorable"] == true) {
@@ -84,6 +99,7 @@ class NativeMediaRuntime(
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         try {
+            check(!disposed) { "原生媒体桥接已释放" }
             if (isServiceCall(call)) {
                 serviceCommand(call, result)
                 return
@@ -117,7 +133,7 @@ class NativeMediaRuntime(
                         player!!.seekToDefaultPosition()
                     }
                     player!!.play()
-                    syncPlaybackState(player!!)
+                    syncPlaybackState(player!!, localGeneration)
                     result.success(snapshot())
                 }
                 "pause" -> {
@@ -192,6 +208,7 @@ class NativeMediaRuntime(
     }
 
     private fun serviceCommand(call: MethodCall, result: MethodChannel.Result) {
+        val requestGeneration = bridgeGeneration
         val args = mutableMapOf<String, Any?>()
         (call.arguments as? Map<*, *>)?.forEach { (key, value) ->
             if (key is String) args[key] = value
@@ -199,7 +216,11 @@ class NativeMediaRuntime(
         if ((args["sessionId"] as? String).isNullOrBlank()) {
             serviceSessionId?.let { args["sessionId"] = it }
         }
-        NativeMediaSessionService.command(context, call.method, args) { outcome ->
+        NativeMediaSessionService.command(context, call.method, args) commandCallback@{ outcome ->
+            if (disposed || requestGeneration != bridgeGeneration) {
+                result.error("native_media_stale", "原生媒体桥接已重绑定", null)
+                return@commandCallback
+            }
             outcome.fold(
                 onSuccess = { raw ->
                     if (call.method == "stop" || call.method == "close") {
@@ -305,10 +326,28 @@ class NativeMediaRuntime(
         mime: String,
         hls: Boolean,
     ) {
-        stopLocalPlayer()
+        stop stopCallback@{ completed ->
+            if (!completed) {
+                result.error("native_media_stop", "原生播放器仍在释放，媒体未打开", null)
+                return@stopCallback
+            }
+            openInServiceAfterStop(call, result, taskId, uri, mime, hls)
+        }
+    }
+
+    private fun openInServiceAfterStop(
+        call: MethodCall,
+        result: MethodChannel.Result,
+        taskId: String,
+        uri: String,
+        mime: String,
+        hls: Boolean,
+    ) {
         ensureTexture()
+        val requestGeneration = bridgeGeneration
         val requestedSession = call.argument<String>("sessionId")?.takeIf { it.isNotBlank() }
             ?: "play_${taskId}_${UUID.randomUUID()}"
+        val bindingId = surfaceBindingId(requestedSession, requestGeneration)
         NativeMediaSessionService.open(
             context,
             NativeMediaSessionService.OpenRequest(
@@ -321,10 +360,16 @@ class NativeMediaRuntime(
                 hls = hls,
                 autoPlay = call.argument<Boolean>("autoPlay") ?: true,
                 surface = surface,
-            ) { outcome ->
+                surfaceBindingId = bindingId,
+            ) callback@{ outcome ->
+                if (disposed || requestGeneration != bridgeGeneration) {
+                    result.error("native_media_stale", "原生媒体桥接已重绑定", null)
+                    return@callback
+                }
                 outcome.fold(
                     onSuccess = { raw ->
                         serviceSessionId = raw["sessionId"] as? String
+                        serviceSurfaceBindingId = bindingId
                         result.success(raw.toMutableMap().apply { this["textureId"] = textureEntry?.id() })
                     },
                     onFailure = { error ->
@@ -345,7 +390,25 @@ class NativeMediaRuntime(
         origin: String?,
         inputLease: Closeable? = null,
     ) {
-        stop()
+        stop startCallback@{ completed ->
+            if (!completed) {
+                result.error("native_media_stop", "原生播放器仍在释放，媒体未打开", null)
+                return@startCallback
+            }
+            startAfterStop(call, result, uri, mime, referer, origin, inputLease)
+        }
+    }
+
+    private fun startAfterStop(
+        call: MethodCall,
+        result: MethodChannel.Result,
+        uri: Uri,
+        mime: String,
+        referer: String?,
+        origin: String?,
+        inputLease: Closeable? = null,
+    ) {
+        val generation = ++localGeneration
         fileLease = inputLease
         sessionId = call.argument<String>("sessionId")?.takeIf { it.isNotBlank() }
             ?: "native_${UUID.randomUUID()}"
@@ -410,7 +473,7 @@ class NativeMediaRuntime(
                 initializedTimestampMs: Long,
                 initializationDurationMs: Long,
             ) {
-                if (next !== player || observationSession != sessionId) return
+                if (!isCurrentPlayer(next, generation) || observationSession != sessionId) return
                 NativeMediaObservations.recordDecoder(observationSession, decoderName,
                     next.videoFormat?.sampleMimeType, "video")
             }
@@ -421,7 +484,7 @@ class NativeMediaRuntime(
                 initializedTimestampMs: Long,
                 initializationDurationMs: Long,
             ) {
-                if (next !== player || observationSession != sessionId) return
+                if (!isCurrentPlayer(next, generation) || observationSession != sessionId) return
                 NativeMediaObservations.recordDecoder(observationSession, decoderName,
                     next.audioFormat?.sampleMimeType, "audio")
             }
@@ -437,24 +500,24 @@ class NativeMediaRuntime(
         attachSurface(next)
         next.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
-                syncPlaybackState(next)
+                syncPlaybackState(next, generation)
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                syncPlaybackState(next)
+                syncPlaybackState(next, generation)
             }
 
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-                syncPlaybackState(next)
+                syncPlaybackState(next, generation)
             }
 
             override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
-                if (next !== player) return
+                if (!isCurrentPlayer(next, generation)) return
                 emit(state)
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                if (next !== player) return
+                if (!isCurrentPlayer(next, generation)) return
                 state = "failed"
                 val detail = buildString {
                     append(error.errorCodeName).append(':')
@@ -509,8 +572,11 @@ class NativeMediaRuntime(
      * playWhenReady=true. Keep preparation/buffering states until the player is
      * ready, and only expose paused after an explicit playWhenReady=false.
      */
-    private fun syncPlaybackState(active: ExoPlayer) {
-        if (active !== player || state == "failed" || state == "stopped") return
+    private fun isCurrentPlayer(active: ExoPlayer, generation: Long): Boolean =
+        !disposed && generation == localGeneration && active === player
+
+    private fun syncPlaybackState(active: ExoPlayer, generation: Long) {
+        if (!isCurrentPlayer(active, generation) || state == "failed" || state == "stopped") return
         val nextState = NativePlaybackState.resolve(
             state, active.playbackState, active.isPlaying, active.playWhenReady,
         )
@@ -521,6 +587,7 @@ class NativeMediaRuntime(
     }
 
     private fun emit(nextState: String, error: String? = null) {
+        if (disposed) return
         sessionId?.let { NativeMediaObservations.recordPlayback(it, nextState) }
         channel?.invokeMethod("state", snapshot(nextState, error))
     }
@@ -543,34 +610,65 @@ class NativeMediaRuntime(
         )
     }
 
-    private fun stop() {
-        stopLocalPlayer()
-        if (serviceSessionId != null || NativeMediaSessionService.hasActiveSession()) {
-            NativeMediaSessionService.stop(context)
-            serviceSessionId = null
+    private fun surfaceBindingId(sessionId: String?, generation: Long): String =
+        "$bridgeId:$generation:${sessionId ?: "unknown"}"
+
+    private fun stop(onComplete: (Boolean) -> Unit = {}) {
+        // A runtime may outlive a Flutter bridge rebind. Never stop or detach
+        // a service session that this runtime did not bind to.
+        val hasServiceSession = serviceSessionId != null
+        if (hasServiceSession) {
+            NativeMediaSessionService.stop(context) stopCallback@{ completed ->
+                if (!completed) {
+                    onComplete(false)
+                    return@stopCallback
+                }
+                serviceSessionId = null
+                serviceSurfaceBindingId = null
+                stopLocalPlayer(releaseSurface = false)
+                releaseSurface()
+                onComplete(true)
+            }
+            return
         }
+        stopLocalPlayer()
+        onComplete(true)
     }
 
-    private fun stopLocalPlayer() {
-        player?.let { media ->
-            runCatching { media.clearVideoSurface() }
-            // If release fails, keep the player and its input lease for a
-            // subsequent stop attempt; deletion must stay blocked while the
-            // native reader's termination is unconfirmed.
-            media.release()
+    private fun stopLocalPlayer() = stopLocalPlayer(releaseSurface = true)
+
+    private fun stopLocalPlayer(releaseSurface: Boolean) {
+        localGeneration++
+        val media = player
+        player = null
+        if (media != null) {
+            // Invalidate callbacks before touching the player. Media3 can
+            // deliver queued state/error events while stop() and release()
+            // are unwinding on the playback looper.
+            try {
+                media.clearVideoSurface()
+                media.stop()
+                media.clearMediaItems()
+                media.release()
+            } catch (error: Throwable) {
+                player = media
+                state = "stopping"
+                lastError = error.message ?: "原生播放器释放失败"
+                throw error
+            }
         }
         sessionId?.let { NativeMediaObservations.recordPlayback(it, "stopped") }
-        player = null
-        fileLease?.close()
-        fileLease = null
-        surface?.release()
-        surface = null
-        textureEntry?.release()
-        textureEntry = null
+        closeFileLease()
+        if (releaseSurface) releaseSurface()
         sessionId = null
         candidateId = null
         speed = 1f
         state = "stopped"
+    }
+
+    private fun closeFileLease() {
+        fileLease?.close()
+        fileLease = null
     }
 
     private fun ensureTexture() {
@@ -585,6 +683,7 @@ class NativeMediaRuntime(
         surface = null
         textureEntry?.release()
         textureEntry = null
+        serviceSurfaceBindingId = null
     }
 
     private fun attachSurface(next: ExoPlayer) {
@@ -595,17 +694,47 @@ class NativeMediaRuntime(
     }
 
     fun dispose() {
+        if (disposed) return
+        disposed = true
+        bridgeGeneration++
         NativeMediaSessionService.cancelPendingActions()
         // The MediaSessionService intentionally survives Flutter engine
         // teardown. Only detach the temporary video surface and unregister
         // callbacks; an explicit Dart stop/close command still stops it.
-        if (serviceSessionId != null || NativeMediaSessionService.hasActiveSession()) {
-            NativeMediaSessionService.detachSurface(context)
-            releaseSurface()
+        if (serviceSessionId != null) {
+            val expectedSessionId = serviceSessionId
+            val expectedBindingId = serviceSurfaceBindingId
             serviceSessionId = null
+            serviceSurfaceBindingId = null
+            // NativeMediaSessionService.detachSurface(context) is the
+            // service-owned boundary; generation IDs below narrow it to this
+            // bridge's current surface binding.
+            NativeMediaSessionService.detachSurface(
+                context,
+                expectedSessionId,
+                expectedBindingId,
+            ) { _ ->
+                // A stale detach can be rejected after service teardown has
+                // started. The Flutter-owned Surface/Texture still belongs to
+                // this runtime and must be released either way.
+                releaseSurface()
+                finishDispose()
+            }
         } else {
-            stop()
+            try {
+                stop()
+            } catch (error: Throwable) {
+                // Keep the player, lease, and bridge reachable for a retry;
+                // a failed native release must not become a silent teardown.
+                disposed = false
+                throw error
+            }
+            finishDispose()
+            return
         }
+    }
+
+    private fun finishDispose() {
         serviceObserver?.let(NativeMediaSessionService::unregisterObserver)
         serviceObserver = null
         channel?.setMethodCallHandler(null)

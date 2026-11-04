@@ -1,7 +1,7 @@
 name: site_lens
 description: A local-first, manually selected multi-site browser with capability-gated user scripts.
 publish_to: none
-version: 0.6.0-alpha20+153
+version: 0.6.0-alpha21+154
 environment:
   sdk: ^3.13.0
 dependencies:
@@ -24,6 +24,7 @@ dependencies:
   re_editor: ^0.10.0
   re_highlight: ^0.0.3
   flutter_secure_storage: ^11.2.0
+  flutter_markdown: ^0.7.7+1
 dev_dependencies:
   flutter_test:
     sdk: flutter

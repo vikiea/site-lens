@@ -122,4 +122,66 @@ class NativeMediaSessionPolicyTest {
             ),
         )
     }
+
+    @Test fun staleOrReleasedCallbacksAreIgnored() {
+        assertTrue(
+            NativeMediaSessionPolicy.acceptsLifecycleCallback(
+                callbackGeneration = 7L,
+                currentGeneration = 7L,
+                phase = NativeMediaSessionPolicy.LifecyclePhase.ACTIVE,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.acceptsLifecycleCallback(
+                callbackGeneration = 6L,
+                currentGeneration = 7L,
+                phase = NativeMediaSessionPolicy.LifecyclePhase.ACTIVE,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.acceptsLifecycleCallback(
+                callbackGeneration = 7L,
+                currentGeneration = 7L,
+                phase = NativeMediaSessionPolicy.LifecyclePhase.STOPPING,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.acceptsLifecycleCallback(
+                callbackGeneration = 7L,
+                currentGeneration = 7L,
+                phase = NativeMediaSessionPolicy.LifecyclePhase.RELEASED,
+            ),
+        )
+    }
+
+    @Test fun surfaceBindingRequiresTheCurrentSessionAndActiveLifecycle() {
+        assertTrue(
+            NativeMediaSessionPolicy.acceptsSurfaceBinding(
+                requestedSessionId = "session-7",
+                activeSessionId = "session-7",
+                phase = NativeMediaSessionPolicy.LifecyclePhase.ACTIVE,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.acceptsSurfaceBinding(
+                requestedSessionId = "old-session",
+                activeSessionId = "session-7",
+                phase = NativeMediaSessionPolicy.LifecyclePhase.ACTIVE,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.acceptsSurfaceBinding(
+                requestedSessionId = "session-7",
+                activeSessionId = "session-7",
+                phase = NativeMediaSessionPolicy.LifecyclePhase.STOPPING,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.acceptsSurfaceBinding(
+                requestedSessionId = null,
+                activeSessionId = null,
+                phase = NativeMediaSessionPolicy.LifecyclePhase.ACTIVE,
+            ),
+        )
+    }
 }

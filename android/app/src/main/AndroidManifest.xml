@@ -61,6 +61,10 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
         <service
+            android:name="dev.vikiea.site_lens.NativeUpdateService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />

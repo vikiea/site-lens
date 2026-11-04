@@ -3,6 +3,14 @@ package dev.vikiea.site_lens
 import androidx.media3.common.Player
 
 internal object NativeMediaSessionPolicy {
+    enum class LifecyclePhase {
+        READY,
+        OPENING,
+        ACTIVE,
+        STOPPING,
+        RELEASED,
+    }
+
     enum class PlayerCommandDecision {
         ALLOW,
         ALLOW_AND_RELEASE,
@@ -57,6 +65,25 @@ internal object NativeMediaSessionPolicy {
     fun isExplicitPlayWhenReadyChange(reason: Int): Boolean =
         reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST ||
             reason == Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE
+
+    fun acceptsLifecycleCallback(
+        callbackGeneration: Long,
+        currentGeneration: Long,
+        phase: LifecyclePhase,
+    ): Boolean =
+        callbackGeneration == currentGeneration &&
+            phase != LifecyclePhase.STOPPING &&
+            phase != LifecyclePhase.RELEASED
+
+    fun acceptsSurfaceBinding(
+        requestedSessionId: String?,
+        activeSessionId: String?,
+        phase: LifecyclePhase,
+    ): Boolean =
+        phase != LifecyclePhase.STOPPING &&
+            phase != LifecyclePhase.RELEASED &&
+            activeSessionId != null &&
+            (requestedSessionId.isNullOrBlank() || requestedSessionId == activeSessionId)
 
     private val TERMINAL_STATES = setOf("failed", "completed", "stopped")
 }

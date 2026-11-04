@@ -2,12 +2,14 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../settings/app_settings.dart';
 import '../ui/app_controller.dart';
+import '../ui/navigation_observer.dart';
+import '../ui/software_update_screen.dart';
 import 'github_token_store.dart';
 import 'update_service.dart';
 
@@ -37,6 +39,7 @@ class UpdateController extends ChangeNotifier with WidgetsBindingObserver {
   UpdateController({UpdateService? service})
     : service = service ?? UpdateService() {
     WidgetsBinding.instance.addObserver(this);
+    this.service.nativeBackend?.setEventHandler(_handleNativeEvent);
   }
 
   final UpdateService service;
@@ -59,8 +62,11 @@ class UpdateController extends ChangeNotifier with WidgetsBindingObserver {
   bool _noticeHandled = false;
   bool _foreground = true;
   bool _updateScreenVisible = false;
+  bool _routeOpenScheduled = false;
   bool _disposed = false;
   UpdateDownload? _download;
+  Map<String, Object?>? _pendingNativeState;
+  bool _nativeVerificationPending = false;
 
   ReleaseInfo? get release => _release;
   String? get currentVersion => _currentVersion;
@@ -180,8 +186,107 @@ class UpdateController extends ChangeNotifier with WidgetsBindingObserver {
         /* version is cosmetic; the page falls back to a placeholder */
       }
     }
+    try {
+      final native = await service.rebindNative();
+      if (native != null) {
+        _handleNativeEvent('nativeUpdateState', <String, Object?>{
+          'state': native.state,
+          'tagName': native.tagName,
+          'sha256': native.sha256,
+          'received': native.received,
+          'total': native.total,
+          'path': native.path,
+          'pausedByUser': native.pausedByUser,
+          'etag': native.etag,
+          'lastModified': native.lastModified,
+          'error': native.error,
+        });
+      }
+    } catch (_) {
+      // The native service may be unavailable while Android is replacing the
+      // Flutter engine; the durable files remain the source of truth.
+    }
     await _refreshLocalState();
     _notify();
+  }
+
+  void _handleNativeEvent(String method, Map<String, Object?> arguments) {
+    if (_disposed) return;
+    if (method == 'nativeUpdateProgress' || method == 'nativeUpdateState') {
+      final tag = arguments['tagName'] as String?;
+      final release = _release;
+      if (tag == null || release == null) {
+        _pendingNativeState = Map<String, Object?>.from(arguments);
+        return;
+      }
+      if (release.tagName != tag) return;
+      _received = (arguments['received'] as num?)?.toInt() ?? _received;
+      final total = (arguments['total'] as num?)?.toInt();
+      if (total != null && total > 0) _total = total;
+      switch (arguments['state']) {
+        case 'downloading':
+          _downloadState = UpdateDownloadState.downloading;
+          break;
+        case 'paused':
+          _downloadState = UpdateDownloadState.paused;
+          _pauseReason = (arguments['pausedByUser'] as bool? ?? false)
+              ? UpdatePauseReason.user
+              : UpdatePauseReason.network;
+          break;
+        case 'transferred':
+          _downloadState = _nativeVerificationPending || _download != null
+              ? UpdateDownloadState.verifying
+              : UpdateDownloadState.ready;
+          break;
+        case 'ready':
+          // A live native transfer still has a Dart-side package/signature
+          // verification step after the bytes arrive. Rebinding an engine
+          // has no live Future, so a durable ready marker may be shown
+          // directly and verified again when the user installs.
+          if (_nativeVerificationPending || _download != null) {
+            _downloadState = UpdateDownloadState.verifying;
+          } else {
+            _downloadState = UpdateDownloadState.ready;
+          }
+          final path = arguments['path'] as String?;
+          if (path != null && path.isNotEmpty) _readyApk = File(path);
+          if (_downloadState == UpdateDownloadState.ready) {
+            _noticeVisible = true;
+            _noticeHandled = false;
+          }
+          break;
+        case 'failed':
+          _downloadState = UpdateDownloadState.failed;
+          _error = arguments['error'] as String? ?? '更新下载失败';
+          break;
+      }
+      _notify();
+      return;
+    }
+    if (method != 'openUpdateRoute' ||
+        _disposed ||
+        _updateScreenVisible ||
+        _routeOpenScheduled) {
+      return;
+    }
+    _routeOpenScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_disposed || _updateScreenVisible) {
+        _routeOpenScheduled = false;
+        return;
+      }
+      final navigator = siteLensNavigatorKey.currentState;
+      if (navigator == null || !navigator.mounted) {
+        _routeOpenScheduled = false;
+        return;
+      }
+      navigator.push(
+        MaterialPageRoute<void>(
+          builder: (_) => SoftwareUpdateScreen(channel: channel),
+        ),
+      );
+      _routeOpenScheduled = false;
+    });
   }
 
   Future<void> check({bool autoResume = false}) async {
@@ -199,6 +304,11 @@ class UpdateController extends ChangeNotifier with WidgetsBindingObserver {
       _currentVersion = (await service.packageInfo).version;
       _checkedAt = result.checkedAt;
       _release = result.release;
+      final pendingNative = _pendingNativeState;
+      _pendingNativeState = null;
+      if (pendingNative != null) {
+        _handleNativeEvent('nativeUpdateState', pendingNative);
+      }
       // Cache freshness is an implementation detail. Keep the visible
       // message about the result itself so a cached latest check reads the
       // same as a network check.
@@ -232,6 +342,7 @@ class UpdateController extends ChangeNotifier with WidgetsBindingObserver {
     _noticeVisible = false;
     _noticeHandled = false;
     _downloadState = UpdateDownloadState.downloading;
+    _nativeVerificationPending = service.nativeBackend != null;
     _received = partial?.received ?? 0;
     _total = partial != null && partial.total > 0
         ? partial.total
@@ -254,6 +365,7 @@ class UpdateController extends ChangeNotifier with WidgetsBindingObserver {
         },
       );
     } catch (error) {
+      _nativeVerificationPending = false;
       _downloadState = UpdateDownloadState.failed;
       _error = readableUpdateError(error);
       _notify();
@@ -262,6 +374,7 @@ class UpdateController extends ChangeNotifier with WidgetsBindingObserver {
     _download = download;
     try {
       final result = await download.done;
+      _nativeVerificationPending = false;
       if (result.isCompleted) {
         final file = result.file!;
         _readyApk = file;
@@ -290,6 +403,7 @@ class UpdateController extends ChangeNotifier with WidgetsBindingObserver {
       _downloadState = UpdateDownloadState.failed;
       _error = readableUpdateError(error);
     } finally {
+      _nativeVerificationPending = false;
       _download = null;
       await _refreshLocalState();
       _notify();
@@ -298,7 +412,39 @@ class UpdateController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Stops the transfer and keeps the fragment so it can be resumed.
   void pause() {
-    _download?.cancel();
+    final download = _download;
+    if (download != null) {
+      download.cancel();
+      return;
+    }
+    final native = service.nativeBackend;
+    if (native == null || _downloadState != UpdateDownloadState.downloading) {
+      return;
+    }
+    unawaited(() async {
+      try {
+        final snapshot = await native.pause();
+        if (snapshot != null) {
+          _handleNativeEvent('nativeUpdateState', <String, Object?>{
+            'state': snapshot.state,
+            'tagName': snapshot.tagName,
+            'sha256': snapshot.sha256,
+            'received': snapshot.received,
+            'total': snapshot.total,
+            'path': snapshot.path,
+            'pausedByUser': snapshot.pausedByUser,
+            'etag': snapshot.etag,
+            'lastModified': snapshot.lastModified,
+            'error': snapshot.error,
+          });
+        }
+        await _refreshLocalState();
+        _notify();
+      } catch (error) {
+        _error = readableUpdateError(error);
+        _notify();
+      }
+    }());
   }
 
   /// Continues a retained download. A fragment alone does not carry the
@@ -324,14 +470,21 @@ class UpdateController extends ChangeNotifier with WidgetsBindingObserver {
       _download = null;
     }
     final release = _release;
+    var deleted = true;
     if (release != null) {
       try {
         await service.deleteDownload(release);
-      } catch (_) {
-        /* cleanup is best effort */
+      } catch (error) {
+        deleted = false;
+        _error = readableUpdateError(error);
       }
     }
+    if (!deleted) {
+      _notify();
+      return;
+    }
     _downloadState = UpdateDownloadState.idle;
+    _nativeVerificationPending = false;
     _pauseReason = null;
     _error = null;
     _installMessage = null;
@@ -479,6 +632,7 @@ class UpdateController extends ChangeNotifier with WidgetsBindingObserver {
     if (_disposed) return;
     _disposed = true;
     WidgetsBinding.instance.removeObserver(this);
+    service.nativeBackend?.setEventHandler(null);
     // An app teardown is not a user pause: the fragment stays resumable.
     _download?.cancel(byUser: false);
     unawaited(service.close());

@@ -39,6 +39,7 @@ class ResumableMediaTransfer(
     private val routeForConnection: (HttpURLConnection) -> String = {
         if (it.usingProxy()) "http_proxy" else "direct"
     },
+    private val onAttempt: (Map<String, Any>) -> Unit = {},
 ) {
     private val aborted = AtomicBoolean(false)
     @Volatile private var connection: HttpURLConnection? = null
@@ -64,6 +65,7 @@ class ResumableMediaTransfer(
         var failure: IOException? = null
         val routeAttempts = mutableMapOf<String, Int>()
         repeat(4) { attempt ->
+            val startedAt = System.nanoTime()
             checkActive()
             var failedUri = url
             var failurePhase = "route"
@@ -71,6 +73,8 @@ class ResumableMediaTransfer(
             var failureBytes = 0L
             var failureRoute = "unknown"
             var cookiePresent = false
+            var responseStatus = 0
+            var attemptFailed = false
             try {
                 while (true) {
                     checkActive()
@@ -118,6 +122,7 @@ class ResumableMediaTransfer(
                             failurePhase = "response_headers"
                             failureOffset = offset
                             val status = current.responseCode
+                            responseStatus = status
                             if (status in listOf(301, 302, 303, 307, 308)) {
                                 check(redirect < 5) { "重定向过多" }
                                 val next = uri.resolve(current.getHeaderField("Location") ?: error("重定向缺少地址"))
@@ -225,6 +230,7 @@ class ResumableMediaTransfer(
                     }
                 }
             } catch (error: IOException) {
+                attemptFailed = true
                 checkActive()
                 // Never serialize provider messages, URLs, query parameters,
                 // proxy addresses or cookies through the diagnostics channel.
@@ -252,6 +258,17 @@ class ResumableMediaTransfer(
                 routeAttempts[routeKey] = (routeAttempts[routeKey] ?: 0) + 1
             } finally {
                 connection?.disconnect(); connection = null
+                runCatching {
+                    onAttempt(mapOf(
+                        "elapsedMs" to (System.nanoTime() - startedAt) / 1_000_000L,
+                        "phase" to failurePhase,
+                        "attempt" to attempt,
+                        "route" to failureRoute,
+                        "httpStatus" to responseStatus,
+                        "bytesWritten" to failureBytes,
+                        "outcome" to if (attemptFailed) "retry" else "completed",
+                    ))
+                }
             }
             if (attempt < 3) Thread.sleep(100L shl attempt)
         }

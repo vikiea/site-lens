@@ -37,6 +37,7 @@ class MainActivity : FlutterActivity() {
     private var appRuntime: NativeAppRuntime? = null
     private var nativeDownloads: NativeDownloadRuntime? = null
     private var nativeExport: NativeExportRuntime? = null
+    private var nativeUpdate: NativeUpdateRuntime? = null
     private var deviceDiagnostics: NativeDeviceDiagnostics? = null
     private var dlnaMulticastLock: WifiManager.MulticastLock? = null
     private var diagnosticsExecutor: ExecutorService? = null
@@ -85,6 +86,12 @@ class MainActivity : FlutterActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         if (nativeExport?.handleActivityResult(requestCode, resultCode, data) == true) return
         super.onActivityResult(requestCode, resultCode, data)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        nativeUpdate?.handleIntent(intent)
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -218,10 +225,15 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun registerUpdateChannel(flutterEngine: FlutterEngine) {
-        MethodChannel(
+        val channel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "site_lens/update",
-        ).setMethodCallHandler { call, result ->
+        )
+        nativeUpdate?.dispose()
+        nativeUpdate = NativeUpdateRuntime(this).also { it.attach(channel) }
+        nativeUpdate?.handleIntent(intent)
+        channel.setMethodCallHandler { call, result ->
+            if (nativeUpdate?.handle(call, result) == true) return@setMethodCallHandler
             when (call.method) {
                 "canInstallPackages" -> result.success(canInstallPackages())
                 "openInstallPermissionSettings" -> {
@@ -442,6 +454,7 @@ class MainActivity : FlutterActivity() {
         nativeMedia?.dispose(); nativeMedia = null
         nativeDownloads?.dispose(); nativeDownloads = null
         nativeExport?.dispose(); nativeExport = null
+        nativeUpdate?.dispose(); nativeUpdate = null
         dlnaMulticastLock?.takeIf { it.isHeld }?.release()
         dlnaMulticastLock = null
         super.cleanUpFlutterEngine(flutterEngine)
