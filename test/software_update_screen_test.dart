@@ -314,7 +314,7 @@ void main() {
       app,
       () => find.text('下载更新').evaluate().isNotEmpty,
     );
-    expect(find.text('v0.2.0'), findsOneWidget);
+    expect(find.text('site-lens-v0.2.0.apk'), findsNothing);
 
     await runReal(tester, () async {
       unawaited(controller.startDownload());
