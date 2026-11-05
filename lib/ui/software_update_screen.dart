@@ -239,28 +239,20 @@ class _SoftwareUpdateScreenState extends ConsumerState<SoftwareUpdateScreen> {
           if (_controller.release != null) ...[
             SiteLensSectionHeader(title: '可用更新'),
             SiteLensPanel(
-              padding: const EdgeInsets.all(SiteLensMetrics.panelPadding),
+              padding: EdgeInsets.zero,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    _controller.release!.tagName,
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    _controller.release!.apkName,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
                   if (_controller.release!.body.trim().isNotEmpty) ...[
-                    const SizedBox(height: 12),
                     _ReleaseChangelog(
                       body: _controller.release!.body.trim(),
                       onOpenLink: _openUrl,
                     ),
                   ],
-                  const SizedBox(height: 14),
-                  _buildDownloadArea(context),
+                  Padding(
+                    padding: const EdgeInsets.all(SiteLensMetrics.panelPadding),
+                    child: _buildDownloadArea(context),
+                  ),
                 ],
               ),
             ),
@@ -534,6 +526,7 @@ class _ReleaseChangelog extends StatelessWidget {
     return SizedBox(
       key: const ValueKey('release-changelog'),
       height: 240,
+      width: double.infinity,
       child: DecoratedBox(
         decoration: BoxDecoration(
           border: Border.all(color: SiteLensColors.of(context).divider),

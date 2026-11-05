@@ -310,7 +310,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   IconData get _playbackModeIcon => switch (_playbackMode) {
     MediaPlaybackMode.listLoop => Icons.repeat,
     MediaPlaybackMode.singleLoop => Icons.repeat_one,
-    MediaPlaybackMode.stopAfterEpisode => Icons.stop_circle_outlined,
+    MediaPlaybackMode.stopAfterEpisode => Icons.do_not_disturb_on_outlined,
   };
 
   Future<void> _saveProgress({NativePlaybackSession? session}) async {
