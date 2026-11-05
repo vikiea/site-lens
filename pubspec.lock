@@ -719,6 +719,13 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.4.3"
+  site_lens_health_probe:
+    dependency: "direct main"
+    description:
+      path: "packages/site_lens_health_probe"
+      relative: true
+    source: path
+    version: "0.0.1"
   sky_engine:
     dependency: transitive
     description: flutter
@@ -1006,4 +1013,4 @@ packages:
     version: "3.1.4"
 sdks:
   dart: ">=3.13.0 <4.0.0"
-  flutter: ">=3.44.0"
+  flutter: ">=3.47.0"

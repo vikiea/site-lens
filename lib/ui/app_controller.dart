@@ -26,6 +26,7 @@ export '../browser/browser_session.dart'
     show ActiveBrowserSession, BrowserSessionState;
 import '../data/profile_pack.dart';
 import '../background/health_worker.dart';
+import '../background/native_health_probe.dart';
 import '../device/device_conditions.dart';
 import '../discovery/health_checker.dart';
 import '../discovery/probe_coordinator.dart';
@@ -489,6 +490,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         state != AppLifecycleState.paused &&
         state != AppLifecycleState.detached;
     if (_foreground) unawaited(deviceDiagnostics.refreshHcpp());
+    if (state == AppLifecycleState.resumed) {
+      unawaited(refreshProfileHealth());
+    }
     if (state != AppLifecycleState.resumed) {
       unawaited(_observeActivePlayback());
       unawaited(watchSaves.flush());
@@ -1983,6 +1987,24 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     await load();
   }
 
+  int _healthRefreshEpoch = 0;
+
+  Future<void> refreshProfileHealth() async {
+    final epoch = ++_healthRefreshEpoch;
+    try {
+      final health = await db.profileHealthAll();
+      if (_disposed || epoch != _healthRefreshEpoch) return;
+      profileHealth = health;
+      notifyListeners();
+    } catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'background.health-refresh',
+        stack: stack,
+      );
+    }
+  }
+
   Future<void> load({bool suppressCorruption = false}) =>
       _loadMetadata(suppressCorruption: suppressCorruption);
 
@@ -2516,7 +2538,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     conditions ??= await const DeviceConditions().read();
     final checker = ProfileHealthChecker(
       db: db,
-      probe: HttpReachabilityProbe(),
+      probe: Platform.isAndroid ? NativeHealthProbe() : HttpReachabilityProbe(),
       conditions: conditions,
       now: DateTime.now,
       notify: (title, body) async {

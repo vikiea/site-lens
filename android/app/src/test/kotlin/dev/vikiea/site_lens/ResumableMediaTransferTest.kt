@@ -19,6 +19,30 @@ import org.junit.Test
 
 class ResumableMediaTransferTest {
     @Test
+    fun tlsKeyRetryReportsBothAttempts() = fixture { root ->
+        val url = URL("https://cdn.example/key.bin?token=secret").toURI()
+        val seen = mutableListOf<Int>()
+        val diagnostics = mutableListOf<Map<String, Any>>()
+        val transfer = ResumableMediaTransfer(
+            connectForAttempt = { _, index ->
+                seen += index
+                if (index == 0) throw javax.net.ssl.SSLHandshakeException("private token=secret")
+                FakeConnection(200, mapOf("Content-Length" to "16"), ByteArrayInputStream(ByteArray(16)))
+            },
+            onAttempt = { diagnostics += it },
+            dnsModeForConnection = { "system_route" },
+            networkEpochForAttempt = { 12L },
+        )
+        assertEquals(16L, transfer.transfer(url, url, File(root, "key.part"), "test", maxAttempts = 5))
+        assertEquals(listOf(0, 1), seen)
+        assertEquals("tls_handshake", diagnostics.first()["failureCategory"])
+        assertEquals("completed", diagnostics.last()["outcome"])
+        assertEquals(12L, diagnostics.last()["networkEpoch"])
+        assertFalse(diagnostics.toString().contains("token"))
+        assertFalse(diagnostics.toString().contains("secret"))
+    }
+
+    @Test
     fun retryDelayUsesFailureCategoryAndPartialProgress() {
         assertEquals(250L, ResumableMediaTransfer.retryDelayMillis("dns", 0L, 0))
         assertEquals(100L, ResumableMediaTransfer.retryDelayMillis("connection_reset", 10L, 0))
@@ -85,7 +109,7 @@ class ResumableMediaTransferTest {
         } catch (failure: MediaTransferFailure) {
             assertEquals("response_headers", failure.phase)
             assertEquals("cdn.example", failure.host)
-            assertEquals(7, failure.attempt)
+            assertEquals(4, failure.attempt)
             assertEquals("direct", failure.route)
             assertEquals(false, failure.cookiePresent)
             assertEquals(0L, failure.bytesWritten)
@@ -123,13 +147,14 @@ class ResumableMediaTransferTest {
         val url = URL("https://cdn.example/video").toURI()
         val partial = File(root, "video.part")
         ResumableMediaTransfer(connect = { responses.removeFirst() }).transfer(
-            url, URL("https://site.example/watch").toURI(), partial, "test",
+            url, URL("https://site.example/watch/ep-2?token=private#secret").toURI(), partial, "test",
             requestHeaders = mapOf("authorization" to "secret", "x-cdn-auth" to "cdn-secret"),
             requestCookies = { uri ->
                 lookedUp.add(uri.host)
                 if (uri.host == "cdn.example") "cdn=secret" else null
             },
         )
+        assertEquals("https://site.example/watch/ep-2", first.properties["Referer"])
         assertEquals(listOf("cdn.example", "other.example"), lookedUp)
         assertEquals("cdn=secret", first.properties["Cookie"])
         assertNull(second.properties["Cookie"])
@@ -306,7 +331,7 @@ class ResumableMediaTransferTest {
             failed = true
         }
         assertEquals(true, failed)
-        assertEquals(8, requests)
+        assertEquals(5, requests)
     }
 
     @Test

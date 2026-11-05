@@ -166,10 +166,7 @@ class _ProfileCard extends StatelessWidget {
                         const SizedBox(height: 5),
                         Row(
                           children: [
-                            healthBadge(
-                              context,
-                              app.healthFor(profile.id).state,
-                            ),
+                            healthBadge(context, app.healthFor(profile.id)),
                             if (stale) ...[
                               const SizedBox(width: 6),
                               SiteLensStatusBadge(
@@ -193,6 +190,10 @@ class _ProfileCard extends StatelessWidget {
                     semanticLabel: profile.name,
                   ),
                 ],
+              ),
+              const SizedBox(height: 6),
+              SiteLensScrollableRowText(
+                healthSummary(app.healthFor(profile.id)),
               ),
               const SizedBox(height: 14),
               Padding(
@@ -324,13 +325,41 @@ String profileSummary(AppController app, SiteProfile profile) {
   final parts = <String>[
     landing == null ? '最近可用落点：尚无' : '最近可用落点：$landing',
     if (cost != null) '最近首页就绪：${cost.inMilliseconds} ms',
-    '上次检测：${clock(checked)}',
+    '前台最近检测：${clock(checked)}',
+    healthSummary(app.healthFor(profile.id)),
     '$count 个候选落点',
   ];
   return parts.join('\n');
 }
 
-Widget healthBadge(BuildContext context, ProfileHealthState state) {
+bool healthIsStale(ProfileHealth health, {DateTime? now}) {
+  final at = health.lastCheckedAt;
+  return at == null ||
+      (now ?? DateTime.now()).difference(at) > const Duration(hours: 24);
+}
+
+String healthSummary(ProfileHealth health) {
+  final failure = switch (health.lastFailureCategory) {
+    'fake_ip_policy' => 'Fake-IP 路由未确认',
+    'dns' => 'DNS 解析失败',
+    'proxy_connect' || 'proxy_connect_status' => '代理连接失败',
+    'tls_handshake' => 'TLS 握手失败',
+    'certificate' || 'hostname' => '证书验证失败',
+    'timeout' => '探测超时',
+    'http_401' || 'http_403' => '站点要求授权',
+    'http_5xx' => '站点服务异常',
+    null => null,
+    _ => '网络请求失败',
+  };
+  return '后台存活检查：${healthLabel(health.state)} · ${clock(health.lastCheckedAt)}'
+      '${healthIsStale(health) ? ' · 结果已过期' : ''}'
+      '${failure == null ? '' : ' · $failure'}';
+}
+
+Widget healthBadge(BuildContext context, ProfileHealth health) {
+  final state = healthIsStale(health)
+      ? ProfileHealthState.unknown
+      : health.state;
   final colors = SiteLensColors.of(context);
   final (color, icon) = switch (state) {
     ProfileHealthState.ok => (colors.ok, Icons.check_circle_outline),
@@ -341,9 +370,9 @@ Widget healthBadge(BuildContext context, ProfileHealthState state) {
     ),
   };
   return Semantics(
-    label: '后台存活检查：${healthLabel(state)}（尽力而为，不保证时效）',
+    label: healthSummary(health),
     child: SiteLensStatusBadge(
-      label: healthLabel(state),
+      label: healthIsStale(health) ? '结果已过期' : healthLabel(state),
       icon: icon,
       color: color,
       compact: true,
@@ -510,7 +539,7 @@ class ProfileDetailScreen extends StatelessWidget {
                 children: [
                   Row(
                     children: [
-                      healthBadge(context, app.healthFor(live.id).state),
+                      healthBadge(context, app.healthFor(live.id)),
                       const SizedBox(width: 8),
                       SiteLensStatusBadge(
                         label: live.enabled ? '已启用' : '已停用',
@@ -524,10 +553,13 @@ class ProfileDetailScreen extends StatelessWidget {
                       ),
                       const Spacer(),
                       Text(
-                        '上次检测：${clock(app.lastCheckedFor(live.id))}',
+                        '前台最近检测：${clock(app.lastCheckedFor(live.id))}',
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
                     ],
+                  ),
+                  SiteLensScrollableRowText(
+                    healthSummary(app.healthFor(live.id)),
                   ),
                   const SizedBox(height: 14),
                   SiteLensSectionHeader(

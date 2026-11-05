@@ -698,7 +698,8 @@ class NativeHosts extends WebHostEvents {
     if (probe == null || session.disposed || url.trim().isEmpty) return;
     final generation = session.generation;
     try {
-      final route = await probe(webUri(url)).timeout(const Duration(seconds: 6));
+      final route = await probe(webUri(url))
+          .timeout(const Duration(seconds: 6));
       if (session.disposed ||
           sessions[session.id] != session ||
           session.generation != generation) {

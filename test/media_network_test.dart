@@ -10,6 +10,43 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test(
+    'cancel during route preflight never submits a native transfer',
+    () async {
+      const channel = MethodChannel('test/media_cancel_preflight');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      final entered = Completer<void>();
+      final release = Completer<Map<String, Object?>>();
+      var transfers = 0;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'route') {
+          entered.complete();
+          return release.future;
+        }
+        if (call.method == 'transferFile') transfers++;
+        return null;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final cancel = Cancellation();
+      final pending = MediaNetwork(channel: channel).transferFileWithPolicy(
+        Uri.parse('https://cdn.example/segment.ts'),
+        Uri.parse('https://site.example/watch'),
+        File('/tmp/site-lens-cancel-not-written.part'),
+        1024,
+        cancel,
+        maxAttempts: 5,
+        startAttempt: 0,
+      );
+      final expectation = expectLater(pending, throwsA(isA<Cancelled>()));
+      await entered.future;
+      cancel.cancel();
+      release.complete({'proxy': 'DIRECT'});
+      await expectation;
+      expect(transfers, 0);
+    },
+  );
+
+  test(
     'native progress is isolated per transfer and retired after completion',
     () async {
       const channel = MethodChannel('test/media_network');

@@ -162,6 +162,11 @@ const _v20MediaDirectoryCacheTable =
     'root_id TEXT NOT NULL, directory TEXT NOT NULL, entries TEXT NOT NULL, '
     'updated_at INTEGER NOT NULL, PRIMARY KEY(root_id, directory))';
 
+const _v22HealthColumns = <String>[
+  'ALTER TABLE profile_health ADD COLUMN last_failure_category TEXT',
+  'ALTER TABLE profile_health ADD COLUMN last_failure_route TEXT',
+];
+
 const _v21MediaExportJobsTable =
     'CREATE TABLE IF NOT EXISTS media_export_jobs('
     'task_id TEXT PRIMARY KEY REFERENCES media_tasks(id) ON DELETE CASCADE, '
@@ -171,7 +176,7 @@ const _v21MediaExportJobsTable =
     'state TEXT NOT NULL DEFAULT \'queued\', '
     'next_attempt_at TEXT NOT NULL, last_error TEXT, updated_at TEXT NOT NULL)';
 
-const _v22NativePlaybackTables = <String>[
+const _v23NativePlaybackTables = <String>[
   'CREATE TABLE IF NOT EXISTS native_playback_positions('
       'task_id TEXT PRIMARY KEY, cache_key TEXT NOT NULL, '
       'position_ms INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER, '
@@ -247,8 +252,10 @@ class AppDatabase extends GeneratedDatabase {
   @visibleForTesting
   static void Function(String step)? migrationDebugHook;
 
+  static const currentSchemaVersion = 23;
+
   @override
-  int get schemaVersion => 22;
+  int get schemaVersion => currentSchemaVersion;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -278,7 +285,8 @@ class AppDatabase extends GeneratedDatabase {
         ..._v19MediaOperationsTables,
         _v20MediaDirectoryCacheTable,
         _v21MediaExportJobsTable,
-        ..._v22NativePlaybackTables,
+        ..._v22HealthColumns,
+        ..._v23NativePlaybackTables,
       ]) {
         await customStatement(sql);
       }
@@ -383,7 +391,15 @@ class AppDatabase extends GeneratedDatabase {
       if (from < 20) await customStatement(_v20MediaDirectoryCacheTable);
       if (from < 21) await customStatement(_v21MediaExportJobsTable);
       if (from < 22) {
-        for (final sql in _v22NativePlaybackTables) {
+        for (final sql in _v22HealthColumns) {
+          final column = sql.split(' ')[5];
+          if (!await _columnExists('profile_health', column)) {
+            await customStatement(sql);
+          }
+        }
+      }
+      if (from < 23) {
+        for (final sql in _v23NativePlaybackTables) {
           await customStatement(sql);
         }
       }
@@ -858,6 +874,10 @@ class AppDatabase extends GeneratedDatabase {
               lastCheckedAt: r.readNullable<String>('last_checked_at') == null
                   ? null
                   : DateTime.parse(r.read<String>('last_checked_at')),
+              lastFailureCategory: r.readNullable<String>(
+                'last_failure_category',
+              ),
+              lastFailureRoute: r.readNullable<String>('last_failure_route'),
               lastOkAt: r.readNullable<String>('last_ok_at') == null
                   ? null
                   : DateTime.parse(r.read<String>('last_ok_at')),
@@ -871,14 +891,16 @@ class AppDatabase extends GeneratedDatabase {
   }
 
   Future<void> saveProfileHealth(ProfileHealth health) => customStatement(
-    'INSERT INTO profile_health(profile_id,consecutive_failures,state,last_checked_at,last_ok_at) VALUES(?,?,?,?,?) '
-    'ON CONFLICT(profile_id) DO UPDATE SET consecutive_failures=excluded.consecutive_failures,state=excluded.state,last_checked_at=excluded.last_checked_at,last_ok_at=excluded.last_ok_at',
+    'INSERT INTO profile_health(profile_id,consecutive_failures,state,last_checked_at,last_ok_at,last_failure_category,last_failure_route) VALUES(?,?,?,?,?,?,?) '
+    'ON CONFLICT(profile_id) DO UPDATE SET consecutive_failures=excluded.consecutive_failures,state=excluded.state,last_checked_at=excluded.last_checked_at,last_ok_at=excluded.last_ok_at,last_failure_category=excluded.last_failure_category,last_failure_route=excluded.last_failure_route',
     [
       health.profileId,
       health.consecutiveFailures,
       health.state.name,
       health.lastCheckedAt?.toIso8601String(),
       health.lastOkAt?.toIso8601String(),
+      health.lastFailureCategory,
+      health.lastFailureRoute,
     ],
   );
 

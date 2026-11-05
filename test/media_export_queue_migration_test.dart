@@ -30,7 +30,7 @@ void main() {
 
       final current = sqlite3.open(file.path);
       addTearDown(current.close);
-      expect(current.userVersion, 22);
+      expect(current.userVersion, AppDatabase.currentSchemaVersion);
       expect(
         current
             .select('PRAGMA table_info(media_export_jobs)')

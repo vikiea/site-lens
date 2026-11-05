@@ -1,0 +1,13 @@
+group = 'dev.vikiea.site_lens_health_probe'
+version = '1.0'
+apply plugin: 'com.android.library'
+
+android {
+    namespace = 'dev.vikiea.site_lens_health_probe'
+    compileSdk = 36
+    defaultConfig { minSdk = 26 }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}

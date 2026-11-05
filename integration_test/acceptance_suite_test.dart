@@ -11,6 +11,7 @@ import 'evidence_test.dart' as evidence;
 import 'modernization_test.dart' as modernization;
 import 'update_flow_test.dart' as update_flow;
 import 'media_tasks_test.dart' as media_tasks;
+import 'network_reliability_test.dart' as network_reliability;
 import 'media3_parity_test.dart' as media3_parity;
 
 /// One install, one run: registers every integration suite in this process.
@@ -30,5 +31,6 @@ void main() {
   modernization.main();
   update_flow.main();
   media_tasks.main();
+  network_reliability.main();
   media3_parity.main();
 }

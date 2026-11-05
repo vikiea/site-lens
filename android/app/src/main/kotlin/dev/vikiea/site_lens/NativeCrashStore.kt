@@ -204,6 +204,9 @@ object NativeCrashStore {
 class SiteLensApplication : android.app.Application() {
     override fun onCreate() {
         super.onCreate()
+        dev.vikiea.site_lens_health_probe.HealthProbePlugin.createRuntime = { context ->
+            NativeHealthProbeRuntime(context)
+        }
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             NativeCrashStore.append(

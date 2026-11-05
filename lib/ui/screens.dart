@@ -2494,13 +2494,17 @@ class BrowserScreen extends StatefulWidget {
 class EpisodeDownloadSheet extends StatefulWidget {
   const EpisodeDownloadSheet({
     super.key,
-    required this.candidates,
+    required this.host,
+    required this.candidatesChanged,
+    required this.readCandidates,
     required this.onDownload,
     required this.onPlay,
     required this.onResniff,
   });
 
-  final List<MediaCandidate> candidates;
+  final HostSession host;
+  final Listenable candidatesChanged;
+  final List<MediaCandidate> Function() readCandidates;
   final Future<void> Function(List<MediaCandidate>) onDownload;
   final Future<void> Function(MediaCandidate) onPlay;
   final VoidCallback onResniff;
@@ -2510,14 +2514,70 @@ class EpisodeDownloadSheet extends StatefulWidget {
 }
 
 class _EpisodeDownloadSheetState extends State<EpisodeDownloadSheet> {
-  late final List<MapEntry<String, List<MediaCandidate>>> _episodes;
-  late final Map<String, MediaCandidate> _selected;
+  List<MapEntry<String, List<MediaCandidate>>> _episodes = [];
+  final _selected = <String, MediaCandidate>{};
+  late int _generation;
+  late int _hostId;
+  Set<String> _series = {};
 
   @override
   void initState() {
     super.initState();
+    _generation = widget.host.generation;
+    _hostId = widget.host.id;
+    _refreshCandidates(initial: true);
+    widget.candidatesChanged.addListener(_onCandidatesChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.candidatesChanged.removeListener(_onCandidatesChanged);
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant EpisodeDownloadSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.candidatesChanged != widget.candidatesChanged) {
+      oldWidget.candidatesChanged.removeListener(_onCandidatesChanged);
+      widget.candidatesChanged.addListener(_onCandidatesChanged);
+    }
+    _refreshCandidates();
+  }
+
+  void _onCandidatesChanged() {
+    if (mounted) setState(_refreshCandidates);
+  }
+
+  void _refreshCandidates({bool initial = false}) {
+    final candidates = widget.host.disposed
+        ? const <MediaCandidate>[]
+        : widget
+              .readCandidates()
+              .where(
+                (c) =>
+                    c.hostId == widget.host.id &&
+                    c.generation == widget.host.generation,
+              )
+              .toList();
+    final series = candidates
+        .where((c) => c.hasEpisodeIdentity)
+        .map((c) => c.seriesKey!)
+        .toSet();
+    final boundaryChanged =
+        _hostId != widget.host.id ||
+        _generation != widget.host.generation ||
+        (_series.isNotEmpty &&
+            series.isNotEmpty &&
+            !(_series.length == series.length && _series.containsAll(series)));
+    _generation = widget.host.generation;
+    _hostId = widget.host.id;
+    if (series.isNotEmpty) _series = series;
+    final previous = boundaryChanged
+        ? <String, MediaCandidate>{}
+        : Map.of(_selected);
     final grouped = <String, List<MediaCandidate>>{};
-    for (final candidate in widget.candidates) {
+    for (final candidate in candidates) {
       if (!candidate.hasEpisodeIdentity) continue;
       grouped
           .putIfAbsent(candidate.episodeIdentityKey, () => [])
@@ -2541,10 +2601,24 @@ class _EpisodeDownloadSheetState extends State<EpisodeDownloadSheet> {
         final b = right.value.first.episodeNumber ?? 0;
         return a == b ? left.key.compareTo(right.key) : a.compareTo(b);
       });
-    _selected = {
-      for (final entry in _episodes)
-        if (entry.value.isNotEmpty) entry.key: entry.value.first,
-    };
+    _selected.clear();
+    for (final entry in _episodes) {
+      if (initial) {
+        _selected[entry.key] = entry.value.first;
+      } else if (previous.containsKey(entry.key)) {
+        final old = previous[entry.key]!;
+        _selected[entry.key] =
+            entry.value
+                .where(
+                  (c) =>
+                      c.representationRank == old.representationRank &&
+                      c.qualityLabel == old.qualityLabel &&
+                      c.audioLabel == old.audioLabel,
+                )
+                .firstOrNull ??
+            entry.value.first;
+      }
+    }
   }
 
   String _seriesTitle(MediaCandidate candidate) {
@@ -2679,9 +2753,17 @@ class _EpisodeDownloadSheetState extends State<EpisodeDownloadSheet> {
                               IconButton(
                                 tooltip: '播放本集',
                                 icon: const Icon(Icons.play_circle_outline),
-                                onPressed: () => widget.onPlay(
-                                  _selected[entry.key] ?? options.first,
-                                ),
+                                onPressed: () {
+                                  setState(_refreshCandidates);
+                                  final live = _episodes
+                                      .where((e) => e.key == entry.key)
+                                      .firstOrNull;
+                                  if (live != null) {
+                                    widget.onPlay(
+                                      _selected[entry.key] ?? live.value.first,
+                                    );
+                                  }
+                                },
                               ),
                             ],
                           ),
@@ -2700,7 +2782,12 @@ class _EpisodeDownloadSheetState extends State<EpisodeDownloadSheet> {
                     FilledButton.icon(
                       onPressed: selected.isEmpty
                           ? null
-                          : () => widget.onDownload(selected),
+                          : () {
+                              setState(_refreshCandidates);
+                              if (_selected.isNotEmpty) {
+                                widget.onDownload(_selected.values.toList());
+                              }
+                            },
                       icon: const Icon(Icons.download),
                       label: Text('下载 ${selected.length} 集'),
                     ),
@@ -3796,7 +3883,9 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
         showDragHandle: true,
         backgroundColor: Colors.transparent,
         builder: (sheetContext) => EpisodeDownloadSheet(
-          candidates: episodeCandidates,
+          host: current,
+          candidatesChanged: widget.app.hosts.changed,
+          readCandidates: () => widget.app.hosts.mediaCandidates(current),
           onDownload: (selected) async {
             Navigator.of(sheetContext).pop();
             await _downloadMediaCandidates(current, selected);

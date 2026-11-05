@@ -315,23 +315,31 @@ class ProfileHealth {
     this.state = ProfileHealthState.unknown,
     this.lastCheckedAt,
     this.lastOkAt,
+    this.lastFailureCategory,
+    this.lastFailureRoute,
   });
   final int profileId;
   final int consecutiveFailures;
   final ProfileHealthState state;
   final DateTime? lastCheckedAt;
   final DateTime? lastOkAt;
+  final String? lastFailureCategory;
+  final String? lastFailureRoute;
   ProfileHealth copyWith({
     int? consecutiveFailures,
     ProfileHealthState? state,
     DateTime? lastCheckedAt,
     DateTime? lastOkAt,
+    String? lastFailureCategory,
+    String? lastFailureRoute,
   }) => ProfileHealth(
     profileId: profileId,
     consecutiveFailures: consecutiveFailures ?? this.consecutiveFailures,
     state: state ?? this.state,
     lastCheckedAt: lastCheckedAt ?? this.lastCheckedAt,
     lastOkAt: lastOkAt ?? this.lastOkAt,
+    lastFailureCategory: lastFailureCategory ?? this.lastFailureCategory,
+    lastFailureRoute: lastFailureRoute ?? this.lastFailureRoute,
   );
 }
 

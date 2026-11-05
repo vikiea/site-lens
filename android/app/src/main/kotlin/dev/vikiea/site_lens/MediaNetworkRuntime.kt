@@ -115,25 +115,36 @@ class MediaNetworkRuntime(
             val job = call.argument<String>("jobId") ?: "invalid"
             require(job.matches(Regex("[A-Za-z0-9_-]{1,100}"))) { "下载任务无效" }
             var selectedRoute = "unknown"
+            var targetDnsMode = "unknown"
+            val attempts = mutableListOf<Map<String, Any>>()
+            val resourceKind = call.argument<String>("resourceKind")
+                ?.takeIf { it in setOf("manifest", "key", "segment", "map", "file") } ?: "file"
             val networkEpoch = call.argument<Int>("networkEpoch") ?: 0
             val transfer = ResumableMediaTransfer(
                 connectForAttempt = { uri, attempt ->
+                    selectedRoute = "unknown"
+                    targetDnsMode = "unknown"
                     SystemMediaNetwork.openMediaConnection(context, uri, attempt) { info ->
                         selectedRoute = info.kind.wireName
+                        targetDnsMode = info.targetDnsMode
                     }
                 },
                 routeForConnection = { selectedRoute },
+                dnsModeForConnection = { targetDnsMode },
+                networkEpochForAttempt = { SystemMediaNetwork.networkEpoch() },
+                routeBeforeConnect = { selectedRoute },
                 onAttempt = { diagnostics ->
+                    if (attempts.size < 5) attempts += diagnostics + mapOf("resourceKind" to resourceKind)
                     if ((diagnostics["elapsedMs"] as? Long ?: 0L) >= 2_000L ||
                         diagnostics["outcome"] != "completed") {
-                        Log.i("SiteLensMediaNetwork", "epoch=$networkEpoch $diagnostics")
+                        Log.i("SiteLensMediaNetwork", "epoch=$networkEpoch resource=$resourceKind $diagnostics")
                     }
                 },
             )
             transfers.submit(job, transfer::abort, { transferFile(call, transfer, job) }) { outcome ->
                 main.post { outcome.fold(
-                    onSuccess = { result.success(mapOf("attemptsUsed" to transfer.attemptsUsed)) },
-                    onFailure = { failTransfer(result, it) },
+                    onSuccess = { result.success(mapOf("attemptsUsed" to transfer.attemptsUsed, "finalUrl" to transfer.finalUrl?.toString(), "attempts" to attempts)) },
+                    onFailure = { failTransfer(result, it, attempts, resourceKind) },
                 ) }
             }
         } catch (error: Exception) {
@@ -141,10 +152,10 @@ class MediaNetworkRuntime(
         }
     }
 
-    private fun failTransfer(result: MethodChannel.Result, error: Throwable) {
+    private fun failTransfer(result: MethodChannel.Result, error: Throwable, attempts: List<Map<String, Any>> = emptyList(), resourceKind: String = "file") {
         val code = if (error is MediaAuthorizationException) "media_authorization" else "media_transfer"
         val details = when (error) {
-            is MediaTransferFailure -> error.diagnostics()
+            is MediaTransferFailure -> error.diagnostics() + mapOf("attempts" to attempts, "resourceKind" to resourceKind)
             is MediaAuthorizationException -> mapOf(
                 "attemptsUsed" to error.attemptsUsed, "httpStatus" to error.statusCode,
             )
@@ -189,7 +200,6 @@ class MediaNetworkRuntime(
                 requestHeaders = requestHeaders,
                 requestCookies = { target ->
                     AndroidCookieReader.get(target.toString())
-                        ?: AndroidCookieReader.get(document.toString())
                 },
                 onProgress = { bytes, _ ->
                     val now = SystemClock.elapsedRealtime()

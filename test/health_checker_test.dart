@@ -1,5 +1,8 @@
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/widgets.dart';
+import 'package:site_lens/ui/app_controller.dart';
+import 'package:site_lens/ui/profile_panel.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/discovery/health_checker.dart';
 import 'package:site_lens/domain/models.dart';
@@ -32,6 +35,84 @@ void main() {
     notify: (title, body) async => notes.add('$title|$body'),
     maxPerDay: maxPerDay,
   ).run();
+
+  test(
+    'resuming reloads durable health and stale success is not current evidence',
+    () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      final app = AppController(db);
+      addTearDown(app.dispose);
+      final old = DateTime(2026, 1, 1);
+      await db.saveProfileHealth(
+        ProfileHealth(
+          profileId: profileId,
+          state: ProfileHealthState.ok,
+          lastCheckedAt: old,
+        ),
+      );
+      await app.refreshProfileHealth();
+      expect(
+        healthIsStale(
+          app.healthFor(profileId),
+          now: old.add(const Duration(hours: 25)),
+        ),
+        isTrue,
+      );
+      expect(
+        healthIsStale(
+          app.healthFor(profileId),
+          now: old.add(const Duration(hours: 23)),
+        ),
+        isFalse,
+      );
+      await db.saveProfileHealth(
+        ProfileHealth(
+          profileId: profileId,
+          state: ProfileHealthState.failing,
+          consecutiveFailures: 2,
+          lastCheckedAt: DateTime.now(),
+          lastFailureCategory: 'tls_handshake',
+        ),
+      );
+      app.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      for (
+        var i = 0;
+        i < 20 && app.healthFor(profileId).state != ProfileHealthState.failing;
+        i++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      expect(app.healthFor(profileId).state, ProfileHealthState.failing);
+      expect(healthSummary(app.healthFor(profileId)), contains('TLS 握手失败'));
+    },
+  );
+
+  test('classified failures persist route and timestamp and recovery clears diagnostics', () async {
+    final probe = _DetailedProbe();
+    final at = DateTime(2026, 11, 5, 12);
+    Future<HealthRunReport> check() => ProfileHealthChecker(
+      db: db,
+      probe: probe,
+      conditions: const HealthConditions(charging: true, wifi: true),
+      now: () => at,
+      notify: (_, _) async {},
+      maxPerDay: 10,
+    ).run();
+    await check();
+    await check();
+    final failed = await db.profileHealth(profileId);
+    expect(failed.state, ProfileHealthState.failing);
+    expect(failed.lastFailureCategory, 'tls_handshake');
+    expect(failed.lastFailureRoute, 'http_proxy');
+    expect(failed.lastCheckedAt, at);
+    probe.ok = true;
+    await check();
+    final recovered = await db.profileHealth(profileId);
+    expect(recovered.consecutiveFailures, 0);
+    expect(recovered.lastFailureCategory, isNull);
+    expect(recovered.lastFailureRoute, isNull);
+    expect(recovered.lastOkAt, at);
+  });
 
   test('skips when not charging', () async {
     final notes = <String>[];
@@ -183,4 +264,16 @@ class _FlagProbe implements ReachabilityProbe {
   final bool value;
   @override
   Future<bool> reachable(Uri url) async => value;
+}
+
+class _DetailedProbe implements DetailedReachabilityProbe {
+  bool ok = false;
+  @override
+  Future<bool> reachable(Uri url) async => ok;
+  @override
+  Future<HealthProbeResult> check(Uri url) async => HealthProbeResult(
+    reachable: ok,
+    failureCategory: ok ? null : 'tls_handshake',
+    routeKind: 'http_proxy',
+  );
 }

@@ -45,7 +45,12 @@ class ResumableMediaTransfer(
     },
     private val onAttempt: (Map<String, Any>) -> Unit = {},
     private val onAttemptStarted: (Int) -> Unit = {},
+    private val dnsModeForConnection: () -> String = { "unknown" },
+    private val networkEpochForAttempt: () -> Long = { 0L },
+    private val routeBeforeConnect: () -> String = { "unknown" },
 ) {
+    var finalUrl: URI? = null
+        private set
     var attemptsUsed: Int = 0
         private set
     private val aborted = AtomicBoolean(false)
@@ -65,12 +70,13 @@ class ResumableMediaTransfer(
         requestCookies: (URI) -> String? = { null },
         requestHeaders: Map<String, String> = emptyMap(),
         onProgress: (Long, Long?) -> Unit = { _, _ -> },
-        maxAttempts: Int = 8,
+        maxAttempts: Int = 5,
         startAttempt: Int = 0,
     ): Long {
         require(maxAttempts > 0 && startAttempt >= 0) { "媒体重试预算无效" }
-        val availableAttempts = maxAttempts
+        val availableAttempts = maxAttempts.coerceAtMost(5)
         attemptsUsed = 0
+        finalUrl = null
         val metadataFile = File(partial.path + ".resume")
         val identity = MessageDigest.getInstance("SHA-256").digest(stableIdentity(url).toByteArray())
             .joinToString("") { "%02x".format(it) }
@@ -83,13 +89,14 @@ class ResumableMediaTransfer(
             attemptsUsed = localAttempt + 1
             onAttemptStarted(attemptsUsed)
             var failedUri = url
-            var failurePhase = "route"
+            var failurePhase = "connect"
             var failureOffset = 0L
             var failureBytes = 0L
             var failureRoute = "unknown"
             var cookiePresent = false
             var responseStatus = 0
             var attemptFailed = false
+            var failureCategory = "none"
             try {
                 while (true) {
                     checkActive()
@@ -107,7 +114,7 @@ class ResumableMediaTransfer(
                     var response: HttpURLConnection? = null
                     try {
                         for (redirect in 0..5) {
-                            checkActive(); validate(uri); failurePhase = "route"
+                            checkActive(); validate(uri); failurePhase = "connect"
                             failedUri = uri
                             val routeKey = uri.toString()
                             val current = connect?.invoke(uri)
@@ -124,7 +131,7 @@ class ResumableMediaTransfer(
                             if (sameOrigin(url, uri)) requestHeaders.forEach { (name, value) ->
                                 current.setRequestProperty(name, value)
                             }
-                            current.setRequestProperty("Referer", source.toString())
+                            current.setRequestProperty("Referer", URI(source.scheme, null, source.host, source.port, source.path, null, null).toASCIIString())
                             current.setRequestProperty("Origin", "${source.scheme}://${source.rawAuthority}")
                             requestCookies(uri)?.takeIf { it.isNotBlank() }?.let {
                                 cookiePresent = true
@@ -149,6 +156,7 @@ class ResumableMediaTransfer(
                             }
                         }
                         val current = response ?: error("重定向过多")
+                        finalUrl = uri
                         val status = current.responseCode
                         val receivedValidator = current.getHeaderField("ETag")?.takeIf {
                             it.startsWith('"') && it.endsWith('"')
@@ -274,6 +282,8 @@ class ResumableMediaTransfer(
                     "closed" in text -> "connection_closed"
                     else -> (classified as? MediaRouteIOException)?.category ?: "io"
                 }
+                failureCategory = reason
+                if (failureRoute == "unknown") failureRoute = routeBeforeConnect()
                 failure = MediaTransferFailure(
                     phase = failurePhase,
                     host = failedUri.host ?: "unknown",
@@ -296,6 +306,12 @@ class ResumableMediaTransfer(
                         "phase" to failurePhase,
                         "attempt" to attempt,
                         "route" to failureRoute,
+                        "routeKind" to failureRoute,
+                        "targetDnsMode" to dnsModeForConnection(),
+                        "host" to (failedUri.host ?: "unknown"),
+                        "offset" to failureOffset,
+                        "failureCategory" to failureCategory,
+                        "networkEpoch" to networkEpochForAttempt(),
                         "httpStatus" to responseStatus,
                         "bytesWritten" to failureBytes,
                         "outcome" to if (attemptFailed) "retry" else "completed",
@@ -322,7 +338,7 @@ class ResumableMediaTransfer(
             val base = when (reason) {
                 "dns", "proxy_connect", "proxy_connect_status", "timeout" -> 250L
                 "connection_reset", "connection_closed" -> if (bytesWritten > 0L) 100L else 300L
-                "tls" -> 500L
+                "tls", "tls_handshake" -> 500L
                 else -> if (bytesWritten > 0L) 150L else 400L
             }
             return (base shl attempt.coerceIn(0, 4)).coerceAtMost(5_000L)

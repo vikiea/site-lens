@@ -312,8 +312,19 @@ void _httpTests() {
     );
 
     test(
-      'confirms PLAYING, expected URI and position using advertised version',
+      'confirms PLAYING after delayed transitions using advertised version',
       () async {
+        // This is real loopback HTTP, not fake time: three SOAP polls cannot
+        // share the 120ms budget used by the negative timeout fixtures.
+        cast.dispose();
+        cast = DlnaCastController(
+          CastSessionController(tasks: tasks),
+          commandTimeout: const Duration(seconds: 2),
+          confirmationTimeout: const Duration(seconds: 3),
+          pollInterval: const Duration(milliseconds: 5),
+          monitorInterval: const Duration(hours: 1),
+        );
+        receiver.transportDelay = const Duration(milliseconds: 150);
         receiver.transitioningQueries = 2;
         final session = await start();
         expect(session.state, CastSessionState.playing);
@@ -738,6 +749,7 @@ class _Receiver {
   Uri? media;
   int transportQueries = 0;
   int transitioningQueries = 0;
+  Duration transportDelay = Duration.zero;
   int volume = 42;
   String? seekTarget;
 
@@ -790,6 +802,7 @@ class _Receiver {
             output =
                 '<Source>http-get:*:application/vnd.apple.mpegurl:*</Source><Sink>$sink</Sink>';
           case 'GetTransportInfo':
+            await Future<void>.delayed(transportDelay);
             transportQueries++;
             output =
                 '<CurrentTransportState>${transportQueries <= transitioningQueries ? 'TRANSITIONING' : state}</CurrentTransportState><CurrentTransportStatus>$status</CurrentTransportStatus><CurrentSpeed>1</CurrentSpeed>';

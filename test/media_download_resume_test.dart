@@ -12,6 +12,68 @@ import 'package:site_lens/media/media_resource_coordinator.dart';
 import 'package:site_lens/network/transport.dart';
 
 void main() {
+  test('policy native HLS gives key its own five-attempt budget and preserves resource kinds', () async {
+    final root = await Directory.systemTemp.createTemp('native-hls-policy-');
+    addTearDown(() => root.delete(recursive: true));
+    final candidate = _candidate(Uri.parse('https://cdn.example/index.m3u8'));
+    final tasks = MediaTaskStore(directoryProvider: () async => root);
+    final kinds = <String>[];
+    final headersByKind = <String, Map<String, String>?>{};
+    final service = MediaDownloadService(
+      tasks: tasks,
+      policyTransfer:
+          (
+            url,
+            document,
+            destination,
+            maxBytes,
+            cancel, {
+            onProgress,
+            headers,
+            requestContextId,
+            required maxAttempts,
+            required startAttempt,
+            resourceKind = 'file',
+          }) async {
+            expect(maxAttempts, 5);
+            expect(startAttempt, 0);
+            expect(document, candidate.sourceUrl);
+            kinds.add(resourceKind);
+            headersByKind[resourceKind] = headers;
+            if (resourceKind == 'manifest') {
+              await destination.writeAsString(
+                '#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\n#EXTINF:4,\nsegment.ts\n#EXT-X-ENDLIST\n',
+              );
+            } else if (resourceKind == 'key') {
+              throw PlatformException(
+                code: 'media_transfer',
+                message: '媒体连接失败，已保留缓存，可重试',
+                details: {
+                  'attemptsUsed': 5,
+                  'phase': 'response_headers',
+                  'reason': 'tls_handshake',
+                  'route': 'http_proxy',
+                  'offset': 0,
+                  'bytesWritten': 0,
+                },
+              );
+            } else {
+              fail('segment must not be requested after key failure');
+            }
+            return MediaTransferResult(attemptsUsed: 1, finalUrl: url);
+          },
+    );
+    final task = tasks.create(candidate);
+    await expectLater(
+      service.start(task, candidate),
+      throwsA(isA<PlatformException>()),
+    );
+    expect(kinds, ['manifest', 'key']);
+    expect(tasks.task(task.id)!.id, task.id);
+    expect(tasks.task(task.id)!.errorReason, contains('资源：密钥'));
+    expect(tasks.task(task.id)!.errorReason, contains('TLS 握手失败'));
+  });
+
   // REGRESSION CONTRACT: MEDIA-HLS-001
   // REGRESSION CONTRACT: MEDIA-PLAY-001
   // REGRESSION CONTRACT: MEDIA-UPGRADE-001
@@ -138,6 +200,81 @@ void main() {
       },
     );
   }
+
+  test(
+    'failed shared HLS bytes keep their owner until explicit task deletion',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'shared-native-partial-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final candidate = _candidate(Uri.parse('https://cdn.example/index.m3u8'));
+      await db.saveMediaCandidate(candidate);
+      final coordinator = MediaResourceCoordinator(
+        rootProvider: () async => Directory('${root.path}/shared'),
+      );
+      final tasks = MediaTaskStore(
+        directoryProvider: () async => root,
+        db: db,
+        resourceCoordinator: coordinator,
+      );
+      final task = tasks.create(candidate);
+      final service = MediaDownloadService(
+        tasks: tasks,
+        resourceCoordinator: coordinator,
+        policyTransfer:
+            (
+              url,
+              document,
+              destination,
+              maxBytes,
+              cancel, {
+              onProgress,
+              headers,
+              requestContextId,
+              required maxAttempts,
+              required startAttempt,
+              resourceKind = 'file',
+            }) async {
+              if (resourceKind == 'manifest') {
+                await destination.writeAsString(
+                  '#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nsegment.ts\n#EXT-X-ENDLIST\n',
+                );
+                return MediaTransferResult(attemptsUsed: 1, finalUrl: url);
+              }
+              await destination.writeAsBytes([1, 2, 3], flush: true);
+              throw PlatformException(
+                code: 'media_transfer',
+                message: '媒体连接失败，已保留缓存，可重试',
+                details: {
+                  'attemptsUsed': 5,
+                  'phase': 'body_read',
+                  'reason': 'connection_reset',
+                  'route': 'vpn_tun_fake_ip',
+                  'offset': 0,
+                  'bytesWritten': 3,
+                },
+              );
+            },
+      );
+      await expectLater(
+        service.start(task, candidate),
+        throwsA(isA<PlatformException>()),
+      );
+      final resource = candidate.mediaUrl.resolve('segment.ts');
+      final key = sha256.convert(utf8.encode(resource.toString())).toString();
+      final partial = File(
+        '${(await coordinator.committedFile(key)).path}.part',
+      );
+      expect(await partial.readAsBytes(), [1, 2, 3]);
+      expect(await db.mediaResourceOwners(key), contains('task:${task.id}'));
+      await service.delete(task.id);
+      expect(await partial.exists(), isFalse);
+      expect(await db.mediaResourceOwners(key), isEmpty);
+    },
+  );
 
   test('failed HLS resources do not leave database owners behind', () async {
     final root = await Directory.systemTemp.createTemp('site-lens-owner-fail-');

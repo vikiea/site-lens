@@ -41,6 +41,24 @@ abstract interface class ReachabilityProbe {
   Future<bool> reachable(Uri url);
 }
 
+class HealthProbeResult {
+  const HealthProbeResult({
+    required this.reachable,
+    this.failureCategory,
+    this.routeKind,
+    this.networkEpoch,
+  });
+  final bool reachable;
+  final String? failureCategory;
+  final String? routeKind;
+  final int? networkEpoch;
+}
+
+abstract interface class DetailedReachabilityProbe
+    implements ReachabilityProbe {
+  Future<HealthProbeResult> check(Uri url);
+}
+
 class HttpReachabilityProbe implements ReachabilityProbe {
   HttpReachabilityProbe({HttpProbe? probe, this.allowLocal = false})
     : _probe = probe ?? HttpProbe();
@@ -125,7 +143,10 @@ class ProfileHealthChecker {
         if (!profile.enabled) continue;
         final url = await _targetUrl(profile.id);
         if (url == null) continue;
-        final reachable = await probe.reachable(url);
+        final observation = probe is DetailedReachabilityProbe
+            ? await (probe as DetailedReachabilityProbe).check(url)
+            : HealthProbeResult(reachable: await probe.reachable(url));
+        final reachable = observation.reachable;
         final renewed = await db
             .customSelect(
               'UPDATE health_run_leases SET expires_at=? WHERE owner=? RETURNING owner',
@@ -164,6 +185,8 @@ class ProfileHealthChecker {
                   : previous.state,
               lastCheckedAt: at,
               lastOkAt: previous.lastOkAt,
+              lastFailureCategory: observation.failureCategory ?? 'unknown',
+              lastFailureRoute: observation.routeKind,
             ),
           );
           if (failures >= failuresBeforeAlert) failing++;

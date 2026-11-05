@@ -36,6 +36,10 @@ class MediaRouteIOException(
 
 /** Resolve only the OS policy: an unusable proxy must not silently become DIRECT. */
 object SystemMediaNetwork {
+    private val epoch = java.util.concurrent.atomic.AtomicLong(0)
+    private val observedNetwork = java.util.concurrent.atomic.AtomicReference<String?>(null)
+    fun networkEpoch(): Long = epoch.get()
+
     enum class RouteKind(val wireName: String) {
         PUBLIC_DIRECT("public_direct"),
         HTTP_PROXY("http_proxy"),
@@ -185,6 +189,8 @@ object SystemMediaNetwork {
         val network = manager?.activeNetwork
         val capabilities = network?.let(manager::getNetworkCapabilities)
         val links = network?.let(manager::getLinkProperties)
+        val fingerprint = "${network?.networkHandle}:${links?.httpProxy}:${links?.dnsServers}"
+        if (observedNetwork.getAndSet(fingerprint) != fingerprint) epoch.incrementAndGet()
         val vpn = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
         val routerTrusted = routerFakeIpEligible(
             capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true,

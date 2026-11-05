@@ -6,6 +6,7 @@ import '../data/database.dart';
 import '../settings/settings_repository.dart';
 import '../device/device_conditions.dart';
 import '../discovery/health_checker.dart';
+import 'native_health_probe.dart';
 
 const healthTaskName = 'profileHealthCheck';
 const healthUniqueName = 'site-lens-health-check';
@@ -16,18 +17,27 @@ const healthNoticeKey = 'health_notice_pending';
 /// connectivity_plus work here; no WebView host is ever created.
 @pragma('vm:entry-point')
 void healthCallbackDispatcher() {
-  Workmanager().executeTask((taskName, inputData) async {
-    if (taskName != healthTaskName) return true;
-    final db = await AppDatabase.open();
-    try {
-      final report = await runBackgroundHealthCheck(db);
-      return report.outcome != HealthRunOutcome.skippedConditions;
-    } catch (_) {
-      return false;
-    } finally {
-      await db.close();
-    }
-  });
+  Workmanager().executeTask(
+    (taskName, inputData) async {
+      if (taskName != healthTaskName) return true;
+      final db = await AppDatabase.open();
+      try {
+        final report = await runBackgroundHealthCheck(db);
+        return report.outcome != HealthRunOutcome.skippedConditions;
+      } catch (_) {
+        return false;
+      } finally {
+        await db.close();
+      }
+    },
+    onTaskStopped: (taskName, _) async {
+      if (taskName == healthTaskName && Platform.isAndroid) {
+        try {
+          await NativeHealthProbe().cancel();
+        } catch (_) {}
+      }
+    },
+  );
 }
 
 /// The shared background entry point. Charging + WiFi are enforced twice: as
@@ -46,7 +56,7 @@ Future<HealthRunReport> runBackgroundHealthCheck(AppDatabase db) async {
   );
   final checker = ProfileHealthChecker(
     db: db,
-    probe: HttpReachabilityProbe(),
+    probe: Platform.isAndroid ? NativeHealthProbe() : HttpReachabilityProbe(),
     conditions: conditions,
     now: DateTime.now,
     notify: (title, body) async {

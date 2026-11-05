@@ -56,6 +56,7 @@ INTEGRATION_TARGETS = (
     'integration_test/modernization_test.dart',
     'integration_test/script_import_test.dart',
     'integration_test/media_tasks_test.dart',
+    'integration_test/network_reliability_test.dart',
     'integration_test/media3_parity_test.dart',
     'integration_test/configured_sites_test.dart',
     'integration_test/real_media_site_test.dart',
@@ -910,7 +911,7 @@ def main() -> int:
         return restore_only(args.device, Path(args.restore_from))
 
     if not args.skip_check:
-        run_flutter(["./tool/check.sh"], timeout=300)
+        run_flutter(["./tool/check.sh"], timeout=900)
     if prebuilt_apks is None:
         # Always capture a normal product APK; previous integration runs replace the build output.
         run_flutter(normal_debug_build(args.device), timeout=600)

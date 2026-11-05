@@ -5,6 +5,7 @@ import 'dart:math';
 import 'dart:isolate';
 
 import 'package:crypto/crypto.dart';
+import 'package:drift/drift.dart' show Variable;
 import 'package:flutter/foundation.dart' show ChangeNotifier;
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
@@ -16,6 +17,7 @@ import '../domain/models.dart';
 import '../network/transport.dart';
 import 'media_resource_coordinator.dart';
 import 'media_transfer_scheduler.dart';
+import 'media_transfer_diagnostics.dart';
 import 'native_download_runtime.dart';
 import 'native_export_runtime.dart';
 
@@ -2099,6 +2101,7 @@ typedef NativeTlsTransferWithPolicy = Future<MediaTransferResult> Function(
   String? requestContextId,
   required int maxAttempts,
   required int startAttempt,
+  String resourceKind,
 });
 
 class MediaRetryPolicy {
@@ -2348,6 +2351,7 @@ class MediaDownloadService {
     required MediaRetryBudget budget,
     void Function(int bytesWritten)? onProgress,
     Map<String, String> headers = const {},
+    String resourceKind = 'file',
   }) async {
     cancel.check();
     budget.check();
@@ -2364,6 +2368,7 @@ class MediaDownloadService {
           onProgress: onProgress,
           headers: headers,
           requestContextId: null,
+          resourceKind: resourceKind,
           maxAttempts: granted,
           startAttempt: budget.attemptsUsed,
         );
@@ -2898,6 +2903,18 @@ class MediaDownloadService {
       paths.add(directory);
     }
     final keys = <String>{};
+    // A failed shared transfer may own only a .part file, not a published
+    // resources.json entry. Explicit task deletion must release that owner too.
+    final database = tasks.db;
+    if (database != null) {
+      final rows = await database
+          .customSelect(
+            'SELECT resource_key FROM media_resource_owners WHERE owner_id=?',
+            variables: [Variable.withString('task:${task.id}')],
+          )
+          .get();
+      keys.addAll(rows.map((row) => row.read<String>('resource_key')));
+    }
     final resourceName = RegExp(r'^resource_([0-9a-f]{64})\.bin$');
     for (final directoryPath in paths) {
       final directory = Directory(directoryPath);
@@ -3073,7 +3090,7 @@ class MediaDownloadService {
             ? MediaTaskState.reauthorize
             : MediaTaskState.failed,
         errorCode: code,
-        errorReason: readableError(error),
+        errorReason: mediaTransferFailureText(error),
       );
     }
   }
@@ -3097,7 +3114,9 @@ class MediaDownloadService {
           retryBudgets ??
           _activeRetryBudgets.putIfAbsent(
             id,
-            () => MediaRetryBudgets(retryPolicy.maxAttempts),
+            () => MediaRetryBudgets(
+              policyTransfer != null ? 5 : retryPolicy.maxAttempts,
+            ),
           );
       _dartTasks.add(id);
       final cancel = Cancellation();
@@ -3218,8 +3237,10 @@ class MediaDownloadService {
       } on MediaAuthorizationRequiredException {
         final refresh = refreshAuthorization;
         if (refresh == null || authorizationAttempt == 1) rethrow;
-        for (final slot in retryBudgets._slots.values) {
-          slot.extend();
+        if (policyTransfer == null) {
+          for (final slot in retryBudgets._slots.values) {
+            slot.extend();
+          }
         }
         final refreshed = await refresh(task, currentCandidate);
         if (refreshed == null) rethrow;
@@ -3539,6 +3560,42 @@ class MediaDownloadService {
     required MediaRetryBudget retryBudget,
     Map<String, String> headers = const {},
   }) async {
+    if (policyTransfer != null) {
+      final key = sha256
+          .convert(utf8.encode(_resumeContentIdentity(url)))
+          .toString();
+      final partial = File('${staging.path}/.playlist_$key.part');
+      try {
+        final finalUrl = await _transferNative(
+          url,
+          document,
+          partial,
+          16 * 1024 * 1024,
+          cancel,
+          budget: retryBudget,
+          headers: headers,
+          resourceKind: 'manifest',
+        );
+        if (!await partial.exists() || await partial.length() == 0) {
+          throw StateError('HLS 清单响应为空');
+        }
+        return (url: finalUrl, text: await partial.readAsString());
+      } on PlatformException catch (error) {
+        throw PlatformException(
+          code: error.code,
+          message: error.message,
+          details: {
+            'resource': 'manifest',
+            if (error.details is Map) ...error.details as Map,
+          },
+        );
+      } finally {
+        for (final suffix in ['', '.resume', '.resume.tmp']) {
+          final file = File('${partial.path}$suffix');
+          if (await file.exists()) await file.delete();
+        }
+      }
+    }
     try {
       final response = await _fetchMediaWithRetry(
         url,
@@ -3716,6 +3773,15 @@ class MediaDownloadService {
     var published = false;
     Future<void> releaseFailedOwner() async {
       if (published) return;
+      if (coordinator != null) {
+        final committed = await coordinator.committedFile(key);
+        final pending = File('${committed.path}.part');
+        if (await pending.exists() && await pending.length() > 0) {
+          // Retain durable task ownership of flushed bytes. Explicit deletion
+          // finds this owner even when no completed sidecar was published.
+          return;
+        }
+      }
       try {
         await _releaseSharedResources(ownerId, [key]);
       } catch (error, stack) {
@@ -3756,6 +3822,7 @@ class MediaDownloadService {
           document: document,
           maxBytes: min(64 * 1024 * 1024, maxBytes),
           headers: headers,
+          resourceKind: resourceKind,
           retryBudget: retryBudget,
           onProgress: onProgress,
         ),
@@ -3777,6 +3844,7 @@ class MediaDownloadService {
               document: document,
               maxBytes: min(64 * 1024 * 1024, maxBytes),
               headers: headers,
+              resourceKind: resourceKind,
               retryBudget: retryBudget,
               onProgress: onProgress,
             ),
@@ -3977,9 +4045,12 @@ class MediaDownloadService {
     required MediaRetryBudget retryBudget,
     required int maxBytes,
     Map<String, String> headers = const {},
+    String resourceKind = 'file',
     void Function(int bytesWritten)? onProgress,
   }) async {
-    if (_hasNativeTransfer && await File('${partial.path}.resume').exists()) {
+    if (policyTransfer != null ||
+        (_hasNativeTransfer && await File('${partial.path}.resume').exists())) {
+      await _prepareNativeResumeState(url, partial);
       try {
         await _transferNative(
           url,
@@ -3990,11 +4061,14 @@ class MediaDownloadService {
           budget: retryBudget,
           onProgress: onProgress,
           headers: headers,
+          resourceKind: resourceKind,
         );
         cancel.check();
         return;
       } on PlatformException catch (error) {
-        if (!_isRetryableNativeHeaderFailure(error)) rethrow;
+        if (policyTransfer != null || !_isRetryableNativeHeaderFailure(error)) {
+          rethrow;
+        }
         if (retryBudget.exhausted) retryBudget.extend();
         // The native transport has already exhausted its own bounded retry
         // budget. A clean response-header failure with no flushed bytes can
@@ -4008,6 +4082,7 @@ class MediaDownloadService {
           onProgress: onProgress,
           allowNativeFallback: false,
           headers: headers,
+          resourceKind: resourceKind,
           retryBudget: retryBudget,
         );
         return;
@@ -4026,6 +4101,7 @@ class MediaDownloadService {
       maxBytes: maxBytes,
       onProgress: onProgress,
       headers: headers,
+      resourceKind: resourceKind,
       allowNativeFallback: true,
       retryBudget: retryBudget,
     );
@@ -4040,6 +4116,7 @@ class MediaDownloadService {
     required int maxBytes,
     void Function(int bytesWritten)? onProgress,
     Map<String, String> headers = const {},
+    String resourceKind = 'file',
     required bool allowNativeFallback,
   }) async {
     final identity = sha256
@@ -4182,6 +4259,7 @@ class MediaDownloadService {
               budget: retryBudget,
               onProgress: onProgress,
               headers: headers,
+              resourceKind: resourceKind,
             );
             cancel.check();
             return;
@@ -4199,6 +4277,7 @@ class MediaDownloadService {
               maxBytes: maxBytes,
               onProgress: onProgress,
               headers: headers,
+              resourceKind: resourceKind,
               allowNativeFallback: false,
               retryBudget: retryBudget,
             );

@@ -1,0 +1,16 @@
+name: site_lens_health_probe
+description: Headless-safe channel lifecycle for Site Lens network health probes.
+version: 0.0.1
+publish_to: none
+environment:
+  sdk: ^3.13.0
+  flutter: '>=3.47.0'
+dependencies:
+  flutter:
+    sdk: flutter
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: dev.vikiea.site_lens_health_probe
+        pluginClass: HealthProbePlugin

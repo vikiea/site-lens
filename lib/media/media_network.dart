@@ -64,7 +64,7 @@ class MediaNetwork {
       onProgress: onProgress,
       headers: headers,
       requestContextId: requestContextId,
-      maxAttempts: 8,
+      maxAttempts: 5,
       startAttempt: 0,
     );
   }
@@ -80,6 +80,7 @@ class MediaNetwork {
     String? requestContextId,
     required int maxAttempts,
     required int startAttempt,
+    String resourceKind = 'file',
   }) async {
     if (!_nativeAvailable) throw UnsupportedError('需要 Android 媒体传输');
     if (maxAttempts < 1 || startAttempt < 0) {
@@ -115,6 +116,7 @@ class MediaNetwork {
         // discovery is best effort so a page without observed auth headers
         // keeps the existing transport behavior.
       }
+      cancel.check();
       final result = await _channel.invokeMapMethod<String, Object?>(
         'transferFile',
         {
@@ -127,6 +129,7 @@ class MediaNetwork {
           'maxBytes': maxBytes,
           'maxAttempts': maxAttempts,
           'startAttempt': startAttempt,
+          'resourceKind': resourceKind,
           if (headers != null && headers.isNotEmpty) 'headers': headers,
         },
       );

@@ -1,12 +1,14 @@
 name: site_lens
 description: A local-first, manually selected multi-site browser with capability-gated user scripts.
 publish_to: none
-version: 0.6.0-alpha26+159
+version: 0.6.0-alpha27+160
 environment:
   sdk: ^3.13.0
 dependencies:
   flutter:
     sdk: flutter
+  site_lens_health_probe:
+    path: packages/site_lens_health_probe
   flutter_riverpod: ^3.4.3
   drift: ^2.35.2
   sqlite3: ^3.7.1
