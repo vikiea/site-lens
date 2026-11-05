@@ -191,7 +191,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 21);
+      expect(raw.userVersion, 22);
       expect(
         raw.select(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='watch_saves'",
@@ -455,7 +455,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 21);
+      expect(raw.userVersion, 22);
       expect(
         raw.select(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='filter_snapshots'",
@@ -516,7 +516,7 @@ void main() {
 
     final raw = sqlite3.open(file.path);
     addTearDown(raw.close);
-    expect(raw.userVersion, 21);
+    expect(raw.userVersion, 22);
     expect(
       raw.select('PRAGMA table_info(media_tasks)').map((row) => row['name']),
       contains('batch_directory'),
@@ -552,7 +552,7 @@ void main() {
 
       final raw = sqlite3.open(file.path);
       addTearDown(raw.close);
-      expect(raw.userVersion, 21);
+      expect(raw.userVersion, 22);
       expect(
         raw
             .select('PRAGMA table_info(media_tasks)')

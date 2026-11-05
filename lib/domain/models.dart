@@ -1548,6 +1548,25 @@ class MediaTask {
   );
 }
 
+/// A durable checkpoint for native playback of a local media task.
+class NativePlaybackPosition {
+  const NativePlaybackPosition({
+    required this.taskId,
+    required this.cacheKey,
+    required this.positionMs,
+    required this.durationMs,
+    required this.state,
+    required this.updatedAt,
+  });
+
+  final String taskId;
+  final String cacheKey;
+  final int positionMs;
+  final int? durationMs;
+  final String state;
+  final DateTime updatedAt;
+}
+
 class AppErrorLog {
   const AppErrorLog({
     required this.id,

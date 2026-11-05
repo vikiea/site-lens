@@ -52,6 +52,7 @@ import '../media/media_network.dart';
 import '../media/media_resource_coordinator.dart';
 import '../media/native_media_runtime.dart';
 import '../media/native_media_auth_refresh.dart';
+import '../media/native_playback_store.dart';
 import '../media/watch_save_store.dart';
 import 'glass_quality_cache.dart';
 import 'ui_util.dart';
@@ -190,6 +191,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     mediaOperations = MediaOperationRunner(db);
     unawaited(mediaOperations.markInterrupted().catchError((_) {}));
     watchSaves = WatchSaveStore(db);
+    nativePlayback = NativePlaybackStore(db);
     nativeDownloads = Platform.isAndroid ? NativeDownloadRuntime() : null;
     nativeExports = Platform.isAndroid ? NativeExportRuntime() : null;
     if (nativeExports != null &&
@@ -597,6 +599,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   late final FilterSourceManager filterSources;
   late final ExportNotifyingMediaTaskStore mediaTasks;
   late final WatchSaveStore watchSaves;
+  late final NativePlaybackStore nativePlayback;
   late final MediaDownloadService mediaDownloads;
   var _mediaRuntimeReady = false;
   late final Mp4ExportService mediaExports;
@@ -3219,6 +3222,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         ? _persistSessions()
         : _sessionWrites;
     final mediaFlush = mediaTasks.flushAll();
+    final nativePlaybackFlush = nativePlayback.flush();
     final mediaExportFlush = mediaExportQueue.close();
     final watchSaveFlush = watchSaves.flush();
     WidgetsBinding.instance.removeObserver(this);
@@ -3246,6 +3250,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         Future.wait<void>([
           flush,
           mediaFlush,
+          nativePlaybackFlush,
           watchSaveFlush,
           (() async {
             try {

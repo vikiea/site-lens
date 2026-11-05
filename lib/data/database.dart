@@ -171,6 +171,15 @@ const _v21MediaExportJobsTable =
     'state TEXT NOT NULL DEFAULT \'queued\', '
     'next_attempt_at TEXT NOT NULL, last_error TEXT, updated_at TEXT NOT NULL)';
 
+const _v22NativePlaybackTables = <String>[
+  'CREATE TABLE IF NOT EXISTS native_playback_positions('
+      'task_id TEXT PRIMARY KEY, cache_key TEXT NOT NULL, '
+      'position_ms INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER, '
+      'state TEXT NOT NULL, updated_at TEXT NOT NULL)',
+  'CREATE TABLE IF NOT EXISTS native_playback_preferences('
+      'playlist_key TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at TEXT NOT NULL)',
+];
+
 const _v18MediaCandidateColumns = <(String, String)>[
   ('ALTER TABLE media_candidates ADD COLUMN series_key TEXT', 'series_key'),
   (
@@ -239,7 +248,7 @@ class AppDatabase extends GeneratedDatabase {
   static void Function(String step)? migrationDebugHook;
 
   @override
-  int get schemaVersion => 21;
+  int get schemaVersion => 22;
   @override
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
   @override
@@ -269,6 +278,7 @@ class AppDatabase extends GeneratedDatabase {
         ..._v19MediaOperationsTables,
         _v20MediaDirectoryCacheTable,
         _v21MediaExportJobsTable,
+        ..._v22NativePlaybackTables,
       ]) {
         await customStatement(sql);
       }
@@ -372,6 +382,11 @@ class AppDatabase extends GeneratedDatabase {
       }
       if (from < 20) await customStatement(_v20MediaDirectoryCacheTable);
       if (from < 21) await customStatement(_v21MediaExportJobsTable);
+      if (from < 22) {
+        for (final sql in _v22NativePlaybackTables) {
+          await customStatement(sql);
+        }
+      }
     },
     beforeOpen: (_) async {
       await customStatement('PRAGMA foreign_keys = ON');
@@ -1834,6 +1849,61 @@ class AppDatabase extends GeneratedDatabase {
 
   Future<void> deleteWatchSave(String ownerId) =>
       customStatement('DELETE FROM watch_saves WHERE owner_id=?', [ownerId]);
+
+  Future<NativePlaybackPosition?> nativePlaybackPosition(String taskId) async {
+    final row = await customSelect(
+      'SELECT * FROM native_playback_positions WHERE task_id=?',
+      variables: [Variable.withString(taskId)],
+    ).getSingleOrNull();
+    if (row == null) return null;
+    return NativePlaybackPosition(
+      taskId: row.read<String>('task_id'),
+      cacheKey: row.read<String>('cache_key'),
+      positionMs: row.read<int>('position_ms'),
+      durationMs: row.readNullable<int>('duration_ms'),
+      state: row.read<String>('state'),
+      updatedAt: DateTime.parse(row.read<String>('updated_at')),
+    );
+  }
+
+  Future<bool> saveNativePlaybackPosition(NativePlaybackPosition position) =>
+      transaction(() async {
+        await customStatement(
+          'INSERT INTO native_playback_positions(task_id,cache_key,position_ms,duration_ms,state,updated_at) '
+          'VALUES(?,?,?,?,?,?) '
+          'ON CONFLICT(task_id) DO UPDATE SET cache_key=excluded.cache_key,position_ms=excluded.position_ms,'
+          'duration_ms=excluded.duration_ms,state=excluded.state,updated_at=excluded.updated_at '
+          'WHERE substr(replace(excluded.updated_at,\'Z\',\'000\'),1,26) >= '
+          'substr(replace(native_playback_positions.updated_at,\'Z\',\'000\'),1,26)',
+          [
+            position.taskId,
+            position.cacheKey,
+            position.positionMs,
+            position.durationMs,
+            position.state,
+            position.updatedAt.toUtc().toIso8601String(),
+          ],
+        );
+        final changed = await customSelect('SELECT changes() AS c').getSingle();
+        return changed.read<int>('c') > 0;
+      });
+
+  Future<String?> nativePlaybackMode(String playlistKey) async {
+    final row = await customSelect(
+      'SELECT mode FROM native_playback_preferences WHERE playlist_key=?',
+      variables: [Variable.withString(playlistKey)],
+    ).getSingleOrNull();
+    return row?.read<String>('mode');
+  }
+
+  Future<void> saveNativePlaybackMode(String playlistKey, String mode) {
+    final now = DateTime.now().toUtc().toIso8601String();
+    return customStatement(
+      'INSERT INTO native_playback_preferences(playlist_key,mode,updated_at) VALUES(?,?,?) '
+      'ON CONFLICT(playlist_key) DO UPDATE SET mode=excluded.mode,updated_at=excluded.updated_at',
+      [playlistKey, mode, now],
+    );
+  }
 
   WatchSave _watchSaveFromRow(QueryRow row) => WatchSave(
     ownerId: row.read<String>('owner_id'),

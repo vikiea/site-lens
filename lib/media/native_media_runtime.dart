@@ -177,7 +177,11 @@ class NativeMediaRuntime {
   }
 
   /// SAF files are read through their granted URI, without a second MP4 copy.
-  Future<NativePlaybackSession> openDocument(MediaTask task, Uri uri) async {
+  Future<NativePlaybackSession> openDocument(
+    MediaTask task,
+    Uri uri, {
+    bool autoPlay = true,
+  }) async {
     final requestGeneration = _beginOpen();
     if (uri.scheme != 'content' || uri.host.isEmpty) {
       throw const FormatException('本地媒体地址无效');
@@ -190,6 +194,7 @@ class NativeMediaRuntime {
       'uri': uri.toString(),
       'mime': 'video/mp4',
       'title': task.displayName,
+      'autoPlay': autoPlay,
     });
     _ensureOpenCurrent(requestGeneration);
     return _decode(raw ?? const <String, Object?>{});

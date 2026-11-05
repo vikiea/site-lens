@@ -99,6 +99,28 @@ String mediaPlaylistEntryName(Iterable<MediaTask> playlist, MediaTask task) {
   return '${task.displayName} · 来源 ${index + 1}';
 }
 
+enum MediaPlaybackMode { listLoop, singleLoop, stopAfterEpisode }
+
+String mediaPlaybackModeLabel(MediaPlaybackMode mode) => switch (mode) {
+  MediaPlaybackMode.listLoop => '列表循环',
+  MediaPlaybackMode.singleLoop => '单集循环',
+  MediaPlaybackMode.stopAfterEpisode => '播完即停',
+};
+
+String mediaPlaybackModeHint(MediaPlaybackMode mode) => switch (mode) {
+  MediaPlaybackMode.listLoop => '列表循环：播完后播放下一集',
+  MediaPlaybackMode.singleLoop => '单集循环：播完后从头播放本集',
+  MediaPlaybackMode.stopAfterEpisode => '播完即停',
+};
+
+String mediaPlaybackPlaylistKey(MediaTask task, {String? explicitKey}) {
+  final explicit = explicitKey?.trim();
+  if (explicit != null && explicit.isNotEmpty) return explicit;
+  final series = task.seriesKey?.trim();
+  if (series != null && series.isNotEmpty) return 'series:$series';
+  return 'task:${task.id}';
+}
+
 String? mediaPlaylistBoundaryHint({
   required int index,
   required int length,
@@ -314,6 +336,38 @@ class NativePlaybackSession {
   final int videoHeight;
   final double speed;
   final String? errorCode;
+
+  NativePlaybackSession copyWith({
+    String? id,
+    String? candidateId,
+    String? taskId,
+    bool? userPaused,
+    NativePlaybackState? state,
+    int? textureId,
+    int? positionMs,
+    int? durationMs,
+    int? videoWidth,
+    int? videoHeight,
+    double? speed,
+    Object? errorCode = _unset,
+  }) => NativePlaybackSession(
+    id: id ?? this.id,
+    candidateId: candidateId ?? this.candidateId,
+    taskId: taskId ?? this.taskId,
+    userPaused: userPaused ?? this.userPaused,
+    state: state ?? this.state,
+    textureId: textureId ?? this.textureId,
+    positionMs: positionMs ?? this.positionMs,
+    durationMs: durationMs ?? this.durationMs,
+    videoWidth: videoWidth ?? this.videoWidth,
+    videoHeight: videoHeight ?? this.videoHeight,
+    speed: speed ?? this.speed,
+    errorCode: identical(errorCode, _unset)
+        ? this.errorCode
+        : errorCode as String?,
+  );
+
+  static const _unset = Object();
 }
 
 /// User-triggered native playback state. The platform Media3 adapter can

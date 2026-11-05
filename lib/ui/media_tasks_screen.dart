@@ -197,6 +197,7 @@ class NativeMediaPlayerScreen extends StatefulWidget {
     this.candidate,
     this.playlist = const [],
     this.playlistIndex = 0,
+    this.playlistKey,
     this.preferExported = false,
   });
 
@@ -206,6 +207,7 @@ class NativeMediaPlayerScreen extends StatefulWidget {
   final MediaCandidate? candidate;
   final List<MediaTask> playlist;
   final int playlistIndex;
+  final String? playlistKey;
   final bool preferExported;
 
   @override
@@ -236,6 +238,14 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   bool _longPressing = false;
   double _speedBeforeLongPress = 1;
   late int _playlistIndex;
+  late final String _playbackPlaylistKey;
+  MediaPlaybackMode _playbackMode = MediaPlaybackMode.stopAfterEpisode;
+  bool _completionHandling = false;
+  int _stateRequestEpoch = 0;
+  int? _positionGuardMs;
+  DateTime? _positionGuardUntil;
+  Future<void>? _exitRun;
+  Timer? _progressSaver;
   final _playlistRetained = <String>{};
   Future<void>? _playlistSwitch;
 
@@ -248,18 +258,107 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
   void initState() {
     super.initState();
     _playlistIndex = widget.playlistIndex;
+    _playbackPlaylistKey = widget.task == null && widget.playlist.isEmpty
+        ? 'candidate:${widget.session.candidateId}'
+        : mediaPlaybackPlaylistKey(
+            _currentTask!,
+            explicitKey: widget.playlistKey,
+          );
     _states = widget.app.nativeMedia.states.listen((next) {
-      if (!mounted || next.id != _session.id) return;
-      setState(() => _session = next);
-      _scheduleHide();
+      _acceptNativeState(next);
     });
     _statePoller = Timer.periodic(
       const Duration(milliseconds: 500),
       (_) => unawaited(_refreshState()),
     );
+    _progressSaver = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => unawaited(_saveProgress()),
+    );
+    unawaited(_loadPlaybackMode());
     unawaited(_loadGestureLevels());
     unawaited(_applySystemUi());
     _scheduleHide();
+  }
+
+  MediaTask? get _currentTask =>
+      widget.playlist.isEmpty ? widget.task : widget.playlist[_playlistIndex];
+
+  Future<void> _loadPlaybackMode() async {
+    final mode = await widget.app.nativePlayback.modeFor(_playbackPlaylistKey);
+    if (mounted) setState(() => _playbackMode = mode);
+  }
+
+  Future<void> _cyclePlaybackMode() async {
+    final values = MediaPlaybackMode.values;
+    final previous = _playbackMode;
+    final next = values[(_playbackMode.index + 1) % values.length];
+    setState(() => _playbackMode = next);
+    try {
+      await widget.app.nativePlayback.saveMode(_playbackPlaylistKey, next);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _playbackMode = previous);
+        showError(context, error);
+      }
+      return;
+    }
+    _showGestureHint(mediaPlaybackModeHint(next));
+    _scheduleHide();
+  }
+
+  IconData get _playbackModeIcon => switch (_playbackMode) {
+    MediaPlaybackMode.listLoop => Icons.repeat,
+    MediaPlaybackMode.singleLoop => Icons.repeat_one,
+    MediaPlaybackMode.stopAfterEpisode => Icons.stop_circle_outlined,
+  };
+
+  Future<void> _saveProgress({NativePlaybackSession? session}) async {
+    final task = widget.task == null && widget.playlist.isEmpty
+        ? null
+        : _currentTask;
+    if (task == null || _closing && session == null) return;
+    final current = session ?? _session;
+    await widget.app.nativePlayback.savePosition(
+      task,
+      positionMs: current.positionMs,
+      durationMs: current.durationMs,
+      state: current.state,
+    );
+  }
+
+  void _setPositionGuard(int positionMs) {
+    _positionGuardMs = positionMs;
+    _positionGuardUntil = DateTime.now().add(const Duration(seconds: 2));
+  }
+
+  void _acceptNativeState(NativePlaybackSession next) {
+    if (!mounted || next.id != _session.id) return;
+    final now = DateTime.now();
+    final guard = _positionGuardMs;
+    final guardUntil = _positionGuardUntil;
+    if (guard != null && guardUntil != null) {
+      if (now.isBefore(guardUntil) &&
+          (next.positionMs - guard).abs() > 1200 &&
+          next.state != NativePlaybackState.completed) {
+        return;
+      }
+      if (next.positionMs >= guard &&
+          next.state == NativePlaybackState.playing) {
+        _positionGuardMs = null;
+        _positionGuardUntil = null;
+      }
+    }
+    if (next.state != NativePlaybackState.completed &&
+        next.positionMs + 250 < _session.positionMs) {
+      return;
+    }
+    setState(() => _session = next);
+    unawaited(_saveProgress(session: next));
+    _scheduleHide();
+    if (next.state == NativePlaybackState.completed) {
+      unawaited(_handlePlaybackCompleted(next));
+    }
   }
 
   Future<void> _loadGestureLevels() async {
@@ -461,11 +560,15 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
 
   Future<void> _command(Future<NativePlaybackSession> Function() action) async {
     if (!_canControl) return;
+    final requestEpoch = ++_stateRequestEpoch;
     try {
       final next = await action();
-      if (!mounted || next.id != _session.id) return;
-      setState(() => _session = next);
-      _scheduleHide();
+      if (!mounted ||
+          requestEpoch != _stateRequestEpoch ||
+          next.id != _session.id) {
+        return;
+      }
+      _acceptNativeState(next);
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -477,9 +580,12 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
 
   Future<void> _refreshState() async {
     if (!_canControl || _seeking) return;
+    final requestEpoch = ++_stateRequestEpoch;
     try {
       final next = await widget.app.nativeMedia.state(sessionId: _session.id);
-      if (mounted && next.id == _session.id) setState(() => _session = next);
+      if (requestEpoch == _stateRequestEpoch) {
+        _acceptNativeState(next);
+      }
     } catch (_) {}
   }
 
@@ -493,6 +599,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
         ? target.clamp(0, duration)
         : target.clamp(0, 1 << 62);
     if (!await _waitForPartialSeek(clamped)) return;
+    _setPositionGuard(clamped);
     await _command(
       () => widget.app.nativeMedia.seek(
         Duration(milliseconds: clamped),
@@ -506,6 +613,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
         ? value.round().clamp(0, 1 << 62)
         : value.round().clamp(0, _session.durationMs);
     if (!await _waitForPartialSeek(target)) return;
+    _setPositionGuard(target);
     await _command(
       () => widget.app.nativeMedia.seek(
         Duration(milliseconds: target),
@@ -559,7 +667,11 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     );
   }
 
-  Future<NativePlaybackSession> _openPlaylistTask(MediaTask task) async {
+  Future<NativePlaybackSession> _openPlaylistTask(
+    MediaTask task, {
+    bool autoPlay = true,
+    bool restoreProgress = true,
+  }) async {
     final shouldRetain = !_playlistRetained.contains(task.id);
     var retained = false;
     try {
@@ -572,7 +684,18 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
         final artifact = widget.app.mediaLibrary.item(task.id);
         final uri = Uri.tryParse(artifact?.location ?? '');
         if (uri?.scheme == 'content') {
-          return await widget.app.nativeMedia.openDocument(task, uri!);
+          var opened = await widget.app.nativeMedia.openDocument(
+            task,
+            uri!,
+            autoPlay: false,
+          );
+          if (restoreProgress) {
+            opened = await _restoreSavedPosition(task, opened);
+          }
+          if (autoPlay) {
+            opened = await widget.app.nativeMedia.play(sessionId: opened.id);
+          }
+          return opened;
         }
       }
       final cached =
@@ -587,7 +710,16 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
               ? await widget.app.mediaPartialPlaybackFile(task)
               : null);
       if (cached != null) {
-        return await widget.app.nativeMedia.openLocal(task, cached);
+        var opened = await widget.app.nativeMedia.openLocal(
+          task,
+          cached,
+          autoPlay: false,
+        );
+        if (restoreProgress) opened = await _restoreSavedPosition(task, opened);
+        if (autoPlay) {
+          opened = await widget.app.nativeMedia.play(sessionId: opened.id);
+        }
+        return opened;
       }
       throw StateError('文件缺失，请在媒体任务中重新下载');
     } catch (_) {
@@ -597,6 +729,21 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
       }
       rethrow;
     }
+  }
+
+  Future<NativePlaybackSession> _restoreSavedPosition(
+    MediaTask task,
+    NativePlaybackSession session,
+  ) async {
+    final saved = await widget.app.nativePlayback.positionFor(task);
+    if (saved == null || saved.state == NativePlaybackState.completed.name) {
+      return session;
+    }
+    if (saved.positionMs <= 0) return session;
+    return widget.app.nativeMedia.seek(
+      Duration(milliseconds: saved.positionMs),
+      sessionId: session.id,
+    );
   }
 
   Future<void> _switchPlaylist(int offset) async {
@@ -613,6 +760,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     final targetIndex = _playlistIndex + offset;
     final previousTask = widget.playlist[_playlistIndex];
     final previousPositionMs = _session.positionMs;
+    await _saveProgress();
     try {
       final next = await _openPlaylistTask(widget.playlist[targetIndex]);
       if (!mounted || _closing) {
@@ -630,6 +778,58 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     } catch (error) {
       await _restorePlaylistTask(previousTask, previousPositionMs);
       if (mounted) showError(context, error);
+    }
+  }
+
+  Future<void> _handlePlaybackCompleted(NativePlaybackSession completed) async {
+    if (_completionHandling ||
+        _closing ||
+        !mounted ||
+        completed.id != _session.id ||
+        _session.state != NativePlaybackState.completed) {
+      return;
+    }
+    _completionHandling = true;
+    try {
+      await _saveProgress(session: completed);
+      if (!mounted || _closing || completed.id != _session.id) return;
+      switch (_playbackMode) {
+        case MediaPlaybackMode.stopAfterEpisode:
+          _showGestureHint('本集播放完毕');
+        case MediaPlaybackMode.singleLoop:
+          final reset = await widget.app.nativeMedia.seek(
+            Duration.zero,
+            sessionId: completed.id,
+          );
+          if (!mounted || _closing) return;
+          setState(() => _session = reset);
+          await _command(
+            () => widget.app.nativeMedia.play(sessionId: reset.id),
+          );
+        case MediaPlaybackMode.listLoop:
+          if (widget.playlist.isEmpty) {
+            _showGestureHint('本集播放完毕');
+            return;
+          }
+          final nextIndex = (_playlistIndex + 1) % widget.playlist.length;
+          final next = await _openPlaylistTask(widget.playlist[nextIndex]);
+          if (!mounted || _closing) {
+            await widget.app.nativeMedia.close(sessionId: next.id);
+            return;
+          }
+          setState(() {
+            _session = next;
+            _playlistIndex = nextIndex;
+          });
+          _showGestureHint(
+            mediaPlaylistEntryName(widget.playlist, widget.playlist[nextIndex]),
+          );
+          _scheduleHide();
+      }
+    } catch (error) {
+      if (mounted) showError(context, error);
+    } finally {
+      _completionHandling = false;
     }
   }
 
@@ -789,21 +989,25 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     if (_closing) return;
     _closing = true;
     _hideTimer?.cancel();
+    _progressSaver?.cancel();
+    try {
+      await _saveProgress(session: _session);
+    } catch (_) {}
     try {
       await widget.app.nativeMedia.close(sessionId: _session.id);
     } catch (_) {}
   }
 
-  Future<void> _stopAndExit() async {
-    if (_closing) return;
-    _closing = true;
-    _hideTimer?.cancel();
-    try {
-      await widget.app.nativeMedia.stop(sessionId: _session.id);
-    } catch (error) {
-      if (mounted) showError(context, error);
-    }
-    if (mounted) Navigator.of(context).maybePop();
+  Future<void> _exitPlayer() async {
+    final running = _exitRun;
+    if (running != null) return running;
+    late final Future<void> exit;
+    exit = () async {
+      await _close();
+      if (mounted) Navigator.of(context).pop();
+    }();
+    _exitRun = exit;
+    return exit;
   }
 
   Future<void> _openCastControls() async {
@@ -837,6 +1041,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
     _hideTimer?.cancel();
     _gestureHintTimer?.cancel();
     _statePoller?.cancel();
+    _progressSaver?.cancel();
     unawaited(SystemChrome.setPreferredOrientations([]));
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     unawaited(_close());
@@ -848,8 +1053,9 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
 
   @override
   Widget build(BuildContext context) => PopScope(
+    canPop: false,
     onPopInvokedWithResult: (didPop, _) {
-      if (!didPop) unawaited(_close());
+      if (!didPop) unawaited(_exitPlayer());
     },
     child: Scaffold(
       backgroundColor: Colors.black,
@@ -909,7 +1115,7 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
                       tooltip: '返回',
                       color: Colors.white,
                       icon: const Icon(Icons.arrow_back),
-                      onPressed: () => Navigator.of(context).maybePop(),
+                      onPressed: _exitPlayer,
                     ),
                     Row(
                       mainAxisSize: MainAxisSize.min,
@@ -1033,17 +1239,8 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
                       onChanged: (value) {
                         if (mounted) {
                           setState(() {
-                            _session = NativePlaybackSession(
-                              id: _session.id,
-                              candidateId: _session.candidateId,
-                              state: _session.state,
-                              textureId: _session.textureId,
+                            _session = _session.copyWith(
                               positionMs: value.round(),
-                              durationMs: _session.durationMs,
-                              videoWidth: _session.videoWidth,
-                              videoHeight: _session.videoHeight,
-                              speed: _session.speed,
-                              errorCode: _session.errorCode,
                             );
                           });
                         }
@@ -1109,10 +1306,10 @@ class _NativeMediaPlayerScreenState extends State<NativeMediaPlayerScreen> {
                               : null,
                         ),
                         IconButton(
-                          tooltip: '停止',
+                          tooltip: mediaPlaybackModeLabel(_playbackMode),
                           color: Colors.white,
-                          icon: const Icon(Icons.stop_circle_outlined),
-                          onPressed: _canControl ? _stopAndExit : null,
+                          icon: Icon(_playbackModeIcon),
+                          onPressed: _canControl ? _cyclePlaybackMode : null,
                         ),
                       ],
                     ),
@@ -1134,6 +1331,7 @@ Future<void> openMediaTaskPlayer(
   bool preferExported = false,
   Iterable<MediaTask>? playlistTasks,
   bool playlistPlayableOnly = true,
+  String? playlistKey,
 }) async {
   app.mediaTasks.retain(task.id);
   final prioritize =
@@ -1162,9 +1360,19 @@ Future<void> openMediaTaskPlayer(
                   ? null
                   : await app.mediaPartialPlaybackFile(task));
     if (cached != null || document?.scheme == 'content') {
-      final session = document?.scheme == 'content'
-          ? await app.nativeMedia.openDocument(task, document!)
-          : await app.nativeMedia.openLocal(task, cached!);
+      var session = document?.scheme == 'content'
+          ? await app.nativeMedia.openDocument(task, document!, autoPlay: false)
+          : await app.nativeMedia.openLocal(task, cached!, autoPlay: false);
+      final saved = await app.nativePlayback.positionFor(task);
+      if (saved != null && saved.state != NativePlaybackState.completed.name) {
+        if (saved.positionMs > 0) {
+          session = await app.nativeMedia.seek(
+            Duration(milliseconds: saved.positionMs),
+            sessionId: session.id,
+          );
+        }
+      }
+      session = await app.nativeMedia.play(sessionId: session.id);
       if (!context.mounted) {
         await app.nativeMedia.close(sessionId: session.id);
         return;
@@ -1178,6 +1386,7 @@ Future<void> openMediaTaskPlayer(
             task: task,
             playlist: playlist,
             playlistIndex: playlistIndex < 0 ? 0 : playlistIndex,
+            playlistKey: playlistKey,
             preferExported: preferExported,
           ),
         ),
@@ -1797,6 +2006,8 @@ class _MediaLibraryScreenState extends State<MediaLibraryScreen>
           preferExported: true,
           playlistTasks: folderPlaylist,
           playlistPlayableOnly: false,
+          playlistKey:
+              'library-folder:${_storageRoot?.location ?? 'root'}:${_browser.folderId ?? 'root'}',
         );
       case 'rescan':
         await _rescan();
@@ -3927,6 +4138,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
       widget.app,
       task,
       playlistTasks: folderPlaylist,
+      playlistKey: 'tasks-folder:${_browser.folderId ?? 'root'}',
     );
   }
 
