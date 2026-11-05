@@ -51,14 +51,10 @@ class MediaNetworkRuntime(
                 val uri = URI(call.argument<String>("url") ?: error("缺少媒体地址"))
                 val attempt = call.argument<Int>("attempt") ?: 0
                 val networkEpoch = call.argument<Int>("networkEpoch") ?: 0
-                val plan = if (call.method == "probeRoute") null
-                    else SystemMediaNetwork.routePlan(context, uri, attempt)
-                val routeInfo = plan?.info ?: SystemMediaNetwork.RouteInfo(
-                    SystemMediaNetwork.RouteKind.UNKNOWN, SystemMediaNetwork.DnsOwner.UNKNOWN, false,
-                )
+                val plan = SystemMediaNetwork.routePlan(context, uri, attempt)
+                val routeInfo = plan.info
                 val strategy = routeInfo.kind
-                val proxy = plan?.let(SystemMediaNetwork::configuration)
-                    ?: SystemMediaNetwork.probeConfiguration(uri, attempt = attempt)
+                val proxy = SystemMediaNetwork.configuration(plan)
                 val document = call.argument<String>("document")
                     ?.trim()
                     ?.takeIf { it.isNotEmpty() }
@@ -79,16 +75,38 @@ class MediaNetworkRuntime(
                     "preferVpnTun" to routeInfo.preferVpnTun,
                     "directAllowed" to routeInfo.directAllowed,
                     "dnsClass" to routeInfo.dnsClass,
+                    "targetDnsMode" to routeInfo.targetDnsMode,
                     "networkEpoch" to networkEpoch,
                     "requestContextId" to MediaRequestContextRegistry
-                        .latest(uri.toString(), document?.toString().orEmpty())?.id,
+                        .latest(uri.toString(), document.orEmpty())?.id,
                     "userAgent" to userAgent,
                 )
             }
             main.post { outcome.fold(
                 onSuccess = { result.success(it) },
-                onFailure = { result.error("media_route", "无法使用系统代理，请检查代理设置后重试", null) },
+                onFailure = {
+                    result.error(
+                        "media_route",
+                        "无法使用系统代理，请检查代理设置后重试",
+                        mapOf("category" to routeFailureCategory(it)),
+                    )
+                },
             ) }
+        }
+    }
+
+    private fun routeFailureCategory(error: Throwable): String {
+        val names = generateSequence(error) { it.cause }
+            .map { it::class.java.simpleName.lowercase() }
+            .toList()
+        return when {
+            names.any { it.contains("unknownhost") } -> "dns"
+            names.any { it.contains("sockettimeout") || it.contains("timeout") } -> "timeout"
+            names.any { it.contains("sslpeer") || it.contains("certificate") } -> "certificate"
+            names.any { it.contains("ssl") || it.contains("tls") } -> "tls_handshake"
+            names.any { it.contains("protocol") || it.contains("proxy") } -> "proxy_connect"
+            error is IllegalArgumentException -> "route_policy"
+            else -> "route"
         }
     }
 

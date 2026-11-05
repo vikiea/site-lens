@@ -1,0 +1,332 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "用户脚本数据流：导入、确认摘要、注入与 GM 回写",
+    "subtitle": "每轮导航都会重算摘要与依赖完整性，失配脚本在进入宿主之前就被关闭",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "output": ".archify/dataflow-userscript-runtime-20261104-200028/userscript-runtime.html",
+    "viewBox": [
+      1080,
+      695
+    ],
+    "repository": {
+      "url": "git@github.com:vikiea/site-lens.git",
+      "revision": "bc5248d2e480f6f38871a935b2b99c7a5a2c3c21",
+      "provider": "github",
+      "link_mode": "local-only"
+    }
+  },
+  "stages": [
+    {
+      "label": "导入保存"
+    },
+    {
+      "label": "解析授权"
+    },
+    {
+      "label": "持久化"
+    },
+    {
+      "label": "注册注入"
+    },
+    {
+      "label": "GM 回写"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "file",
+      "type": "external",
+      "label": "脚本文件",
+      "stage": 0,
+      "row": 1,
+      "sublabel": ".user.js",
+      "width": 92,
+      "sources": [
+        {
+          "path": "lib/scripts/script_service.dart",
+          "line": 24,
+          "end_line": 39,
+          "label": "save"
+        }
+      ]
+    },
+    {
+      "id": "svc",
+      "type": "backend",
+      "label": "ScriptService",
+      "stage": 0,
+      "row": 3,
+      "sublabel": "保存与授权",
+      "width": 104,
+      "sources": [
+        {
+          "path": "lib/scripts/script_service.dart",
+          "line": 62,
+          "end_line": 195,
+          "label": "enable"
+        },
+        {
+          "path": "lib/scripts/script_service.dart",
+          "line": 198,
+          "end_line": 323,
+          "label": "registrations"
+        }
+      ]
+    },
+    {
+      "id": "meta",
+      "type": "security",
+      "label": "元数据解析",
+      "stage": 1,
+      "row": 2,
+      "sublabel": "@match / @grant",
+      "width": 96,
+      "sources": [
+        {
+          "path": "lib/scripts/metadata.dart",
+          "line": 199,
+          "end_line": 299,
+          "label": "ScriptMetadata.parse"
+        },
+        {
+          "path": "lib/scripts/metadata.dart",
+          "line": 295,
+          "end_line": 299,
+          "label": "unsafeWindow 混用"
+        }
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "本地数据库",
+      "stage": 4,
+      "row": 0,
+      "sublabel": "scripts + 确认摘要",
+      "width": 104,
+      "sources": [
+        {
+          "path": "lib/data/database.dart",
+          "line": 1077,
+          "end_line": 1095,
+          "label": "saveScript"
+        },
+        {
+          "path": "lib/data/database.dart",
+          "line": 1226,
+          "end_line": 1237,
+          "label": "setValue"
+        }
+      ]
+    },
+    {
+      "id": "gate",
+      "type": "security",
+      "label": "完整性闸门",
+      "stage": 2,
+      "row": 3,
+      "sublabel": "摘要 / 依赖 / 资源",
+      "width": 104,
+      "sources": [
+        {
+          "path": "lib/scripts/script_service.dart",
+          "line": 253,
+          "end_line": 266,
+          "label": "自动关闭"
+        }
+      ]
+    },
+    {
+      "id": "native",
+      "type": "backend",
+      "label": "NativeWebHost",
+      "stage": 3,
+      "row": 1,
+      "sublabel": "install 与租约",
+      "width": 104,
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt",
+          "line": 1465,
+          "end_line": 1487,
+          "label": "install"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt",
+          "line": 1489,
+          "end_line": 1514,
+          "label": "createPrivilegedWorld"
+        }
+      ]
+    },
+    {
+      "id": "rt",
+      "type": "external",
+      "label": "脚本运行时",
+      "stage": 4,
+      "row": 1,
+      "sublabel": "每脚本隔离世界",
+      "width": 104,
+      "sources": [
+        {
+          "path": "web_assets/userscript_runtime.js",
+          "line": 1,
+          "end_line": 2,
+          "label": "隔离世界"
+        },
+        {
+          "path": "web_assets/userscript_runtime.js",
+          "line": 205,
+          "end_line": 222,
+          "label": "GM_* API"
+        }
+      ]
+    },
+    {
+      "id": "gm",
+      "type": "backend",
+      "label": "onGmRequest",
+      "stage": 4,
+      "row": 3,
+      "sublabel": "Dart 侧授权",
+      "width": 104,
+      "sources": [
+        {
+          "path": "lib/web_host/native_hosts.dart",
+          "line": 715,
+          "end_line": 760,
+          "label": "onGmRequest"
+        },
+        {
+          "path": "lib/web_host/native_hosts.dart",
+          "line": 1005,
+          "end_line": 1013,
+          "label": "setValue 队列"
+        }
+      ],
+      "yOffset": 30
+    }
+  ],
+  "flows": [
+    {
+      "id": "f1",
+      "from": "file",
+      "to": "svc",
+      "label": "源码",
+      "classification": "≤16 MiB",
+      "variant": "emphasis",
+      "labelDy": 0,
+      "labelAt": [
+        305,
+        336
+      ]
+    },
+    {
+      "id": "f2",
+      "from": "svc",
+      "to": "meta",
+      "label": "解析元数据",
+      "classification": "@match / @grant",
+      "variant": "default"
+    },
+    {
+      "id": "f3",
+      "from": "meta",
+      "to": "db",
+      "label": "授权规则",
+      "classification": "canEnable + grants",
+      "variant": "default",
+      "labelDy": -14
+    },
+    {
+      "id": "f4",
+      "from": "svc",
+      "to": "gate",
+      "label": "确认摘要",
+      "classification": "network_mode + 钉住 SHA-256",
+      "variant": "emphasis",
+      "labelAt": [
+        760,
+        530
+      ]
+    },
+    {
+      "id": "f5",
+      "from": "gate",
+      "to": "native",
+      "label": "ScriptRegistration",
+      "classification": "id / revision / rulesJson",
+      "variant": "emphasis",
+      "labelDy": -14,
+      "labelAt": [
+        700,
+        430
+      ]
+    },
+    {
+      "id": "f6",
+      "from": "native",
+      "to": "rt",
+      "label": "注入脚本",
+      "classification": "特权世界带 __lensBridgeToken",
+      "variant": "emphasis",
+      "labelAt": [
+        853,
+        200
+      ]
+    },
+    {
+      "id": "f7",
+      "from": "rt",
+      "to": "gm",
+      "label": "桥接请求",
+      "classification": "每文档 token 校验",
+      "variant": "security",
+      "labelAt": [
+        860,
+        400
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "信任边界",
+      "items": [
+        "摘要 digest 同时覆盖源码、@require 依赖与 @resource 资源的 SHA-256",
+        "依赖与资源在 enable 时下载并钉住，之后每轮不符即视为被改写",
+        "public 网络模式需要逐脚本确认，legacy 摘要按声明式模式就地升级"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "declared / public 网络模式",
+      "items": [
+        "declared 模式只放行 metadata.connect 里声明的域名",
+        "public 模式放行全部域名，但必须 public_confirmed 才算有效确认",
+        "连接域在 NativeHosts.onGmRequest 里按 xhr 请求逐个校验"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "备份不含未确认状态",
+      "items": [
+        "saveScript 每次写入都把 enabled 与 approved_digest 清零",
+        "脚本被禁用或确认被清空后，备份只能恢复源码，不会恢复授权",
+        "@grant none 的脚本进页面世界，且没有 lensBridge 可调用"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "自动关闭与回写",
+      "items": [
+        "完整性闸门失配时禁用脚本并记录「确认或依赖完整性已失效，自动关闭」",
+        "不支持 @grant、unsafeWindow 与 GM 特权混用都在元数据解析阶段报错",
+        "GM 值写回经 lensBridge 进入 onGmRequest，再按脚本串行写入本地数据库"
+      ]
+    }
+  ]
+}

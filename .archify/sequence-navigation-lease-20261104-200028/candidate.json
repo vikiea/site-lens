@@ -1,0 +1,369 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "一次导航的租约时序：从 navigate() 到 loaded",
+    "locale": "zh-CN",
+    "output": ".archify/sequence-navigation-lease-20261104-200028/navigation-lease.html",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [
+      1080,
+      658
+    ],
+    "repository": {
+      "url": "git@github.com:vikiea/site-lens.git",
+      "revision": "bc5248d2e480f6f38871a935b2b99c7a5a2c3c21",
+      "provider": "github",
+      "link_mode": "local-only"
+    }
+  },
+  "participants": [
+    {
+      "id": "app",
+      "type": "frontend",
+      "label": "AppController",
+      "sublabel": "发起导航",
+      "sources": [
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 2935,
+          "end_line": 2987,
+          "label": "_spawnTab"
+        },
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 1851,
+          "end_line": 1877,
+          "label": "_hostMetadataChanged"
+        }
+      ]
+    },
+    {
+      "id": "hosts",
+      "type": "backend",
+      "label": "NativeHosts",
+      "sublabel": "桥接与 generation",
+      "sources": [
+        {
+          "path": "lib/web_host/native_hosts.dart",
+          "line": 241,
+          "end_line": 242,
+          "label": "navigate"
+        },
+        {
+          "path": "lib/web_host/native_hosts.dart",
+          "line": 330,
+          "end_line": 345,
+          "label": "onEvent"
+        },
+        {
+          "path": "lib/web_host/native_hosts.dart",
+          "line": 649,
+          "end_line": 696,
+          "label": "getScriptsForNavigation"
+        }
+      ]
+    },
+    {
+      "id": "pigeon",
+      "type": "messagebus",
+      "label": "Pigeon 桥",
+      "sublabel": "WebHostApi / Events",
+      "sources": [
+        {
+          "path": "pigeons/web_host.dart",
+          "line": 359,
+          "end_line": 359,
+          "label": "navigate"
+        },
+        {
+          "path": "pigeons/web_host.dart",
+          "line": 402,
+          "end_line": 405,
+          "label": "getScriptsForNavigation"
+        }
+      ]
+    },
+    {
+      "id": "native",
+      "type": "backend",
+      "label": "NativeWebHost",
+      "sublabel": "导航租约",
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt",
+          "line": 1333,
+          "end_line": 1392,
+          "label": "prepareNavigation"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt",
+          "line": 1465,
+          "end_line": 1487,
+          "label": "install"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt",
+          "line": 862,
+          "end_line": 947,
+          "label": "onNavigationStarted / Redirected"
+        }
+      ]
+    },
+    {
+      "id": "scripts",
+      "type": "database",
+      "label": "ScriptService",
+      "sublabel": "注册与完整性",
+      "sources": [
+        {
+          "path": "lib/scripts/script_service.dart",
+          "line": 198,
+          "end_line": 323,
+          "label": "registrations"
+        },
+        {
+          "path": "lib/scripts/script_service.dart",
+          "line": 253,
+          "end_line": 266,
+          "label": "完整性闸门"
+        }
+      ]
+    }
+  ],
+  "segments": [
+    {
+      "from": 148,
+      "to": 370,
+      "label": "发起与准备"
+    },
+    {
+      "from": 372,
+      "to": 482,
+      "label": "注入加载"
+    },
+    {
+      "from": 484,
+      "to": 538,
+      "label": "事件回传"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "app",
+      "from": 160,
+      "to": 176
+    },
+    {
+      "participant": "app",
+      "from": 524,
+      "to": 560
+    },
+    {
+      "participant": "hosts",
+      "from": 148,
+      "to": 200
+    },
+    {
+      "participant": "hosts",
+      "from": 248,
+      "to": 300
+    },
+    {
+      "participant": "hosts",
+      "from": 492,
+      "to": 524
+    },
+    {
+      "participant": "pigeon",
+      "from": 148,
+      "to": 200
+    },
+    {
+      "participant": "pigeon",
+      "from": 248,
+      "to": 300
+    },
+    {
+      "participant": "pigeon",
+      "from": 460,
+      "to": 500
+    },
+    {
+      "participant": "native",
+      "from": 216,
+      "to": 460
+    },
+    {
+      "participant": "scripts",
+      "from": 244,
+      "to": 300
+    }
+  ],
+  "messages": [
+    {
+      "id": "m1",
+      "from": "app",
+      "to": "hosts",
+      "y": 160,
+      "label": "打开标签",
+      "note": "AppController 打开标签",
+      "variant": "emphasis"
+    },
+    {
+      "id": "m2",
+      "from": "hosts",
+      "to": "pigeon",
+      "y": 188,
+      "label": "宿主接口",
+      "note": "Pigeon 生成的 WebHostApi",
+      "variant": "emphasis"
+    },
+    {
+      "id": "m3",
+      "from": "pigeon",
+      "to": "native",
+      "y": 216,
+      "label": "分发宿主",
+      "note": "NativeWebHostRegistry 分发到宿主",
+      "variant": "emphasis"
+    },
+    {
+      "id": "m5",
+      "from": "native",
+      "to": "pigeon",
+      "y": 244,
+      "label": "取脚本",
+      "note": "getScriptsForNavigation(generation)",
+      "variant": "dashed"
+    },
+    {
+      "id": "m6",
+      "from": "pigeon",
+      "to": "hosts",
+      "y": 272,
+      "label": "取脚本",
+      "note": "Pigeon 转给 NativeHosts",
+      "variant": "dashed"
+    },
+    {
+      "id": "m9",
+      "from": "hosts",
+      "to": "scripts",
+      "y": 300,
+      "label": "注册表",
+      "note": "registrations(profileId)",
+      "variant": "dashed"
+    },
+    {
+      "id": "m7",
+      "from": "scripts",
+      "to": "hosts",
+      "y": 328,
+      "label": "脚本与 revision",
+      "note": "完整性失配的脚本已自动禁用",
+      "variant": "return"
+    },
+    {
+      "id": "m10",
+      "from": "pigeon",
+      "to": "native",
+      "y": 356,
+      "label": "注册项",
+      "note": "ScriptRegistration 带 revision",
+      "variant": "return"
+    },
+    {
+      "id": "m14",
+      "from": "native",
+      "to": "pigeon",
+      "y": 384,
+      "label": "写租约",
+      "note": "install() 写 expectedUrl / leasedOrigin，随后才 loadUrl",
+      "variant": "security"
+    },
+    {
+      "id": "m11",
+      "from": "pigeon",
+      "to": "native",
+      "y": 412,
+      "label": "加载 URL",
+      "note": "租约成立后才 loadUrl",
+      "variant": "emphasis"
+    },
+    {
+      "id": "m19",
+      "from": "pigeon",
+      "to": "native",
+      "y": 440,
+      "label": "redirected",
+      "note": "同源入口跳转更新租约",
+      "variant": "security"
+    },
+    {
+      "id": "m23",
+      "from": "pigeon",
+      "to": "hosts",
+      "y": 468,
+      "label": "onEvent(loaded)",
+      "note": "NativeHosts.onEvent 先丢弃过期 generation",
+      "variant": "default"
+    },
+    {
+      "id": "m24",
+      "from": "hosts",
+      "to": "app",
+      "y": 496,
+      "label": "更新标签",
+      "note": "标签状态与新页面同步",
+      "variant": "return"
+    },
+    {
+      "id": "m26",
+      "from": "hosts",
+      "to": "app",
+      "y": 524,
+      "label": "scriptsSuspended",
+      "note": "generation 变化即丢弃过期事件与候选",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "租约生命周期",
+      "items": [
+        "prepareNavigation 先 revoke()，ticket 取新 generation，再由 install() 写 expectedUrl、leasedOrigin 与 accepting",
+        "prepareHistoryNavigation 预授权前进后退，保留 expectedUrl，另起历史超时",
+        "事件 generation 小于当前值直接丢弃，等于新值才重置取消令牌、菜单与媒体证据"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "5 跳上限",
+      "items": [
+        "只有 App 发起且 entryArmed 的同源入口跳转才累加 entryHops",
+        "entryHops < MAX_ENTRY_REDIRECTS（5）才更新 expectedUrl 与 leasedOrigin",
+        "跨源跳转立即 revoke 并发出 scriptsSuspended"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "每文档 token",
+      "items": [
+        "install() 为每个特权脚本生成 UUID token，拼成 const __lensBridgeToken = ...; 前缀",
+        "lensBridge 监听器按世界找 binding，校验 token、来源与版本，未认证消息不进 Dart"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "事件按 generation 丢弃",
+      "items": [
+        "NativeHosts.onEvent 丢弃 event.generation < session.generation 的过期事件",
+        "generation 变化时清理 _aborted、取消令牌、菜单、媒体候选与播放证据",
+        "Navigation policy rejected 与 Navigation setup failed 都变成 networkError"
+      ]
+    }
+  ]
+}

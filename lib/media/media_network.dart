@@ -202,6 +202,7 @@ class MediaNetwork {
           value['fakeIpAllowed'] == true || value['routeAllowsFakeIp'] == true,
       routeKind: value['routeKind'] as String? ?? 'unknown',
       dnsOwner: value['dnsOwner'] as String? ?? 'unknown',
+      targetDnsMode: value['targetDnsMode'] as String? ?? 'unknown',
       fakeIpAllowed:
           value['fakeIpAllowed'] == true || value['routeAllowsFakeIp'] == true,
       proxyConfigured: value['proxyConfigured'] == true,

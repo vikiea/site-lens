@@ -1,0 +1,919 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "媒体子系统：从页面候选到可播放文件",
+    "subtitle": "页面脚本上报候选 → 宿主事件进 Flutter → 原生 Worker 或 Dart 传输 → .media 登记媒体库 → 播放、导出、投屏",
+    "locale": "zh-CN",
+    "output": ".archify/architecture-media-pipeline-20261104-200028/media-pipeline.html",
+    "quality_profile": "showcase",
+    "visual_preset": "signal-flow",
+    "repository": {
+      "url": "git@github.com:vikiea/site-lens.git",
+      "revision": "bc5248d2e480f6f38871a935b2b99c7a5a2c3c21",
+      "provider": "github",
+      "link_mode": "local-only"
+    },
+    "legend": {
+      "mode": "all",
+      "entries": {
+        "frontend": {
+          "label": "页面内与 Flutter 侧"
+        },
+        "backend": {
+          "label": "传输与调度"
+        },
+        "database": {
+          "label": "持久化"
+        },
+        "cloud": {
+          "label": "系统媒体服务"
+        },
+        "security": {
+          "label": "授权与校验"
+        },
+        "messagebus": {
+          "label": "原生任务队列"
+        },
+        "external": {
+          "label": "远端站点"
+        }
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "web_script",
+      "type": "frontend",
+      "label": "web_assets/media_lifecycle.js",
+      "sublabel": "页面内脚本 · post('candidates')",
+      "tag": "页面候选",
+      "pos": [
+        40,
+        64
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "web_assets/media_lifecycle.js",
+          "line": 57,
+          "label": "post(kind, fields)"
+        },
+        {
+          "path": "web_assets/media_lifecycle.js",
+          "line": 1175,
+          "label": "post('candidates')"
+        }
+      ]
+    },
+    {
+      "id": "native_web_host",
+      "type": "frontend",
+      "label": "NativeWebHost 媒体事件",
+      "sublabel": "NativeWebHost.kt · mediaCandidate",
+      "tag": "宿主事件",
+      "pos": [
+        40,
+        204
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt",
+          "line": 474,
+          "label": "媒体事件转发"
+        },
+        {
+          "path": "pigeons/web_host.dart",
+          "line": 394,
+          "label": "WebHostEvents"
+        }
+      ]
+    },
+    {
+      "id": "native_hosts",
+      "type": "backend",
+      "label": "NativeHosts",
+      "sublabel": "候选缓存 · authorizeMediaCandidate",
+      "tag": "候选仓库",
+      "pos": [
+        400,
+        64
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lib/web_host/native_hosts.dart",
+          "line": 75,
+          "label": "class NativeHosts"
+        },
+        {
+          "path": "lib/web_host/native_hosts.dart",
+          "line": 330,
+          "label": "onEvent"
+        },
+        {
+          "path": "lib/web_host/native_hosts.dart",
+          "line": 271,
+          "label": "authorizeMediaCandidate"
+        }
+      ]
+    },
+    {
+      "id": "app_controller",
+      "type": "frontend",
+      "label": "AppController",
+      "sublabel": "装配 · 授权回调 · 网络变化",
+      "tag": "应用编排",
+      "pos": [
+        40,
+        344
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 126,
+          "label": "class AppController"
+        },
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 1392,
+          "label": "_authorizeMediaDownload"
+        },
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 1351,
+          "label": "mediaCandidateForRetry"
+        }
+      ]
+    },
+    {
+      "id": "download_service",
+      "type": "backend",
+      "label": "MediaDownloadService",
+      "sublabel": "分流 · 校验 · 进度回写",
+      "tag": "下载编排",
+      "pos": [
+        650,
+        64
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 2059,
+          "label": "class MediaDownloadService"
+        },
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 2786,
+          "label": "startNative"
+        },
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 2949,
+          "label": "_startHls"
+        }
+      ]
+    },
+    {
+      "id": "scheduler",
+      "type": "backend",
+      "label": "MediaTransferScheduler",
+      "sublabel": "MediaCandidateValidator · 并发上限",
+      "tag": "调度与校验",
+      "pos": [
+        650,
+        290
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lib/media/media_transfer_scheduler.dart",
+          "line": 5,
+          "label": "MediaTransferScheduler"
+        },
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 442,
+          "label": "MediaCandidateValidator"
+        },
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 474,
+          "label": "MediaCandidateCollector"
+        }
+      ]
+    },
+    {
+      "id": "dart_http",
+      "type": "backend",
+      "label": "ControlledHttp (Dart)",
+      "sublabel": "HLS 清单与分片下载",
+      "tag": "Dart 传输",
+      "pos": [
+        650,
+        190
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lib/network/transport.dart",
+          "line": 993,
+          "label": "HttpProbe"
+        },
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 2852,
+          "label": "start (Dart)"
+        },
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 2992,
+          "label": "_startHlsAttempt"
+        }
+      ]
+    },
+    {
+      "id": "native_runtime",
+      "type": "cloud",
+      "label": "NativeDownloadRuntime",
+      "sublabel": "MethodChannel · 入队 WorkManager",
+      "tag": "原生下载运行时",
+      "pos": [
+        1200,
+        234
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeDownloadRuntime.kt",
+          "line": 26,
+          "label": "NativeDownloadRuntime"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeDownloadRuntime.kt",
+          "line": 99,
+          "label": "start"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeDownloadRuntime.kt",
+          "line": 143,
+          "label": "networkChanged"
+        }
+      ]
+    },
+    {
+      "id": "native_worker",
+      "type": "messagebus",
+      "label": "NativeMediaDownloadWorker",
+      "sublabel": "6 分钟切片 · 并发 1–6",
+      "tag": "前台 Worker",
+      "pos": [
+        1525,
+        234
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeMediaDownloadWorker.kt",
+          "line": 25,
+          "label": "NativeMediaDownloadWorker"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeMediaDownloadWorker.kt",
+          "line": 29,
+          "label": "doWork"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeMediaDownloadWorker.kt",
+          "line": 320,
+          "label": "DownloadSlotGate"
+        }
+      ]
+    },
+    {
+      "id": "resumable",
+      "type": "backend",
+      "label": "ResumableMediaTransfer",
+      "sublabel": ".part + .resume 续传",
+      "tag": "断点续传",
+      "pos": [
+        1200,
+        414
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/ResumableMediaTransfer.kt",
+          "line": 32,
+          "label": "ResumableMediaTransfer"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/ResumableMediaTransfer.kt",
+          "line": 56,
+          "label": "transfer"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/ResumableMediaTransfer.kt",
+          "line": 294,
+          "label": "MediaAuthorizationException"
+        }
+      ]
+    },
+    {
+      "id": "auth_refresh",
+      "type": "security",
+      "label": "NativeMediaAuthRefreshService",
+      "sublabel": "只回传状态 + cookieDigest",
+      "tag": "授权刷新",
+      "pos": [
+        1525,
+        94
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeMediaAuthRefreshService.kt",
+          "line": 37,
+          "label": "NativeMediaAuthRefreshService"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeMediaAuthRefreshService.kt",
+          "line": 151,
+          "label": "refresh"
+        },
+        {
+          "path": "lib/media/native_media_auth_refresh.dart",
+          "line": 18,
+          "label": "NativeMediaAuthRefresh"
+        }
+      ]
+    },
+    {
+      "id": "task_store",
+      "type": "database",
+      "label": "MediaTaskStore",
+      "sublabel": "库路径 · 租约 · 导出索引",
+      "tag": "任务与产物",
+      "pos": [
+        1525,
+        474
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 533,
+          "label": "class MediaTaskStore"
+        },
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 1173,
+          "label": "_transition"
+        },
+        {
+          "path": "lib/domain/models.dart",
+          "line": 1350,
+          "label": "MediaTaskState"
+        }
+      ]
+    },
+    {
+      "id": "app_database",
+      "type": "database",
+      "label": "AppDatabase",
+      "sublabel": "mediaTasks · mediaCandidate",
+      "tag": "SQLite/Drift",
+      "pos": [
+        1525,
+        614
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lib/data/database.dart",
+          "line": 225,
+          "label": "class AppDatabase"
+        },
+        {
+          "path": "lib/data/database.dart",
+          "line": 1651,
+          "label": "mediaTasks()"
+        }
+      ]
+    },
+    {
+      "id": "storage",
+      "type": "database",
+      "label": "MediaStorageService",
+      "sublabel": "导出根 · 模式与权限",
+      "tag": "导出根",
+      "pos": [
+        650,
+        754
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lib/media/media_storage.dart",
+          "line": 58,
+          "label": "MediaStorageService"
+        },
+        {
+          "path": "lib/media/media_storage.dart",
+          "line": 14,
+          "label": "MediaStorageKind"
+        },
+        {
+          "path": "lib/media/media_storage.dart",
+          "line": 16,
+          "label": "MediaStoragePermission"
+        }
+      ]
+    },
+    {
+      "id": "library",
+      "type": "database",
+      "label": "MediaLibrary / MediaArtifact",
+      "sublabel": "register · deliver · rescan",
+      "tag": "媒体库",
+      "pos": [
+        970,
+        754
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lib/media/media_library.dart",
+          "line": 221,
+          "label": "class MediaLibrary"
+        },
+        {
+          "path": "lib/media/media_library.dart",
+          "line": 963,
+          "label": "register"
+        },
+        {
+          "path": "lib/media/media_library.dart",
+          "line": 1286,
+          "label": "deliver"
+        }
+      ]
+    },
+    {
+      "id": "export_queue",
+      "type": "backend",
+      "label": "MediaExportQueue",
+      "sublabel": "MP4 导出 · 1s/4s 重试",
+      "tag": "导出队列",
+      "pos": [
+        1200,
+        754
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lib/media/media_export_queue.dart",
+          "line": 152,
+          "label": "MediaExportQueue"
+        },
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 1487,
+          "label": "_performQueuedMediaExport"
+        }
+      ]
+    },
+    {
+      "id": "media_runtime",
+      "type": "cloud",
+      "label": "NativeMediaRuntime",
+      "sublabel": "open / openLocal",
+      "tag": "原生播放器",
+      "pos": [
+        650,
+        914
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeMediaRuntime.kt",
+          "line": 44,
+          "label": "NativeMediaRuntime"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeMediaRuntime.kt",
+          "line": 282,
+          "label": "openLocal"
+        },
+        {
+          "path": "lib/media/native_media_runtime.dart",
+          "line": 13,
+          "label": "NativeMediaRuntime (Dart)"
+        }
+      ]
+    },
+    {
+      "id": "session_service",
+      "type": "cloud",
+      "label": "NativeMediaSessionService",
+      "sublabel": "ExoPlayer 播放会话",
+      "tag": "播放会话",
+      "pos": [
+        970,
+        914
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeMediaSessionService.kt",
+          "line": 39,
+          "label": "NativeMediaSessionService"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeMediaSessionService.kt",
+          "line": 416,
+          "label": "open"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeMediaSessionService.kt",
+          "line": 502,
+          "label": "command"
+        }
+      ]
+    },
+    {
+      "id": "dlna",
+      "type": "external",
+      "label": "DLNA 投屏",
+      "sublabel": "DlnaCastController · Relay",
+      "tag": "局域网投屏",
+      "pos": [
+        1200,
+        914
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lib/media/dlna_service.dart",
+          "line": 740,
+          "label": "DlnaCastController"
+        },
+        {
+          "path": "lib/media/dlna_service.dart",
+          "line": 862,
+          "label": "cast"
+        }
+      ]
+    },
+    {
+      "id": "remote_site",
+      "type": "external",
+      "label": "站点媒体源",
+      "sublabel": "MP4 / HLS 清单与分片",
+      "tag": "远端资源",
+      "pos": [
+        930,
+        614
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 4026,
+          "label": "MediaErrorCode 文案"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "页面脚本与宿主事件",
+      "wraps": [
+        "web_script",
+        "native_web_host",
+        "native_hosts"
+      ],
+      "pad": 20
+    },
+    {
+      "kind": "region",
+      "label": "Flutter 下载编排与 Dart 传输",
+      "wraps": [
+        "download_service",
+        "scheduler",
+        "dart_http",
+        "app_controller"
+      ],
+      "pad": 20
+    },
+    {
+      "kind": "security-group",
+      "label": "Android 原生传输与授权刷新",
+      "wraps": [
+        "native_runtime",
+        "native_worker",
+        "auth_refresh",
+        "resumable"
+      ],
+      "pad": 20
+    },
+    {
+      "kind": "region",
+      "label": "持久化、媒体库与消费",
+      "wraps": [
+        "task_store",
+        "app_database",
+        "storage",
+        "library",
+        "export_queue"
+      ],
+      "pad": 20
+    },
+    {
+      "kind": "region",
+      "label": "投屏出口",
+      "wraps": [
+        "dlna"
+      ],
+      "pad": 20
+    }
+  ],
+  "connections": [
+    {
+      "id": "c_script_hosts",
+      "from": "web_script",
+      "to": "native_hosts",
+      "label": "mediaCandidate 事件",
+      "variant": "emphasis"
+    },
+    {
+      "id": "c_ctl_hosts",
+      "from": "app_controller",
+      "to": "native_hosts",
+      "label": "候选缓存",
+      "variant": "default"
+    },
+    {
+      "id": "c_hosts_svc",
+      "from": "native_hosts",
+      "to": "download_service",
+      "label": "authorizeMediaCandidate",
+      "variant": "security",
+      "labelDy": -40
+    },
+    {
+      "id": "c_ctl_svc",
+      "from": "app_controller",
+      "to": "download_service",
+      "label": "startNativeBatch",
+      "variant": "emphasis"
+    },
+    {
+      "id": "c_svc_sched",
+      "from": "download_service",
+      "to": "scheduler",
+      "label": "maxConcurrency",
+      "variant": "default"
+    },
+    {
+      "id": "c_sched_dart",
+      "from": "scheduler",
+      "to": "dart_http",
+      "label": "HLS 分片调度",
+      "variant": "default"
+    },
+    {
+      "id": "c_dart_site",
+      "from": "dart_http",
+      "to": "remote_site",
+      "label": "拉取清单与分片",
+      "variant": "default"
+    },
+    {
+      "id": "c_svc_rt",
+      "from": "download_service",
+      "to": "native_runtime",
+      "label": "原生传输",
+      "variant": "emphasis"
+    },
+    {
+      "id": "c_dart_rt",
+      "from": "dart_http",
+      "to": "native_runtime",
+      "label": "Dart 传输",
+      "variant": "default"
+    },
+    {
+      "id": "c_rt_worker",
+      "from": "native_runtime",
+      "to": "native_worker",
+      "label": "WorkManager 入队",
+      "variant": "default"
+    },
+    {
+      "id": "c_worker_auth",
+      "from": "native_worker",
+      "to": "auth_refresh",
+      "label": "授权失败刷新一次",
+      "variant": "security"
+    },
+    {
+      "id": "c_auth_store",
+      "from": "auth_refresh",
+      "to": "task_store",
+      "label": "只回传状态摘要",
+      "variant": "security"
+    },
+    {
+      "id": "c_store_hosts",
+      "from": "task_store",
+      "to": "native_hosts",
+      "label": "刷新后重试一次",
+      "variant": "dashed"
+    },
+    {
+      "id": "c_resume_site",
+      "from": "resumable",
+      "to": "remote_site",
+      "label": "续传媒体字节",
+      "variant": "default"
+    },
+    {
+      "id": "c_dart_resume",
+      "from": "dart_http",
+      "to": "resumable",
+      "label": ".part + .resume",
+      "variant": "default"
+    },
+    {
+      "id": "c_worker_resume",
+      "from": "native_worker",
+      "to": "resumable",
+      "label": "repeat(4) 续传",
+      "variant": "default"
+    },
+    {
+      "id": "c_rt_store",
+      "from": "native_runtime",
+      "to": "task_store",
+      "label": "原生任务记录",
+      "variant": "default"
+    },
+    {
+      "id": "c_svc_store",
+      "from": "download_service",
+      "to": "task_store",
+      "label": "状态与进度",
+      "variant": "default"
+    },
+    {
+      "id": "c_store_db",
+      "from": "task_store",
+      "to": "app_database",
+      "label": "持久化任务行",
+      "variant": "default"
+    },
+    {
+      "id": "c_store_lib",
+      "from": "task_store",
+      "to": "library",
+      "label": "localRef 登记",
+      "variant": "emphasis"
+    },
+    {
+      "id": "c_lib_export",
+      "from": "library",
+      "to": "export_queue",
+      "label": "导出 MP4",
+      "variant": "default"
+    },
+    {
+      "id": "c_lib_storage",
+      "from": "library",
+      "to": "storage",
+      "label": "导出根权限",
+      "variant": "security"
+    },
+    {
+      "id": "c_lib_play",
+      "from": "library",
+      "to": "media_runtime",
+      "label": "可播放产物",
+      "variant": "emphasis"
+    },
+    {
+      "id": "c_store_play",
+      "from": "task_store",
+      "to": "media_runtime",
+      "label": "缓存目录",
+      "variant": "default"
+    },
+    {
+      "id": "c_play_session",
+      "from": "media_runtime",
+      "to": "session_service",
+      "label": "openLocal",
+      "variant": "default"
+    },
+    {
+      "id": "c_lib_dlna",
+      "from": "library",
+      "to": "dlna",
+      "label": "已验证 MP4",
+      "variant": "default"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "原生与 Dart 两条路径的分流条件",
+      "items": [
+        "只有 native != null && !candidate.isHls && !candidate.hasRequestHeaders 才进入原生 Worker",
+        "HLS 或带自定义请求头的候选回落到 Dart start，由 _startHls 拉清单与分片",
+        "两条路径共用任务行与本地引用，界面不必区分传输实现"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "授权刷新只回传状态与摘要",
+      "items": [
+        "MediaAuthorizationException 触发 NativeMediaAuthRefreshService，重试预算只有一次",
+        "返回体只含 taskId、来源、resourceKey 与 cookieDigest，Cookie 不经过 Dart 通道",
+        "带非白名单 query 的签名 URL 直接回到 reauthorize，由播放页重新授权"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "文件租约与导出索引独立于任务行",
+      "items": [
+        "MediaTaskStore 持有播放、导出、投屏与文件租约，任务行删除不释放已导出文件",
+        "MediaExportQueue 的导出索引独立于 HLS 缓存目录，二者所有权互不继承",
+        "MediaStorageService 只判定导出产物属于哪个根，不拥有下载缓存路径"
+      ]
+    }
+  ]
+}

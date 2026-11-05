@@ -341,6 +341,12 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
                 ? (uri, attempt) =>
                       MediaNetwork().probeRoute(uri, attempt: attempt)
                 : null,
+            onFailure: (error, stack, context) => AppErrorLogger.capture(
+              error,
+              module: 'discovery.probe',
+              context: context,
+              stack: stack,
+            ),
           ),
       verifier: homepageVerifier ?? NativeHomepageVerifier(hosts),
       save: db.saveProbe,
@@ -2593,6 +2599,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
             (() async {
               await hosts.configure(session);
               if (!session.disposed && !_disposed) {
+                hosts.resetNavigationRetry(session);
                 await hosts.api.reload(session.id);
               }
             })(),
@@ -2680,6 +2687,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       (h) => h.purpose == HostPurpose.browsing && !h.disposed,
     )) {
       await hosts.configure(session);
+      hosts.resetNavigationRetry(session);
       await hosts.api.reload(session.id);
     }
   }

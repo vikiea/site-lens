@@ -59,18 +59,28 @@ object SystemMediaNetwork {
         val preferVpnTun: Boolean = false,
         val directAllowed: Boolean = false,
         val dnsClass: String = "unknown",
+        val targetDnsMode: String = "unknown",
     )
 
     fun fakeIpRouteKind(vpnTransport: Boolean): RouteKind =
         if (vpnTransport) RouteKind.VPN_TUN_FAKE_IP else RouteKind.ROUTER_FAKE_IP
 
+    @Suppress("UNUSED_PARAMETER")
     fun routerFakeIpEligible(
         networkValidated: Boolean,
         wifiCellularOrEthernet: Boolean,
         privateDns: Boolean,
         directRoute: Boolean,
-    ): Boolean =
-        networkValidated && wifiCellularOrEthernet && privateDns && directRoute
+    ): Boolean {
+        // The DNS server address is not an ownership proof. Users may select
+        // a public DNS resolver while OpenClash/Mihomo still owns the system
+        // route, and a proxy/VPN can legitimately make the DNS server appear
+        // outside RFC1918. The actual authority check happens later in
+        // planFor: DIRECT must already be selected and every answer must be a
+        // known 198.18.0.0/15 Fake-IP. Real private and loopback answers still
+        // fail publicAddress validation.
+        return wifiCellularOrEthernet && directRoute
+    }
 
     private fun validateWebUri(uri: URI) {
         require(uri.scheme in listOf("http", "https") && !uri.host.isNullOrBlank() && uri.userInfo == null) {
@@ -207,7 +217,8 @@ object SystemMediaNetwork {
         val http = selected.filter { it.type() == Proxy.Type.HTTP }
         fun proxyPlan(index: Int, dnsClass: String = "proxy"): RoutePlan = RoutePlan(
             RouteInfo(RouteKind.HTTP_PROXY, DnsOwner.PROXY, false,
-                proxyConfigured = true, dnsClass = dnsClass),
+                proxyConfigured = true, dnsClass = dnsClass,
+                targetDnsMode = "proxy_remote"),
             http[Math.floorMod(index, http.size)],
         )
         if (http.isNotEmpty() && !vpnTransport) return proxyPlan(attempt)
@@ -229,7 +240,8 @@ object SystemMediaNetwork {
             return RoutePlan(
                 RouteInfo(RouteKind.VPN_TUN_FAKE_IP, DnsOwner.SYSTEM_DNS, true,
                     proxyConfigured = http.isNotEmpty(), preferVpnTun = true,
-                    directAllowed = true, dnsClass = "fake_ip"),
+                    directAllowed = true, dnsClass = "fake_ip",
+                    targetDnsMode = "system_route"),
                 Proxy.NO_PROXY, addresses,
             )
         }
@@ -237,7 +249,8 @@ object SystemMediaNetwork {
             if (addresses.all(::publicAddress)) "public" else "blocked")
         if (onlyFakeIp && routerTrusted) return RoutePlan(
             RouteInfo(RouteKind.ROUTER_FAKE_IP, DnsOwner.SYSTEM_DNS, true,
-                directAllowed = true, dnsClass = "fake_ip"),
+                directAllowed = true, dnsClass = "fake_ip",
+                targetDnsMode = "system_route"),
             Proxy.NO_PROXY, addresses,
         )
         require(addresses.isNotEmpty() && addresses.all(::publicAddress)) {
@@ -245,7 +258,8 @@ object SystemMediaNetwork {
         }
         return RoutePlan(
             RouteInfo(RouteKind.PUBLIC_DIRECT, DnsOwner.SYSTEM_DNS, false,
-                directAllowed = true, dnsClass = "public"),
+                directAllowed = true, dnsClass = "public",
+                targetDnsMode = "direct_validated"),
             Proxy.NO_PROXY, addresses,
         )
     }

@@ -198,6 +198,7 @@ void main() {
         'proxy': 'DIRECT',
         'routeKind': 'vpn_tun_fake_ip',
         'dnsOwner': 'system_dns',
+        'targetDnsMode': 'system_route',
         'fakeIpAllowed': true,
         'proxyConfigured': true,
         'preferVpnTun': true,
@@ -209,6 +210,7 @@ void main() {
 
     final route = await MediaNetwork(channel: channel).route(target);
     expect(route.routeKind, 'vpn_tun_fake_ip');
+    expect(route.targetDnsMode, 'system_route');
     expect(route.proxyConfigured, isTrue);
     expect(route.preferVpnTun, isTrue);
     expect(route.directAllowed, isTrue);

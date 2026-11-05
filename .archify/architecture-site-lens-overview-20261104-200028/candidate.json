@@ -1,0 +1,445 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "择站 · Site Lens 系统总览：本地优先的站点发现与浏览",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "output": ".archify/architecture-site-lens-overview-20261104-200028/site-lens-overview.html",
+    "repository": {
+      "url": "git@github.com:vikiea/site-lens.git",
+      "revision": "bc5248d2e480f6f38871a935b2b99c7a5a2c3c21",
+      "provider": "github",
+      "link_mode": "local-only"
+    }
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "使用者",
+      "sublabel": "手动选站",
+      "pos": [
+        60,
+        320
+      ],
+      "size": [
+        140,
+        72
+      ]
+    },
+    {
+      "id": "app_shell",
+      "type": "frontend",
+      "label": "Flutter 界面层",
+      "sublabel": "HomeScreen / BrowserScreen",
+      "pos": [
+        260,
+        320
+      ],
+      "size": [
+        180,
+        72
+      ],
+      "sources": [
+        {
+          "path": "lib/main.dart",
+          "line": 105,
+          "end_line": 172,
+          "label": "SiteLensApp 入口"
+        },
+        {
+          "path": "lib/ui/screens.dart",
+          "line": 169,
+          "end_line": 200,
+          "label": "HomeScreen"
+        }
+      ]
+    },
+    {
+      "id": "app_controller",
+      "type": "frontend",
+      "label": "AppController",
+      "sublabel": "会话编排",
+      "pos": [
+        500,
+        320
+      ],
+      "size": [
+        170,
+        72
+      ],
+      "sources": [
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 126,
+          "end_line": 175,
+          "label": "AppController"
+        },
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 491,
+          "end_line": 560,
+          "label": "syncMediaPolicy"
+        }
+      ]
+    },
+    {
+      "id": "discovery",
+      "type": "backend",
+      "label": "发现与健康检查",
+      "sublabel": "ProbeCoordinator",
+      "pos": [
+        740,
+        190
+      ],
+      "size": [
+        180,
+        72
+      ],
+      "sources": [
+        {
+          "path": "lib/discovery/probe_coordinator.dart",
+          "line": 193,
+          "end_line": 270,
+          "label": "ProbeCoordinator"
+        },
+        {
+          "path": "lib/discovery/health_checker.dart",
+          "line": 62,
+          "end_line": 100,
+          "label": "ProfileHealthChecker"
+        }
+      ]
+    },
+    {
+      "id": "network",
+      "type": "security",
+      "label": "网络传输与策略",
+      "sublabel": "HttpProbe / TLS",
+      "pos": [
+        740,
+        450
+      ],
+      "size": [
+        180,
+        72
+      ],
+      "sources": [
+        {
+          "path": "lib/network/transport.dart",
+          "line": 993,
+          "end_line": 1040,
+          "label": "HttpProbe"
+        }
+      ]
+    },
+    {
+      "id": "media_download",
+      "type": "backend",
+      "label": "下载服务",
+      "sublabel": "MediaDownloadService",
+      "pos": [
+        740,
+        320
+      ],
+      "size": [
+        180,
+        72
+      ],
+      "sources": [
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 2059,
+          "end_line": 2130,
+          "label": "MediaDownloadService"
+        },
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 1173,
+          "end_line": 1215,
+          "label": "_transition"
+        }
+      ]
+    },
+    {
+      "id": "local_store",
+      "type": "database",
+      "label": "本地存储",
+      "sublabel": "SQLite + 媒体库",
+      "pos": [
+        520,
+        540
+      ],
+      "size": [
+        180,
+        72
+      ],
+      "sources": [
+        {
+          "path": "lib/data/database.dart",
+          "line": 225,
+          "end_line": 300,
+          "label": "AppDatabase"
+        },
+        {
+          "path": "lib/media/media_library.dart",
+          "line": 221,
+          "end_line": 260,
+          "label": "MediaLibrary"
+        }
+      ]
+    },
+    {
+      "id": "background",
+      "type": "backend",
+      "label": "后台任务",
+      "sublabel": "WorkManager 巡检",
+      "pos": [
+        520,
+        180
+      ],
+      "size": [
+        180,
+        72
+      ],
+      "sources": [
+        {
+          "path": "lib/background/health_worker.dart",
+          "line": 1,
+          "end_line": 60,
+          "label": "healthCallbackDispatcher"
+        }
+      ]
+    },
+    {
+      "id": "pigeon_contract",
+      "type": "messagebus",
+      "label": "Pigeon 契约",
+      "sublabel": "WebHostApi",
+      "pos": [
+        980,
+        320
+      ],
+      "size": [
+        160,
+        72
+      ],
+      "sources": [
+        {
+          "path": "pigeons/web_host.dart",
+          "line": 339,
+          "end_line": 381,
+          "label": "WebHostApi"
+        },
+        {
+          "path": "pigeons/web_host.dart",
+          "line": 394,
+          "end_line": 409,
+          "label": "WebHostEvents"
+        }
+      ]
+    },
+    {
+      "id": "native_hosts",
+      "type": "backend",
+      "label": "原生宿主",
+      "sublabel": "NativeWebHost",
+      "pos": [
+        1200,
+        320
+      ],
+      "size": [
+        170,
+        72
+      ],
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt",
+          "line": 186,
+          "end_line": 260,
+          "label": "NativeWebHostRegistry"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeMediaSessionService.kt",
+          "line": 39,
+          "end_line": 100,
+          "label": "MediaSessionService"
+        }
+      ]
+    },
+    {
+      "id": "webview",
+      "type": "external",
+      "label": "WebView 页面",
+      "sublabel": "脚本 / 过滤器",
+      "pos": [
+        1200,
+        150
+      ],
+      "size": [
+        170,
+        72
+      ],
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt",
+          "line": 1465,
+          "end_line": 1520,
+          "label": "脚本注入"
+        }
+      ]
+    },
+    {
+      "id": "remote_sites",
+      "type": "external",
+      "label": "外部站点",
+      "sublabel": "入口 / 落地 / 媒体",
+      "pos": [
+        1200,
+        490
+      ],
+      "size": [
+        170,
+        72
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Flutter 应用运行时",
+      "wraps": [
+        "app_shell",
+        "app_controller",
+        "discovery",
+        "network",
+        "media_download",
+        "local_store",
+        "background"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Android 原生层",
+      "wraps": [
+        "native_hosts",
+        "webview"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "c_user_shell",
+      "from": "user",
+      "to": "app_shell",
+      "label": "点选站点",
+      "variant": "emphasis"
+    },
+    {
+      "id": "c_shell_ctl",
+      "from": "app_shell",
+      "to": "app_controller",
+      "label": "用户操作"
+    },
+    {
+      "id": "c_ctl_probe",
+      "from": "app_controller",
+      "to": "discovery",
+      "label": "detect()"
+    },
+    {
+      "id": "c_probe_net",
+      "from": "discovery",
+      "to": "network",
+      "label": "初筛/验证"
+    },
+    {
+      "id": "c_ctl_media",
+      "from": "app_controller",
+      "to": "media_download",
+      "label": "媒体任务"
+    },
+    {
+      "id": "c_ctl_pigeon",
+      "from": "app_controller",
+      "to": "pigeon_contract",
+      "label": "navigate()"
+    },
+    {
+      "id": "c_pigeon_native",
+      "from": "pigeon_contract",
+      "to": "native_hosts",
+      "label": "宿主调用"
+    },
+    {
+      "id": "c_native_webview",
+      "from": "native_hosts",
+      "to": "webview",
+      "label": "载入页面"
+    },
+    {
+      "id": "c_net_sites",
+      "from": "network",
+      "to": "remote_sites",
+      "label": "HTTP 探测"
+    },
+    {
+      "id": "c_webview_sites",
+      "from": "webview",
+      "to": "remote_sites",
+      "label": "页面请求"
+    },
+    {
+      "id": "c_media_native",
+      "from": "media_download",
+      "to": "native_hosts",
+      "label": "原生传输",
+      "variant": "dashed"
+    },
+    {
+      "id": "c_bg_store",
+      "from": "background",
+      "to": "local_store",
+      "label": "巡检结果",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "c_store_ctl",
+      "from": "local_store",
+      "to": "app_controller",
+      "label": "记录",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "本地优先与 fail-closed",
+      "items": [
+        "站点、候选、脚本与任务全部落在本地 SQLite，无服务端、无遥测",
+        "网络与脚本能力默认关闭，需显式确认后才放行"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "容量与预算",
+      "items": [
+        "最多 8 个标签页、8 个并发初筛、每候选 5 秒合计预算",
+        "默认只验证前 3 个不同落点，全部模式才放开"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "数据边界",
+      "items": [
+        "Cookie、Web 存储、未确认脚本状态不进入业务备份",
+        "授权刷新只回传状态与摘要，凭据不跨 Dart 通道"
+      ]
+    }
+  ]
+}

@@ -252,6 +252,7 @@ class SystemMediaNetworkTest {
             resolve = { resolutions++; fake },
         )
         assertEquals(SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP, tun.info.kind)
+        assertEquals("system_route", tun.info.targetDnsMode)
         assertEquals(Proxy.NO_PROXY, tun.proxy)
         assertEquals(listOf(fake[0]), tun.addresses)
         assertEquals(1, resolutions)
@@ -264,6 +265,7 @@ class SystemMediaNetworkTest {
             resolve = { resolutions++; fake },
         )
         assertEquals(SystemMediaNetwork.RouteKind.HTTP_PROXY, http.info.kind)
+        assertEquals("proxy_remote", http.info.targetDnsMode)
         assertEquals(proxy, http.proxy)
         assertEquals(1, resolutions)
     }
@@ -280,6 +282,22 @@ class SystemMediaNetworkTest {
         )
         assertEquals(SystemMediaNetwork.RouteKind.PUBLIC_DIRECT, plan.info.kind)
         assertEquals(true, plan.info.directAllowed)
+        assertEquals(Proxy.NO_PROXY, plan.proxy)
+    }
+
+    @Test
+    fun routePlanAllowsGatewayFakeIpWithPublicDnsOrUnvalidatedNetwork() {
+        val target = URI("https://cdn.example/a")
+        val plan = SystemMediaNetwork.planFor(
+            target,
+            listOf(Proxy.NO_PROXY),
+            vpnTransport = false,
+            routerTrusted = true,
+            resolve = { arrayOf(InetAddress.getByName("198.18.0.7")) },
+        )
+        assertEquals(SystemMediaNetwork.RouteKind.ROUTER_FAKE_IP, plan.info.kind)
+        assertEquals("system_route", plan.info.targetDnsMode)
+        assertEquals(true, plan.info.fakeIpAllowed)
         assertEquals(Proxy.NO_PROXY, plan.proxy)
     }
 
@@ -359,11 +377,11 @@ class SystemMediaNetworkTest {
     }
 
     @Test
-    fun routerFakeIpRequiresValidatedPrivateDnsOnDirectRoute() {
+    fun routerFakeIpUsesDirectPhysicalRouteInsteadOfDnsOwnerHeuristic() {
         assertEquals(true, SystemMediaNetwork.routerFakeIpEligible(true, true, true, true))
-        assertEquals(false, SystemMediaNetwork.routerFakeIpEligible(false, true, true, true))
+        assertEquals(true, SystemMediaNetwork.routerFakeIpEligible(false, true, true, true))
         assertEquals(false, SystemMediaNetwork.routerFakeIpEligible(true, false, true, true))
-        assertEquals(false, SystemMediaNetwork.routerFakeIpEligible(true, true, false, true))
+        assertEquals(true, SystemMediaNetwork.routerFakeIpEligible(true, true, false, true))
         assertEquals(false, SystemMediaNetwork.routerFakeIpEligible(true, true, true, false))
     }
 

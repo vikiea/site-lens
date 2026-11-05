@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "6eb583f5-cad4-417e-bfb6-a89dd185aca0",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/architecture-web-host-lease-20261104-200028/candidate.json",
+  "output": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/architecture-web-host-lease-20261104-200028/web-host-lease.html",
+  "specification": {
+    "sha256": "ab97b0da634cbf94a51b1323cba510e7172a68bb81f81d4dcd006917b0d02fdb",
+    "bytes": 12397
+  },
+  "artifact": {
+    "sha256": "1bfc1628416746a99f1919c98677b548a3a363aef0c9142d0a615171592a07f6",
+    "bytes": 780986
+  }
+}

@@ -1,0 +1,469 @@
+{
+  "schema_version": 2,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "浏览器会话与应用生命周期：前台、后台与媒体策略",
+    "locale": "zh-CN",
+    "output": ".archify/lifecycle-browser-session-20261104-200028/browser-session.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:vikiea/site-lens.git",
+      "revision": "bc5248d2e480f6f38871a935b2b99c7a5a2c3c21",
+      "provider": "github",
+      "link_mode": "local-only"
+    }
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "应用进程"
+    },
+    {
+      "id": "tab",
+      "label": "浏览器标签"
+    },
+    {
+      "id": "policy",
+      "label": "媒体策略"
+    }
+  ],
+  "states": [
+    {
+      "id": "launch",
+      "lane": "main",
+      "col": 0,
+      "type": "start",
+      "label": "启动并恢复会话",
+      "sublabel": "读取 browserSession_v1 快照",
+      "icon": "start",
+      "width": 176,
+      "height": 64,
+      "sources": [
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 1792,
+          "end_line": 1850,
+          "label": "restoreSavedSessions 恢复标签"
+        },
+        {
+          "path": "lib/browser/browser_session_store.dart",
+          "line": 92,
+          "end_line": 118,
+          "label": "decode 拒绝重复或超上限标签"
+        }
+      ]
+    },
+    {
+      "id": "restored",
+      "lane": "main",
+      "col": 1,
+      "type": "active",
+      "label": "会话已恢复",
+      "sublabel": "标签以 unloaded 状态待命",
+      "icon": "active",
+      "width": 160,
+      "height": 64,
+      "sources": [
+        {
+          "path": "lib/browser/browser_session.dart",
+          "line": 10,
+          "end_line": 90,
+          "label": "ActiveBrowserSession.restored"
+        }
+      ]
+    },
+    {
+      "id": "foreground",
+      "lane": "main",
+      "col": 2,
+      "type": "active",
+      "label": "前台运行",
+      "sublabel": "resumed",
+      "icon": "active",
+      "width": 148,
+      "height": 64,
+      "sources": [
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 475,
+          "end_line": 489,
+          "label": "didChangeAppLifecycleState"
+        }
+      ]
+    },
+    {
+      "id": "background",
+      "lane": "main",
+      "col": 3,
+      "type": "waiting",
+      "label": "后台 paused",
+      "sublabel": "_foreground = false",
+      "icon": "moon",
+      "width": 148,
+      "height": 64,
+      "sources": [
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 480,
+          "end_line": 488,
+          "label": "paused/detached 视为非前台"
+        }
+      ]
+    },
+    {
+      "id": "detached",
+      "lane": "main",
+      "col": 4,
+      "type": "failure",
+      "label": "已分离 detached",
+      "sublabel": "宿主随进程退场",
+      "icon": "failure",
+      "width": 160,
+      "height": 64,
+      "sources": [
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 480,
+          "end_line": 489,
+          "label": "detached 同样进入非前台"
+        }
+      ]
+    },
+    {
+      "id": "tab_unloaded",
+      "lane": "tab",
+      "col": 0,
+      "type": "neutral",
+      "label": "unloaded",
+      "sublabel": "尚未创建 WebView",
+      "icon": "neutral",
+      "width": 152,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/browser/browser_session.dart",
+          "line": 5,
+          "end_line": 8,
+          "label": "BrowserSessionState 四种状态"
+        },
+        {
+          "path": "lib/browser/browser_session.dart",
+          "line": 69,
+          "end_line": 78,
+          "label": "state getter：无宿主即 unloaded"
+        }
+      ]
+    },
+    {
+      "id": "tab_loading",
+      "lane": "tab",
+      "col": 1,
+      "type": "active",
+      "label": "loading",
+      "sublabel": "宿主创建并导航中",
+      "icon": "active",
+      "width": 152,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 2934,
+          "end_line": 2975,
+          "label": "_spawnTab 创建宿主并导航"
+        },
+        {
+          "path": "lib/browser/browser_session.dart",
+          "line": 69,
+          "end_line": 78,
+          "label": "loading 优先于 ready"
+        }
+      ]
+    },
+    {
+      "id": "tab_ready",
+      "lane": "tab",
+      "col": 2,
+      "type": "success",
+      "label": "ready",
+      "sublabel": "首页 DOM 就绪可浏览",
+      "icon": "success",
+      "width": 152,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/browser/browser_session.dart",
+          "line": 69,
+          "end_line": 78,
+          "label": "host.loaded 才为 ready"
+        }
+      ]
+    },
+    {
+      "id": "tab_failed",
+      "lane": "tab",
+      "col": 3,
+      "type": "failure",
+      "label": "failed",
+      "sublabel": "failure 非空或宿主已销毁",
+      "icon": "failure",
+      "width": 168,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/browser/browser_session.dart",
+          "line": 69,
+          "end_line": 85,
+          "label": "failure 与 invalidate(reason)"
+        },
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 3015,
+          "end_line": 3055,
+          "label": "_recreateHost 失败写 failure"
+        }
+      ]
+    },
+    {
+      "id": "tab_capped",
+      "lane": "tab",
+      "col": 4,
+      "type": "decision",
+      "label": "8 个标签上限",
+      "sublabel": "拒绝创建并提示关闭一个",
+      "icon": "flag",
+      "width": 176,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 2932,
+          "end_line": 2945,
+          "label": "maxBrowserTabs 与 StateError 提示"
+        },
+        {
+          "path": "lib/settings/app_settings.dart",
+          "line": 577,
+          "end_line": 577,
+          "label": "AppPolicy.maxBrowserTabs = 8"
+        }
+      ]
+    },
+    {
+      "id": "policy_active",
+      "lane": "policy",
+      "col": 1,
+      "type": "active",
+      "label": "活动宿主",
+      "sublabel": "当前选中且可见且前台",
+      "icon": "active",
+      "width": 168,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 526,
+          "end_line": 539,
+          "label": "选中且可见且前台才活动"
+        }
+      ]
+    },
+    {
+      "id": "policy_serial",
+      "lane": "policy",
+      "col": 2,
+      "type": "waiting",
+      "label": "策略串行化",
+      "sublabel": "epoch 递增，先暂停再切换",
+      "icon": "waiting",
+      "width": 172,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 491,
+          "end_line": 510,
+          "label": "syncMediaPolicy 递增 epoch 串行化"
+        },
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 512,
+          "end_line": 525,
+          "label": "先暂停非活动宿主"
+        }
+      ]
+    },
+    {
+      "id": "policy_inactive",
+      "lane": "policy",
+      "col": 3,
+      "type": "neutral",
+      "label": "非活动宿主",
+      "sublabel": "allowBackgroundPlayback = false",
+      "icon": "neutral",
+      "width": 184,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/settings/app_settings.dart",
+          "line": 160,
+          "end_line": 160,
+          "label": "allowBackgroundPlayback 默认 false"
+        },
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 530,
+          "end_line": 536,
+          "label": "setHostActivity 传入前台与开关"
+        }
+      ]
+    },
+    {
+      "id": "policy_destroy",
+      "lane": "policy",
+      "col": 4,
+      "type": "failure",
+      "label": "无效并销毁宿主",
+      "sublabel": "网页已关闭，选标签可重新加载",
+      "icon": "failure",
+      "width": 192,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 540,
+          "end_line": 550,
+          "label": "无法暂停后台音频即 invalidate + destroy"
+        }
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "from": "launch",
+      "to": "restored",
+      "label": "读取快照",
+      "variant": "emphasis"
+    },
+    {
+      "from": "restored",
+      "to": "foreground",
+      "label": "进入前台",
+      "variant": "emphasis"
+    },
+    {
+      "from": "foreground",
+      "to": "background",
+      "label": "paused",
+      "variant": "default"
+    },
+    {
+      "from": "background",
+      "to": "foreground",
+      "label": "resumed",
+      "variant": "dashed"
+    },
+    {
+      "from": "background",
+      "to": "detached",
+      "label": "detached",
+      "variant": "dashed"
+    },
+    {
+      "from": "tab_unloaded",
+      "to": "tab_loading",
+      "label": "打开地址",
+      "variant": "emphasis"
+    },
+    {
+      "from": "tab_loading",
+      "to": "tab_ready",
+      "label": "宿主 loaded",
+      "variant": "emphasis"
+    },
+    {
+      "from": "tab_loading",
+      "to": "tab_failed",
+      "label": "创建或导航失败",
+      "variant": "dashed"
+    },
+    {
+      "from": "tab_failed",
+      "to": "tab_loading",
+      "label": "重新加载",
+      "variant": "dashed"
+    },
+    {
+      "from": "tab_loading",
+      "to": "tab_capped",
+      "label": "已达 8 个",
+      "variant": "dashed"
+    },
+    {
+      "from": "foreground",
+      "to": "policy_serial",
+      "label": "syncMediaPolicy",
+      "variant": "emphasis"
+    },
+    {
+      "from": "background",
+      "to": "policy_serial",
+      "label": "非 resumed：冲刷存档并观察播放",
+      "variant": "default"
+    },
+    {
+      "from": "policy_serial",
+      "to": "policy_active",
+      "label": "选中且前台",
+      "variant": "default"
+    },
+    {
+      "from": "policy_serial",
+      "to": "policy_inactive",
+      "label": "未允许后台播放",
+      "variant": "default"
+    },
+    {
+      "from": "policy_inactive",
+      "to": "policy_destroy",
+      "label": "无法暂停音频",
+      "variant": "dashed"
+    },
+    {
+      "from": "policy_destroy",
+      "to": "tab_failed",
+      "label": "标签置为可重载",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "8 标签上限",
+      "items": [
+        "AppPolicy.maxBrowserTabs = 8，计入尚未完成的创建预留",
+        "超限时 _spawnTab 抛出：最多同时打开 8 个标签页；请到「浏览器」页关闭一个再进入",
+        "弹窗打开新标签同样以 8 为界，超限直接忽略而不报错",
+        "恢复快照时重复 id 或超过 8 条整体判为 FormatException"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "策略串行化 epoch",
+      "items": [
+        "syncMediaPolicy 每次递增 _mediaPolicyEpoch 并置 _mediaPolicyAgain，已有运行则复用同一次 drain",
+        "drain 循环直到 epoch 稳定；每个 await 之后都比对 epoch，过期立即退出",
+        "先暂停所有非活动宿主，再切换当前宿主，避免两个标签同时出声"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "默认设置与提示原文",
+      "items": [
+        "allowBackgroundPlayback 默认 false：后台不保留可发声宿主",
+        "无法后台暂停时提示原文：当前 WebView 无法暂停后台音频，网页已关闭；选择标签可重新加载",
+        "进程被原生销毁时另一条提示：网页进程已退出，选择标签可重新加载",
+        "标签会话持久化：restoreBrowserSessions 默认 true，快照键 browserSession_v1"
+      ]
+    }
+  ]
+}

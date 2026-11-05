@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "f2258e0e-ce65-47e4-a59c-7e791d915a4a",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/architecture-media-pipeline-20261104-200028/candidate.json",
+  "output": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/architecture-media-pipeline-20261104-200028/media-pipeline.html",
+  "specification": {
+    "sha256": "79d1486073f3c437aab48e11bcc405ef0381210d0dbf33af305b3a74982ae916",
+    "bytes": 21810
+  },
+  "artifact": {
+    "sha256": "ee7b3a23a641c79ac97742f0a859a620b8e167ffe448583a63aaf376bb0be013",
+    "bytes": 812111
+  }
+}

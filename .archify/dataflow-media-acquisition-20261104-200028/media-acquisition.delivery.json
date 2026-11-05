@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "d4b101ef-c125-4a06-80c9-a0d1e40d95bd",
+  "status": "current",
+  "command": "deliver",
+  "type": "dataflow",
+  "input": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/dataflow-media-acquisition-20261104-200028/candidate.json",
+  "output": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/dataflow-media-acquisition-20261104-200028/media-acquisition.html",
+  "specification": {
+    "sha256": "273fc33be63fe812ddc1b0ae7e97b634b9201a5b482f9558a5455555f7e836ae",
+    "bytes": 11191
+  },
+  "artifact": {
+    "sha256": "5242a083f045dded9dacb6ce6a57bb2a9a3324a849f107b0faef089acce0f8e6",
+    "bytes": 765638
+  }
+}

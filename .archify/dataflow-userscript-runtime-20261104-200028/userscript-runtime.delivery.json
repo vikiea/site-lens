@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "ae48a268-9144-40df-803b-54bc4178af7e",
+  "status": "current",
+  "command": "deliver",
+  "type": "dataflow",
+  "input": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/dataflow-userscript-runtime-20261104-200028/candidate.json",
+  "output": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/dataflow-userscript-runtime-20261104-200028/userscript-runtime.html",
+  "specification": {
+    "sha256": "0ecda40226b83f1da8065a24b51a7ebfbba4e6c3ed0cbd17cd104aed72efd82e",
+    "bytes": 7976
+  },
+  "artifact": {
+    "sha256": "a1116b0299dc6512d1e800479fe699a0259d0822bf0ac05e520f24ed85a725d0",
+    "bytes": 759497
+  }
+}

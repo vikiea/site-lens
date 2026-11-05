@@ -1,0 +1,296 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "lifecycle",
+  "quality": "showcase",
+  "specification": {
+    "path": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-browser-session-20261104-200028/candidate.json",
+    "sha256": "d816e16fd8ee5f72027bb19532dc8942d1b58851d5dbe54df087eded8c838f58",
+    "bytes": 11776
+  },
+  "artifact": {
+    "path": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-browser-session-20261104-200028/browser-session.html",
+    "sha256": "f13a85985f094159f44cce141a4798b2b9b718993386ee4ad991bfd0026fad3d",
+    "bytes": 779820
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-browser-session-20261104-200028/browser-session.finalize.json",
+    "summaryReceipt": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-browser-session-20261104-200028/browser-session.finalize-summary.json",
+    "browserCheckReceipt": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-browser-session-20261104-200028/browser-session.browser-check.json"
+  },
+  "update": {
+    "status": "update_available",
+    "installedVersion": "3.0.1",
+    "availableVersion": "3.2.0",
+    "releaseNotes": "https://github.com/tt-a1i/archify/releases/tag/v3.2.0",
+    "severity": "normal",
+    "checkedAt": "2026-11-04T12:13:39.920Z",
+    "source": "cache",
+    "noticeRequired": true,
+    "noticeText": "Archify update: 3.0.1 → 3.2.0. A previous check at 2026-11-04T12:13:39.920Z found a newer release. Release notes: https://github.com/tt-a1i/archify/releases/tag/v3.2.0. The installed Skill has not changed; ask to snooze or ignore this reminder.",
+    "eventKey": "archify@sha256:70e210265c59f24dcbdf2a502ff671104b5454e7ee7d3554aecd86bad32384f5"
+  },
+  "visualReview": "not-requested",
+  "durationMs": 2814,
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "resolvedCrossovers": 7,
+      "routesOverSuggestedBends": 2,
+      "routesOverSuggestedStretch": 3
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [
+        {
+          "left": {
+            "from": "tab_loading",
+            "to": "tab_ready",
+            "label": "宿主 loaded",
+            "collectionIndex": 6,
+            "artifactIndex": 7
+          },
+          "right": {
+            "from": "foreground",
+            "to": "policy_serial",
+            "label": "syncMediaPolicy",
+            "collectionIndex": 10,
+            "artifactIndex": 11
+          },
+          "point": [
+            485,
+            274
+          ]
+        },
+        {
+          "left": {
+            "from": "tab_loading",
+            "to": "tab_failed",
+            "label": "创建或导航失败",
+            "collectionIndex": 7,
+            "artifactIndex": 8
+          },
+          "right": {
+            "from": "foreground",
+            "to": "policy_serial",
+            "label": "syncMediaPolicy",
+            "collectionIndex": 10,
+            "artifactIndex": 11
+          },
+          "point": [
+            598,
+            138
+          ]
+        },
+        {
+          "left": {
+            "from": "tab_loading",
+            "to": "tab_failed",
+            "label": "创建或导航失败",
+            "collectionIndex": 7,
+            "artifactIndex": 8
+          },
+          "right": {
+            "from": "background",
+            "to": "policy_serial",
+            "label": "非 resumed：冲刷存档并观察播放",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "point": [
+            821,
+            226
+          ]
+        },
+        {
+          "left": {
+            "from": "tab_failed",
+            "to": "tab_loading",
+            "label": "重新加载",
+            "collectionIndex": 8,
+            "artifactIndex": 9
+          },
+          "right": {
+            "from": "foreground",
+            "to": "policy_serial",
+            "label": "syncMediaPolicy",
+            "collectionIndex": 10,
+            "artifactIndex": 11
+          },
+          "point": [
+            598,
+            160
+          ]
+        },
+        {
+          "left": {
+            "from": "tab_failed",
+            "to": "tab_loading",
+            "label": "重新加载",
+            "collectionIndex": 8,
+            "artifactIndex": 9
+          },
+          "right": {
+            "from": "background",
+            "to": "policy_serial",
+            "label": "非 resumed：冲刷存档并观察播放",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "point": [
+            836,
+            160
+          ]
+        },
+        {
+          "left": {
+            "from": "tab_loading",
+            "to": "tab_capped",
+            "label": "已达 8 个",
+            "collectionIndex": 9,
+            "artifactIndex": 10
+          },
+          "right": {
+            "from": "foreground",
+            "to": "policy_serial",
+            "label": "syncMediaPolicy",
+            "collectionIndex": 10,
+            "artifactIndex": 11
+          },
+          "point": [
+            598,
+            182
+          ]
+        },
+        {
+          "left": {
+            "from": "tab_loading",
+            "to": "tab_capped",
+            "label": "已达 8 个",
+            "collectionIndex": 9,
+            "artifactIndex": 10
+          },
+          "right": {
+            "from": "background",
+            "to": "policy_serial",
+            "label": "非 resumed：冲刷存档并观察播放",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "point": [
+            836,
+            182
+          ]
+        }
+      ],
+      "detours": [
+        {
+          "relationship": {
+            "from": "tab_loading",
+            "to": "tab_failed",
+            "label": "创建或导航失败",
+            "collectionIndex": 7,
+            "artifactIndex": 8
+          },
+          "bends": 2,
+          "stretch": 1.443,
+          "directCorridorBlockers": [
+            {
+              "id": "tab_ready",
+              "label": "ready",
+              "box": [
+                522,
+                244,
+                152,
+                60
+              ]
+            }
+          ]
+        },
+        {
+          "relationship": {
+            "from": "tab_failed",
+            "to": "tab_loading",
+            "label": "重新加载",
+            "collectionIndex": 8,
+            "artifactIndex": 9
+          },
+          "bends": 2,
+          "stretch": 1.351,
+          "directCorridorBlockers": [
+            {
+              "id": "tab_ready",
+              "label": "ready",
+              "box": [
+                522,
+                244,
+                152,
+                60
+              ]
+            }
+          ]
+        },
+        {
+          "relationship": {
+            "from": "foreground",
+            "to": "policy_serial",
+            "label": "syncMediaPolicy",
+            "collectionIndex": 10,
+            "artifactIndex": 11
+          },
+          "bends": 4,
+          "stretch": 1.607,
+          "directCorridorBlockers": [
+            {
+              "id": "tab_ready",
+              "label": "ready",
+              "box": [
+                522,
+                244,
+                152,
+                60
+              ]
+            }
+          ]
+        },
+        {
+          "relationship": {
+            "from": "background",
+            "to": "policy_serial",
+            "label": "非 resumed：冲刷存档并观察播放",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "bends": 4,
+          "stretch": 1
+        }
+      ],
+      "truncated": false
+    },
+    "hints": [
+      "tab_loading → tab_ready crosses foreground → policy_serial: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "tab_loading → tab_failed crosses foreground → policy_serial: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "tab_loading → tab_failed crosses background → policy_serial: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "tab_failed → tab_loading crosses foreground → policy_serial: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "tab_failed → tab_loading crosses background → policy_serial: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "tab_loading → tab_capped crosses foreground → policy_serial: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "tab_loading → tab_capped crosses background → policy_serial: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "background → policy_serial needs 4 bends: move node background or policy_serial so they share a row or column with matching centers, or sit diagonally with a clear corner."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

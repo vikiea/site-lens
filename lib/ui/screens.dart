@@ -3139,6 +3139,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     _keepNavigationVisible();
     final current = host;
     if (current == null) return;
+    widget.app.hosts.resetNavigationRetry(current);
     await widget.app.hosts.api.reload(current.id);
   }
 
@@ -3339,13 +3340,26 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
 
   Future<void> _retryTab() async {
     final tab = _tab;
+    final current = host;
     if (tab == null || error != null) {
       await _start();
       return;
     }
     if (mounted) setState(() => error = null);
     await safely(context, () async {
-      await widget.app.ensureTabLoaded(tab);
+      final navigationError =
+          current != null &&
+          const {
+            'certificateError',
+            'networkError',
+            'httpError',
+          }.contains(current.errorKind);
+      if (navigationError && !current.disposed) {
+        widget.app.hosts.resetNavigationRetry(current);
+        await widget.app.hosts.api.reload(current.id);
+      } else {
+        await widget.app.ensureTabLoaded(tab);
+      }
       if (!mounted) return;
       _setBrowserVisible(!_covered);
       setState(() => error = null);
@@ -3393,11 +3407,21 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
 
   Widget _webContent() {
     final current = host;
+    final navigationError =
+        current != null &&
+        const {
+          'certificateError',
+          'networkError',
+          'httpError',
+        }.contains(current.errorKind);
     if (!_surfaceReady) return const SizedBox.shrink();
     if (_hasHadTabs && widget.app.browserTabs.isEmpty) {
       return const SizedBox.shrink();
     }
-    if (error != null || _tab?.failure != null || current?.disposed == true) {
+    if (error != null ||
+        _tab?.failure != null ||
+        current?.disposed == true ||
+        navigationError) {
       return ColoredBox(
         color: Theme.of(context).colorScheme.surface,
         child: Center(
@@ -3408,7 +3432,11 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
               children: [
                 Text(
                   friendlyError(
-                    _tab?.failure ?? error ?? current?.error ?? '网页进程已退出，请重新加载',
+                    _tab?.failure ??
+                        error ??
+                        (navigationError ? current.error : null) ??
+                        current?.error ??
+                        '网页进程已退出，请重新加载',
                   ),
                   textAlign: TextAlign.center,
                   style: TextStyle(

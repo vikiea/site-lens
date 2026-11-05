@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "4be0a3fa-fab7-4c9b-b030-e372811ec7dc",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/architecture-site-lens-overview-20261104-200028/candidate.json",
+  "output": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/architecture-site-lens-overview-20261104-200028/site-lens-overview.html",
+  "specification": {
+    "sha256": "0044a7414ad17d8a03025763d2a15801ad49cc0ee3e6802252ce2810afaeec8e",
+    "bytes": 9486
+  },
+  "artifact": {
+    "sha256": "06dc09d10f9160c825e3ab9347bc077ce1d0d775b941df6aec59c7c3f6a149df",
+    "bytes": 774588
+  }
+}

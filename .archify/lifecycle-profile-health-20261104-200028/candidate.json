@@ -1,0 +1,442 @@
+{
+  "schema_version": 2,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "站点健康生命周期：WorkManager、租约与通知",
+    "locale": "zh-CN",
+    "output": ".archify/lifecycle-profile-health-20261104-200028/profile-health.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:vikiea/site-lens.git",
+      "revision": "bc5248d2e480f6f38871a935b2b99c7a5a2c3c21",
+      "provider": "github",
+      "link_mode": "local-only"
+    }
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "WorkManager 调度"
+    },
+    {
+      "id": "checker",
+      "label": "ProfileHealthChecker"
+    },
+    {
+      "id": "notify",
+      "label": "用户通知"
+    }
+  ],
+  "states": [
+    {
+      "id": "idle",
+      "lane": "main",
+      "col": 0,
+      "type": "start",
+      "label": "周期任务待命",
+      "sublabel": "site-lens-health-check",
+      "icon": "start",
+      "width": 184,
+      "height": 62,
+      "sources": [
+        {
+          "path": "lib/background/health_worker.dart",
+          "line": 10,
+          "end_line": 12,
+          "label": "healthUniqueName 唯一任务名"
+        },
+        {
+          "path": "lib/background/health_worker.dart",
+          "line": 94,
+          "end_line": 110,
+          "label": "registerPeriodicTask 约束"
+        }
+      ]
+    },
+    {
+      "id": "fired",
+      "lane": "main",
+      "col": 1,
+      "type": "active",
+      "label": "任务被唤醒",
+      "sublabel": "仅充电且非计费网络",
+      "icon": "clock",
+      "width": 168,
+      "height": 62,
+      "sources": [
+        {
+          "path": "lib/background/health_worker.dart",
+          "line": 94,
+          "end_line": 112,
+          "label": "requiresCharging + unmetered"
+        }
+      ]
+    },
+    {
+      "id": "disabled",
+      "lane": "main",
+      "col": 2,
+      "type": "decision",
+      "label": "功能开关",
+      "sublabel": "backgroundHealthCheck",
+      "icon": "flag",
+      "width": 152,
+      "height": 62,
+      "sources": [
+        {
+          "path": "lib/background/health_worker.dart",
+          "line": 35,
+          "end_line": 60,
+          "label": "关闭时返回 skippedDisabled"
+        },
+        {
+          "path": "lib/settings/app_settings.dart",
+          "line": 174,
+          "end_line": 174,
+          "label": "backgroundHealthCheck 默认 true"
+        }
+      ]
+    },
+    {
+      "id": "conditions",
+      "lane": "main",
+      "col": 3,
+      "type": "decision",
+      "label": "充电 + WiFi",
+      "sublabel": "不满足即 skippedConditions",
+      "icon": "flag",
+      "width": 168,
+      "height": 62,
+      "sources": [
+        {
+          "path": "lib/discovery/health_checker.dart",
+          "line": 80,
+          "end_line": 90,
+          "label": "非充电或非 WiFi 直接跳过"
+        }
+      ]
+    },
+    {
+      "id": "lease",
+      "lane": "main",
+      "col": 4,
+      "type": "decision",
+      "label": "抢占 15 分钟租约",
+      "sublabel": "health_run_leases 事务内续租",
+      "icon": "database",
+      "width": 184,
+      "height": 62,
+      "sources": [
+        {
+          "path": "lib/discovery/health_checker.dart",
+          "line": 90,
+          "end_line": 135,
+          "label": "租约抢占与每日频控"
+        }
+      ]
+    },
+    {
+      "id": "rate",
+      "lane": "checker",
+      "col": 3,
+      "type": "waiting",
+      "label": "今日已满 2 次",
+      "sublabel": "skippedRateLimit 并释放租约",
+      "icon": "waiting",
+      "width": 160,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/discovery/health_checker.dart",
+          "line": 62,
+          "end_line": 78,
+          "label": "maxPerDay = 2"
+        },
+        {
+          "path": "lib/discovery/health_checker.dart",
+          "line": 122,
+          "end_line": 140,
+          "label": "用满即删租约返回 false"
+        }
+      ]
+    },
+    {
+      "id": "run",
+      "lane": "checker",
+      "col": 4,
+      "type": "active",
+      "label": "逐站点 HTTP 探测",
+      "sublabel": "不启动 WebView，每站续租",
+      "icon": "active",
+      "width": 176,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/discovery/health_checker.dart",
+          "line": 40,
+          "end_line": 60,
+          "label": "只做 HTTP，不起渲染进程"
+        },
+        {
+          "path": "lib/discovery/health_checker.dart",
+          "line": 143,
+          "end_line": 175,
+          "label": "逐站探测并在事务内续租"
+        }
+      ]
+    },
+    {
+      "id": "target",
+      "lane": "checker",
+      "col": 2,
+      "type": "neutral",
+      "label": "选定目标 URL",
+      "sublabel": "最新已验证首页 → 启用候选 → 发布页",
+      "icon": "external",
+      "width": 200,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/discovery/health_checker.dart",
+          "line": 192,
+          "end_line": 206,
+          "label": "_targetUrl 三级回退"
+        }
+      ]
+    },
+    {
+      "id": "ok",
+      "lane": "checker",
+      "col": 1,
+      "type": "success",
+      "label": "ok 可达",
+      "sublabel": "连续失败清零",
+      "icon": "success",
+      "width": 152,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/discovery/health_checker.dart",
+          "line": 150,
+          "end_line": 160,
+          "label": "成功重置 consecutiveFailures"
+        },
+        {
+          "path": "lib/domain/models.dart",
+          "line": 265,
+          "end_line": 268,
+          "label": "ProfileHealthState 三态"
+        }
+      ]
+    },
+    {
+      "id": "failing",
+      "lane": "checker",
+      "col": 0,
+      "type": "failure",
+      "label": "failing 连续不可达",
+      "sublabel": "连续失败 ≥ 2 进入",
+      "icon": "failure",
+      "width": 176,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/discovery/health_checker.dart",
+          "line": 160,
+          "end_line": 180,
+          "label": "failures >= 2 记为 failing"
+        }
+      ]
+    },
+    {
+      "id": "transition",
+      "lane": "notify",
+      "col": 2,
+      "type": "decision",
+      "label": "仅状态跃迁时通知",
+      "sublabel": "上一轮不是 failing 才发",
+      "icon": "messagebus",
+      "width": 176,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/discovery/health_checker.dart",
+          "line": 160,
+          "end_line": 180,
+          "label": "alert 条件避免重复提醒"
+        }
+      ]
+    },
+    {
+      "id": "notified",
+      "lane": "notify",
+      "col": 3,
+      "type": "waiting",
+      "label": "待展示通知",
+      "sublabel": "health_notice_pending 落库",
+      "icon": "messagebus",
+      "width": 176,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/background/health_worker.dart",
+          "line": 12,
+          "end_line": 12,
+          "label": "healthNoticeKey 暂存队列"
+        },
+        {
+          "path": "lib/background/health_worker.dart",
+          "line": 60,
+          "end_line": 92,
+          "label": "后台无 Activity 时写入待发"
+        }
+      ]
+    },
+    {
+      "id": "released",
+      "lane": "notify",
+      "col": 4,
+      "type": "success",
+      "label": "通知已投递",
+      "sublabel": "站点可能不可达 / 连续 N 轮不可达",
+      "icon": "success",
+      "width": 200,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/discovery/health_checker.dart",
+          "line": 170,
+          "end_line": 180,
+          "label": "通知标题与正文原文"
+        }
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "from": "idle",
+      "to": "fired",
+      "label": "周期唤醒",
+      "variant": "emphasis",
+      "labelDx": 1,
+      "labelDy": -30
+    },
+    {
+      "from": "fired",
+      "to": "disabled",
+      "label": "读设置",
+      "variant": "emphasis"
+    },
+    {
+      "from": "disabled",
+      "to": "conditions",
+      "label": "已启用",
+      "variant": "emphasis"
+    },
+    {
+      "from": "conditions",
+      "to": "lease",
+      "label": "充电且 WiFi",
+      "variant": "emphasis",
+      "labelDx": 1,
+      "labelDy": 56
+    },
+    {
+      "from": "lease",
+      "to": "run",
+      "label": "抢到租约且未满 2 次",
+      "variant": "emphasis"
+    },
+    {
+      "from": "lease",
+      "to": "rate",
+      "label": "今日额度已用尽",
+      "variant": "dashed"
+    },
+    {
+      "from": "rate",
+      "to": "idle",
+      "label": "释放租约等待下一轮",
+      "variant": "dashed"
+    },
+    {
+      "from": "run",
+      "to": "target",
+      "label": "为每站选地址",
+      "variant": "default"
+    },
+    {
+      "from": "target",
+      "to": "ok",
+      "label": "HTTP 2xx",
+      "variant": "default"
+    },
+    {
+      "from": "target",
+      "to": "failing",
+      "label": "HTTP 失败",
+      "variant": "dashed"
+    },
+    {
+      "from": "ok",
+      "to": "idle",
+      "label": "释放租约",
+      "variant": "default"
+    },
+    {
+      "from": "failing",
+      "to": "transition",
+      "label": "累计失败",
+      "variant": "dashed"
+    },
+    {
+      "from": "transition",
+      "to": "notified",
+      "label": "发生跃迁",
+      "variant": "emphasis"
+    },
+    {
+      "from": "notified",
+      "to": "released",
+      "label": "下发",
+      "variant": "emphasis"
+    },
+    {
+      "from": "transition",
+      "to": "idle",
+      "label": "未跃迁不打扰",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "租约与频控",
+      "items": [
+        "唯一任务 site-lens-health-check，12 小时周期，需充电且非计费网络",
+        "15 分钟 DB 租约：health_run_leases 事务内抢占，逐站点续租，finally 释放",
+        "每站点每天最多 2 次，计数键按日期生成；额度耗尽立即删除租约",
+        "续租失败抛出 Cancelled，主动让出本次运行"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "探测只走 HTTP",
+      "items": [
+        "HttpReachabilityProbe 复用 HttpProbe，仅当状态为 reachable 视为可达",
+        "刻意不创建 WebView：后台检查不应启动渲染进程",
+        "目标地址回退：最新已验证 ready 落地页 → 启用候选 → 发布页"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "通知去重与边界",
+      "items": [
+        "连续 2 次失败进入 failing，且只在上一次不是 failing 时发一次通知",
+        "通知标题「站点可能不可达」，正文「<name> 连续 N 轮不可达」",
+        "后台 isolate 没有 Activity，通知内容先写入 health_notice_pending 由前台展示",
+        "健康状态不参与排序或推荐：状态只描述可达性，不等于可浏览"
+      ]
+    }
+  ]
+}

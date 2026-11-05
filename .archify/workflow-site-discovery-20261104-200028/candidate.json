@@ -1,0 +1,401 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "站点发现工作流：HTTP 初筛、首页验证与人为决策",
+    "locale": "zh-CN",
+    "output": ".archify/workflow-site-discovery-20261104-200028/site-discovery.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:vikiea/site-lens.git",
+      "revision": "bc5248d2e480f6f38871a935b2b99c7a5a2c3c21",
+      "provider": "github",
+      "link_mode": "local-only"
+    }
+  },
+  "lanes": [
+    {
+      "id": "user",
+      "label": "用户",
+      "variant": "normal"
+    },
+    {
+      "id": "app",
+      "label": "Flutter 应用",
+      "variant": "normal"
+    },
+    {
+      "id": "site",
+      "label": "站点与网络",
+      "variant": "normal"
+    }
+  ],
+  "phases": [
+    {
+      "id": "input",
+      "label": "输入",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "sieve",
+      "label": "初筛",
+      "fromCol": 2,
+      "toCol": 2
+    },
+    {
+      "id": "verify",
+      "label": "验证",
+      "fromCol": 3,
+      "toCol": 4
+    },
+    {
+      "id": "decide",
+      "label": "决策",
+      "fromCol": 5,
+      "toCol": 5,
+      "variant": "emphasis"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "pick",
+      "lane": "user",
+      "col": 0,
+      "type": "frontend",
+      "label": "选择站点档案",
+      "sublabel": "输入发布页与核心 DOM 选择器",
+      "icon": "person",
+      "width": 148,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/ui/profile_panel.dart",
+          "line": 1347,
+          "end_line": 1420,
+          "label": "showAddProfileDialog 添加站点档案"
+        }
+      ]
+    },
+    {
+      "id": "save",
+      "lane": "app",
+      "col": 1,
+      "type": "database",
+      "label": "校验并保存档案",
+      "sublabel": "事务写入 profile 与 profile_pages",
+      "icon": "database",
+      "width": 148,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/ui/profile_panel.dart",
+          "line": 1360,
+          "end_line": 1420,
+          "label": "保存成功后再 app.load()"
+        }
+      ]
+    },
+    {
+      "id": "candidates",
+      "lane": "app",
+      "col": 2,
+      "type": "backend",
+      "label": "读取启用候选",
+      "sublabel": "enabled 且匹配 profileId",
+      "icon": "backend",
+      "width": 140,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/discovery/probe_coordinator.dart",
+          "line": 322,
+          "end_line": 340,
+          "label": "候选过滤并进入并发探测"
+        }
+      ]
+    },
+    {
+      "id": "http",
+      "lane": "site",
+      "col": 2,
+      "type": "cloud",
+      "label": "HTTP 初筛",
+      "sublabel": "8 路并发，每候选 5 秒",
+      "icon": "cloud",
+      "width": 140,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/discovery/probe_coordinator.dart",
+          "line": 193,
+          "end_line": 200,
+          "label": "maxConcurrentProbes = 8"
+        },
+        {
+          "path": "lib/network/transport.dart",
+          "line": 993,
+          "end_line": 1010,
+          "label": "HttpProbe.candidateDeadline"
+        }
+      ]
+    },
+    {
+      "id": "select",
+      "lane": "app",
+      "col": 3,
+      "type": "backend",
+      "label": "归并落地页",
+      "sublabel": "landingKey 去重后排序",
+      "icon": "backend",
+      "width": 140,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/discovery/probe_coordinator.dart",
+          "line": 342,
+          "end_line": 353,
+          "label": "landingKey 去重与 take(3)"
+        }
+      ]
+    },
+    {
+      "id": "dom",
+      "lane": "site",
+      "col": 4,
+      "type": "cloud",
+      "label": "DOM 验证首页",
+      "sublabel": "默认串行前 3 个，合计 5 秒",
+      "icon": "cloud",
+      "width": 148,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/discovery/probe_coordinator.dart",
+          "line": 375,
+          "end_line": 383,
+          "label": "默认串行验证前三个落点"
+        },
+        {
+          "path": "lib/discovery/probe_coordinator.dart",
+          "line": 260,
+          "end_line": 275,
+          "label": "HTTP 与 DOM 共享 5 秒预算"
+        }
+      ]
+    },
+    {
+      "id": "probe_result",
+      "lane": "app",
+      "col": 5,
+      "type": "database",
+      "label": "保存探测结果",
+      "sublabel": "落库并生成推荐",
+      "icon": "database",
+      "width": 140,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/discovery/probe_coordinator.dart",
+          "line": 214,
+          "end_line": 226,
+          "label": "recommendations 本轮已验证落点"
+        }
+      ]
+    },
+    {
+      "id": "notice",
+      "lane": "user",
+      "col": 5,
+      "type": "frontend",
+      "label": "人工确认后进入",
+      "sublabel": "检测完成不自动跳转",
+      "icon": "person",
+      "width": 148,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/discovery/probe_coordinator.dart",
+          "line": 384,
+          "end_line": 397,
+          "label": "推荐通知原文"
+        },
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 2831,
+          "end_line": 2880,
+          "label": "enterProfile 仅用户触发"
+        }
+      ]
+    },
+    {
+      "id": "branch_http",
+      "lane": "site",
+      "col": 2,
+      "type": "cloud",
+      "label": "初筛未通过",
+      "sublabel": "验证码 / 需交互 / 超时",
+      "icon": "cloud",
+      "width": 140,
+      "height": 60,
+      "sources": [
+        {
+          "path": "lib/discovery/probe_coordinator.dart",
+          "line": 45,
+          "end_line": 140,
+          "label": "Host 错误映射到 ProbeStatus"
+        },
+        {
+          "path": "lib/network/transport.dart",
+          "line": 1040,
+          "end_line": 1110,
+          "label": "重定向、证书与超时分支"
+        }
+      ],
+      "yOffset": 104
+    }
+  ],
+  "edges": [
+    {
+      "from": "pick",
+      "to": "save",
+      "label": "提交档案",
+      "role": "main",
+      "variant": "emphasis"
+    },
+    {
+      "from": "save",
+      "to": "candidates",
+      "label": "加载启用候选",
+      "role": "main",
+      "variant": "emphasis"
+    },
+    {
+      "from": "candidates",
+      "to": "http",
+      "label": "逐候选探测",
+      "role": "main",
+      "variant": "emphasis"
+    },
+    {
+      "from": "http",
+      "to": "select",
+      "label": "返回 ProbeResult",
+      "role": "main",
+      "variant": "emphasis"
+    },
+    {
+      "from": "select",
+      "to": "dom",
+      "label": "前 3 个不同落点",
+      "role": "main",
+      "variant": "emphasis"
+    },
+    {
+      "from": "dom",
+      "to": "probe_result",
+      "label": "验证读数",
+      "role": "main",
+      "variant": "emphasis"
+    },
+    {
+      "from": "probe_result",
+      "to": "notice",
+      "label": "推荐 + 通知",
+      "role": "main",
+      "variant": "emphasis"
+    },
+    {
+      "from": "http",
+      "to": "branch_http",
+      "label": "401/403 需交互",
+      "role": "branch",
+      "variant": "dashed"
+    },
+    {
+      "from": "dom",
+      "to": "branch_http",
+      "label": "首页未就绪",
+      "role": "branch",
+      "variant": "dashed"
+    },
+    {
+      "from": "branch_http",
+      "to": "notice",
+      "label": "记录失败读数，推荐不作数",
+      "role": "return",
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "pick",
+    "save",
+    "candidates",
+    "http",
+    "select",
+    "dom",
+    "probe_result",
+    "notice"
+  ],
+  "semanticChecks": {
+    "allowedRoots": [
+      "pick"
+    ],
+    "allowedTerminals": [
+      "notice"
+    ],
+    "requiredEdges": [
+      {
+        "from": "candidates",
+        "to": "http"
+      },
+      {
+        "from": "http",
+        "to": "select"
+      },
+      {
+        "from": "select",
+        "to": "dom"
+      },
+      {
+        "from": "dom",
+        "to": "probe_result"
+      },
+      {
+        "from": "probe_result",
+        "to": "notice"
+      }
+    ]
+  },
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "精确限制",
+      "items": [
+        "HTTP 初筛并发 maxConcurrentProbes = 8，每候选 candidateDeadline = 5s",
+        "默认只验证前 3 个不同落点，且串行执行，便于横向比较耗时",
+        "all=true 时验证全部不同落点，并发仍不超过 8",
+        "每个候选的 HTTP 初筛与 DOM 验证合计共享 5 秒预算，超时记为 timeout"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "ProbeStatus 十种取值",
+      "items": [
+        "reachable（初筛可达 · 未验证）、ready（首页已就绪）",
+        "unavailable、timeout、offline、certificateError",
+        "challenge、interactionRequired、unsupported、cancelled"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "人为决策",
+      "items": [
+        "检测完成后由用户选择落点，绝不自动跳转",
+        "通知原文：首页已就绪 N 个不同落点；仅初筛前三个不同落点。HTTP 可达不代表首页可用。",
+        "历史 ready 不等于当前已验证：只有本轮 round 内的读数进入推荐",
+        "取消检测会递增 round 并清空推荐；保存失败以 notice 附带体现，不阻断推荐"
+      ]
+    }
+  ]
+}

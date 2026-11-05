@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "d66e757d-6904-4b1b-95d2-b58816599c26",
+  "status": "current",
+  "command": "deliver",
+  "type": "workflow",
+  "input": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/workflow-site-discovery-20261104-200028/candidate.json",
+  "output": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/workflow-site-discovery-20261104-200028/site-discovery.html",
+  "specification": {
+    "sha256": "7d22a2f93527aaadbef0e3ac4c6341776672c554350a75b2e7fccd199db73d69",
+    "bytes": 9428
+  },
+  "artifact": {
+    "sha256": "d503724ae99ac081a0828ab969273cfca355b28a7cd79a6d802cc3b782593b6a",
+    "bytes": 763595
+  }
+}

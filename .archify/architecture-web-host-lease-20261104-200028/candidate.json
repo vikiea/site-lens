@@ -1,0 +1,541 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "WebView 宿主与导航租约：单标签的脚本隔离与事件回传",
+    "subtitle": "Flutter 控制器发起导航，Android 原生宿主独占租约，脚本在世界隔离与每文档 token 下注入",
+    "locale": "zh-CN",
+    "output": ".archify/architecture-web-host-lease-20261104-200028/web-host-lease.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:vikiea/site-lens.git",
+      "revision": "bc5248d2e480f6f38871a935b2b99c7a5a2c3c21",
+      "provider": "github",
+      "link_mode": "local-only"
+    }
+  },
+  "components": [
+    {
+      "id": "app",
+      "type": "frontend",
+      "label": "AppController",
+      "sources": [
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 2935,
+          "end_line": 2987,
+          "label": "_spawnTab"
+        },
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 1851,
+          "end_line": 1877,
+          "label": "_hostMetadataChanged"
+        },
+        {
+          "path": "lib/ui/app_controller.dart",
+          "line": 309,
+          "end_line": 324,
+          "label": "onInvalidated"
+        }
+      ],
+      "pos": [
+        40,
+        250
+      ],
+      "size": [
+        180,
+        88
+      ],
+      "sublabel": "导航发起与标签状态"
+    },
+    {
+      "id": "hosts",
+      "type": "backend",
+      "label": "NativeHosts",
+      "sources": [
+        {
+          "path": "lib/web_host/native_hosts.dart",
+          "line": 241,
+          "end_line": 242,
+          "label": "navigate"
+        },
+        {
+          "path": "lib/web_host/native_hosts.dart",
+          "line": 330,
+          "end_line": 345,
+          "label": "onEvent"
+        },
+        {
+          "path": "lib/web_host/native_hosts.dart",
+          "line": 649,
+          "end_line": 696,
+          "label": "getScriptsForNavigation"
+        }
+      ],
+      "pos": [
+        276,
+        250
+      ],
+      "size": [
+        180,
+        88
+      ],
+      "sublabel": "租约与事件回传"
+    },
+    {
+      "id": "pigeon",
+      "type": "messagebus",
+      "label": "WebHostApi / WebHostEvents",
+      "sources": [
+        {
+          "path": "pigeons/web_host.dart",
+          "line": 339,
+          "end_line": 375,
+          "label": "WebHostApi"
+        },
+        {
+          "path": "pigeons/web_host.dart",
+          "line": 394,
+          "end_line": 409,
+          "label": "WebHostEvents"
+        }
+      ],
+      "pos": [
+        564,
+        250
+      ],
+      "size": [
+        180,
+        88
+      ],
+      "sublabel": "Pigeon 生成桥"
+    },
+    {
+      "id": "native",
+      "type": "backend",
+      "label": "NativeWebHost",
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt",
+          "line": 1333,
+          "end_line": 1392,
+          "label": "prepareNavigation"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt",
+          "line": 1465,
+          "end_line": 1487,
+          "label": "install"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt",
+          "line": 1489,
+          "end_line": 1514,
+          "label": "createPrivilegedWorld"
+        }
+      ],
+      "pos": [
+        1000,
+        250
+      ],
+      "size": [
+        180,
+        88
+      ],
+      "sublabel": "租约唯一持有者"
+    },
+    {
+      "id": "scripts",
+      "type": "database",
+      "label": "ScriptService",
+      "sources": [
+        {
+          "path": "lib/scripts/script_service.dart",
+          "line": 198,
+          "end_line": 266,
+          "label": "registrations"
+        },
+        {
+          "path": "lib/scripts/script_service.dart",
+          "line": 268,
+          "end_line": 319,
+          "label": "runtime 与 config"
+        }
+      ],
+      "pos": [
+        126,
+        100
+      ],
+      "size": [
+        180,
+        88
+      ],
+      "sublabel": "注册与完整性闸门"
+    },
+    {
+      "id": "filter",
+      "type": "messagebus",
+      "label": "FilterService",
+      "sources": [
+        {
+          "path": "lib/web_host/native_hosts.dart",
+          "line": 140,
+          "end_line": 190,
+          "label": "_applyFilter"
+        },
+        {
+          "path": "web_assets/filter_runtime.js",
+          "line": 1,
+          "end_line": 40
+        }
+      ],
+      "pos": [
+        792,
+        100
+      ],
+      "size": [
+        180,
+        88
+      ],
+      "sublabel": "filter_runtime.js"
+    },
+    {
+      "id": "lensrt",
+      "type": "external",
+      "label": "lens 隔离世界",
+      "sources": [
+        {
+          "path": "web_assets/userscript_runtime.js",
+          "line": 1,
+          "end_line": 60,
+          "label": "per-script world"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt",
+          "line": 1472,
+          "end_line": 1480,
+          "label": "token 前缀"
+        }
+      ],
+      "pos": [
+        1260,
+        100
+      ],
+      "size": [
+        180,
+        88
+      ],
+      "sublabel": "每脚本独立世界"
+    },
+    {
+      "id": "page",
+      "type": "external",
+      "label": "页面世界",
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt",
+          "line": 1481,
+          "end_line": 1483,
+          "label": "PAGE_WORLD_NAME"
+        },
+        {
+          "path": "web_assets/userscript_runtime.js",
+          "line": 1,
+          "end_line": 60,
+          "label": "bridge"
+        }
+      ],
+      "pos": [
+        1520,
+        100
+      ],
+      "size": [
+        180,
+        88
+      ],
+      "sublabel": "页面世界 · @grant none"
+    },
+    {
+      "id": "webview",
+      "type": "cloud",
+      "label": "WebView",
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt",
+          "line": 1465,
+          "end_line": 1487,
+          "label": "addDocumentStartJavaScript"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt",
+          "line": 862,
+          "end_line": 925,
+          "label": "onNavigationStarted"
+        }
+      ],
+      "pos": [
+        1260,
+        400
+      ],
+      "size": [
+        180,
+        60
+      ],
+      "sublabel": "document-start 注入"
+    },
+    {
+      "id": "media",
+      "type": "external",
+      "label": "media_lifecycle.js",
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/BrowserMediaController.kt",
+          "line": 283,
+          "end_line": 292,
+          "label": "refreshInjection"
+        },
+        {
+          "path": "web_assets/media_lifecycle.js",
+          "line": 1,
+          "end_line": 63,
+          "label": "post"
+        }
+      ],
+      "pos": [
+        1260,
+        520
+      ],
+      "size": [
+        180,
+        60
+      ],
+      "sublabel": "页面世界 · 仅遥测"
+    },
+    {
+      "id": "remote",
+      "type": "external",
+      "label": "远端页面",
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeWebHost.kt",
+          "line": 862,
+          "end_line": 925,
+          "label": "导航监听"
+        }
+      ],
+      "pos": [
+        1520,
+        520
+      ],
+      "size": [
+        180,
+        60
+      ],
+      "sublabel": "不可信站点内容"
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Flutter 侧",
+      "wraps": [
+        "app",
+        "hosts"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Pigeon 桥",
+      "wraps": [
+        "pigeon",
+        "scripts"
+      ]
+    },
+    {
+      "kind": "security-group",
+      "label": "Android 原生宿主",
+      "wraps": [
+        "native",
+        "filter"
+      ]
+    },
+    {
+      "kind": "security-group",
+      "label": "不可信页面 · WebView 进程",
+      "wraps": [
+        "lensrt",
+        "page",
+        "webview",
+        "media",
+        "remote"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "c1",
+      "from": "app",
+      "to": "hosts",
+      "label": "navigate",
+      "variant": "emphasis"
+    },
+    {
+      "id": "c2",
+      "from": "hosts",
+      "to": "pigeon",
+      "label": "WebHostApi.navigate",
+      "variant": "emphasis"
+    },
+    {
+      "id": "c3",
+      "from": "pigeon",
+      "to": "native",
+      "label": "prepareNavigation",
+      "variant": "emphasis"
+    },
+    {
+      "id": "c4",
+      "from": "native",
+      "to": "pigeon",
+      "label": "getScriptsForNavigation",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "bottom"
+    },
+    {
+      "id": "c5",
+      "from": "pigeon",
+      "to": "scripts",
+      "label": "registrations",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "bottom"
+    },
+    {
+      "id": "c6",
+      "from": "scripts",
+      "to": "pigeon",
+      "label": "registration + revision",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "top"
+    },
+    {
+      "id": "c7",
+      "from": "filter",
+      "to": "native",
+      "label": "applyFilter",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "c8",
+      "from": "pigeon",
+      "to": "native",
+      "label": "install(url)",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "bottom"
+    },
+    {
+      "id": "c9",
+      "from": "native",
+      "to": "hosts",
+      "label": "onEvent(generation)",
+      "variant": "security",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "c10",
+      "from": "hosts",
+      "to": "app",
+      "label": "标签状态",
+      "fromSide": "top",
+      "toSide": "top"
+    },
+    {
+      "id": "c11",
+      "from": "native",
+      "to": "lensrt",
+      "label": "每脚本世界",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "c12",
+      "from": "native",
+      "to": "page",
+      "label": "@grant none",
+      "variant": "dashed"
+    },
+    {
+      "id": "c13",
+      "from": "native",
+      "to": "webview",
+      "label": "loadUrl",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "right"
+    },
+    {
+      "id": "c14",
+      "from": "native",
+      "to": "media",
+      "label": "页面世界注入",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "c15",
+      "from": "webview",
+      "to": "remote",
+      "label": "加载文档",
+      "variant": "emphasis"
+    },
+    {
+      "id": "c16",
+      "from": "lensrt",
+      "to": "native",
+      "label": "lensBridge 按 token 校验",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "租约规则",
+      "items": [
+        "prepareNavigation 先撤销旧租约，再用 ticket=新 generation 发起准备",
+        "仅 App 发起的导航可跟随服务端重定向，最多 5 跳（MAX_ENTRY_REDIRECTS）",
+        "历史导航走 prepareHistoryNavigation：预授权并保留 expectedUrl，避免后退误报 scriptsSuspended",
+        "事件 generation 小于当前租约即被丢弃，过期回包无法改写标签状态"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "世界与授权",
+      "items": [
+        "特权脚本进入每脚本隔离世界，注入前缀 const __lensBridgeToken = \"…\";",
+        "@grant none 与 unsafeWindow 进入页面世界，没有特权桥",
+        "lensBridge 按每文档 token、origin、@match 与 generation 校验后才到 Dart",
+        "未认证的 WebMessage 不会进入 onGmRequest"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "页面遥测",
+      "items": [
+        "media_lifecycle.js 由 BrowserMediaController 注入页面世界，仅上报候选与播放证据",
+        "该脚本没有导航、网络、存储或用户脚本权限，消息超过 4096 字节即丢弃",
+        "媒体候选经宿主事件 mediaCandidate / mediaPlaybackEvidence 回传，随租约失效清空"
+      ]
+    }
+  ]
+}

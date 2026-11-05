@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "dataflow",
+  "quality": "showcase",
+  "specification": {
+    "path": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/dataflow-media-acquisition-20261104-200028/candidate.json",
+    "sha256": "273fc33be63fe812ddc1b0ae7e97b634b9201a5b482f9558a5455555f7e836ae",
+    "bytes": 11191
+  },
+  "artifact": {
+    "path": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/dataflow-media-acquisition-20261104-200028/media-acquisition.html",
+    "sha256": "5242a083f045dded9dacb6ce6a57bb2a9a3324a849f107b0faef089acce0f8e6",
+    "bytes": 765638
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/dataflow-media-acquisition-20261104-200028/media-acquisition.finalize.json",
+    "summaryReceipt": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/dataflow-media-acquisition-20261104-200028/media-acquisition.finalize-summary.json",
+    "browserCheckReceipt": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/dataflow-media-acquisition-20261104-200028/media-acquisition.browser-check.json"
+  },
+  "update": {
+    "status": "update_available",
+    "installedVersion": "3.0.1",
+    "availableVersion": "3.2.0",
+    "releaseNotes": "https://github.com/tt-a1i/archify/releases/tag/v3.2.0",
+    "severity": "normal",
+    "checkedAt": "2026-11-04T12:13:39.920Z",
+    "source": "cache",
+    "noticeRequired": true,
+    "noticeText": "Archify update: 3.0.1 → 3.2.0. A previous check at 2026-11-04T12:13:39.920Z found a newer release. Release notes: https://github.com/tt-a1i/archify/releases/tag/v3.2.0. The installed Skill has not changed; ask to snooze or ignore this reminder.",
+    "eventKey": "archify@sha256:70e210265c59f24dcbdf2a502ff671104b5454e7ee7d3554aecd86bad32384f5"
+  },
+  "visualReview": "not-requested",
+  "durationMs": 3102,
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "routesOverSuggestedBends": 1
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [],
+      "detours": [
+        {
+          "relationship": {
+            "id": "f6",
+            "from": "native",
+            "to": "partial",
+            "label": "进度 / 字节",
+            "collectionIndex": 5,
+            "artifactIndex": 6
+          },
+          "bends": 3,
+          "stretch": 1.189
+        }
+      ],
+      "truncated": false
+    },
+    "hints": [
+      "native → partial needs 3 bends: move node native or partial so they share a row or column with matching centers, or sit diagonally with a clear corner."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

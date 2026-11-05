@@ -1,0 +1,374 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/architecture-site-lens-overview-20261104-200028/candidate.json",
+    "sha256": "0044a7414ad17d8a03025763d2a15801ad49cc0ee3e6802252ce2810afaeec8e",
+    "bytes": 9486
+  },
+  "artifact": {
+    "path": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/architecture-site-lens-overview-20261104-200028/site-lens-overview.html",
+    "sha256": "06dc09d10f9160c825e3ab9347bc077ce1d0d775b941df6aec59c7c3f6a149df",
+    "bytes": 774588
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/architecture-site-lens-overview-20261104-200028/site-lens-overview.finalize.json",
+    "summaryReceipt": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/architecture-site-lens-overview-20261104-200028/site-lens-overview.finalize-summary.json",
+    "browserCheckReceipt": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/architecture-site-lens-overview-20261104-200028/site-lens-overview.browser-check.json"
+  },
+  "update": {
+    "status": "update_available",
+    "installedVersion": "3.0.1",
+    "availableVersion": "3.2.0",
+    "releaseNotes": "https://github.com/tt-a1i/archify/releases/tag/v3.2.0",
+    "severity": "normal",
+    "checkedAt": "2026-11-04T12:13:39.920Z",
+    "source": "cache",
+    "noticeRequired": true,
+    "noticeText": "Archify update: 3.0.1 → 3.2.0. A previous check at 2026-11-04T12:13:39.920Z found a newer release. Release notes: https://github.com/tt-a1i/archify/releases/tag/v3.2.0. The installed Skill has not changed; ask to snooze or ignore this reminder.",
+    "eventKey": "archify@sha256:70e210265c59f24dcbdf2a502ff671104b5454e7ee7d3554aecd86bad32384f5"
+  },
+  "visualReview": "not-requested",
+  "durationMs": 10788,
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "resolvedCrossovers": 8,
+      "routesOverSuggestedBends": 6,
+      "routesOverSuggestedStretch": 1
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [
+        {
+          "left": {
+            "id": "c_ctl_probe",
+            "from": "app_controller",
+            "to": "discovery",
+            "label": "detect()",
+            "collectionIndex": 2,
+            "artifactIndex": 3
+          },
+          "right": {
+            "id": "c_bg_store",
+            "from": "background",
+            "to": "local_store",
+            "label": "巡检结果",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "point": [
+            610,
+            255
+          ]
+        },
+        {
+          "left": {
+            "id": "c_probe_net",
+            "from": "discovery",
+            "to": "network",
+            "label": "初筛/验证",
+            "collectionIndex": 3,
+            "artifactIndex": 4
+          },
+          "right": {
+            "id": "c_ctl_pigeon",
+            "from": "app_controller",
+            "to": "pigeon_contract",
+            "label": "navigate()",
+            "collectionIndex": 5,
+            "artifactIndex": 6
+          },
+          "point": [
+            944,
+            447
+          ]
+        },
+        {
+          "left": {
+            "id": "c_probe_net",
+            "from": "discovery",
+            "to": "network",
+            "label": "初筛/验证",
+            "collectionIndex": 3,
+            "artifactIndex": 4
+          },
+          "right": {
+            "id": "c_media_native",
+            "from": "media_download",
+            "to": "native_hosts",
+            "label": "原生传输",
+            "collectionIndex": 10,
+            "artifactIndex": 11
+          },
+          "point": [
+            944,
+            356
+          ]
+        },
+        {
+          "left": {
+            "id": "c_ctl_media",
+            "from": "app_controller",
+            "to": "media_download",
+            "label": "媒体任务",
+            "collectionIndex": 4,
+            "artifactIndex": 5
+          },
+          "right": {
+            "id": "c_bg_store",
+            "from": "background",
+            "to": "local_store",
+            "label": "巡检结果",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "point": [
+            673,
+            356
+          ]
+        },
+        {
+          "left": {
+            "id": "c_ctl_pigeon",
+            "from": "app_controller",
+            "to": "pigeon_contract",
+            "label": "navigate()",
+            "collectionIndex": 5,
+            "artifactIndex": 6
+          },
+          "right": {
+            "id": "c_media_native",
+            "from": "media_download",
+            "to": "native_hosts",
+            "label": "原生传输",
+            "collectionIndex": 10,
+            "artifactIndex": 11
+          },
+          "point": [
+            1060,
+            416
+          ]
+        },
+        {
+          "left": {
+            "id": "c_ctl_pigeon",
+            "from": "app_controller",
+            "to": "pigeon_contract",
+            "label": "navigate()",
+            "collectionIndex": 5,
+            "artifactIndex": 6
+          },
+          "right": {
+            "id": "c_bg_store",
+            "from": "background",
+            "to": "local_store",
+            "label": "巡检结果",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "point": [
+            673,
+            370
+          ]
+        },
+        {
+          "left": {
+            "id": "c_ctl_pigeon",
+            "from": "app_controller",
+            "to": "pigeon_contract",
+            "label": "navigate()",
+            "collectionIndex": 5,
+            "artifactIndex": 6
+          },
+          "right": {
+            "id": "c_store_ctl",
+            "from": "local_store",
+            "to": "app_controller",
+            "label": "记录",
+            "collectionIndex": 12,
+            "artifactIndex": 13
+          },
+          "point": [
+            694,
+            416
+          ],
+          "sharedNode": "app_controller"
+        },
+        {
+          "left": {
+            "id": "c_bg_store",
+            "from": "background",
+            "to": "local_store",
+            "label": "巡检结果",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "right": {
+            "id": "c_store_ctl",
+            "from": "local_store",
+            "to": "app_controller",
+            "label": "记录",
+            "collectionIndex": 12,
+            "artifactIndex": 13
+          },
+          "point": [
+            673,
+            416
+          ],
+          "sharedNode": "local_store"
+        }
+      ],
+      "detours": [
+        {
+          "relationship": {
+            "id": "c_ctl_probe",
+            "from": "app_controller",
+            "to": "discovery",
+            "label": "detect()",
+            "collectionIndex": 2,
+            "artifactIndex": 3
+          },
+          "bends": 3,
+          "stretch": 1
+        },
+        {
+          "relationship": {
+            "id": "c_ctl_pigeon",
+            "from": "app_controller",
+            "to": "pigeon_contract",
+            "label": "navigate()",
+            "collectionIndex": 5,
+            "artifactIndex": 6
+          },
+          "bends": 3,
+          "stretch": 1.267,
+          "directCorridorBlockers": [
+            {
+              "id": "media_download",
+              "label": "下载服务",
+              "box": [
+                740,
+                320,
+                180,
+                72
+              ]
+            }
+          ]
+        },
+        {
+          "relationship": {
+            "id": "c_webview_sites",
+            "from": "webview",
+            "to": "remote_sites",
+            "label": "页面请求",
+            "collectionIndex": 9,
+            "artifactIndex": 10
+          },
+          "bends": 3,
+          "stretch": 1.126,
+          "directCorridorBlockers": [
+            {
+              "id": "native_hosts",
+              "label": "原生宿主",
+              "box": [
+                1200,
+                320,
+                170,
+                72
+              ]
+            }
+          ]
+        },
+        {
+          "relationship": {
+            "id": "c_media_native",
+            "from": "media_download",
+            "to": "native_hosts",
+            "label": "原生传输",
+            "collectionIndex": 10,
+            "artifactIndex": 11
+          },
+          "bends": 3,
+          "stretch": 1.12,
+          "directCorridorBlockers": [
+            {
+              "id": "pigeon_contract",
+              "label": "Pigeon 契约",
+              "box": [
+                980,
+                320,
+                160,
+                72
+              ]
+            }
+          ]
+        },
+        {
+          "relationship": {
+            "id": "c_bg_store",
+            "from": "background",
+            "to": "local_store",
+            "label": "巡检结果",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "bends": 4,
+          "stretch": 1.438,
+          "directCorridorBlockers": [
+            {
+              "id": "app_controller",
+              "label": "AppController",
+              "box": [
+                500,
+                320,
+                170,
+                72
+              ]
+            }
+          ]
+        },
+        {
+          "relationship": {
+            "id": "c_store_ctl",
+            "from": "local_store",
+            "to": "app_controller",
+            "label": "记录",
+            "collectionIndex": 12,
+            "artifactIndex": 13
+          },
+          "bends": 3,
+          "stretch": 1.161
+        }
+      ],
+      "truncated": false
+    },
+    "hints": [
+      "app_controller → discovery crosses background → local_store: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "discovery → network crosses app_controller → pigeon_contract: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "discovery → network crosses media_download → native_hosts: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "app_controller → media_download crosses background → local_store: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "app_controller → pigeon_contract crosses media_download → native_hosts: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "app_controller → pigeon_contract crosses background → local_store: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "app_controller → pigeon_contract and local_store → app_controller cross next to app_controller: move node pigeon_contract or local_store so the two reach app_controller from different sides (for example one level with it, one directly above or below it).",
+      "background → local_store and local_store → app_controller cross next to local_store: move node background or app_controller so the two reach local_store from different sides (for example one level with it, one directly above or below it)."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

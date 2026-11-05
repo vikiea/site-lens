@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "946abc70-7e16-4fc3-8434-e32a19ad8f50",
+  "status": "current",
+  "command": "deliver",
+  "type": "sequence",
+  "input": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/sequence-navigation-lease-20261104-200028/candidate.json",
+  "output": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/sequence-navigation-lease-20261104-200028/navigation-lease.html",
+  "specification": {
+    "sha256": "b209cef07f4142b680e8674eb0db95599977ec972bcbaa3b81cc53503f045403",
+    "bytes": 8788
+  },
+  "artifact": {
+    "sha256": "0edc75ca4b33f3974149a638bd4f4300d222cbe7333ee9979a68a8240edc2e09",
+    "bytes": 763993
+  }
+}

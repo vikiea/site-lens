@@ -1,0 +1,400 @@
+{
+  "schema_version": 2,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "媒体任务生命周期：八种状态与恢复路径",
+    "subtitle": "主流程覆盖排队、下载、暂停、完成与可播放；异常与恢复覆盖需要重新授权、失败与取消，cancelled 与 failed 均可重启",
+    "locale": "zh-CN",
+    "output": ".archify/lifecycle-media-task-20261104-200028/media-task.html",
+    "quality_profile": "showcase",
+    "visual_preset": "signal-flow",
+    "repository": {
+      "url": "git@github.com:vikiea/site-lens.git",
+      "revision": "bc5248d2e480f6f38871a935b2b99c7a5a2c3c21",
+      "provider": "github",
+      "link_mode": "local-only"
+    },
+    "legend": {
+      "mode": "all",
+      "entries": {
+        "start": {
+          "label": "起点"
+        },
+        "active": {
+          "label": "进行中"
+        },
+        "waiting": {
+          "label": "等待"
+        },
+        "decision": {
+          "label": "判定"
+        },
+        "success": {
+          "label": "成功"
+        },
+        "failure": {
+          "label": "失败"
+        },
+        "neutral": {
+          "label": "已取消"
+        },
+        "external": {
+          "label": "外部依赖"
+        }
+      }
+    }
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "主流程"
+    },
+    {
+      "id": "recovery",
+      "label": "异常与恢复"
+    }
+  ],
+  "states": [
+    {
+      "id": "queued",
+      "type": "start",
+      "label": "排队中",
+      "sublabel": "已入队待调度",
+      "tag": "queued",
+      "lane": "main",
+      "col": 0,
+      "width": 150,
+      "sources": [
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 533,
+          "label": "MediaTaskStore"
+        },
+        {
+          "path": "lib/domain/models.dart",
+          "line": 1350,
+          "label": "MediaTaskState"
+        }
+      ]
+    },
+    {
+      "id": "downloading",
+      "type": "active",
+      "label": "下载中",
+      "sublabel": "原生 Worker 或 Dart",
+      "tag": "downloading",
+      "lane": "main",
+      "col": 1,
+      "width": 150,
+      "sources": [
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 2786,
+          "label": "startNative"
+        },
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 2852,
+          "label": "start"
+        }
+      ]
+    },
+    {
+      "id": "paused",
+      "type": "waiting",
+      "label": "已暂停",
+      "sublabel": "保留 .part 进度",
+      "tag": "paused",
+      "lane": "main",
+      "col": 2,
+      "width": 150,
+      "sources": [
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 1173,
+          "label": "_transition"
+        },
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 2120,
+          "label": "recoverAfterNetworkChange"
+        }
+      ]
+    },
+    {
+      "id": "completed",
+      "type": "decision",
+      "label": "已完成",
+      "sublabel": "文件已落盘",
+      "tag": "completed",
+      "lane": "main",
+      "col": 3,
+      "width": 150,
+      "sources": [
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 1277,
+          "label": "setLocalRef"
+        },
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 1173,
+          "label": "_transition"
+        }
+      ]
+    },
+    {
+      "id": "playable",
+      "type": "success",
+      "label": "可播放",
+      "sublabel": "localRef 已登记",
+      "tag": "playable",
+      "lane": "main",
+      "col": 4,
+      "width": 150,
+      "sources": [
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 1277,
+          "label": "setLocalRef"
+        },
+        {
+          "path": "lib/ui/media_tasks_screen.dart",
+          "line": 83,
+          "label": "_mediaTaskStateLabel"
+        }
+      ]
+    },
+    {
+      "id": "reauthorize",
+      "type": "external",
+      "label": "需要重新授权",
+      "sublabel": "页面会话已过期",
+      "tag": "reauthorize",
+      "lane": "recovery",
+      "col": 2,
+      "width": 170,
+      "sources": [
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 1207,
+          "label": "reauthorize 集合"
+        },
+        {
+          "path": "lib/ui/media_tasks_screen.dart",
+          "line": 99,
+          "label": "authorizationRequired 文案"
+        }
+      ]
+    },
+    {
+      "id": "failed",
+      "type": "failure",
+      "label": "失败",
+      "sublabel": "保留错误码",
+      "tag": "failed",
+      "lane": "recovery",
+      "col": 3,
+      "width": 150,
+      "sources": [
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 1173,
+          "label": "_transition"
+        },
+        {
+          "path": "lib/ui/media_tasks_screen.dart",
+          "line": 4014,
+          "label": "deleteFailed 仅限 failed"
+        }
+      ]
+    },
+    {
+      "id": "cancelled",
+      "type": "neutral",
+      "label": "已取消",
+      "sublabel": "用户主动中止",
+      "tag": "cancelled",
+      "lane": "recovery",
+      "col": 4,
+      "width": 150,
+      "sources": [
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 1218,
+          "label": "cancelled 集合"
+        },
+        {
+          "path": "lib/ui/media_tasks_screen.dart",
+          "line": 4012,
+          "label": "pause 仅限 downloading"
+        }
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "id": "t1",
+      "from": "queued",
+      "to": "downloading"
+    },
+    {
+      "id": "t2",
+      "from": "downloading",
+      "to": "completed"
+    },
+    {
+      "id": "t3",
+      "from": "completed",
+      "to": "playable"
+    },
+    {
+      "id": "t4",
+      "from": "downloading",
+      "to": "paused",
+      "label": "暂停"
+    },
+    {
+      "id": "t5",
+      "from": "paused",
+      "to": "downloading",
+      "label": "恢复"
+    },
+    {
+      "id": "t6",
+      "from": "downloading",
+      "to": "reauthorize",
+      "label": "授权失败",
+      "variant": "security"
+    },
+    {
+      "id": "t7",
+      "from": "reauthorize",
+      "to": "downloading"
+    },
+    {
+      "id": "t8",
+      "from": "paused",
+      "to": "reauthorize",
+      "variant": "security"
+    },
+    {
+      "id": "t9",
+      "from": "downloading",
+      "to": "failed",
+      "label": "传输失败",
+      "variant": "security"
+    },
+    {
+      "id": "t10",
+      "from": "paused",
+      "to": "failed",
+      "variant": "security"
+    },
+    {
+      "id": "t11",
+      "from": "completed",
+      "to": "failed",
+      "variant": "security"
+    },
+    {
+      "id": "t12",
+      "from": "queued",
+      "to": "failed",
+      "variant": "security"
+    },
+    {
+      "id": "t13",
+      "from": "reauthorize",
+      "to": "failed",
+      "variant": "security"
+    },
+    {
+      "id": "t14",
+      "from": "downloading",
+      "to": "cancelled"
+    },
+    {
+      "id": "t15",
+      "from": "paused",
+      "to": "cancelled"
+    },
+    {
+      "id": "t16",
+      "from": "queued",
+      "to": "cancelled"
+    },
+    {
+      "id": "t17",
+      "from": "completed",
+      "to": "cancelled"
+    },
+    {
+      "id": "t18",
+      "from": "reauthorize",
+      "to": "cancelled"
+    },
+    {
+      "id": "t19",
+      "from": "failed",
+      "to": "downloading",
+      "label": "重试"
+    },
+    {
+      "id": "t20",
+      "from": "cancelled",
+      "to": "downloading",
+      "label": "重新下载"
+    },
+    {
+      "id": "t21",
+      "from": "failed",
+      "to": "cancelled"
+    },
+    {
+      "id": "t22",
+      "from": "cancelled",
+      "to": "failed"
+    },
+    {
+      "id": "t23",
+      "from": "playable",
+      "to": "failed"
+    },
+    {
+      "id": "t24",
+      "from": "playable",
+      "to": "cancelled"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "迁移白名单",
+      "items": [
+        "_transition 按当前状态取允许集合，集合外的迁移抛 StateError。",
+        "queued 只允许 downloading / cancelled / failed。",
+        "completed 只允许 failed / playable / cancelled；playable 只允许 cancelled / failed。",
+        "转入 downloading 时清空 errorCode 与 errorReason。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "终态会重启",
+      "items": [
+        "cancelled 与 failed 都允许回到 downloading，重试沿用同一任务行。",
+        "批量重试针对 failed / cancelled / paused / reauthorize。",
+        "failed 与 cancelled 之间也可以互相迁移。"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "取消与失败不是绝对终态",
+      "items": [
+        "需要重新授权由授权失败触发，刷新后只重试一次。",
+        "网络变化会恢复 paused 任务并重建原生传输。",
+        "缓存缺失把 completed / playable 降级为 failed(cacheMissing)。"
+      ]
+    }
+  ]
+}

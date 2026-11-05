@@ -1,0 +1,361 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/architecture-media-pipeline-20261104-200028/candidate.json",
+    "sha256": "79d1486073f3c437aab48e11bcc405ef0381210d0dbf33af305b3a74982ae916",
+    "bytes": 21810
+  },
+  "artifact": {
+    "path": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/architecture-media-pipeline-20261104-200028/media-pipeline.html",
+    "sha256": "ee7b3a23a641c79ac97742f0a859a620b8e167ffe448583a63aaf376bb0be013",
+    "bytes": 812111
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/architecture-media-pipeline-20261104-200028/review-3/media-pipeline.finalize.json",
+    "summaryReceipt": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/architecture-media-pipeline-20261104-200028/review-3/media-pipeline.finalize-summary.json",
+    "browserCheckReceipt": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/architecture-media-pipeline-20261104-200028/review-3/media-pipeline.browser-check.json"
+  },
+  "update": {
+    "status": "update_available",
+    "installedVersion": "3.0.1",
+    "availableVersion": "3.2.0",
+    "releaseNotes": "https://github.com/tt-a1i/archify/releases/tag/v3.2.0",
+    "severity": "normal",
+    "checkedAt": "2026-11-04T12:13:39.920Z",
+    "source": "cache",
+    "noticeRequired": true,
+    "noticeText": "Archify update: 3.0.1 → 3.2.0. A previous check at 2026-11-04T12:13:39.920Z found a newer release. Release notes: https://github.com/tt-a1i/archify/releases/tag/v3.2.0. The installed Skill has not changed; ask to snooze or ignore this reminder.",
+    "eventKey": "archify@sha256:70e210265c59f24dcbdf2a502ff671104b5454e7ee7d3554aecd86bad32384f5"
+  },
+  "visualReview": "not-requested",
+  "durationMs": 5155,
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "resolvedCrossovers": 16,
+      "routesOverSuggestedBends": 7,
+      "routesOverSuggestedStretch": 2
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [
+        {
+          "left": {
+            "id": "c_ctl_svc",
+            "from": "app_controller",
+            "to": "download_service",
+            "label": "startNativeBatch",
+            "collectionIndex": 3,
+            "artifactIndex": 4
+          },
+          "right": {
+            "id": "c_store_hosts",
+            "from": "task_store",
+            "to": "native_hosts",
+            "label": "刷新后重试一次",
+            "collectionIndex": 12,
+            "artifactIndex": 13
+          },
+          "point": [
+            500,
+            385
+          ]
+        },
+        {
+          "left": {
+            "id": "c_svc_sched",
+            "from": "download_service",
+            "to": "scheduler",
+            "label": "maxConcurrency",
+            "collectionIndex": 4,
+            "artifactIndex": 5
+          },
+          "right": {
+            "id": "c_dart_rt",
+            "from": "dart_http",
+            "to": "native_runtime",
+            "label": "Dart 传输",
+            "collectionIndex": 8,
+            "artifactIndex": 9
+          },
+          "point": [
+            874,
+            217
+          ]
+        },
+        {
+          "left": {
+            "id": "c_svc_sched",
+            "from": "download_service",
+            "to": "scheduler",
+            "label": "maxConcurrency",
+            "collectionIndex": 4,
+            "artifactIndex": 5
+          },
+          "right": {
+            "id": "c_dart_resume",
+            "from": "dart_http",
+            "to": "resumable",
+            "label": ".part + .resume",
+            "collectionIndex": 14,
+            "artifactIndex": 15
+          },
+          "point": [
+            874,
+            231
+          ]
+        },
+        {
+          "left": {
+            "id": "c_dart_site",
+            "from": "dart_http",
+            "to": "remote_site",
+            "label": "拉取清单与分片",
+            "collectionIndex": 6,
+            "artifactIndex": 7
+          },
+          "right": {
+            "id": "c_store_hosts",
+            "from": "task_store",
+            "to": "native_hosts",
+            "label": "刷新后重试一次",
+            "collectionIndex": 12,
+            "artifactIndex": 13
+          },
+          "point": [
+            626,
+            490
+          ]
+        },
+        {
+          "left": {
+            "id": "c_dart_site",
+            "from": "dart_http",
+            "to": "remote_site",
+            "label": "拉取清单与分片",
+            "collectionIndex": 6,
+            "artifactIndex": 7
+          },
+          "right": {
+            "id": "c_store_play",
+            "from": "task_store",
+            "to": "media_runtime",
+            "label": "缓存目录",
+            "collectionIndex": 23,
+            "artifactIndex": 24
+          },
+          "point": [
+            874,
+            648
+          ]
+        },
+        {
+          "left": {
+            "id": "c_dart_rt",
+            "from": "dart_http",
+            "to": "native_runtime",
+            "label": "Dart 传输",
+            "collectionIndex": 8,
+            "artifactIndex": 9
+          },
+          "right": {
+            "id": "c_svc_store",
+            "from": "download_service",
+            "to": "task_store",
+            "label": "状态与进度",
+            "collectionIndex": 17,
+            "artifactIndex": 18
+          },
+          "point": [
+            1125,
+            217
+          ]
+        },
+        {
+          "left": {
+            "id": "c_worker_auth",
+            "from": "native_worker",
+            "to": "auth_refresh",
+            "label": "授权失败刷新一次",
+            "collectionIndex": 10,
+            "artifactIndex": 11
+          },
+          "right": {
+            "id": "c_auth_store",
+            "from": "auth_refresh",
+            "to": "task_store",
+            "label": "只回传状态摘要",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "point": [
+            1632,
+            186
+          ],
+          "sharedNode": "auth_refresh"
+        },
+        {
+          "left": {
+            "id": "c_store_hosts",
+            "from": "task_store",
+            "to": "native_hosts",
+            "label": "刷新后重试一次",
+            "collectionIndex": 12,
+            "artifactIndex": 13
+          },
+          "right": {
+            "id": "c_resume_site",
+            "from": "resumable",
+            "to": "remote_site",
+            "label": "续传媒体字节",
+            "collectionIndex": 13,
+            "artifactIndex": 14
+          },
+          "point": [
+            1165,
+            490
+          ]
+        }
+      ],
+      "detours": [
+        {
+          "relationship": {
+            "id": "c_hosts_svc",
+            "from": "native_hosts",
+            "to": "download_service",
+            "label": "authorizeMediaCandidate",
+            "collectionIndex": 2,
+            "artifactIndex": 3
+          },
+          "bends": 4,
+          "stretch": 1.627
+        },
+        {
+          "relationship": {
+            "id": "c_ctl_svc",
+            "from": "app_controller",
+            "to": "download_service",
+            "label": "startNativeBatch",
+            "collectionIndex": 3,
+            "artifactIndex": 4
+          },
+          "bends": 3,
+          "stretch": 1
+        },
+        {
+          "relationship": {
+            "id": "c_svc_sched",
+            "from": "download_service",
+            "to": "scheduler",
+            "label": "maxConcurrency",
+            "collectionIndex": 4,
+            "artifactIndex": 5
+          },
+          "bends": 3,
+          "stretch": 1.164,
+          "directCorridorBlockers": [
+            {
+              "id": "dart_http",
+              "label": "ControlledHttp (Dart)",
+              "box": [
+                650,
+                190,
+                200,
+                68
+              ]
+            }
+          ]
+        },
+        {
+          "relationship": {
+            "id": "c_auth_store",
+            "from": "auth_refresh",
+            "to": "task_store",
+            "label": "只回传状态摘要",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "bends": 4,
+          "stretch": 1.646,
+          "directCorridorBlockers": [
+            {
+              "id": "native_worker",
+              "label": "NativeMediaDownloadWorker",
+              "box": [
+                1525,
+                234,
+                200,
+                68
+              ]
+            }
+          ]
+        },
+        {
+          "relationship": {
+            "id": "c_store_lib",
+            "from": "task_store",
+            "to": "library",
+            "label": "localRef 登记",
+            "collectionIndex": 19,
+            "artifactIndex": 20
+          },
+          "bends": 3,
+          "stretch": 1
+        },
+        {
+          "relationship": {
+            "id": "c_lib_export",
+            "from": "library",
+            "to": "export_queue",
+            "label": "导出 MP4",
+            "collectionIndex": 20,
+            "artifactIndex": 21
+          },
+          "bends": 3,
+          "stretch": 1.293
+        },
+        {
+          "relationship": {
+            "id": "c_lib_play",
+            "from": "library",
+            "to": "media_runtime",
+            "label": "可播放产物",
+            "collectionIndex": 22,
+            "artifactIndex": 23
+          },
+          "bends": 3,
+          "stretch": 1
+        }
+      ],
+      "truncated": true
+    },
+    "hints": [
+      "task_store has 5 relationships facing its left side, which fits 3 ports: make that side at least 88px, or move some of those neighbours so they face another side of task_store.",
+      "app_controller → download_service crosses task_store → native_hosts: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "download_service → scheduler crosses dart_http → native_runtime: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "download_service → scheduler crosses dart_http → resumable: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "dart_http → remote_site crosses task_store → native_hosts: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "dart_http → remote_site crosses task_store → media_runtime: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "dart_http → native_runtime crosses download_service → task_store: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "native_worker → auth_refresh and auth_refresh → task_store cross next to auth_refresh: move node native_worker or task_store so the two reach auth_refresh from different sides (for example one level with it, one directly above or below it)."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "0719a58d-bc50-4cf9-8c08-8364c4f51b99",
+  "status": "current",
+  "command": "deliver",
+  "type": "lifecycle",
+  "input": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-profile-health-20261104-200028/candidate.json",
+  "output": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-profile-health-20261104-200028/profile-health.html",
+  "specification": {
+    "sha256": "beaceaed375fe5ca7556d6b2092899689f3000edc4bfd91add6c6acb8d552d83",
+    "bytes": 10907
+  },
+  "artifact": {
+    "sha256": "65c46bed743999e175d9f34d1fd81d304f2ac18d9e8aa45fb56b56e940dcad33",
+    "bytes": 777647
+  }
+}

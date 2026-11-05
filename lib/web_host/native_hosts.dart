@@ -42,6 +42,11 @@ class HostSession {
   String title = '';
   String? errorKind;
   String? error;
+  String routeKind = 'unknown';
+  String dnsOwner = 'unknown';
+  String targetDnsMode = 'unknown';
+  int networkEpoch = 0;
+  bool autoRetryUsed = false;
   Cancellation cancellation = Cancellation();
   final menus = <String, ScriptMenu>{};
   final registered = <String, String>{};
@@ -239,6 +244,7 @@ class NativeHosts extends WebHostEvents {
   }
 
   Future<void> navigate(HostSession session, Uri url) async {
+    resetNavigationRetry(session);
     await api.navigate(session.id, url.toString());
   }
 
@@ -324,6 +330,15 @@ class NativeHosts extends WebHostEvents {
       menu.generation,
       menu.revision,
     );
+  }
+
+  /// Resets the one-shot automatic navigation recovery budget for an explicit
+  /// user or settings initiated reload. A new WebView generation alone does
+  /// not reset this flag: the native host advances generations while reporting
+  /// the same failed reload, and doing so would create an infinite retry loop.
+  void resetNavigationRetry(HostSession session) {
+    if (session.disposed) return;
+    session.autoRetryUsed = false;
   }
 
   @override
@@ -612,18 +627,96 @@ class NativeHosts extends WebHostEvents {
       await _drainCandidateWrites(session);
       await api.destroy(session.id);
     }
-    if (event.kind == 'loaded') session.loaded = true;
-    if (event.kind == 'started') session.loaded = false;
-    if ([
+    final navigationError = [
       'certificateError',
       'networkError',
       'httpError',
-      'scriptsSuspended',
-    ].contains(event.kind)) {
+    ].contains(event.kind);
+    final diagnosticError = navigationError || event.kind == 'scriptsSuspended';
+    if (event.kind == 'loaded') {
+      session.loaded = true;
+      session.error = null;
+      session.errorKind = null;
+      session.autoRetryUsed = false;
+    }
+    if (event.kind == 'started') {
+      session.loaded = false;
+      session.error = null;
+      session.errorKind = null;
+    }
+    if (diagnosticError) {
       session.errorKind = event.kind;
       session.error = readableError(event.detail);
+      if (session.purpose == HostPurpose.browsing) {
+        await _refreshRouteDiagnostics(session, event.url);
+      }
+      AppErrorLogger.capture(
+        StateError('WebView ${event.kind}: ${event.detail}'),
+        module: 'webview.navigation',
+        context:
+            'host=${session.id} generation=${session.generation} '
+            'route=${session.routeKind} dns=${session.dnsOwner} '
+            'mode=${session.targetDnsMode} epoch=${session.networkEpoch}',
+        stack: StackTrace.current,
+      );
+      if (navigationError && session.purpose == HostPurpose.browsing) {
+        _scheduleNavigationRetry(session);
+      }
     }
     changed.value++;
+  }
+
+  void _scheduleNavigationRetry(HostSession session) {
+    if (session.disposed || session.autoRetryUsed) {
+      return;
+    }
+    final generation = session.generation;
+    session.autoRetryUsed = true;
+    unawaited(
+      Future<void>.delayed(const Duration(milliseconds: 350), () async {
+        if (session.disposed ||
+            session.generation != generation ||
+            sessions[session.id] != session) {
+          return;
+        }
+        try {
+          await api.reload(session.id);
+        } catch (error, stack) {
+          AppErrorLogger.capture(
+            error,
+            module: 'webview.navigation.retry',
+            context: 'host=${session.id} generation=$generation',
+            stack: stack,
+          );
+        }
+      }),
+    );
+  }
+
+  Future<void> _refreshRouteDiagnostics(HostSession session, String url) async {
+    final probe = probeRoute;
+    if (probe == null || session.disposed || url.trim().isEmpty) return;
+    final generation = session.generation;
+    try {
+      final route = await probe(webUri(url)).timeout(const Duration(seconds: 6));
+      if (session.disposed ||
+          sessions[session.id] != session ||
+          session.generation != generation) {
+        return;
+      }
+      session.routeKind = route.routeKind;
+      session.dnsOwner = route.dnsOwner;
+      session.targetDnsMode = route.targetDnsMode;
+      session.networkEpoch = route.networkEpoch;
+      changed.value++;
+    } catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'webview.navigation.route',
+        context: 'host=${session.id} generation=$generation',
+        stack: stack,
+      );
+    }
   }
 
   @override
@@ -671,6 +764,10 @@ class NativeHosts extends WebHostEvents {
         (probeRoute?.call(uri) ?? Future.value(const MediaNetworkRoute()))
             .timeout(const Duration(seconds: 6)),
       );
+      session.routeKind = route.routeKind;
+      session.dnsOwner = route.dnsOwner;
+      session.targetDnsMode = route.targetDnsMode;
+      session.networkEpoch = route.networkEpoch;
       await NetworkPolicy.publicNavigation(
         uri,
         route: route,

@@ -259,6 +259,8 @@ class NetworkPolicy {
     Cancellation? cancel,
     Future<List<InternetAddress>> Function(String) resolve =
         InternetAddress.lookup,
+    Future<List<InternetAddress>> Function(String) systemResolve =
+        InternetAddress.lookup,
   }) async {
     webUri(uri.toString());
     if (allowLocalTestPages) return;
@@ -267,9 +269,16 @@ class NetworkPolicy {
     // WebView follows the OS route. Resolve the origin only when DIRECT is
     // selected, never merely because PAC lists it after an HTTP proxy.
     final first = route.proxy.split(';').first.trim();
-    if (first.startsWith('PROXY ')) return;
+    if (route.targetDnsMode == 'proxy_remote' ||
+        route.routeKind == 'http_proxy' ||
+        first.startsWith('PROXY ')) {
+      return;
+    }
     if (first != 'DIRECT') throw StateError('系统代理没有可用路由');
-    final addresses = await resolve(uri.host)
+    final resolver = route.targetDnsMode == 'system_route'
+        ? systemResolve
+        : resolve;
+    final addresses = await resolver(uri.host)
         .timeout(const Duration(seconds: 5));
     cancel?.check();
     if (addresses.isEmpty ||
@@ -433,6 +442,7 @@ class MediaNetworkRoute {
     this.allowProxyFakeIp = false,
     this.routeKind = 'unknown',
     this.dnsOwner = 'unknown',
+    this.targetDnsMode = 'unknown',
     this.fakeIpAllowed = false,
     this.proxyConfigured = false,
     this.preferVpnTun = false,
@@ -452,6 +462,7 @@ class MediaNetworkRoute {
   final bool allowProxyFakeIp;
   final String routeKind;
   final String dnsOwner;
+  final String targetDnsMode;
   final bool fakeIpAllowed;
   final bool proxyConfigured;
   final bool preferVpnTun;
@@ -568,7 +579,9 @@ class ControlledHttp {
         // bypass that route and return the real origin address. Let the active
         // system route resolve the origin in that case; proxy connections only
         // resolve the proxy endpoint above.
-        resolve: route.allowProxyFakeIp ? InternetAddress.lookup : resolve,
+        resolve: route.targetDnsMode == 'system_route' || route.allowProxyFakeIp
+            ? InternetAddress.lookup
+            : resolve,
         allowLocal: allowLocal,
         allowProxyFakeIp: route.allowProxyFakeIp,
         timeout:
@@ -1037,10 +1050,13 @@ class HttpProbe {
     this.allowLocal = allowLocalTestPages,
     this.routeForAttempt,
     this.resolve = InternetAddress.lookup,
+    this.onFailure,
   });
   final bool allowLocal;
   final Future<MediaNetworkRoute> Function(Uri, int)? routeForAttempt;
   final Future<List<InternetAddress>> Function(String) resolve;
+  final void Function(Object error, StackTrace stack, String context)?
+  onFailure;
   Future<ProbeResult> run(
     Candidate candidate,
     int round,
@@ -1068,6 +1084,14 @@ class HttpProbe {
       checkedAt: DateTime.now(),
       reason: reason,
     );
+    void captureFailure(Object error, StackTrace stack, String phase) {
+      onFailure?.call(
+        error,
+        stack,
+        'candidate=${candidate.id} round=$round phase=$phase',
+      );
+    }
+
     try {
       return await (() async {
         Duration remaining() {
@@ -1153,19 +1177,24 @@ class HttpProbe {
       })().timeout(candidateDeadline);
     } on Cancelled {
       return result(ProbeStatus.cancelled);
-    } on TimeoutException {
+    } on TimeoutException catch (error, stack) {
       requestCancel.cancel();
+      captureFailure(error, stack, 'timeout');
       return result(ProbeStatus.timeout, 'HTTP 初筛超时');
-    } on HandshakeException {
+    } on HandshakeException catch (error, stack) {
+      captureFailure(error, stack, 'tls');
       return result(ProbeStatus.certificateError, 'TLS/证书验证失败');
     } on AddressPolicyException catch (e) {
+      captureFailure(e, StackTrace.current, 'address_policy');
       return result(ProbeStatus.offline, e.message);
-    } on SocketException {
+    } on SocketException catch (error, stack) {
+      captureFailure(error, stack, 'socket');
       return result(
         cancel.cancelled ? ProbeStatus.cancelled : ProbeStatus.offline,
         '网络连接失败',
       );
-    } catch (e) {
+    } catch (e, stack) {
+      captureFailure(e, stack, 'unknown');
       final text = e.toString();
       final policy = text.contains('Fake-IP') || text.contains('私网');
       return result(

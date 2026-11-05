@@ -1,0 +1,1713 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "lifecycle",
+  "quality": "showcase",
+  "startedAt": "2026-11-04T12:49:31.006Z",
+  "specification": {
+    "path": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-media-task-20261104-200028/candidate.json",
+    "sha256": "902abef94c164f707f62fde4ec44fafe6283ab1727a2780bd7ecc71dfdf9735f",
+    "bytes": 8943
+  },
+  "artifact": {
+    "path": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-media-task-20261104-200028/media-task.html",
+    "sha256": "a1a848643b496109c13238be51d8eb0bedf22c7758ae75dc6b3b4458283ce3bc",
+    "bytes": 775172
+  },
+  "stages": {
+    "validate": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": null,
+      "execution": "embedded-in-deliver",
+      "command": [
+        "/Users/qinfuling/.local/share/mise/installs/node/24.18.0/bin/node",
+        "/Users/qinfuling/.dsh/profiles/desktop/node_modules/@tt-a1i/archify-dsh/skills/archify/bin/archify.mjs",
+        "deliver",
+        "lifecycle",
+        "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-media-task-20261104-200028/candidate.json",
+        "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-media-task-20261104-200028/media-task.html",
+        "--quality",
+        "showcase",
+        "--repo-root",
+        "/Users/qinfuling/www/github/vikiea/site-lens",
+        "--json"
+      ],
+      "receipt": {
+        "schemaVersion": 1,
+        "ok": true,
+        "command": "validate",
+        "specification": {
+          "sha256": "902abef94c164f707f62fde4ec44fafe6283ab1727a2780bd7ecc71dfdf9735f",
+          "bytes": 8943
+        },
+        "validation": {
+          "checksPassed": 9,
+          "checkCount": 9,
+          "compositionProfile": "showcase",
+          "compositionStatus": "pass",
+          "errors": 0,
+          "warnings": 0
+        }
+      }
+    },
+    "deliver": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": 1007,
+      "command": [
+        "/Users/qinfuling/.local/share/mise/installs/node/24.18.0/bin/node",
+        "/Users/qinfuling/.dsh/profiles/desktop/node_modules/@tt-a1i/archify-dsh/skills/archify/bin/archify.mjs",
+        "deliver",
+        "lifecycle",
+        "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-media-task-20261104-200028/candidate.json",
+        "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-media-task-20261104-200028/media-task.html",
+        "--quality",
+        "showcase",
+        "--repo-root",
+        "/Users/qinfuling/www/github/vikiea/site-lens",
+        "--json"
+      ],
+      "receipt": {
+        "schemaVersion": 1,
+        "receiptId": "2dfc93f7-888b-4746-8758-fb1b97e7cbd3",
+        "ok": true,
+        "command": "deliver",
+        "type": "lifecycle",
+        "input": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-media-task-20261104-200028/candidate.json",
+        "output": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-media-task-20261104-200028/media-task.html",
+        "specification": {
+          "sha256": "902abef94c164f707f62fde4ec44fafe6283ab1727a2780bd7ecc71dfdf9735f",
+          "bytes": 8943
+        },
+        "artifact": {
+          "sha256": "a1a848643b496109c13238be51d8eb0bedf22c7758ae75dc6b3b4458283ce3bc",
+          "bytes": 775172
+        },
+        "validation": {
+          "checksPassed": 9,
+          "checkCount": 9,
+          "compositionProfile": "showcase",
+          "compositionStatus": "pass",
+          "errors": 0,
+          "warnings": 0
+        },
+        "evidence": {
+          "verified": true,
+          "repository": "git@github.com:vikiea/site-lens",
+          "revision": "bc5248d2e480f6f38871a935b2b99c7a5a2c3c21",
+          "references": 16,
+          "linkMode": "local-only"
+        },
+        "update": {
+          "status": "unavailable",
+          "installedVersion": null,
+          "availableVersion": null,
+          "releaseNotes": null,
+          "checkedAt": null,
+          "source": null,
+          "noticeRequired": false,
+          "noticeText": null,
+          "reason": "disabled"
+        }
+      }
+    },
+    "check": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": 482,
+      "command": [
+        "/Users/qinfuling/.local/share/mise/installs/node/24.18.0/bin/node",
+        "/Users/qinfuling/.dsh/profiles/desktop/node_modules/@tt-a1i/archify-dsh/skills/archify/bin/archify.mjs",
+        "check",
+        "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-media-task-20261104-200028/media-task.html",
+        "--require-provenance"
+      ],
+      "receipt": {
+        "ok": true,
+        "file": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-media-task-20261104-200028/media-task.html",
+        "artifact": {
+          "sha256": "a1a848643b496109c13238be51d8eb0bedf22c7758ae75dc6b3b4458283ce3bc",
+          "bytes": 775172
+        },
+        "checks": [
+          {
+            "name": "single_svg",
+            "ok": true,
+            "details": [
+              "found 1 <svg> block(s)"
+            ]
+          },
+          {
+            "name": "finite_svg",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "orthogonal_arrows",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "label_route_clearance",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "relationship_crossings",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "relationship_corridors",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "container_border_runs",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "route_rhythm",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "legend_clearance",
+            "ok": true,
+            "details": []
+          }
+        ],
+        "composition": {
+          "schemaVersion": 1,
+          "profile": "showcase",
+          "status": "pass",
+          "summary": {
+            "errors": 0,
+            "warnings": 0
+          },
+          "metrics": {
+            "properCrossings": 0,
+            "resolvedCrossovers": 33,
+            "ambiguousCorridors": 0,
+            "arrowheadCollisions": 0,
+            "containerBorderRuns": 0,
+            "labelRouteClearanceIssues": 0,
+            "labelCanvasOverflowIssues": 0,
+            "minLabelRouteClearance": 10,
+            "desktopReadabilityIssues": 0,
+            "viewportHeightIssues": 0,
+            "minProjectedNodeTextPx": 6.492146596858639,
+            "maxBends": 2,
+            "routesOverSuggestedBends": 0,
+            "maxStretch": 1.087,
+            "routesOverSuggestedStretch": 0,
+            "minSegmentPx": 18,
+            "minInteriorSegmentPx": 35.4,
+            "shortSegmentCount": 0,
+            "shortEndpointSegmentCount": 0,
+            "shortInteriorSegmentCount": 0,
+            "microSegmentCount": 0
+          },
+          "suggestedLimits": {
+            "bendsPerRelationship": 2,
+            "stretch": 1.35,
+            "segmentPx": 16,
+            "microSegmentPx": 8
+          },
+          "routeReview": {
+            "crossings": [
+              {
+                "left": {
+                  "id": "t2",
+                  "from": "downloading",
+                  "to": "completed",
+                  "label": "",
+                  "collectionIndex": 1,
+                  "artifactIndex": 2
+                },
+                "right": {
+                  "id": "t8",
+                  "from": "paused",
+                  "to": "reauthorize",
+                  "label": "",
+                  "collectionIndex": 7,
+                  "artifactIndex": 8
+                },
+                "point": [
+                  542.9999999999999,
+                  137.99999999999997
+                ]
+              },
+              {
+                "left": {
+                  "id": "t2",
+                  "from": "downloading",
+                  "to": "completed",
+                  "label": "",
+                  "collectionIndex": 1,
+                  "artifactIndex": 2
+                },
+                "right": {
+                  "id": "t10",
+                  "from": "paused",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 9,
+                  "artifactIndex": 10
+                },
+                "point": [
+                  573,
+                  138
+                ]
+              },
+              {
+                "left": {
+                  "id": "t2",
+                  "from": "downloading",
+                  "to": "completed",
+                  "label": "",
+                  "collectionIndex": 1,
+                  "artifactIndex": 2
+                },
+                "right": {
+                  "id": "t15",
+                  "from": "paused",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 14,
+                  "artifactIndex": 15
+                },
+                "point": [
+                  603,
+                  138
+                ]
+              },
+              {
+                "left": {
+                  "id": "t6",
+                  "from": "downloading",
+                  "to": "reauthorize",
+                  "label": "授权失败",
+                  "collectionIndex": 5,
+                  "artifactIndex": 6
+                },
+                "right": {
+                  "id": "t12",
+                  "from": "queued",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 11,
+                  "artifactIndex": 12
+                },
+                "point": [
+                  528,
+                  314
+                ]
+              },
+              {
+                "left": {
+                  "id": "t6",
+                  "from": "downloading",
+                  "to": "reauthorize",
+                  "label": "授权失败",
+                  "collectionIndex": 5,
+                  "artifactIndex": 6
+                },
+                "right": {
+                  "id": "t16",
+                  "from": "queued",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 15,
+                  "artifactIndex": 16
+                },
+                "point": [
+                  528,
+                  292
+                ]
+              },
+              {
+                "left": {
+                  "id": "t7",
+                  "from": "reauthorize",
+                  "to": "downloading",
+                  "label": "",
+                  "collectionIndex": 6,
+                  "artifactIndex": 7
+                },
+                "right": {
+                  "id": "t12",
+                  "from": "queued",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 11,
+                  "artifactIndex": 12
+                },
+                "point": [
+                  558,
+                  314
+                ]
+              },
+              {
+                "left": {
+                  "id": "t7",
+                  "from": "reauthorize",
+                  "to": "downloading",
+                  "label": "",
+                  "collectionIndex": 6,
+                  "artifactIndex": 7
+                },
+                "right": {
+                  "id": "t16",
+                  "from": "queued",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 15,
+                  "artifactIndex": 16
+                },
+                "point": [
+                  558,
+                  292
+                ]
+              },
+              {
+                "left": {
+                  "id": "t8",
+                  "from": "paused",
+                  "to": "reauthorize",
+                  "label": "",
+                  "collectionIndex": 7,
+                  "artifactIndex": 8
+                },
+                "right": {
+                  "id": "t9",
+                  "from": "downloading",
+                  "to": "failed",
+                  "label": "传输失败",
+                  "collectionIndex": 8,
+                  "artifactIndex": 9
+                },
+                "point": [
+                  543,
+                  248.00000000000003
+                ]
+              },
+              {
+                "left": {
+                  "id": "t8",
+                  "from": "paused",
+                  "to": "reauthorize",
+                  "label": "",
+                  "collectionIndex": 7,
+                  "artifactIndex": 8
+                },
+                "right": {
+                  "id": "t12",
+                  "from": "queued",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 11,
+                  "artifactIndex": 12
+                },
+                "point": [
+                  543,
+                  314
+                ]
+              },
+              {
+                "left": {
+                  "id": "t8",
+                  "from": "paused",
+                  "to": "reauthorize",
+                  "label": "",
+                  "collectionIndex": 7,
+                  "artifactIndex": 8
+                },
+                "right": {
+                  "id": "t14",
+                  "from": "downloading",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 13,
+                  "artifactIndex": 14
+                },
+                "point": [
+                  543,
+                  182
+                ]
+              },
+              {
+                "left": {
+                  "id": "t8",
+                  "from": "paused",
+                  "to": "reauthorize",
+                  "label": "",
+                  "collectionIndex": 7,
+                  "artifactIndex": 8
+                },
+                "right": {
+                  "id": "t16",
+                  "from": "queued",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 15,
+                  "artifactIndex": 16
+                },
+                "point": [
+                  543,
+                  292
+                ]
+              },
+              {
+                "left": {
+                  "id": "t8",
+                  "from": "paused",
+                  "to": "reauthorize",
+                  "label": "",
+                  "collectionIndex": 7,
+                  "artifactIndex": 8
+                },
+                "right": {
+                  "id": "t19",
+                  "from": "failed",
+                  "to": "downloading",
+                  "label": "重试",
+                  "collectionIndex": 18,
+                  "artifactIndex": 19
+                },
+                "point": [
+                  543,
+                  226
+                ]
+              },
+              {
+                "left": {
+                  "id": "t8",
+                  "from": "paused",
+                  "to": "reauthorize",
+                  "label": "",
+                  "collectionIndex": 7,
+                  "artifactIndex": 8
+                },
+                "right": {
+                  "id": "t20",
+                  "from": "cancelled",
+                  "to": "downloading",
+                  "label": "重新下载",
+                  "collectionIndex": 19,
+                  "artifactIndex": 20
+                },
+                "point": [
+                  543,
+                  160
+                ]
+              },
+              {
+                "left": {
+                  "id": "t9",
+                  "from": "downloading",
+                  "to": "failed",
+                  "label": "传输失败",
+                  "collectionIndex": 8,
+                  "artifactIndex": 9
+                },
+                "right": {
+                  "id": "t16",
+                  "from": "queued",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 15,
+                  "artifactIndex": 16
+                },
+                "point": [
+                  761.6,
+                  292
+                ]
+              },
+              {
+                "left": {
+                  "id": "t9",
+                  "from": "downloading",
+                  "to": "failed",
+                  "label": "传输失败",
+                  "collectionIndex": 8,
+                  "artifactIndex": 9
+                },
+                "right": {
+                  "id": "t18",
+                  "from": "reauthorize",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 17,
+                  "artifactIndex": 18
+                },
+                "point": [
+                  761.6,
+                  335.99999999999994
+                ]
+              },
+              {
+                "left": {
+                  "id": "t10",
+                  "from": "paused",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 9,
+                  "artifactIndex": 10
+                },
+                "right": {
+                  "id": "t14",
+                  "from": "downloading",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 13,
+                  "artifactIndex": 14
+                },
+                "point": [
+                  573,
+                  182
+                ]
+              },
+              {
+                "left": {
+                  "id": "t10",
+                  "from": "paused",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 9,
+                  "artifactIndex": 10
+                },
+                "right": {
+                  "id": "t16",
+                  "from": "queued",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 15,
+                  "artifactIndex": 16
+                },
+                "point": [
+                  808.8000000000001,
+                  292
+                ]
+              },
+              {
+                "left": {
+                  "id": "t10",
+                  "from": "paused",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 9,
+                  "artifactIndex": 10
+                },
+                "right": {
+                  "id": "t18",
+                  "from": "reauthorize",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 17,
+                  "artifactIndex": 18
+                },
+                "point": [
+                  808.8000000000002,
+                  335.99999999999994
+                ]
+              },
+              {
+                "left": {
+                  "id": "t10",
+                  "from": "paused",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 9,
+                  "artifactIndex": 10
+                },
+                "right": {
+                  "id": "t20",
+                  "from": "cancelled",
+                  "to": "downloading",
+                  "label": "重新下载",
+                  "collectionIndex": 19,
+                  "artifactIndex": 20
+                },
+                "point": [
+                  573,
+                  160
+                ]
+              },
+              {
+                "left": {
+                  "id": "t11",
+                  "from": "completed",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 10,
+                  "artifactIndex": 11
+                },
+                "right": {
+                  "id": "t14",
+                  "from": "downloading",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 13,
+                  "artifactIndex": 14
+                },
+                "point": [
+                  797,
+                  182
+                ]
+              },
+              {
+                "left": {
+                  "id": "t11",
+                  "from": "completed",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 10,
+                  "artifactIndex": 11
+                },
+                "right": {
+                  "id": "t15",
+                  "from": "paused",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 14,
+                  "artifactIndex": 15
+                },
+                "point": [
+                  797,
+                  204
+                ]
+              },
+              {
+                "left": {
+                  "id": "t11",
+                  "from": "completed",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 10,
+                  "artifactIndex": 11
+                },
+                "right": {
+                  "id": "t16",
+                  "from": "queued",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 15,
+                  "artifactIndex": 16
+                },
+                "point": [
+                  797,
+                  292
+                ]
+              },
+              {
+                "left": {
+                  "id": "t11",
+                  "from": "completed",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 10,
+                  "artifactIndex": 11
+                },
+                "right": {
+                  "id": "t18",
+                  "from": "reauthorize",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 17,
+                  "artifactIndex": 18
+                },
+                "point": [
+                  832.4,
+                  335.99999999999994
+                ]
+              },
+              {
+                "left": {
+                  "id": "t11",
+                  "from": "completed",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 10,
+                  "artifactIndex": 11
+                },
+                "right": {
+                  "id": "t20",
+                  "from": "cancelled",
+                  "to": "downloading",
+                  "label": "重新下载",
+                  "collectionIndex": 19,
+                  "artifactIndex": 20
+                },
+                "point": [
+                  797,
+                  160
+                ]
+              },
+              {
+                "left": {
+                  "id": "t12",
+                  "from": "queued",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 11,
+                  "artifactIndex": 12
+                },
+                "right": {
+                  "id": "t18",
+                  "from": "reauthorize",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 17,
+                  "artifactIndex": 18
+                },
+                "point": [
+                  738,
+                  335.99999999999994
+                ]
+              },
+              {
+                "left": {
+                  "id": "t14",
+                  "from": "downloading",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 13,
+                  "artifactIndex": 14
+                },
+                "right": {
+                  "id": "t23",
+                  "from": "playable",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 22,
+                  "artifactIndex": 23
+                },
+                "point": [
+                  971.6666666666666,
+                  314
+                ]
+              },
+              {
+                "left": {
+                  "id": "t15",
+                  "from": "paused",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 14,
+                  "artifactIndex": 15
+                },
+                "right": {
+                  "id": "t23",
+                  "from": "playable",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 22,
+                  "artifactIndex": 23
+                },
+                "point": [
+                  996,
+                  204
+                ]
+              },
+              {
+                "left": {
+                  "id": "t16",
+                  "from": "queued",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 15,
+                  "artifactIndex": 16
+                },
+                "right": {
+                  "id": "t19",
+                  "from": "failed",
+                  "to": "downloading",
+                  "label": "重试",
+                  "collectionIndex": 18,
+                  "artifactIndex": 19
+                },
+                "point": [
+                  785.1999999999998,
+                  292
+                ]
+              },
+              {
+                "left": {
+                  "id": "t16",
+                  "from": "queued",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 15,
+                  "artifactIndex": 16
+                },
+                "right": {
+                  "id": "t23",
+                  "from": "playable",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 22,
+                  "artifactIndex": 23
+                },
+                "point": [
+                  952,
+                  314
+                ]
+              },
+              {
+                "left": {
+                  "id": "t17",
+                  "from": "completed",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 16,
+                  "artifactIndex": 17
+                },
+                "right": {
+                  "id": "t23",
+                  "from": "playable",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 22,
+                  "artifactIndex": 23
+                },
+                "point": [
+                  995.9999999999999,
+                  270.0000000000001
+                ]
+              },
+              {
+                "left": {
+                  "id": "t18",
+                  "from": "reauthorize",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 17,
+                  "artifactIndex": 18
+                },
+                "right": {
+                  "id": "t19",
+                  "from": "failed",
+                  "to": "downloading",
+                  "label": "重试",
+                  "collectionIndex": 18,
+                  "artifactIndex": 19
+                },
+                "point": [
+                  785.1999999999997,
+                  335.9999999999999
+                ]
+              },
+              {
+                "left": {
+                  "id": "t18",
+                  "from": "reauthorize",
+                  "to": "cancelled",
+                  "label": "",
+                  "collectionIndex": 17,
+                  "artifactIndex": 18
+                },
+                "right": {
+                  "id": "t23",
+                  "from": "playable",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 22,
+                  "artifactIndex": 23
+                },
+                "point": [
+                  856,
+                  335.99999999999994
+                ]
+              },
+              {
+                "left": {
+                  "id": "t20",
+                  "from": "cancelled",
+                  "to": "downloading",
+                  "label": "重新下载",
+                  "collectionIndex": 19,
+                  "artifactIndex": 20
+                },
+                "right": {
+                  "id": "t23",
+                  "from": "playable",
+                  "to": "failed",
+                  "label": "",
+                  "collectionIndex": 22,
+                  "artifactIndex": 23
+                },
+                "point": [
+                  991.3333333333333,
+                  312.939393939394
+                ]
+              }
+            ],
+            "detours": []
+          },
+          "leadingSpace": {
+            "measured": false,
+            "reviewSuggested": false
+          },
+          "desktopReadability": {
+            "budgetBasis": "legacy-930",
+            "readerContract": "declared-wide-v1",
+            "availableDiagramWidth": 930,
+            "actualBudgetPx": 930,
+            "limit": "legacy",
+            "requestedTargetPx": null,
+            "requestedTargetMet": null,
+            "hardFloorPx": 6,
+            "hardFloorMet": true,
+            "minimumOwner": {
+              "kind": "node",
+              "id": "queued"
+            },
+            "minimumSourceTextPx": 8,
+            "minimumProjectedTextPx": 6.492146596858639,
+            "semanticTextCount": 22
+          },
+          "issues": []
+        },
+        "provenance": "current",
+        "deliveryReceiptId": "2dfc93f7-888b-4746-8758-fb1b97e7cbd3"
+      }
+    },
+    "browser-check": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": 1504,
+      "command": [
+        "/Users/qinfuling/.local/share/mise/installs/node/24.18.0/bin/node",
+        "/Users/qinfuling/.dsh/profiles/desktop/node_modules/@tt-a1i/archify-dsh/skills/archify/bin/archify.mjs",
+        "browser-check",
+        "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-media-task-20261104-200028/media-task.html",
+        "--json",
+        "--require-provenance"
+      ],
+      "execution": "in-process",
+      "receipt": {
+        "schemaVersion": 1,
+        "ok": true,
+        "command": "browser-check",
+        "evidenceKind": "automated-browser",
+        "status": "pass",
+        "visualReview": "not-requested",
+        "provenance": "current",
+        "deliveryReceiptId": "2dfc93f7-888b-4746-8758-fb1b97e7cbd3",
+        "artifact": {
+          "path": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-media-task-20261104-200028/media-task.html",
+          "sha256": "a1a848643b496109c13238be51d8eb0bedf22c7758ae75dc6b3b4458283ce3bc",
+          "bytes": 775172
+        },
+        "state": {
+          "detail": "read",
+          "motion": "still"
+        },
+        "chrome": {
+          "status": "available",
+          "executable": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        },
+        "diagnostics": [],
+        "containment": {
+          "status": "pass",
+          "policy": "fit-or-reader-declared-readable-vertical-scroll",
+          "viewports": [
+            {
+              "width": 1440,
+              "height": 900,
+              "theme": "light",
+              "innerWidth": 1440,
+              "innerHeight": 900,
+              "scrollWidth": 1440,
+              "scrollHeight": 900,
+              "overflowX": false,
+              "overflowY": false,
+              "verticalScrollAccepted": false,
+              "overflowDisposition": "contained",
+              "readerLayout": "adaptive",
+              "readerOverflow": null,
+              "readerFit": "intrinsic-height",
+              "ok": true,
+              "readerWidth": 1376,
+              "diagramWidth": 1346,
+              "pageComposition": {
+                "bodyPaddingPx": 12,
+                "headerPx": 78,
+                "diagramChromePx": 78,
+                "svgPx": 604,
+                "cardsPx": 0,
+                "viewBoxHeight": 514
+              },
+              "viewBoxWidth": 1146,
+              "minimumProjectedNodeTextPx": 8,
+              "minimumProjectedNonEdgeTextPx": 8,
+              "minimumProjectedEdgeTextPx": 8,
+              "minimumProjectedNodeText": "已入队待调度",
+              "minimumProjectedNodeTextDetail": "context",
+              "minimumProjectedNodeTextOwner": {
+                "kind": "node",
+                "id": "queued"
+              },
+              "minimumRequiredNodeTextPx": 6,
+              "readabilityOk": true,
+              "hasLegend": true,
+              "hasNavigationDock": true,
+              "legendDockIntersectionArea": 0,
+              "dockStageIntersectionArea": 0,
+              "dockStageGap": 10,
+              "requiredDockStageGap": 10,
+              "viewerChromeStageOk": true,
+              "viewerChromeReserve": 54,
+              "viewerChromeActive": true,
+              "viewerChromeOk": true,
+              "resolvedTheme": "light"
+            },
+            {
+              "width": 1600,
+              "height": 1000,
+              "theme": "light",
+              "innerWidth": 1600,
+              "innerHeight": 1000,
+              "scrollWidth": 1600,
+              "scrollHeight": 1000,
+              "overflowX": false,
+              "overflowY": false,
+              "verticalScrollAccepted": false,
+              "overflowDisposition": "contained",
+              "readerLayout": "adaptive",
+              "readerOverflow": null,
+              "readerFit": "intrinsic-height",
+              "ok": true,
+              "readerWidth": 1536,
+              "diagramWidth": 1506,
+              "pageComposition": {
+                "bodyPaddingPx": 64,
+                "headerPx": 86,
+                "diagramChromePx": 84,
+                "svgPx": 675,
+                "cardsPx": 0,
+                "viewBoxHeight": 514
+              },
+              "viewBoxWidth": 1146,
+              "minimumProjectedNodeTextPx": 8,
+              "minimumProjectedNonEdgeTextPx": 8,
+              "minimumProjectedEdgeTextPx": 8,
+              "minimumProjectedNodeText": "已入队待调度",
+              "minimumProjectedNodeTextDetail": "context",
+              "minimumProjectedNodeTextOwner": {
+                "kind": "node",
+                "id": "queued"
+              },
+              "minimumRequiredNodeTextPx": 6,
+              "readabilityOk": true,
+              "hasLegend": true,
+              "hasNavigationDock": true,
+              "legendDockIntersectionArea": 0,
+              "dockStageIntersectionArea": 0,
+              "dockStageGap": 10,
+              "requiredDockStageGap": 10,
+              "viewerChromeStageOk": true,
+              "viewerChromeReserve": 54,
+              "viewerChromeActive": true,
+              "viewerChromeOk": true,
+              "resolvedTheme": "light"
+            },
+            {
+              "width": 1920,
+              "height": 1080,
+              "theme": "light",
+              "innerWidth": 1920,
+              "innerHeight": 1080,
+              "scrollWidth": 1920,
+              "scrollHeight": 1080,
+              "overflowX": false,
+              "overflowY": false,
+              "verticalScrollAccepted": false,
+              "overflowDisposition": "contained",
+              "readerLayout": "adaptive",
+              "readerOverflow": null,
+              "readerFit": "intrinsic-height",
+              "ok": true,
+              "readerWidth": 1856,
+              "diagramWidth": 1826,
+              "pageComposition": {
+                "bodyPaddingPx": 64,
+                "headerPx": 86,
+                "diagramChromePx": 84,
+                "svgPx": 819,
+                "cardsPx": 0,
+                "viewBoxHeight": 514
+              },
+              "viewBoxWidth": 1146,
+              "minimumProjectedNodeTextPx": 8,
+              "minimumProjectedNonEdgeTextPx": 8,
+              "minimumProjectedEdgeTextPx": 8,
+              "minimumProjectedNodeText": "已入队待调度",
+              "minimumProjectedNodeTextDetail": "context",
+              "minimumProjectedNodeTextOwner": {
+                "kind": "node",
+                "id": "queued"
+              },
+              "minimumRequiredNodeTextPx": 6,
+              "readabilityOk": true,
+              "hasLegend": true,
+              "hasNavigationDock": true,
+              "legendDockIntersectionArea": 0,
+              "dockStageIntersectionArea": 0,
+              "dockStageGap": 10,
+              "requiredDockStageGap": 10,
+              "viewerChromeStageOk": true,
+              "viewerChromeReserve": 54,
+              "viewerChromeActive": true,
+              "viewerChromeOk": true,
+              "resolvedTheme": "light"
+            },
+            {
+              "width": 2048,
+              "height": 1320,
+              "theme": "light",
+              "innerWidth": 2048,
+              "innerHeight": 1320,
+              "scrollWidth": 2048,
+              "scrollHeight": 1320,
+              "overflowX": false,
+              "overflowY": false,
+              "verticalScrollAccepted": false,
+              "overflowDisposition": "contained",
+              "readerLayout": "adaptive",
+              "readerOverflow": null,
+              "readerFit": "intrinsic-height",
+              "ok": true,
+              "readerWidth": 1920,
+              "diagramWidth": 1870,
+              "pageComposition": {
+                "bodyPaddingPx": 64,
+                "headerPx": 94,
+                "diagramChromePx": 94,
+                "svgPx": 839,
+                "cardsPx": 0,
+                "viewBoxHeight": 514
+              },
+              "viewBoxWidth": 1146,
+              "minimumProjectedNodeTextPx": 8,
+              "minimumProjectedNonEdgeTextPx": 8,
+              "minimumProjectedEdgeTextPx": 8,
+              "minimumProjectedNodeText": "已入队待调度",
+              "minimumProjectedNodeTextDetail": "context",
+              "minimumProjectedNodeTextOwner": {
+                "kind": "node",
+                "id": "queued"
+              },
+              "minimumRequiredNodeTextPx": 6,
+              "readabilityOk": true,
+              "hasLegend": true,
+              "hasNavigationDock": true,
+              "legendDockIntersectionArea": 0,
+              "dockStageIntersectionArea": 0,
+              "dockStageGap": 10,
+              "requiredDockStageGap": 10,
+              "viewerChromeStageOk": true,
+              "viewerChromeReserve": 44,
+              "viewerChromeActive": true,
+              "viewerChromeOk": true,
+              "resolvedTheme": "light"
+            }
+          ]
+        },
+        "themeStates": {
+          "status": "pass",
+          "viewports": [
+            {
+              "width": 1440,
+              "height": 900,
+              "requestedTheme": "light",
+              "resolvedTheme": "light",
+              "ok": true
+            },
+            {
+              "width": 1600,
+              "height": 1000,
+              "requestedTheme": "light",
+              "resolvedTheme": "light",
+              "ok": true
+            },
+            {
+              "width": 1920,
+              "height": 1080,
+              "requestedTheme": "light",
+              "resolvedTheme": "light",
+              "ok": true
+            },
+            {
+              "width": 2048,
+              "height": 1320,
+              "requestedTheme": "light",
+              "resolvedTheme": "light",
+              "ok": true
+            },
+            {
+              "width": 1440,
+              "height": 900,
+              "requestedTheme": "dark",
+              "resolvedTheme": "dark",
+              "ok": true
+            },
+            {
+              "width": 2048,
+              "height": 1320,
+              "requestedTheme": "dark",
+              "resolvedTheme": "dark",
+              "ok": true
+            }
+          ]
+        },
+        "readability": {
+          "status": "pass",
+          "minimumProjectedNodeTextPx": 6,
+          "viewports": [
+            {
+              "width": 1440,
+              "height": 900,
+              "theme": "light",
+              "innerWidth": 1440,
+              "innerHeight": 900,
+              "scrollWidth": 1440,
+              "scrollHeight": 900,
+              "overflowX": false,
+              "overflowY": false,
+              "verticalScrollAccepted": false,
+              "overflowDisposition": "contained",
+              "readerLayout": "adaptive",
+              "readerOverflow": null,
+              "readerFit": "intrinsic-height",
+              "ok": true,
+              "readerWidth": 1376,
+              "diagramWidth": 1346,
+              "pageComposition": {
+                "bodyPaddingPx": 12,
+                "headerPx": 78,
+                "diagramChromePx": 78,
+                "svgPx": 604,
+                "cardsPx": 0,
+                "viewBoxHeight": 514
+              },
+              "viewBoxWidth": 1146,
+              "minimumProjectedNodeTextPx": 8,
+              "minimumProjectedNonEdgeTextPx": 8,
+              "minimumProjectedEdgeTextPx": 8,
+              "minimumProjectedNodeText": "已入队待调度",
+              "minimumProjectedNodeTextDetail": "context",
+              "minimumProjectedNodeTextOwner": {
+                "kind": "node",
+                "id": "queued"
+              },
+              "minimumRequiredNodeTextPx": 6,
+              "readabilityOk": true,
+              "hasLegend": true,
+              "hasNavigationDock": true,
+              "legendDockIntersectionArea": 0,
+              "dockStageIntersectionArea": 0,
+              "dockStageGap": 10,
+              "requiredDockStageGap": 10,
+              "viewerChromeStageOk": true,
+              "viewerChromeReserve": 54,
+              "viewerChromeActive": true,
+              "viewerChromeOk": true,
+              "resolvedTheme": "light"
+            },
+            {
+              "width": 1600,
+              "height": 1000,
+              "theme": "light",
+              "innerWidth": 1600,
+              "innerHeight": 1000,
+              "scrollWidth": 1600,
+              "scrollHeight": 1000,
+              "overflowX": false,
+              "overflowY": false,
+              "verticalScrollAccepted": false,
+              "overflowDisposition": "contained",
+              "readerLayout": "adaptive",
+              "readerOverflow": null,
+              "readerFit": "intrinsic-height",
+              "ok": true,
+              "readerWidth": 1536,
+              "diagramWidth": 1506,
+              "pageComposition": {
+                "bodyPaddingPx": 64,
+                "headerPx": 86,
+                "diagramChromePx": 84,
+                "svgPx": 675,
+                "cardsPx": 0,
+                "viewBoxHeight": 514
+              },
+              "viewBoxWidth": 1146,
+              "minimumProjectedNodeTextPx": 8,
+              "minimumProjectedNonEdgeTextPx": 8,
+              "minimumProjectedEdgeTextPx": 8,
+              "minimumProjectedNodeText": "已入队待调度",
+              "minimumProjectedNodeTextDetail": "context",
+              "minimumProjectedNodeTextOwner": {
+                "kind": "node",
+                "id": "queued"
+              },
+              "minimumRequiredNodeTextPx": 6,
+              "readabilityOk": true,
+              "hasLegend": true,
+              "hasNavigationDock": true,
+              "legendDockIntersectionArea": 0,
+              "dockStageIntersectionArea": 0,
+              "dockStageGap": 10,
+              "requiredDockStageGap": 10,
+              "viewerChromeStageOk": true,
+              "viewerChromeReserve": 54,
+              "viewerChromeActive": true,
+              "viewerChromeOk": true,
+              "resolvedTheme": "light"
+            },
+            {
+              "width": 1920,
+              "height": 1080,
+              "theme": "light",
+              "innerWidth": 1920,
+              "innerHeight": 1080,
+              "scrollWidth": 1920,
+              "scrollHeight": 1080,
+              "overflowX": false,
+              "overflowY": false,
+              "verticalScrollAccepted": false,
+              "overflowDisposition": "contained",
+              "readerLayout": "adaptive",
+              "readerOverflow": null,
+              "readerFit": "intrinsic-height",
+              "ok": true,
+              "readerWidth": 1856,
+              "diagramWidth": 1826,
+              "pageComposition": {
+                "bodyPaddingPx": 64,
+                "headerPx": 86,
+                "diagramChromePx": 84,
+                "svgPx": 819,
+                "cardsPx": 0,
+                "viewBoxHeight": 514
+              },
+              "viewBoxWidth": 1146,
+              "minimumProjectedNodeTextPx": 8,
+              "minimumProjectedNonEdgeTextPx": 8,
+              "minimumProjectedEdgeTextPx": 8,
+              "minimumProjectedNodeText": "已入队待调度",
+              "minimumProjectedNodeTextDetail": "context",
+              "minimumProjectedNodeTextOwner": {
+                "kind": "node",
+                "id": "queued"
+              },
+              "minimumRequiredNodeTextPx": 6,
+              "readabilityOk": true,
+              "hasLegend": true,
+              "hasNavigationDock": true,
+              "legendDockIntersectionArea": 0,
+              "dockStageIntersectionArea": 0,
+              "dockStageGap": 10,
+              "requiredDockStageGap": 10,
+              "viewerChromeStageOk": true,
+              "viewerChromeReserve": 54,
+              "viewerChromeActive": true,
+              "viewerChromeOk": true,
+              "resolvedTheme": "light"
+            },
+            {
+              "width": 2048,
+              "height": 1320,
+              "theme": "light",
+              "innerWidth": 2048,
+              "innerHeight": 1320,
+              "scrollWidth": 2048,
+              "scrollHeight": 1320,
+              "overflowX": false,
+              "overflowY": false,
+              "verticalScrollAccepted": false,
+              "overflowDisposition": "contained",
+              "readerLayout": "adaptive",
+              "readerOverflow": null,
+              "readerFit": "intrinsic-height",
+              "ok": true,
+              "readerWidth": 1920,
+              "diagramWidth": 1870,
+              "pageComposition": {
+                "bodyPaddingPx": 64,
+                "headerPx": 94,
+                "diagramChromePx": 94,
+                "svgPx": 839,
+                "cardsPx": 0,
+                "viewBoxHeight": 514
+              },
+              "viewBoxWidth": 1146,
+              "minimumProjectedNodeTextPx": 8,
+              "minimumProjectedNonEdgeTextPx": 8,
+              "minimumProjectedEdgeTextPx": 8,
+              "minimumProjectedNodeText": "已入队待调度",
+              "minimumProjectedNodeTextDetail": "context",
+              "minimumProjectedNodeTextOwner": {
+                "kind": "node",
+                "id": "queued"
+              },
+              "minimumRequiredNodeTextPx": 6,
+              "readabilityOk": true,
+              "hasLegend": true,
+              "hasNavigationDock": true,
+              "legendDockIntersectionArea": 0,
+              "dockStageIntersectionArea": 0,
+              "dockStageGap": 10,
+              "requiredDockStageGap": 10,
+              "viewerChromeStageOk": true,
+              "viewerChromeReserve": 44,
+              "viewerChromeActive": true,
+              "viewerChromeOk": true,
+              "resolvedTheme": "light"
+            }
+          ]
+        },
+        "viewerChrome": {
+          "status": "pass",
+          "viewports": [
+            {
+              "width": 1440,
+              "height": 900,
+              "theme": "light",
+              "innerWidth": 1440,
+              "innerHeight": 900,
+              "scrollWidth": 1440,
+              "scrollHeight": 900,
+              "overflowX": false,
+              "overflowY": false,
+              "verticalScrollAccepted": false,
+              "overflowDisposition": "contained",
+              "readerLayout": "adaptive",
+              "readerOverflow": null,
+              "readerFit": "intrinsic-height",
+              "ok": true,
+              "readerWidth": 1376,
+              "diagramWidth": 1346,
+              "pageComposition": {
+                "bodyPaddingPx": 12,
+                "headerPx": 78,
+                "diagramChromePx": 78,
+                "svgPx": 604,
+                "cardsPx": 0,
+                "viewBoxHeight": 514
+              },
+              "viewBoxWidth": 1146,
+              "minimumProjectedNodeTextPx": 8,
+              "minimumProjectedNonEdgeTextPx": 8,
+              "minimumProjectedEdgeTextPx": 8,
+              "minimumProjectedNodeText": "已入队待调度",
+              "minimumProjectedNodeTextDetail": "context",
+              "minimumProjectedNodeTextOwner": {
+                "kind": "node",
+                "id": "queued"
+              },
+              "minimumRequiredNodeTextPx": 6,
+              "readabilityOk": true,
+              "hasLegend": true,
+              "hasNavigationDock": true,
+              "legendDockIntersectionArea": 0,
+              "dockStageIntersectionArea": 0,
+              "dockStageGap": 10,
+              "requiredDockStageGap": 10,
+              "viewerChromeStageOk": true,
+              "viewerChromeReserve": 54,
+              "viewerChromeActive": true,
+              "viewerChromeOk": true,
+              "resolvedTheme": "light"
+            },
+            {
+              "width": 1600,
+              "height": 1000,
+              "theme": "light",
+              "innerWidth": 1600,
+              "innerHeight": 1000,
+              "scrollWidth": 1600,
+              "scrollHeight": 1000,
+              "overflowX": false,
+              "overflowY": false,
+              "verticalScrollAccepted": false,
+              "overflowDisposition": "contained",
+              "readerLayout": "adaptive",
+              "readerOverflow": null,
+              "readerFit": "intrinsic-height",
+              "ok": true,
+              "readerWidth": 1536,
+              "diagramWidth": 1506,
+              "pageComposition": {
+                "bodyPaddingPx": 64,
+                "headerPx": 86,
+                "diagramChromePx": 84,
+                "svgPx": 675,
+                "cardsPx": 0,
+                "viewBoxHeight": 514
+              },
+              "viewBoxWidth": 1146,
+              "minimumProjectedNodeTextPx": 8,
+              "minimumProjectedNonEdgeTextPx": 8,
+              "minimumProjectedEdgeTextPx": 8,
+              "minimumProjectedNodeText": "已入队待调度",
+              "minimumProjectedNodeTextDetail": "context",
+              "minimumProjectedNodeTextOwner": {
+                "kind": "node",
+                "id": "queued"
+              },
+              "minimumRequiredNodeTextPx": 6,
+              "readabilityOk": true,
+              "hasLegend": true,
+              "hasNavigationDock": true,
+              "legendDockIntersectionArea": 0,
+              "dockStageIntersectionArea": 0,
+              "dockStageGap": 10,
+              "requiredDockStageGap": 10,
+              "viewerChromeStageOk": true,
+              "viewerChromeReserve": 54,
+              "viewerChromeActive": true,
+              "viewerChromeOk": true,
+              "resolvedTheme": "light"
+            },
+            {
+              "width": 1920,
+              "height": 1080,
+              "theme": "light",
+              "innerWidth": 1920,
+              "innerHeight": 1080,
+              "scrollWidth": 1920,
+              "scrollHeight": 1080,
+              "overflowX": false,
+              "overflowY": false,
+              "verticalScrollAccepted": false,
+              "overflowDisposition": "contained",
+              "readerLayout": "adaptive",
+              "readerOverflow": null,
+              "readerFit": "intrinsic-height",
+              "ok": true,
+              "readerWidth": 1856,
+              "diagramWidth": 1826,
+              "pageComposition": {
+                "bodyPaddingPx": 64,
+                "headerPx": 86,
+                "diagramChromePx": 84,
+                "svgPx": 819,
+                "cardsPx": 0,
+                "viewBoxHeight": 514
+              },
+              "viewBoxWidth": 1146,
+              "minimumProjectedNodeTextPx": 8,
+              "minimumProjectedNonEdgeTextPx": 8,
+              "minimumProjectedEdgeTextPx": 8,
+              "minimumProjectedNodeText": "已入队待调度",
+              "minimumProjectedNodeTextDetail": "context",
+              "minimumProjectedNodeTextOwner": {
+                "kind": "node",
+                "id": "queued"
+              },
+              "minimumRequiredNodeTextPx": 6,
+              "readabilityOk": true,
+              "hasLegend": true,
+              "hasNavigationDock": true,
+              "legendDockIntersectionArea": 0,
+              "dockStageIntersectionArea": 0,
+              "dockStageGap": 10,
+              "requiredDockStageGap": 10,
+              "viewerChromeStageOk": true,
+              "viewerChromeReserve": 54,
+              "viewerChromeActive": true,
+              "viewerChromeOk": true,
+              "resolvedTheme": "light"
+            },
+            {
+              "width": 2048,
+              "height": 1320,
+              "theme": "light",
+              "innerWidth": 2048,
+              "innerHeight": 1320,
+              "scrollWidth": 2048,
+              "scrollHeight": 1320,
+              "overflowX": false,
+              "overflowY": false,
+              "verticalScrollAccepted": false,
+              "overflowDisposition": "contained",
+              "readerLayout": "adaptive",
+              "readerOverflow": null,
+              "readerFit": "intrinsic-height",
+              "ok": true,
+              "readerWidth": 1920,
+              "diagramWidth": 1870,
+              "pageComposition": {
+                "bodyPaddingPx": 64,
+                "headerPx": 94,
+                "diagramChromePx": 94,
+                "svgPx": 839,
+                "cardsPx": 0,
+                "viewBoxHeight": 514
+              },
+              "viewBoxWidth": 1146,
+              "minimumProjectedNodeTextPx": 8,
+              "minimumProjectedNonEdgeTextPx": 8,
+              "minimumProjectedEdgeTextPx": 8,
+              "minimumProjectedNodeText": "已入队待调度",
+              "minimumProjectedNodeTextDetail": "context",
+              "minimumProjectedNodeTextOwner": {
+                "kind": "node",
+                "id": "queued"
+              },
+              "minimumRequiredNodeTextPx": 6,
+              "readabilityOk": true,
+              "hasLegend": true,
+              "hasNavigationDock": true,
+              "legendDockIntersectionArea": 0,
+              "dockStageIntersectionArea": 0,
+              "dockStageGap": 10,
+              "requiredDockStageGap": 10,
+              "viewerChromeStageOk": true,
+              "viewerChromeReserve": 44,
+              "viewerChromeActive": true,
+              "viewerChromeOk": true,
+              "resolvedTheme": "light"
+            }
+          ]
+        },
+        "captures": {
+          "status": "not-requested",
+          "screenshots": [],
+          "contactSheet": null
+        },
+        "sidecars": {
+          "receipt": "media-task.browser-check.json",
+          "files": []
+        }
+      }
+    }
+  },
+  "diagnostics": [],
+  "evidence": {
+    "receipt": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-media-task-20261104-200028/media-task.finalize.json",
+    "summaryReceipt": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-media-task-20261104-200028/media-task.finalize-summary.json",
+    "browserCheckReceipt": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-media-task-20261104-200028/media-task.browser-check.json"
+  },
+  "visualReview": "not-requested",
+  "finishedAt": "2026-11-04T12:49:34.386Z",
+  "durationMs": 3379,
+  "update": {
+    "status": "update_available",
+    "installedVersion": "3.0.1",
+    "availableVersion": "3.2.0",
+    "releaseNotes": "https://github.com/tt-a1i/archify/releases/tag/v3.2.0",
+    "severity": "normal",
+    "checkedAt": "2026-11-04T12:13:39.920Z",
+    "source": "cache",
+    "noticeRequired": true,
+    "noticeText": "Archify update: 3.0.1 → 3.2.0. A previous check at 2026-11-04T12:13:39.920Z found a newer release. Release notes: https://github.com/tt-a1i/archify/releases/tag/v3.2.0. The installed Skill has not changed; ask to snooze or ignore this reminder.",
+    "eventKey": "archify@sha256:70e210265c59f24dcbdf2a502ff671104b5454e7ee7d3554aecd86bad32384f5"
+  }
+}

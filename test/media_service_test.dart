@@ -2312,6 +2312,32 @@ void main() {
     expect(store.task(task.id)!.errorCode, MediaErrorCode.cacheMissing);
   });
 
+  test(
+    'deleting the last task cache removes its empty series directory',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-delete-last-cache-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final task = store.create(candidate(title: '系列 - 第1集'));
+      final directory = await store.cacheDirectory(seriesDirectory: '系列');
+      final cache = Directory('${directory.path}/${task.cacheKey}.hls')
+        ..createSync();
+      File('${cache.path}/index.m3u8')
+          .writeAsStringSync('#EXTM3U\nsegment.ts\n');
+      File('${cache.path}/segment.ts').writeAsBytesSync([1]);
+      store.transition(task.id, MediaTaskState.downloading);
+      store.transition(task.id, MediaTaskState.playable);
+      store.setLocalRef(task.id, '${cache.path}/index.m3u8');
+
+      await store.deleteCachedFiles(task.id);
+
+      expect(await cache.exists(), isFalse);
+      expect(await directory.exists(), isFalse);
+    },
+  );
+
   test('deleting a task with a missing localRef removes deterministic orphan caches', () async {
     final root = await Directory.systemTemp.createTemp(
       'site-lens-delete-orphan-cache-',

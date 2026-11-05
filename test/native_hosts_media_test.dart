@@ -128,6 +128,88 @@ void main() {
     },
   );
 
+  test(
+    'main-frame navigation errors are visible and auto-reloaded once',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final api = FakeWebHostApi();
+      final hosts = NativeHosts(
+        db,
+        ScriptService(db, ControlledHttp()),
+        ControlledHttp(),
+        api: api,
+        probeRoute: (_) async => const MediaNetworkRoute(
+          routeKind: 'http_proxy',
+          dnsOwner: 'proxy',
+          targetDnsMode: 'proxy_remote',
+          networkEpoch: 9,
+        ),
+      );
+      final session = _session(hosts);
+      try {
+        await hosts.onEvent(
+          HostEvent(
+            hostId: session.id,
+            generation: session.generation,
+            kind: 'networkError',
+            url: session.url,
+            detail: '连接超时',
+          ),
+        );
+        expect(session.errorKind, 'networkError');
+        expect(session.error, contains('连接超时'));
+        await Future<void>.delayed(const Duration(milliseconds: 450));
+        expect(api.reloaded, [session.id]);
+        expect(session.routeKind, 'http_proxy');
+        expect(session.targetDnsMode, 'proxy_remote');
+
+        await hosts.onEvent(
+          HostEvent(
+            hostId: session.id,
+            generation: session.generation + 1,
+            kind: 'started',
+            url: session.url,
+            detail: '',
+          ),
+        );
+        await hosts.onEvent(
+          HostEvent(
+            hostId: session.id,
+            generation: session.generation,
+            kind: 'networkError',
+            url: session.url,
+            detail: '再次超时',
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 450));
+        expect(api.reloaded, [session.id]);
+
+        await hosts.onEvent(
+          HostEvent(
+            hostId: session.id,
+            generation: session.generation,
+            kind: 'loaded',
+            url: session.url,
+            detail: '',
+          ),
+        );
+        await hosts.onEvent(
+          HostEvent(
+            hostId: session.id,
+            generation: session.generation,
+            kind: 'networkError',
+            url: session.url,
+            detail: '第三次超时',
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 450));
+        expect(api.reloaded, [session.id, session.id]);
+      } finally {
+        await db.close();
+      }
+    },
+  );
+
   test('same media URL keeps explicit episode identities separate', () async {
     final db = AppDatabase(NativeDatabase.memory());
     final hosts = NativeHosts(

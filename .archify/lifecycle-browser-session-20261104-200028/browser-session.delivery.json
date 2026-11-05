@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "0d1c742b-799b-4f3c-8042-5c3522d1aef8",
+  "status": "current",
+  "command": "deliver",
+  "type": "lifecycle",
+  "input": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-browser-session-20261104-200028/candidate.json",
+  "output": "/Users/qinfuling/www/github/vikiea/site-lens/.archify/lifecycle-browser-session-20261104-200028/browser-session.html",
+  "specification": {
+    "sha256": "d816e16fd8ee5f72027bb19532dc8942d1b58851d5dbe54df087eded8c838f58",
+    "bytes": 11776
+  },
+  "artifact": {
+    "sha256": "f13a85985f094159f44cce141a4798b2b9b718993386ee4ad991bfd0026fad3d",
+    "bytes": 779820
+  }
+}

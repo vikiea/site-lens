@@ -1,0 +1,506 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "媒体获取数据流：候选、授权、传输、索引与消费",
+    "subtitle": "页面候选经授权校验生成 MediaTask 行，原生 Worker 或 Dart HLS 传输落盘为 .part/.resume 与 .media，再登记媒体库供播放、投屏与导出",
+    "locale": "zh-CN",
+    "output": ".archify/dataflow-media-acquisition-20261104-200028/media-acquisition.html",
+    "quality_profile": "showcase",
+    "visual_preset": "signal-flow",
+    "repository": {
+      "url": "git@github.com:vikiea/site-lens.git",
+      "revision": "bc5248d2e480f6f38871a935b2b99c7a5a2c3c21",
+      "provider": "github",
+      "link_mode": "local-only"
+    },
+    "viewBox": [
+      1068,
+      688
+    ],
+    "legend": {
+      "mode": "all",
+      "entries": {
+        "default": {
+          "label": "数据流转"
+        },
+        "emphasis": {
+          "label": "主链路"
+        },
+        "security": {
+          "label": "授权校验"
+        },
+        "dashed": {
+          "label": "分支与异常"
+        },
+        "database": {
+          "label": "落盘资产"
+        }
+      }
+    }
+  },
+  "stages": [
+    {
+      "label": "发现"
+    },
+    {
+      "label": "授权与校验"
+    },
+    {
+      "label": "调度与传输"
+    },
+    {
+      "label": "落盘与索引"
+    },
+    {
+      "label": "使用与清理"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "page_script",
+      "type": "frontend",
+      "label": "页面脚本嗅探",
+      "sublabel": "页面脚本",
+      "tag": "resource timing",
+      "stage": 0,
+      "row": 1,
+      "width": 150,
+      "sources": [
+        {
+          "path": "web_assets/media_lifecycle.js",
+          "line": 57,
+          "label": "post(kind, fields)"
+        },
+        {
+          "path": "web_assets/media_lifecycle.js",
+          "line": 1175,
+          "label": "post('candidates')"
+        }
+      ]
+    },
+    {
+      "id": "authorize",
+      "type": "security",
+      "label": "授权与校验",
+      "sublabel": "会话凭据与世代",
+      "tag": "authorize",
+      "stage": 1,
+      "row": 0,
+      "width": 120,
+      "sources": [
+        {
+          "path": "lib/web_host/native_hosts.dart",
+          "line": 271,
+          "label": "authorizeMediaCandidate"
+        },
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 442,
+          "label": "MediaCandidateValidator"
+        }
+      ]
+    },
+    {
+      "id": "task_row",
+      "type": "backend",
+      "label": "MediaTask 行",
+      "sublabel": "任务状态与进度",
+      "tag": "MediaTaskStore",
+      "stage": 1,
+      "row": 2,
+      "width": 132,
+      "sources": [
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 533,
+          "label": "MediaTaskStore"
+        },
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 1173,
+          "label": "_transition"
+        }
+      ]
+    },
+    {
+      "id": "native",
+      "type": "backend",
+      "label": "原生 Worker 传输",
+      "sublabel": "6 分钟切片",
+      "tag": "WorkManager",
+      "stage": 2,
+      "row": 0,
+      "width": 150,
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeMediaDownloadWorker.kt",
+          "line": 29,
+          "label": "doWork"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeDownloadRuntime.kt",
+          "line": 99,
+          "label": "start"
+        }
+      ]
+    },
+    {
+      "id": "dart",
+      "type": "backend",
+      "label": "Dart HLS 传输",
+      "sublabel": "清单与分片",
+      "tag": "_startHls",
+      "stage": 2,
+      "row": 2,
+      "width": 132,
+      "sources": [
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 2949,
+          "label": "_startHls"
+        },
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 2852,
+          "label": "start"
+        }
+      ]
+    },
+    {
+      "id": "partial",
+      "type": "database",
+      "label": ".part + .resume",
+      "sublabel": "校验与续传",
+      "tag": "断点续传",
+      "stage": 3,
+      "row": 0,
+      "width": 150,
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/ResumableMediaTransfer.kt",
+          "line": 56,
+          "label": "transfer"
+        },
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/ResumableMediaTransfer.kt",
+          "line": 294,
+          "label": "MediaAuthorizationException"
+        }
+      ]
+    },
+    {
+      "id": "media_file",
+      "type": "database",
+      "label": ".media 成品",
+      "sublabel": "原子改名",
+      "tag": "localRef",
+      "stage": 3,
+      "row": 2,
+      "width": 150,
+      "sources": [
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 2852,
+          "label": "start"
+        },
+        {
+          "path": "lib/media/media_service.dart",
+          "line": 1277,
+          "label": "setLocalRef"
+        }
+      ]
+    },
+    {
+      "id": "consume",
+      "type": "frontend",
+      "label": "播放 / 投屏",
+      "sublabel": "Media3 · DLNA",
+      "tag": "消费产物",
+      "stage": 4,
+      "row": 0,
+      "width": 140,
+      "sources": [
+        {
+          "path": "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeMediaSessionService.kt",
+          "line": 416,
+          "label": "open"
+        },
+        {
+          "path": "lib/media/dlna_service.dart",
+          "line": 862,
+          "label": "cast"
+        }
+      ]
+    },
+    {
+      "id": "export",
+      "type": "backend",
+      "label": "导出 MP4",
+      "sublabel": "MediaExportQueue",
+      "tag": "独立所有权",
+      "stage": 4,
+      "row": 2,
+      "width": 140,
+      "sources": [
+        {
+          "path": "lib/media/media_export_queue.dart",
+          "line": 233,
+          "label": "enqueueAutomatic"
+        },
+        {
+          "path": "lib/media/media_library.dart",
+          "line": 1286,
+          "label": "deliver"
+        }
+      ]
+    }
+  ],
+  "flows": [
+    {
+      "id": "f1",
+      "from": "page_script",
+      "to": "authorize",
+      "label": "MediaCandidateDto",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          202,
+          271
+        ],
+        [
+          202,
+          157
+        ]
+      ],
+      "labelAt": [
+        202,
+        110
+      ],
+      "variant": "emphasis",
+      "classification": "策略 HTTP"
+    },
+    {
+      "id": "f2",
+      "from": "page_script",
+      "to": "task_row",
+      "label": "MediaCandidateDto",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          214,
+          271
+        ],
+        [
+          214,
+          385
+        ]
+      ],
+      "labelAt": [
+        214,
+        330
+      ],
+      "variant": "emphasis",
+      "classification": "策略 HTTP"
+    },
+    {
+      "id": "f3",
+      "from": "authorize",
+      "to": "task_row",
+      "label": "授权通过",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [],
+      "labelAt": [
+        315,
+        262
+      ],
+      "variant": "security",
+      "classification": "会话凭据"
+    },
+    {
+      "id": "f4",
+      "from": "authorize",
+      "to": "native",
+      "label": "直链 / 无自定义头",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          417,
+          157
+        ]
+      ],
+      "labelAt": [
+        414,
+        110
+      ],
+      "variant": "emphasis",
+      "classification": "原生路径"
+    },
+    {
+      "id": "f5",
+      "from": "task_row",
+      "to": "dart",
+      "label": "HLS / 自定义请求头",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          417,
+          385
+        ]
+      ],
+      "labelAt": [
+        403,
+        322
+      ],
+      "classification": "Dart 路径"
+    },
+    {
+      "id": "f6",
+      "from": "native",
+      "to": "partial",
+      "label": "进度 / 字节",
+      "fromSide": "right",
+      "toSide": "top",
+      "via": [
+        [
+          632,
+          157
+        ],
+        [
+          632,
+          112
+        ],
+        [
+          745,
+          112
+        ]
+      ],
+      "labelAt": [
+        652,
+        112
+      ],
+      "variant": "emphasis",
+      "classification": "原生传输"
+    },
+    {
+      "id": "f7",
+      "from": "dart",
+      "to": "partial",
+      "label": "分片落盘",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          632,
+          385
+        ],
+        [
+          632,
+          157
+        ]
+      ],
+      "labelAt": [
+        632,
+        300
+      ],
+      "variant": "emphasis",
+      "classification": "_startHls"
+    },
+    {
+      "id": "f8",
+      "from": "partial",
+      "to": "media_file",
+      "label": "原子改名",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [],
+      "labelAt": [
+        745,
+        328
+      ],
+      "variant": "emphasis",
+      "classification": "落盘"
+    },
+    {
+      "id": "f9",
+      "from": "media_file",
+      "to": "consume",
+      "label": "localRef / MediaArtifact",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          847,
+          385
+        ],
+        [
+          847,
+          157
+        ]
+      ],
+      "labelAt": [
+        847,
+        262
+      ],
+      "variant": "emphasis",
+      "classification": "媒体库"
+    },
+    {
+      "id": "f10",
+      "from": "media_file",
+      "to": "export",
+      "label": "MP4 导出",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [],
+      "labelAt": [
+        955,
+        440
+      ],
+      "classification": "MediaExportQueue"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "授权凭据边界",
+      "items": [
+        "页面 Cookie 只留在 CookieManager 与页面会话内。",
+        "刷新服务只回传状态、来源与摘要，Cookie 不过 Dart 通道。",
+        "带签名 query 的媒体地址无法刷新，直接回到需要重新授权。"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "失败清理只清理失败任务",
+      "items": [
+        "批量删除只对 failed 任务生效，其余状态需先停止占用。",
+        "清理任务行不影响已导出的 MP4 与媒体库索引。",
+        "缓存缺失把 completed/playable 降级为 failed(cacheMissing)。"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "导出与缓存所有权独立",
+      "items": [
+        "HLS 缓存目录与导出的 MP4 文件各自持有文件租约。",
+        "任务行消失后导出索引仍然保留。",
+        "移动文件保留目录 ID，旧路径出现新文件会分配新 ID。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "按源身份去重",
+      "items": [
+        "重扫用源身份键去重，content:// 取 document 段。",
+        "file:// 按归一化路径匹配已有产物。",
+        "候选展示去重保留剧集、画质与音轨参数。"
+      ]
+    }
+  ]
+}

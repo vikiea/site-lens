@@ -1430,6 +1430,12 @@ class MediaTaskStore extends ChangeNotifier {
       final directory = Directory(path);
       if (await directory.exists()) await directory.delete(recursive: true);
     }
+    for (final path in plan.cleanupDirectories) {
+      final directory = Directory(path);
+      if (!await directory.exists()) continue;
+      final hasEntries = !(await directory.list(followLinks: false).isEmpty);
+      if (!hasEntries) await directory.delete();
+    }
     cacheFilesDeleted(taskId);
   }
 
@@ -1489,9 +1495,32 @@ class MediaTaskStore extends ChangeNotifier {
       '${directory.path}/${current.cacheKey}.hls',
       '${directory.path}/${current.cacheKey}.hls.part',
     ]);
+    final cleanupDirectories = <String>{};
+    final cacheRoot = await cacheRootDirectory();
+    final normalizedRoot = p.normalize(cacheRoot.path);
+    final normalizedDirectory = p.normalize(directory.path);
+    if (normalizedDirectory != normalizedRoot &&
+        p.isWithin(normalizedRoot, normalizedDirectory)) {
+      final planned = <String>{
+        ...files.map(p.normalize),
+        ...directories.map(p.normalize),
+      };
+      final remaining = <String>[];
+      if (await directory.exists()) {
+        await for (final entity in directory.list(followLinks: false)) {
+          final path = p.normalize(entity.path);
+          final covered = planned.any(
+            (candidate) => path == candidate || p.isWithin(candidate, path),
+          );
+          if (!covered) remaining.add(path);
+        }
+      }
+      if (remaining.isEmpty) cleanupDirectories.add(directory.path);
+    }
     return MediaCacheDeletionPlan(
       files: files.toList(),
       directories: directories.toList(),
+      cleanupDirectories: cleanupDirectories.toList(),
       cacheKey: current.cacheKey,
     );
   }
@@ -1963,16 +1992,19 @@ class MediaCacheDeletionPlan {
   const MediaCacheDeletionPlan({
     required this.files,
     required this.directories,
+    this.cleanupDirectories = const <String>[],
     required this.cacheKey,
   });
 
   final List<String> files;
   final List<String> directories;
+  final List<String> cleanupDirectories;
   final String cacheKey;
 
   Map<String, Object?> toJson() => {
     'files': files,
     'directories': directories,
+    'cleanupDirectories': cleanupDirectories,
     'cacheKey': cacheKey,
   };
 }
@@ -2711,6 +2743,7 @@ class MediaDownloadService {
         nativeReservation = await native!.reserveMutation(id, [
           ...frozenPlan.files,
           ...frozenPlan.directories,
+          ...frozenPlan.cleanupDirectories,
         ]);
       }
     } catch (_) {
