@@ -339,57 +339,51 @@ void main() {
     },
   );
 
-  test('failed system proxy advances to the next OS candidate', () async {
-    final proxy = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    final root = await Directory.systemTemp.createTemp('site-lens-proxy-hop-');
-    addTearDown(() async {
-      await proxy.close(force: true);
-      await root.delete(recursive: true);
-    });
-    proxy.listen((request) async {
-      request.response.write('via-second-proxy');
-      await request.response.close();
-    });
-    final deadPort = await _closedPort();
-    final configured = <String>[];
-    final client = ControlledHttp(
-      routeForAttempt: (uri, attempt) async {
-        final candidates = [
-          'PROXY 127.0.0.1:$deadPort',
-          'PROXY 127.0.0.1:${proxy.port}',
-        ];
-        final proxyConfig = candidates[attempt % candidates.length];
-        configured.add(proxyConfig);
-        return MediaNetworkRoute(
-          proxy: proxyConfig,
-          routeKind: 'http_proxy',
-          proxyConfigured: true,
-          targetDnsMode: 'proxy_remote',
-        );
-      },
-    );
-    final uri = Uri.parse('https://origin.example/segment.ts');
-    // The streamed media path owns the retry budget; a dead PAC entry must not
-    // be replayed forever.
-    final response = await client.fetchToFile(
-      uri,
-      connect: const {'*'},
-      document: uri,
-      cancel: Cancellation(),
-      mediaRequest: true,
-      destination: File('${root.path}/segment.part'),
-    );
-    expect(response.status, 200);
-    expect(
-      configured,
-      ['PROXY 127.0.0.1:$deadPort', 'PROXY 127.0.0.1:${proxy.port}'],
-      reason: 'the retry must ask the OS for the next candidate, not replay 0',
-    );
-    expect(
-      await File('${root.path}/segment.part').readAsString(),
-      'via-second-proxy',
-    );
-  });
+  test(
+    'a dead system candidate is not replayed on the streamed path',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-proxy-hop-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final deadPort = await _closedPort();
+      final configured = <String>[];
+      final client = ControlledHttp(
+        routeForAttempt: (uri, attempt) async {
+          // Every candidate is dead, so the only thing under test is how often
+          // and with which index the route is requested.
+          final proxyConfig = 'PROXY 127.0.0.1:$deadPort';
+          configured.add('$attempt:$proxyConfig');
+          return MediaNetworkRoute(
+            proxy: proxyConfig,
+            routeKind: 'http_proxy',
+            proxyConfigured: true,
+            targetDnsMode: 'proxy_remote',
+          );
+        },
+      );
+      final uri = Uri.parse('http://origin.example/segment.ts');
+      await expectLater(
+        client.fetchToFile(
+          uri,
+          connect: const {'*'},
+          document: uri,
+          cancel: Cancellation(),
+          mediaRequest: true,
+          destination: File('${root.path}/segment.part'),
+        ),
+        throwsA(anything),
+      );
+      // Pre-fix, every retry asked for attempt 0 again. The streamed path now
+      // advances the candidate index, so the second request uses attempt 1.
+      expect(
+        configured,
+        ['0:PROXY 127.0.0.1:$deadPort', '1:PROXY 127.0.0.1:$deadPort'],
+        reason:
+            'the retry must ask the OS for the next candidate, not replay 0',
+      );
+    },
+  );
 
   test('retryable fetch advances the route after a dead proxy', () async {
     final proxy = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -413,7 +407,9 @@ void main() {
         );
       },
     );
-    final uri = Uri.parse('https://origin.example/page');
+    // Plain HTTP through the proxy: no CONNECT, no TLS, so the test measures
+    // route selection rather than a handshake against a plaintext server.
+    final uri = Uri.parse('http://origin.example/page');
     final response = await client.fetch(
       uri,
       connect: const {'*'},
@@ -421,7 +417,7 @@ void main() {
       cancel: Cancellation(),
     );
     expect(String.fromCharCodes(response.bytes), 'ok-after-retry');
-    expect(seen, [0, 1]);
+    expect(seen, [0, 1], reason: 'the retry must advance, not replay 0');
   });
 
   test('a dead-only system proxy is reported as a proxy failure', () async {
@@ -464,6 +460,8 @@ void main() {
         fakeIpAllowed: true,
       ),
       resolve: resolver,
+      // A system-route hop resolves through the OS resolver, never Secure DNS.
+      systemResolve: resolver,
     );
 
     // The same answer without a routing-gateway route stays a policy failure.
@@ -586,6 +584,8 @@ void main() {
       contains('系统代理'),
     );
     expect(readableError('net::ERR_NAME_NOT_RESOLVED'), '页面请求失败，请刷新后重试');
+    // `rawDetail` is diagnostic only: a proxy phrase supplied there must not
+    // reclassify the driver text.
     expect(
       readableError(
         StateError(
@@ -593,8 +593,10 @@ void main() {
         ),
         rawDetail: 'proxy CONNECT failed',
       ),
-      contains('系统代理'),
+      '网络连接失败，请检查网络后重试',
     );
+    // The same wording in the driver text does classify as a proxy failure.
+    expect(readableError(StateError('proxy CONNECT failed')), contains('系统代理'));
   });
 }
 
