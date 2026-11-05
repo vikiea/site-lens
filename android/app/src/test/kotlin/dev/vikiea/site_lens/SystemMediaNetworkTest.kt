@@ -43,6 +43,138 @@ class SystemMediaNetworkTest {
     }
 
     @Test
+    fun networkProxyIsAppendedAsASecondCandidateWithoutReordering() {
+        val selectorProxy = Proxy(
+            Proxy.Type.HTTP,
+            InetSocketAddress.createUnresolved("127.0.0.1", 7891),
+        )
+        val linkProxy = Proxy(
+            Proxy.Type.HTTP,
+            InetSocketAddress.createUnresolved("127.0.0.1", 7890),
+        )
+        // The selector entry keeps its position; the network-scoped proxy is a
+        // second candidate for the retry, and no DIRECT route is invented.
+        assertEquals(
+            listOf(selectorProxy, linkProxy),
+            SystemMediaNetwork.visibleProxyEndpoints(listOf(selectorProxy), listOf(linkProxy)),
+        )
+    }
+
+    @Test
+    fun duplicateNetworkProxyIsNotRetriedTwice() {
+        val proxy = Proxy(
+            Proxy.Type.HTTP,
+            InetSocketAddress.createUnresolved("127.0.0.1", 7890),
+        )
+        assertEquals(
+            listOf(proxy),
+            SystemMediaNetwork.visibleProxyEndpoints(listOf(proxy, Proxy.NO_PROXY), listOf(proxy)),
+        )
+    }
+
+    @Test
+    fun proxyOnlyCandidatesNeverGainADirectFallback() {
+        // The invariant this change must preserve: a dead proxy is never
+        // silently replaced by a direct connection.
+        val first = Proxy(
+            Proxy.Type.HTTP,
+            InetSocketAddress.createUnresolved("127.0.0.1", 7890),
+        )
+        val second = Proxy(
+            Proxy.Type.HTTP,
+            InetSocketAddress.createUnresolved("127.0.0.1", 7891),
+        )
+        val merged = SystemMediaNetwork.visibleProxyEndpoints(listOf(first), listOf(second))
+        assertEquals(listOf(first, second), merged)
+        assertEquals(false, merged.any { it.type() == Proxy.Type.DIRECT })
+    }
+
+    @Test
+    fun aTunnelWithoutInternetIsStillUsableButANonTunnelNeverIs() {
+        val wifi = Net("wifi", vpn = false, internet = true, validated = true)
+        // clash.meta in rule mode: the tunnel reports no INTERNET capability
+        // while the underlay carries connectivity. It must still be selected.
+        assertEquals(
+            "tun0",
+            pick(wifi, listOf(wifi, Net("tun0", vpn = true, internet = false, validated = true))),
+        )
+        // With no tunnel present nothing is promoted and the underlay stays.
+        assertEquals(null, pick(wifi, listOf(wifi)))
+        // A non-VPN network that is "validated" does not become the tunnel.
+        assertEquals(
+            null,
+            pick(wifi, listOf(wifi, Net("vpn-labelled-wifi", vpn = false, internet = true, validated = true))),
+        )
+    }
+
+    @Test
+    fun linkPropertiesProxyAloneStillYieldsAUsableCandidate() {
+        val link = Proxy(
+            Proxy.Type.HTTP,
+            InetSocketAddress.createUnresolved("127.0.0.1", 7890),
+        )
+        assertEquals(
+            listOf(link, Proxy.NO_PROXY),
+            SystemMediaNetwork.visibleProxyEndpoints(listOf(Proxy.NO_PROXY), listOf(link)),
+        )
+        assertEquals(
+            listOf(Proxy.NO_PROXY),
+            SystemMediaNetwork.visibleProxyEndpoints(listOf(Proxy.NO_PROXY), emptyList()),
+        )
+    }
+
+    private data class Net(val name: String, val vpn: Boolean, val internet: Boolean,
+                          val validated: Boolean)
+
+    private fun pick(active: Net, all: List<Net>): String? = SystemMediaNetwork.pickVpnNetwork(
+        active = active,
+        candidates = all,
+        activeIsVpn = active.vpn,
+        isVpn = { it.vpn },
+        isUsable = { it.internet },
+        isValidated = { it.validated },
+    )?.name
+
+    @Test
+    fun ruleModeTunnelWinsEvenWhenUnderlayStaysTheActiveNetwork() {
+        // Observed on-device: clash.meta installs tun0 covering 0.0.0.0/5..7,
+        // yet ConnectivityService still reports the Wi-Fi underlay as the
+        // active default network. Reading only activeNetwork reports "no VPN"
+        // and bypasses the tunnel.
+        val wifi = Net("wifi", vpn = false, internet = true, validated = true)
+        val tun = Net("tun0", vpn = true, internet = true, validated = true)
+        assertEquals("tun0", pick(wifi, listOf(wifi, tun)))
+    }
+
+    @Test
+    fun vpnSelectionKeepsAnActiveTunnelAndPromotesAValidatedOne() {
+        val wifi = Net("wifi", vpn = false, internet = true, validated = true)
+        val tun = Net("tun0", vpn = true, internet = true, validated = true)
+        // Active network already is the tunnel: keep it.
+        assertEquals("tun0", pick(tun, listOf(wifi, tun)))
+        // No tunnel at all: nothing is promoted, the underlay stays.
+        assertEquals(null, pick(wifi, listOf(wifi)))
+        // A validated tunnel outranks an unvalidated one in the same list.
+        assertEquals(
+            "tun0",
+            pick(
+                wifi,
+                listOf(
+                    wifi,
+                    Net("tun-old", vpn = true, internet = true, validated = false),
+                    tun,
+                ),
+            ),
+        )
+        // A rule-mode tunnel may not advertise INTERNET itself; the observed
+        // clash.meta tunnel is exactly that case and must still be selected.
+        assertEquals(
+            "tun0",
+            pick(wifi, listOf(wifi, Net("tun0", vpn = true, internet = false, validated = true))),
+        )
+    }
+
+    @Test
     fun explicitProxySelectorRemainsAuthoritativeOverLinkProperties() {
         val selectedProxy = Proxy(
             Proxy.Type.HTTP,

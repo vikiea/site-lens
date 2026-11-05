@@ -172,6 +172,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       ControlledHttp(resolve: secureDnsResolver.resolve),
       api: api,
       probeRoute: Platform.isAndroid ? MediaNetwork().probeRoute : null,
+      activeRoute: Platform.isAndroid ? MediaNetwork().activeRoute : null,
       beforeCreate: _ensureBrowserPrepared,
     );
     filterSnapshots = FilterSnapshotStore();

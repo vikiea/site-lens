@@ -31,6 +31,7 @@ import java.io.File
 import java.io.Closeable
 import java.util.UUID
 import java.net.InetAddress
+import java.net.Proxy
 import java.net.URI
 import okhttp3.Dns
 import okhttp3.OkHttpClient
@@ -447,17 +448,30 @@ class NativeMediaRuntime(
             val routeOwnsDns = runCatching {
                 SystemMediaNetwork.routeInfo(context, URI(uri.toString())).fakeIpAllowed
             }.getOrDefault(false)
-            val http: DataSource.Factory = if (
+            // The in-process player must follow the same OS proxy as the
+            // browser and the download queue. DefaultHttpDataSource ignores
+            // system proxies entirely, so a proxied page would open media that
+            // the player could never fetch.
+            val systemProxy = runCatching {
+                SystemMediaNetwork.mediaProxy(context, URI(uri.toString()))
+            }.getOrDefault(Proxy.NO_PROXY)
+            val useSecureDns =
                 secureDnsProvider.isNotBlank() && secureDnsProvider != "off" && !routeOwnsDns
-            ) {
+            val http: DataSource.Factory = if (useSecureDns || systemProxy != Proxy.NO_PROXY) {
                 val client = OkHttpClient.Builder()
-                    .dns(object : Dns {
-                        override fun lookup(hostname: String): List<InetAddress> =
-                            runCatching {
-                                secureDnsResolver.lookup(secureDnsProvider, hostname)
-                                    .map(InetAddress::getByName)
-                            }.getOrElse { Dns.SYSTEM.lookup(hostname) }
-                    })
+                    .proxy(systemProxy)
+                    .retryOnConnectionFailure(true)
+                    .apply {
+                        if (useSecureDns) {
+                            dns(object : Dns {
+                                override fun lookup(hostname: String): List<InetAddress> =
+                                    runCatching {
+                                        secureDnsResolver.lookup(secureDnsProvider, hostname)
+                                            .map(InetAddress::getByName)
+                                    }.getOrElse { Dns.SYSTEM.lookup(hostname) }
+                            })
+                        }
+                    }
                     .build()
                 OkHttpDataSource.Factory(client)
                     .setUserAgent(WebSettings.getDefaultUserAgent(context))

@@ -29,12 +29,29 @@ class Cancelled implements Exception {
   const Cancelled();
 }
 
+/// True when [value] is a URL rather than a driver/exception description.
+/// Such text is never treated as evidence about a failure cause.
+///
+/// A platform may hand over a scheme-less address, so a host-shaped prefix is
+/// included; driver descriptions ("net::ERR_*", "SocketException: ...") never
+/// match because they carry a space, a colon separator or no dotted host.
+bool looksLikeUrl(String value) {
+  final text = value.trim();
+  if (text.isEmpty) return false;
+  if (text.contains('://')) return true;
+  if (RegExp(r'^[a-z][a-z0-9+.-]*:/').hasMatch(text)) return true;
+  return RegExp(
+    r'^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#]|$)',
+    caseSensitive: false,
+  ).hasMatch(text);
+}
+
 /// Converts implementation exceptions into short, user-facing guidance.
 ///
 /// This lives at the transport boundary so controllers, persisted probe
 /// results and Flutter surfaces all use the same wording and never leak an
 /// exception class name or a platform error code.
-String readableError(Object error) {
+String readableError(Object error, {String? rawDetail}) {
   if (error is Cancelled) return '操作已取消';
   if (error is TimeoutException) return '操作超时，请稍后重试';
   if (error is PlatformException) {
@@ -55,7 +72,13 @@ String readableError(Object error) {
     }
     final mediaCode =
         error.code == 'native_media' || error.code.startsWith('media_');
-    final message = error.message?.trim() ?? '';
+    // `rawDetail` is only ever a fallback for a platform error with no message.
+    // It is not classified: it can carry the failing URL, and a URL segment must
+    // never decide what went wrong.
+    final detail = rawDetail?.trim() ?? '';
+    final message = (error.message?.trim().isNotEmpty ?? false)
+        ? error.message!.trim()
+        : (looksLikeUrl(detail) ? '' : detail);
     final lowerMessage = message.toLowerCase();
     if (mediaCode &&
         (lowerMessage.contains('permission') || message.contains('权限'))) {
@@ -73,7 +96,55 @@ String readableError(Object error) {
       ? error.message
       : error.toString();
   final lower = raw.toLowerCase();
-  if (error is SocketException ||
+  // Classification reads the driver/exception text only. `rawDetail` may carry
+  // the failing URL, whose path is attacker-controllable, so it is never used
+  // as evidence about the cause.
+  //
+  // Proxy wording is matched as a phrase so an unrelated word such as
+  // "proxy" inside a host name cannot reclassify a real network failure.
+  final proxyFailure = RegExp(
+    [
+      r'(?:err_proxy|err_tunnel)_?[a-z_]*',
+      // "<proxy> <failure>", e.g. "proxy connect failed", "proxy_refused".
+      r'proxy[\s_-]*(?:server|connect\w*|refused|fail\w*|unavailable'
+          r'|auth\w*|tunnel\w*|error|den\w*|reset|timed?[\s_-]*out)',
+      // "authenticate with proxy": the verb comes first.
+      r'auth\w*\s+(?:with\s+)?(?:the\s+)?proxy',
+      // "<failure> by [the] proxy", e.g. "connection refused by the proxy".
+      r'(?:refused|failed|unavailable|reset|denied)\s+by\s+(?:the\s+)?proxy',
+      // "Failed to connect to proxy.example.com:7890", "proxy: refused".
+      r'(?:connect|talk)\w*\s+to\s+(?:the\s+)?proxy',
+      r'proxy\s*[:\s]\s*(?:connect\w*\s+)?(?:refused|failed|unavailable|reset)',
+    ].join('|'),
+  ).hasMatch(lower);
+  // WebView driver failures are checked before the socket wording: several
+  // `net::ERR_*` names also contain socket phrases such as "connection
+  // refused", and the generic socket message would hide the real cause.
+  //
+  // Only an error *description* is classified here. A message that is a URL
+  // never reaches this branch, so a link whose path happens to contain an
+  // ERR_* token cannot change what the app reports.
+  final webViewError =
+      !looksLikeUrl(raw) &&
+      RegExp(
+        r'err_(?:proxy|tunnel|connect(?:ion)?_refused|address_unreachable|'
+        r'name_not_resolved|name_resolution_failed|internet_disconnected|'
+        r'network_changed|timed_out|connection_timed_out|empty_response)',
+      ).hasMatch(lower);
+  if (webViewError) {
+    // Only a proxy/tunnel refusal is re-attributed to the local route. Other
+    // driver failures keep the established generic wording so callers and tests
+    // that already depend on it stay valid.
+    if (RegExp(r'err_(?:proxy|tunnel)').hasMatch(lower)) {
+      return '系统代理拒绝了连接，请检查代理设置或改为直连后重试';
+    }
+    return '页面请求失败，请刷新后重试';
+  }
+  // A proxy failure is a transport failure even when the driver omits the usual
+  // socket wording ("proxy connect failed", "proxy authentication required").
+  // Without it the raw English text would leak to the UI.
+  final transportFailure =
+      error is SocketException ||
       error is HandshakeException ||
       lower.contains('socketexception') ||
       lower.contains('connection reset') ||
@@ -81,7 +152,16 @@ String readableError(Object error) {
       lower.contains('connection aborted') ||
       lower.contains('connection refused') ||
       lower.contains('network is unreachable') ||
-      lower.contains('failed host lookup')) {
+      lower.contains('failed host lookup') ||
+      (proxyFailure && !lower.contains('failed host lookup'));
+  if (transportFailure) {
+    // A resolver failure names the origin, not the proxy. A host such as
+    // `proxy.example.com` must not turn a name failure into a proxy failure.
+    if (proxyFailure && !lower.contains('failed host lookup')) {
+      // A requested HTTP proxy that refuses the connection or tunnels is a
+      // local proxy problem. Never blame the origin site or the general network.
+      return '系统代理连接失败，请检查代理设置或改为直连后重试';
+    }
     return lower.contains('connection closed') ||
             lower.contains('connection aborted')
         ? '网络连接中断，请重试'
@@ -220,6 +300,26 @@ class NetworkPolicy {
     return b.length == 4 && b[0] == 198 && (b[1] == 18 || b[1] == 19);
   }
 
+  /// Extracts the first proxy endpoint from the configuration string the
+  /// native router renders, so a failure can name the actual host:port.
+  ///
+  /// Only the directives that renderer emits are handled: `PROXY host:port` and
+  /// `DIRECT`. SOCKS entries are rejected earlier by the native policy, so a
+  /// branch for them would never be reached.
+  static String routeProxyEndpoint(String configuration) {
+    for (final entry in configuration.split(';')) {
+      final value = entry.trim();
+      if (value.startsWith('PROXY ')) return value.substring(6).trim();
+    }
+    return '未知';
+  }
+
+  /// Route kinds whose DIRECT socket still belongs to an intercepting gateway
+  /// or tunnel. The OS resolves the origin, so origin answers may legitimately
+  /// be Fake-IP and must not be judged by [publicAddress] alone.
+  static bool routeOwnsDns(String routeKind) =>
+      routeKind == 'router_fake_ip' || routeKind == 'vpn_tun_fake_ip';
+
   static String blockedAddressReason(List<InternetAddress> addresses) =>
       addresses.any(proxyFakeIp)
       ? 'DNS 返回代理 Fake-IP（198.18.0.0/15）；当前直连路由未确认 VPN/TUN，请检查系统代理设置'
@@ -281,10 +381,17 @@ class NetworkPolicy {
     final addresses = await resolver(uri.host)
         .timeout(const Duration(seconds: 5));
     cancel?.check();
+    // A gateway Fake-IP route (OpenClash/Mihomo on the LAN router) hands every
+    // origin name to the router. Accept the reserved range for that route kind
+    // exactly as the VPN/TUN route does. This accepts reserve-range answers on
+    // the strength of the native route kind alone: the authority that decides
+    // whether a gateway may own DNS is SystemMediaNetwork.routerFakeIpEligible
+    // on the platform side. Real private and loopback answers still fail below.
+    final fakeIpAllowed =
+        route.allowProxyFakeIp || routeOwnsDns(route.routeKind);
     if (addresses.isEmpty ||
         addresses.any(
-          (a) =>
-              !publicAddress(a) && !(route.allowProxyFakeIp && proxyFakeIp(a)),
+          (a) => !publicAddress(a) && !(fakeIpAllowed && proxyFakeIp(a)),
         )) {
       throw AddressPolicyException(blockedAddressReason(addresses));
     }
@@ -520,6 +627,14 @@ class ControlledHttp {
   /// not cause the next hop to fall back to a direct origin connection.
   final Future<MediaNetworkRoute> Function(Uri, int)? routeForAttempt;
 
+  /// Next OS route index for one transport sequence.
+  ///
+  /// A PAC/`ProxySelector` list can start with a proxy that answers TCP and
+  /// then fails inside the tunnel. The retry therefore advances to the next
+  /// system candidate instead of asking the OS for attempt 0 again, which
+  /// would replay the same failing proxy for the whole budget.
+  int nextRouteAttempt(int current) => current + 1;
+
   Future<MediaNetworkRoute> _configureRoute(
     HttpClient client,
     Uri uri,
@@ -555,6 +670,8 @@ class ControlledHttp {
       // which uses Network.socketFactory and rechecks the VPN before connect.
       throw const SocketException('VPN/TUN 媒体连接需要原生路由');
     }
+    final fakeIpRoute =
+        route.allowProxyFakeIp || NetworkPolicy.routeOwnsDns(route.routeKind);
     client.findProxy = (_) => route.proxy;
     client.connectionFactory = (target, host, port) {
       // HttpClient owns CONNECT and verified TLS inside a proxy tunnel.
@@ -579,11 +696,14 @@ class ControlledHttp {
         // bypass that route and return the real origin address. Let the active
         // system route resolve the origin in that case; proxy connections only
         // resolve the proxy endpoint above.
-        resolve: route.targetDnsMode == 'system_route' || route.allowProxyFakeIp
+        // One predicate for both decisions: a route that owns DNS must also
+        // have its names resolved by the system route, otherwise an accepted
+        // Fake-IP answer would be unreachable.
+        resolve: route.targetDnsMode == 'system_route' || fakeIpRoute
             ? InternetAddress.lookup
             : resolve,
         allowLocal: allowLocal,
-        allowProxyFakeIp: route.allowProxyFakeIp,
+        allowProxyFakeIp: fakeIpRoute,
         timeout:
             timeout ?? client.connectionTimeout ?? const Duration(seconds: 15),
       );
@@ -729,6 +849,9 @@ class ControlledHttp {
     final maxTransportAttempts = _singleMediaTransportAttempt
         ? 1
         : _maxTransportAttempts;
+    // Unlike the streamed path, this candidate index carries across redirects:
+    // a buffered response is tiny, and re-asking the OS for candidate 0 after a
+    // redirect would replay a proxy that just failed.
     var currentRouteAttempt = routeAttempt;
     for (var redirects = 0; redirects <= 5; redirects++) {
       cancel.check();
@@ -778,13 +901,13 @@ class ControlledHttp {
               transportAttempt + 1 >= maxTransportAttempts) {
             rethrow;
           }
-          currentRouteAttempt++;
+          currentRouteAttempt = nextRouteAttempt(currentRouteAttempt);
         } on TimeoutException {
           if (!retryableMethod ||
               transportAttempt + 1 >= maxTransportAttempts) {
             rethrow;
           }
-          currentRouteAttempt++;
+          currentRouteAttempt = nextRouteAttempt(currentRouteAttempt);
         }
       }
       final location = response.headers.value(HttpHeaders.locationHeader);
@@ -853,36 +976,71 @@ class ControlledHttp {
     int routeAttempt,
   ) async {
     _validateHeaders(headers);
+    final maxTransportAttempts = _singleMediaTransportAttempt
+        ? 1
+        : _maxTransportAttempts;
+    // One route change per request is the recovery budget. Repeating it would
+    // let a long media transfer hop across unrelated proxies, which changes the
+    // origin identity (and any CDN session affinity) mid-response.
+    var routeChangesLeft = maxTransportAttempts - 1;
     for (var redirects = 0; redirects <= 5; redirects++) {
       cancel.check();
       if (!allowLocal) NetworkPolicy.validateTarget(uri, connect, document);
-      final client = clients.next();
-      final route = await _configureRoute(
-        client,
-        uri,
-        document,
-        mediaRequest,
-        cancel,
-        routeAttempt,
-        null,
-      );
-      final request = await client.openUrl('GET', uri).timeout(timeout);
-      request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
-      request.followRedirects = false;
-      headers.forEach(request.headers.set);
-      if (mediaRequest) {
-        request.headers.set(HttpHeaders.userAgentHeader, route.userAgent);
-        request.headers.set(HttpHeaders.acceptHeader, '*/*');
-        request.headers.set(
-          HttpHeaders.acceptLanguageHeader,
-          'zh-CN,zh;q=0.9,en;q=0.8',
+      // The retry budget is per request sequence, but the candidate index is
+      // per hop: a new URL must start from the OS's first choice, otherwise a
+      // retry on the previous hop would silently rotate this one.
+      var currentRouteAttempt = routeAttempt;
+      late HttpClientResponse response;
+      late MediaNetworkRoute route;
+      while (true) {
+        cancel.check();
+        final client = clients.next();
+        // The OS route is resolved outside the transport retry catch. A failed
+        // proxy tunnel is a transport failure that may succeed on the next
+        // system candidate, while a route lookup failure stays a policy error.
+        route = await _configureRoute(
+          client,
+          uri,
+          document,
+          mediaRequest,
+          cancel,
+          currentRouteAttempt,
+          null,
         );
-        request.headers.set(HttpHeaders.refererHeader, document.toString());
-        if (document.scheme == 'http' || document.scheme == 'https') {
-          request.headers.set('origin', document.origin);
+        try {
+          final request = await client.openUrl('GET', uri).timeout(timeout);
+          request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
+          request.followRedirects = false;
+          headers.forEach(request.headers.set);
+          if (mediaRequest) {
+            request.headers.set(HttpHeaders.userAgentHeader, route.userAgent);
+            request.headers.set(HttpHeaders.acceptHeader, '*/*');
+            request.headers.set(
+              HttpHeaders.acceptLanguageHeader,
+              'zh-CN,zh;q=0.9,en;q=0.8',
+            );
+            request.headers.set(HttpHeaders.refererHeader, document.toString());
+            if (document.scheme == 'http' || document.scheme == 'https') {
+              request.headers.set('origin', document.origin);
+            }
+          }
+          response = await request.close().timeout(timeout);
+          break;
+        } on Cancelled {
+          rethrow;
+        } on SocketException {
+          // A proxy that accepts TCP and then refuses the tunnel, or a dead
+          // PAC entry, must advance to the next system candidate instead of
+          // replaying the same failing proxy for the whole budget.
+          if (routeChangesLeft <= 0) rethrow;
+          routeChangesLeft--;
+          currentRouteAttempt = nextRouteAttempt(currentRouteAttempt);
+        } on TimeoutException {
+          if (routeChangesLeft <= 0) rethrow;
+          routeChangesLeft--;
+          currentRouteAttempt = nextRouteAttempt(currentRouteAttempt);
         }
       }
-      final response = await request.close().timeout(timeout);
       final location = response.headers.value(HttpHeaders.locationHeader);
       if ([301, 302, 303, 307, 308].contains(response.statusCode) &&
           location != null) {
@@ -1110,6 +1268,7 @@ class HttpProbe {
           HttpClientResponse? response;
           Object? lastRouteError;
           StackTrace? lastRouteStack;
+          MediaNetworkRoute? lastRoute;
           for (
             var routeAttempt = 0;
             routeAttempt < _maxRouteAttempts;
@@ -1117,7 +1276,7 @@ class HttpProbe {
           ) {
             try {
               final client = clients.next();
-              await transport._configureRoute(
+              lastRoute = await transport._configureRoute(
                 client,
                 current,
                 current,
@@ -1146,6 +1305,17 @@ class HttpProbe {
           if (response == null) {
             final error = lastRouteError;
             final stack = lastRouteStack;
+            // Every system candidate failed. Name the proxy when the OS
+            // selected one, so a dead local proxy port is not reported as a
+            // generic network outage.
+            if (lastRoute?.proxyConfigured == true &&
+                !lastRoute!.proxy.startsWith('DIRECT')) {
+              return result(
+                ProbeStatus.offline,
+                '系统代理 ${NetworkPolicy.routeProxyEndpoint(lastRoute.proxy)} 连接失败；'
+                '请确认代理应用正在运行或改为直连后重试',
+              );
+            }
             if (error != null && stack != null) {
               Error.throwWithStackTrace(error, stack);
             }

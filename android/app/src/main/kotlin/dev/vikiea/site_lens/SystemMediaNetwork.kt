@@ -128,6 +128,29 @@ object SystemMediaNetwork {
         return selectedProxies(uri, selector)
     }
 
+    /**
+     * Default first-known proxy for in-process media transports (Media3).
+     *
+     * The global ProxySelector is authoritative when it already names a proxy.
+     * When it reports DIRECT -- which is what several VPN/TUN implementations
+     * expose while keeping their proxy in LinkProperties -- that proxy is used
+     * instead, so in-process playback does not bypass the OS proxy. No proxy
+     * anywhere means a direct connection is the only remaining route.
+     */
+    fun mediaProxy(
+        context: Context,
+        uri: URI,
+        selector: ProxySelector? = ProxySelector.getDefault(),
+    ): Proxy {
+        val selected = selectedProxies(uri, selector)
+        if (selected.any { it.type() == Proxy.Type.HTTP }) {
+            return selected.first { it.type() == Proxy.Type.HTTP }
+        }
+        val manager = context.getSystemService(ConnectivityManager::class.java)
+        val links = routeNetwork(manager)?.let(manager::getLinkProperties)
+        return linkHttpProxies(links?.httpProxy).firstOrNull() ?: Proxy.NO_PROXY
+    }
+
     private fun selectedProxies(uri: URI, selector: ProxySelector?): List<Proxy> {
         validateWebUri(uri)
         val selected = selector?.select(uri) ?: listOf(Proxy.NO_PROXY)
@@ -184,15 +207,114 @@ object SystemMediaNetwork {
         attempt: Int = 0,
     ): RouteInfo = routePlan(context, uri, attempt).info
 
+    /**
+     * Proxy/VPN snapshot for callers that must not resolve the target, such as
+     * a WebView diagnostic for an arbitrary page URL. It never touches DNS, so
+     * a broken resolver cannot make the diagnostic itself fail.
+     */
+    fun activeRouteInfo(
+        context: Context,
+        uri: URI? = null,
+        attempt: Int = 0,
+    ): RouteInfo {
+        val manager = context.getSystemService(ConnectivityManager::class.java)
+        val network = routeNetwork(manager)
+        val capabilities = network?.let(manager::getNetworkCapabilities)
+        val links = network?.let(manager::getLinkProperties)
+        val selector = if (uri == null) {
+            listOf(Proxy.NO_PROXY)
+        } else {
+            runCatching { selectedProxies(uri, ProxySelector.getDefault()) }
+                .getOrDefault(listOf(Proxy.NO_PROXY))
+        }
+        val visible = visibleProxyEndpoints(selector, linkHttpProxies(links?.httpProxy))
+        val http = visible.filter { it.type() == Proxy.Type.HTTP }
+        val vpn = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+        // Mirror planFor: with a proxy configured and no VPN/TUN, the proxy is
+        // the route. With VPN and DIRECT only, the VPN owns the socket.
+        val kind = when {
+            http.isNotEmpty() -> RouteKind.HTTP_PROXY
+            vpn -> RouteKind.VPN_TUN_FAKE_IP
+            else -> RouteKind.PUBLIC_DIRECT
+        }
+        return RouteInfo(
+            kind,
+            if (http.isEmpty()) DnsOwner.SYSTEM_DNS else DnsOwner.PROXY,
+            fakeIpAllowed = kind == RouteKind.VPN_TUN_FAKE_IP,
+            proxyConfigured = http.isNotEmpty(),
+            preferVpnTun = vpn && http.isNotEmpty(),
+            directAllowed = http.isEmpty(),
+            dnsClass = if (http.isEmpty()) "unknown" else "proxy",
+            targetDnsMode = if (http.isEmpty()) "system_route" else "proxy_remote",
+            vpnTransport = vpn,
+        )
+    }
+
+    /**
+     * The VPN network that actually carries traffic, which is not always
+     * `activeNetwork`.
+     *
+     * Clash/Mihomo in rule mode installs a tun interface that covers the whole
+     * IPv4 space, yet Android can still report the underlay Wi-Fi as the
+     * active, validated network. Reading only `activeNetwork` then concludes
+     * "no VPN" and hands every socket to the Wi-Fi route, so the tunnel's
+     * split-DNS and its Fake-IP answers never apply. Prefer a validated VPN
+     * network over the underlay.
+     *
+     * A rule-mode tunnel may not advertise NET_CAPABILITY_INTERNET itself
+     * (the underlay carries connectivity), so a missing capability is treated
+     * as unknown rather than as "unusable"; an explicit false still skips it.
+     */
+    fun vpnNetwork(manager: ConnectivityManager?): Network? {
+        if (manager == null) return null
+        val all = runCatching { manager.allNetworks }.getOrDefault(emptyArray())
+        fun caps(network: Network) = manager.getNetworkCapabilities(network)
+        return pickVpnNetwork(
+            active = manager.activeNetwork,
+            candidates = all.toList(),
+            activeIsVpn = manager.activeNetwork
+                ?.let(::caps)
+                ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true,
+            isVpn = { caps(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true },
+            isUsable = { caps(it)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) != false },
+            isValidated = {
+                caps(it)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+            },
+        )
+    }
+
+    /**
+     * Pure selection of the tunnel that should carry traffic. [isVpn] and
+     * [isValidated] are supplied by the caller so the rule is unit-testable
+     * without a live ConnectivityManager.
+     */
+    fun <N> pickVpnNetwork(
+        active: N?,
+        candidates: List<N>,
+        activeIsVpn: Boolean,
+        isVpn: (N) -> Boolean,
+        isUsable: (N) -> Boolean,
+        isValidated: (N) -> Boolean,
+    ): N? {
+        if (active != null && activeIsVpn) return active
+        val tunnels = candidates.filter { isVpn(it) && isUsable(it) }
+        // A validated tunnel outranks one that has not completed validation yet.
+        return tunnels.firstOrNull(isValidated) ?: tunnels.firstOrNull()
+    }
+
+    /** The network that actually carries this app's traffic for the next hop. */
+    fun routeNetwork(manager: ConnectivityManager?): Network? =
+        vpnNetwork(manager) ?: manager?.activeNetwork
+
     /** One snapshot for the proxy, system DNS, and socket owner of this hop. */
     fun routePlan(context: Context, uri: URI, attempt: Int = 0): RoutePlan {
         val manager = context.getSystemService(ConnectivityManager::class.java)
-        val network = manager?.activeNetwork
+        val network = routeNetwork(manager)
         val capabilities = network?.let(manager::getNetworkCapabilities)
         val links = network?.let(manager::getLinkProperties)
-        val selected = effectiveProxies(
+        val selected = visibleProxyEndpoints(
             selectedProxies(uri, ProxySelector.getDefault()),
-            linkHttpProxy(links?.httpProxy),
+            linkHttpProxies(links?.httpProxy),
         )
         val fingerprint = "${network?.networkHandle}:${links?.httpProxy}:${links?.dnsServers}"
         if (observedNetwork.getAndSet(fingerprint) != fingerprint) epoch.incrementAndGet()
@@ -228,6 +350,45 @@ object SystemMediaNetwork {
             return selected
         }
         return listOf(linkProxy) + selected
+    }
+
+    /**
+     * Proxy candidates visible to other apps: the ProxySelector order first,
+     * then any HTTP proxy the active network declares in LinkProperties.
+     *
+     * The network-scoped proxy is a distinct OS route. Some VPN/TUN apps keep
+     * their proxy only in LinkProperties, and a stale selector entry can be
+     * followed by a working one. Appending never reorders what the OS already
+     * chose, and no DIRECT fallback is invented, so an unusable proxy never
+     * becomes a silent direct connection.
+     */
+    fun visibleProxyEndpoints(
+        selected: List<Proxy>,
+        linkProxies: List<Proxy>,
+    ): List<Proxy> {
+        val merged = ArrayList<Proxy>(selected.size + linkProxies.size)
+        merged += selected
+        for (candidate in linkProxies) {
+            val duplicate = merged.any { existing ->
+                existing.type() == Proxy.Type.HTTP && sameEndpoint(existing, candidate)
+            }
+            if (!duplicate) merged += candidate
+        }
+        // DIRECT is present only because the OS offered it, so a dead proxy
+        // never silently becomes a direct connection.
+        return if (merged.isEmpty()) listOf(Proxy.NO_PROXY) else merged
+    }
+
+    private fun sameEndpoint(first: Proxy, second: Proxy): Boolean {
+        val a = first.address() as? InetSocketAddress ?: return false
+        val b = second.address() as? InetSocketAddress ?: return false
+        return a.hostString == b.hostString && a.port == b.port
+    }
+
+    /** Every HTTP proxy endpoint the active network declares, in order. */
+    fun linkHttpProxies(info: ProxyInfo?): List<Proxy> {
+        val proxy = linkHttpProxy(info) ?: return emptyList()
+        return listOf(proxy)
     }
 
     private fun linkHttpProxy(info: ProxyInfo?): Proxy? {
@@ -293,7 +454,11 @@ object SystemMediaNetwork {
             Proxy.NO_PROXY, addresses,
         )
         require(addresses.isNotEmpty() && addresses.all(::publicAddress)) {
-            "DNS 包含本机/私网媒体地址；请检查系统代理或 VPN 设置"
+            // Do not guess at a cause. A loopback or link-local answer may be a
+            // poisoned resolver rather than a proxy setting, so the message
+            // states the rejection only and leaves the diagnosis to the
+            // caller's route evidence.
+            "DNS 返回本机/私网地址，已拒绝连接；请检查系统代理、VPN 或 DNS 设置"
         }
         return RoutePlan(
             RouteInfo(RouteKind.PUBLIC_DIRECT, DnsOwner.SYSTEM_DNS, false,
@@ -319,9 +484,13 @@ object SystemMediaNetwork {
             uri, plan.proxy, plan.addresses.takeIf { it.isNotEmpty() },
             socketFactory = if (vpn) plan.network?.socketFactory else null,
             beforeConnect = {
-                if (vpn && (plan.network == null || manager?.activeNetwork != plan.network ||
-                    manager.getNetworkCapabilities(plan.network)
-                        ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) != true)) {
+                // Recheck the tunnel that owns this socket. Comparing with
+                // activeNetwork is wrong for rule-mode tunnels, where the
+                // underlay Wi-Fi legitimately stays the active network.
+                val stillVpn = plan.network != null &&
+                    manager?.getNetworkCapabilities(plan.network)
+                        ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+                if (vpn && !stillVpn) {
                     throw MediaRouteIOException("route_changed", IOException("媒体网络已变化"))
                 }
             },
@@ -467,7 +636,7 @@ object SystemMediaNetwork {
                         } else {
                             publicAddress(it) || confirmedFakeIpDirect && fakeIp(it)
                         }
-                    }) { "DNS 包含本机/私网媒体地址；请检查系统代理或 VPN 设置" }
+                    }) { "DNS 返回本机/私网地址，已拒绝连接；请检查系统代理、VPN 或 DNS 设置" }
                     proxyAttempted = true
                     return (open?.invoke(uri, proxy) ?: openOkHttpConnection(uri, proxy, addresses.toList())).also {
                         onSelectedRoute(preferredRoute?.wireName ?: "direct")

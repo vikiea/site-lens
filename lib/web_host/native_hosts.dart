@@ -84,6 +84,7 @@ class NativeHosts extends WebHostEvents {
     this.http, {
     WebHostApi? api,
     this.probeRoute,
+    this.activeRoute,
     this.beforeCreate,
   }) : api = api ?? WebHostApi() {
     WebHostEvents.setUp(this);
@@ -94,6 +95,9 @@ class NativeHosts extends WebHostEvents {
   final WebHostApi api;
   final Future<void> Function()? beforeCreate;
   final Future<MediaNetworkRoute> Function(Uri)? probeRoute;
+
+  /// DNS-free proxy/VPN snapshot used only to explain a navigation failure.
+  final Future<MediaNetworkRoute?> Function(Uri)? activeRoute;
   final _filterPayloads = FilterPayloadStore();
   final sessions = <int, HostSession>{};
   FilterEngine? filterEngine;
@@ -646,7 +650,13 @@ class NativeHosts extends WebHostEvents {
     }
     if (diagnosticError) {
       session.errorKind = event.kind;
-      session.error = readableError(event.detail);
+      // WebView reports only a driver-level failure; the URL travels in the
+      // event so a proxy/VPN diagnosis can be attached to the user-facing
+      // message instead of a bare "refresh the page".
+      final routeHint = await _routeHintForFailure(event.url);
+      session.error = routeHint == null
+          ? readableError(event.detail, rawDetail: event.url)
+          : '$routeHint\n${readableError(event.detail, rawDetail: event.url)}';
       if (session.purpose == HostPurpose.browsing) {
         await _refreshRouteDiagnostics(session, event.url);
       }
@@ -691,6 +701,32 @@ class NativeHosts extends WebHostEvents {
         }
       }),
     );
+  }
+
+  /// A short, actionable prefix when the system route itself is why the page
+  /// cannot load. Only a positively reported proxy/VPN route is named; a
+  /// failed or unknown diagnosis adds nothing and never masks the real error.
+  Future<String?> _routeHintForFailure(String url) async {
+    final probe = activeRoute;
+    if (probe == null || url.trim().isEmpty) return null;
+    final MediaNetworkRoute? route;
+    try {
+      route = await probe(webUri(url))
+          .timeout(const Duration(seconds: 3), onTimeout: () => null);
+    } catch (_) {
+      return null;
+    }
+    if (route == null || route.routeKind == 'unknown') return null;
+    if (route.routeKind == 'http_proxy' && route.proxyConfigured) {
+      return '系统代理已启用但站点未能通过代理访问；请确认代理应用正在运行，或关闭代理后重试';
+    }
+    if (route.routeKind == 'vpn_tun_fake_ip') {
+      return '检测到 VPN/TUN 路由；请确认代理应用的分流规则允许该站点直连或走代理';
+    }
+    if (route.routeKind == 'router_fake_ip') {
+      return '检测到网关代理路由（DNS 返回 Fake-IP）；请确认路由器的代理规则允许该站点，或临时关闭路由代理后重试';
+    }
+    return null;
   }
 
   Future<void> _refreshRouteDiagnostics(HostSession session, String url) async {

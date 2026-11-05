@@ -165,6 +165,35 @@ class MediaNetwork {
     return _route(uri, attempt: attempt, media: false);
   }
 
+  /// Proxy/VPN snapshot for diagnostics that must never resolve the target.
+  ///
+  /// Unlike [probeRoute] this performs no DNS lookup, so a broken resolver or a
+  /// dead proxy cannot make the diagnosis fail for the same reason the page
+  /// failed. A missing native handler (older install or non-Android host)
+  /// reports an unknown route instead of throwing.
+  Future<MediaNetworkRoute?> activeRoute(Uri uri) async {
+    if (!_nativeAvailable) return null;
+    try {
+      final value = await _channel.invokeMapMethod<String, Object?>(
+        'activeRoute',
+        {'url': uri.toString(), 'networkEpoch': _networkEpoch},
+      );
+      if (value == null) return null;
+      return MediaNetworkRoute(
+        routeKind: value['routeKind'] as String? ?? 'unknown',
+        dnsOwner: value['dnsOwner'] as String? ?? 'unknown',
+        targetDnsMode: value['targetDnsMode'] as String? ?? 'unknown',
+        proxyConfigured: value['proxyConfigured'] == true,
+        directAllowed: value['directAllowed'] != false,
+        networkEpoch: _networkEpoch,
+      );
+    } on PlatformException {
+      return null;
+    } on MissingPluginException {
+      return null;
+    }
+  }
+
   /// Android returns Java Socket.localAddress; Dart Socket.address retains the
   /// address passed to connect and therefore cannot identify the local route.
   Future<String> relayAddress(Uri receiver) async {

@@ -28,6 +28,32 @@ class MediaNetworkRuntime(
             result.success(null)
             return
         }
+        if (call.method == "activeRoute") {
+            // Proxy/VPN snapshot without DNS so a broken resolver cannot make
+            // a WebView error diagnostic fail on its own.
+            executor.execute {
+                val outcome = runCatching {
+                    val url = (call.argument<String>("url") ?: "")
+                        .trim()
+                        .takeIf { it.isNotEmpty() }
+                        ?.let { runCatching { URI(it) }.getOrNull() }
+                    val info = SystemMediaNetwork.activeRouteInfo(context, url)
+                    mapOf(
+                        "routeKind" to info.kind.wireName,
+                        "dnsOwner" to info.dnsOwner.wireName,
+                        "proxyConfigured" to info.proxyConfigured,
+                        "directAllowed" to info.directAllowed,
+                        "targetDnsMode" to info.targetDnsMode,
+                        "vpnTransport" to info.vpnTransport,
+                    )
+                }
+                main.post { outcome.fold(
+                    onSuccess = { result.success(it) },
+                    onFailure = { result.error("media_route", "无法读取当前代理设置", null) },
+                ) }
+            }
+            return
+        }
         if (call.method == "transferFile") {
             enqueueTransfer(call, result)
             return
