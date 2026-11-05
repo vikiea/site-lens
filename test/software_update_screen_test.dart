@@ -271,7 +271,13 @@ void main() {
       await tester.pumpAndSettle();
       final panel = find.byKey(const ValueKey('release-changelog'));
       expect(tester.getSize(panel).height, 240);
+      final updatePanel = find.byType(SiteLensPanel).last;
+      expect(
+        tester.getSize(panel).width,
+        closeTo(tester.getSize(updatePanel).width, 0.1),
+      );
       expect(find.byType(Markdown), findsOneWidget);
+      expect(find.text('site-lens-v0.1.0.apk'), findsNothing);
       final rendered = tester.widget<Markdown>(find.byType(Markdown));
       expect(rendered.data, markdown);
       expect(rendered.selectable, isTrue);
