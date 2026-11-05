@@ -17,6 +17,19 @@ import javax.net.ssl.SSLPeerUnverifiedException
 
 class SystemMediaNetworkTest {
     @Test
+    fun publicDirectOnVpnUsesTheActiveVpnNetworkSocket() {
+        assertEquals(true, SystemMediaNetwork.usesVpnNetwork(true, Proxy.NO_PROXY))
+        assertEquals(false, SystemMediaNetwork.usesVpnNetwork(false, Proxy.NO_PROXY))
+        assertEquals(
+            false,
+            SystemMediaNetwork.usesVpnNetwork(
+                true,
+                Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7890)),
+            ),
+        )
+    }
+
+    @Test
     fun linkPropertiesHttpProxyIsAddedWhenProxySelectorOnlyReportsDirect() {
         val link = Proxy(
             Proxy.Type.HTTP,

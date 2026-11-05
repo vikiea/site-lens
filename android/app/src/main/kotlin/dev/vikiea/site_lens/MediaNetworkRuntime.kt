@@ -76,6 +76,7 @@ class MediaNetworkRuntime(
                     "directAllowed" to routeInfo.directAllowed,
                     "dnsClass" to routeInfo.dnsClass,
                     "targetDnsMode" to routeInfo.targetDnsMode,
+                    "vpnTransport" to routeInfo.vpnTransport,
                     "networkEpoch" to networkEpoch,
                     "requestContextId" to MediaRequestContextRegistry
                         .latest(uri.toString(), document.orEmpty())?.id,

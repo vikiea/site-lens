@@ -65,6 +65,7 @@ object SystemMediaNetwork {
         val directAllowed: Boolean = false,
         val dnsClass: String = "unknown",
         val targetDnsMode: String = "unknown",
+        val vpnTransport: Boolean = false,
     )
 
     fun fakeIpRouteKind(vpnTransport: Boolean): RouteKind =
@@ -206,9 +207,13 @@ object SystemMediaNetwork {
             links?.dnsServers?.isNotEmpty() == true && links.dnsServers.all(::privateDnsAddress),
             selected.none { it.type() == Proxy.Type.HTTP },
         )
-        return planFor(uri, selected, vpn, routerTrusted, attempt) { host ->
+        val planned = planFor(uri, selected, vpn, routerTrusted, attempt) { host ->
             network?.getAllByName(host) ?: InetAddress.getAllByName(host)
-        }.copy(network = network)
+        }
+        return planned.copy(
+            info = planned.info.copy(vpnTransport = vpn),
+            network = network,
+        )
     }
 
     /**
@@ -231,6 +236,9 @@ object SystemMediaNetwork {
         if (port !in 1..65535) return null
         return Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved(host, port))
     }
+
+    fun usesVpnNetwork(vpnTransport: Boolean, proxy: Proxy): Boolean =
+        vpnTransport && proxy.type() == Proxy.Type.DIRECT
 
     /** Pure policy. HTTP proxies own origin DNS unless VPN Fake-IP is proven. */
     fun planFor(
@@ -305,7 +313,7 @@ object SystemMediaNetwork {
     ): HttpURLConnection {
         val plan = routePlan(context, uri, attempt)
         onRoute(plan.info)
-        val vpn = plan.info.kind == RouteKind.VPN_TUN_FAKE_IP
+        val vpn = usesVpnNetwork(plan.info.vpnTransport, plan.proxy)
         val manager = context.getSystemService(ConnectivityManager::class.java)
         return openOkHttpConnection(
             uri, plan.proxy, plan.addresses.takeIf { it.isNotEmpty() },
