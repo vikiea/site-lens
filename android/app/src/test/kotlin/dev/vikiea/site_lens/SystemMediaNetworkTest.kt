@@ -17,6 +17,35 @@ import javax.net.ssl.SSLPeerUnverifiedException
 
 class SystemMediaNetworkTest {
     @Test
+    fun linkPropertiesHttpProxyIsAddedWhenProxySelectorOnlyReportsDirect() {
+        val link = Proxy(
+            Proxy.Type.HTTP,
+            InetSocketAddress.createUnresolved("127.0.0.1", 7890),
+        )
+        val selected = SystemMediaNetwork.effectiveProxies(
+            listOf(Proxy.NO_PROXY),
+            link,
+        )
+        assertEquals(listOf(link, Proxy.NO_PROXY), selected)
+    }
+
+    @Test
+    fun explicitProxySelectorRemainsAuthoritativeOverLinkProperties() {
+        val selectedProxy = Proxy(
+            Proxy.Type.HTTP,
+            InetSocketAddress.createUnresolved("127.0.0.1", 7891),
+        )
+        val link = Proxy(
+            Proxy.Type.HTTP,
+            InetSocketAddress.createUnresolved("127.0.0.1", 7890),
+        )
+        assertEquals(
+            listOf(selectedProxy),
+            SystemMediaNetwork.effectiveProxies(listOf(selectedProxy), link),
+        )
+    }
+
+    @Test
     fun proxyWithDirectFallbackDoesNotResolveOriginBeforeTryingProxy() {
         val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7890))
         val policy = selector { listOf(proxy, Proxy.NO_PROXY) }

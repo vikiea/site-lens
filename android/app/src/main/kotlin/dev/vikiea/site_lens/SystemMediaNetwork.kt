@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Network
+import android.net.ProxyInfo
 import javax.net.SocketFactory
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -184,11 +185,14 @@ object SystemMediaNetwork {
 
     /** One snapshot for the proxy, system DNS, and socket owner of this hop. */
     fun routePlan(context: Context, uri: URI, attempt: Int = 0): RoutePlan {
-        val selected = proxies(uri)
         val manager = context.getSystemService(ConnectivityManager::class.java)
         val network = manager?.activeNetwork
         val capabilities = network?.let(manager::getNetworkCapabilities)
         val links = network?.let(manager::getLinkProperties)
+        val selected = effectiveProxies(
+            selectedProxies(uri, ProxySelector.getDefault()),
+            linkHttpProxy(links?.httpProxy),
+        )
         val fingerprint = "${network?.networkHandle}:${links?.httpProxy}:${links?.dnsServers}"
         if (observedNetwork.getAndSet(fingerprint) != fingerprint) epoch.incrementAndGet()
         val vpn = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
@@ -205,6 +209,27 @@ object SystemMediaNetwork {
         return planFor(uri, selected, vpn, routerTrusted, attempt) { host ->
             network?.getAllByName(host) ?: InetAddress.getAllByName(host)
         }.copy(network = network)
+    }
+
+    /**
+     * Some Android VPN/TUN implementations expose DIRECT through the global
+     * ProxySelector while keeping their HTTP proxy only in LinkProperties.
+     * Preserve that OS-level proxy candidate before deciding whether a direct
+     * route is allowed; otherwise discovery can bypass the proxy and reset at
+     * the origin socket.
+     */
+    fun effectiveProxies(selected: List<Proxy>, linkProxy: Proxy?): List<Proxy> {
+        if (linkProxy == null || selected.any { it.type() == Proxy.Type.HTTP }) {
+            return selected
+        }
+        return listOf(linkProxy) + selected
+    }
+
+    private fun linkHttpProxy(info: ProxyInfo?): Proxy? {
+        val host = info?.host?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val port = info.port
+        if (port !in 1..65535) return null
+        return Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved(host, port))
     }
 
     /** Pure policy. HTTP proxies own origin DNS unless VPN Fake-IP is proven. */
