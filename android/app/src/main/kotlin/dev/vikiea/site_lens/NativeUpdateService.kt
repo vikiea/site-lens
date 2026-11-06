@@ -39,6 +39,9 @@ class NativeUpdateService : Service() {
      * transfers, and a bound client pins the network it was created for.
      */
     private fun httpClient(target: String): OkHttpClient {
+        val uri = java.net.URI(target)
+        val plan = SystemMediaNetwork.routePlan(applicationContext, uri, attempt = 0)
+        val bindVpn = SystemMediaNetwork.shouldBindVpnSocket(plan.info, plan.proxy)
         val builder = OkHttpClient.Builder()
             .followRedirects(false)
             .followSslRedirects(false)
@@ -46,27 +49,22 @@ class NativeUpdateService : Service() {
             .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
             .callTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
             .retryOnConnectionFailure(false)
-        val tunnel = SystemMediaNetwork.vpnNetwork(
-            getSystemService(android.net.ConnectivityManager::class.java),
-        )
-        // Only a synthesized answer expects tunnel sockets; a real address must
-        // leave through the underlay or the tunnel drops it.
-        val tunnelSocketsNeeded = tunnel != null && runCatching {
-            SystemMediaNetwork.tunnelResolvesToSynthesized(tunnel, java.net.URI(target))
-        }.getOrDefault(false)
-        if (tunnelSocketsNeeded) SystemMediaNetwork.bindToVpn(this, builder)
-        if (tunnel != null) {
-            // Resolve inside the tunnel, but never accept a synthesized address:
-            // a host the tunnel routes DIRECT would point at an address nothing
-            // answers. A real address is reachable either way.
+            .proxy(plan.proxy)
+        // The APK stream uses the same per-hop route policy as media. HTTP
+        // proxy hops connect to the proxy and never bind VPN sockets. Only a
+        // confirmed VPN Fake-IP DIRECT hop gets tunnel socket factories.
+        if (bindVpn) {
+            check(SystemMediaNetwork.bindToVpn(this, builder)) {
+                "VPN/TUN 路由不可用"
+            }
             builder.dns(object : okhttp3.Dns {
                 override fun lookup(hostname: String): List<java.net.InetAddress> {
-                    val answer = tunnel.getAllByName(hostname).toList()
-                    if (answer.isEmpty() || answer.any { !SystemMediaNetwork.fakeIp(it) }) {
-                        return answer
+                    if (hostname.equals(uri.host, ignoreCase = true) &&
+                        plan.addresses.isNotEmpty()
+                    ) {
+                        return plan.addresses
                     }
-                    return runCatching { okhttp3.Dns.SYSTEM.lookup(hostname) }
-                        .getOrElse { answer }
+                    return okhttp3.Dns.SYSTEM.lookup(hostname)
                 }
             })
         }

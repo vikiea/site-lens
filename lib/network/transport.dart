@@ -25,6 +25,15 @@ const allowLocalTestPages =
     !bool.fromEnvironment('dart.vm.profile') &&
     bool.fromEnvironment('ALLOW_LOCAL_TEST_PAGES');
 
+/// Explicit debug-only local fixture allowance used by Android integration
+/// tests. Production and profile builds never return true here.
+bool isLocalTestPage(Uri uri, {bool enabled = allowLocalTestPages}) {
+  if (!enabled) return false;
+  final host = uri.host.toLowerCase();
+  if (host == 'localhost' || host.endsWith('.localhost')) return true;
+  return InternetAddress.tryParse(host)?.isLoopback ?? false;
+}
+
 class Cancelled implements Exception {
   const Cancelled();
 }

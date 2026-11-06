@@ -133,7 +133,7 @@ class SystemMediaNetworkTest {
         candidates = all,
         activeIsVpn = active.vpn,
         isVpn = { it.vpn },
-        isUsable = { true },
+        isUsable = { it.internet },
         isValidated = { it.validated },
     )?.name
 
@@ -181,16 +181,54 @@ class SystemMediaNetworkTest {
     }
 
     @Test
-    fun aProxiedHopOnTheTunnelStillBelongsToTheTunnel() {
-        // TUN mode: the OS hands out DIRECT, so the plan travels through tun0.
-        // The underlay must never win while a tunnel exists.
+    fun ruleModeTunnelSelectionRequiresUsableOrValidatedNetwork() {
+        // A validated tunnel may be selected even when it does not advertise
+        // INTERNET, because rule-mode TUN can delegate validation to Wi-Fi.
         val wifi = Net("wifi", vpn = false, internet = true, validated = true)
         val tun = Net("tun0", vpn = true, internet = true, validated = true)
         assertEquals("tun0", pick(wifi, listOf(wifi, tun)))
-        // Even when the tunnel looks less "capable" than the underlay, it wins:
-        // the underlay must never be picked while a tunnel exists.
+        // An unvalidated tunnel without INTERNET is unusable and must not be
+        // selected merely because it is present in allNetworks.
         val leanTun = Net("tun0", vpn = true, internet = false, validated = false)
-        assertEquals("tun0", pick(wifi, listOf(wifi, leanTun)))
+        assertEquals(null, pick(wifi, listOf(wifi, leanTun)))
+    }
+
+    @Test
+    fun vpnSocketBindingRequiresAConfirmedFakeIpDirectHop() {
+        val fakeIp = SystemMediaNetwork.RouteInfo(
+            kind = SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP,
+            dnsOwner = SystemMediaNetwork.DnsOwner.SYSTEM_DNS,
+            fakeIpAllowed = true,
+            proxyConfigured = true,
+            preferVpnTun = true,
+            directAllowed = true,
+            dnsClass = "fake_ip",
+            targetDnsMode = "system_route",
+            vpnTransport = true,
+        )
+        val proxy = Proxy(
+            Proxy.Type.HTTP,
+            InetSocketAddress.createUnresolved("127.0.0.1", 7890),
+        )
+        val proxyHop = fakeIp.copy(
+            kind = SystemMediaNetwork.RouteKind.HTTP_PROXY,
+            dnsOwner = SystemMediaNetwork.DnsOwner.PROXY,
+            fakeIpAllowed = false,
+            dnsClass = "proxy",
+        )
+        val realAddress = fakeIp.copy(dnsClass = "real_address")
+        val routerFakeIp = fakeIp.copy(
+            kind = SystemMediaNetwork.RouteKind.ROUTER_FAKE_IP,
+            proxyConfigured = false,
+            preferVpnTun = false,
+            vpnTransport = false,
+        )
+
+        assertTrue(SystemMediaNetwork.shouldBindVpnSocket(fakeIp, Proxy.NO_PROXY))
+        assertFalse(SystemMediaNetwork.shouldBindVpnSocket(fakeIp, proxy))
+        assertFalse(SystemMediaNetwork.shouldBindVpnSocket(proxyHop, proxy))
+        assertFalse(SystemMediaNetwork.shouldBindVpnSocket(realAddress, Proxy.NO_PROXY))
+        assertFalse(SystemMediaNetwork.shouldBindVpnSocket(routerFakeIp, Proxy.NO_PROXY))
     }
 
     @Test

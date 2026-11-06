@@ -512,6 +512,16 @@ object SystemMediaNetwork {
         vpnTransport && proxy.type() == Proxy.Type.DIRECT
 
     /**
+     * Binds an OkHttp client to the VPN only when this hop uses a synthesized
+     * Fake-IP answer through a direct route. HTTP proxy hops and real-address
+     * fallbacks must use their normal socket owner even when a VPN is present.
+     */
+    fun shouldBindVpnSocket(info: RouteInfo, proxy: Proxy): Boolean =
+        info.kind == RouteKind.VPN_TUN_FAKE_IP &&
+            info.dnsClass == "fake_ip" &&
+            proxy.type() == Proxy.Type.DIRECT
+
+    /**
      * Pure policy. HTTP proxies own origin DNS unless VPN Fake-IP is proven.
      *
      * [preferRealAddress] asks for a direct-connect address that the tunnel can
@@ -658,17 +668,10 @@ object SystemMediaNetwork {
         )
         onRoute(plan.info)
         val manager = context.getSystemService(ConnectivityManager::class.java)
-        // Bind whenever the hop is carried by a tunnel, including a proxied hop
-        // whose CONNECT must still leave through the tunnel's sockets.
-        val vpn = plan.network != null &&
-            manager?.getNetworkCapabilities(plan.network)
-                ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+        val bindVpn = shouldBindVpnSocket(plan.info, plan.proxy)
         return openOkHttpConnection(
             context, uri, plan.proxy, plan.addresses.takeIf { it.isNotEmpty() },
-            // Only a tunnel route may use tunnel sockets. Forcing the bind on a
-            // public-direct hop sends a real address into a tunnel that will not
-            // carry it, which fails before TLS even starts.
-            bindVpn = vpn,
+            bindVpn = bindVpn,
             beforeConnect = {
                 // Recheck the tunnel that owns this socket. Comparing with
                 // activeNetwork is wrong for rule-mode tunnels, where the
@@ -676,7 +679,7 @@ object SystemMediaNetwork {
                 val stillVpn = plan.network != null &&
                     manager?.getNetworkCapabilities(plan.network)
                         ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
-                if (vpn && !stillVpn) {
+                if (bindVpn && !stillVpn) {
                     throw MediaRouteIOException("route_changed", IOException("媒体网络已变化"))
                 }
             },
@@ -827,8 +830,8 @@ object SystemMediaNetwork {
                     proxyAttempted = true
                     return (open?.invoke(uri, proxy) ?: openOkHttpConnection(
                         context, uri, proxy, addresses.toList(),
-                        bindVpn = preferredRoute == RouteKind.VPN_TUN_FAKE_IP ||
-                            preferredRoute == RouteKind.ROUTER_FAKE_IP,
+                        bindVpn = preferredRoute == RouteKind.VPN_TUN_FAKE_IP &&
+                            confirmedFakeIpDirect && addresses.all(::fakeIp),
                     )).also {
                         onSelectedRoute(preferredRoute?.wireName ?: "direct")
                         it.connectTimeout = 15000
@@ -838,10 +841,9 @@ object SystemMediaNetwork {
                 proxyAttempted = true
                 return (open?.invoke(uri, proxy) ?: openOkHttpConnection(
                     context, uri, proxy,
-                    // A proxied hop keeps the tunnel only when the tunnel is
-                    // the selected route; otherwise the proxy owns the socket.
-                    bindVpn = preferredRoute == RouteKind.VPN_TUN_FAKE_IP ||
-                        preferredRoute == RouteKind.ROUTER_FAKE_IP,
+                    // The proxy owns this hop's socket, even when a VPN is
+                    // present for another route in the retry sequence.
+                    bindVpn = false,
                 )).also {
                     onSelectedRoute(
                         preferredRoute?.wireName
@@ -895,7 +897,7 @@ object SystemMediaNetwork {
         // socket factory; binding only the latter leaves the handshake on the
         // underlay network.
         if (bindVpn && context != null) {
-            bindToVpn(context, builder)
+            check(bindToVpn(context, builder)) { "VPN/TUN socket binding unavailable" }
             // Name resolution must also happen inside the tunnel, otherwise a
             // split-DNS name is answered by the underlay and the tunnelled
             // socket then connects to the wrong address.

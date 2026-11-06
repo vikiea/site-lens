@@ -400,17 +400,55 @@ typedef UpdateRouteResolver = Future<MediaNetworkRoute> Function(Uri uri);
 
 class _UpdateConnectionPolicy {
   final _fakeIpHosts = <String>{};
+  final _proxyByHost = <String, String>{};
+  final _systemDnsHosts = <String>{};
 
-  void setFakeIpAllowed(Uri uri, bool allowed) {
+  void setRoute(Uri uri, MediaNetworkRoute route) {
     final host = uri.host.toLowerCase();
-    if (allowed) {
+    final tunnelOwnsFakeIp =
+        (route.routeKind == 'vpn_tun_fake_ip' ||
+            route.routeKind == 'router_fake_ip') &&
+        route.targetDnsMode == 'system_route' &&
+        route.directAllowed;
+    if (tunnelOwnsFakeIp) {
       _fakeIpHosts.add(host);
     } else {
       _fakeIpHosts.remove(host);
     }
+    _proxyByHost[host] = route.proxy.trim().isEmpty ? 'DIRECT' : route.proxy;
+    if (route.targetDnsMode == 'system_route') {
+      _systemDnsHosts.add(host);
+    } else {
+      _systemDnsHosts.remove(host);
+    }
   }
 
   bool fakeIpAllowed(String host) => _fakeIpHosts.contains(host.toLowerCase());
+
+  String proxyFor(Uri uri) {
+    final host = uri.host.toLowerCase();
+    return host.isEmpty ? 'DIRECT' : (_proxyByHost[host] ?? 'DIRECT');
+  }
+
+  Future<List<InternetAddress>> resolve(
+    String host,
+    Future<List<InternetAddress>> Function(String) fallback,
+  ) => _systemDnsHosts.contains(host.toLowerCase())
+      ? InternetAddress.lookup(host)
+      : fallback(host);
+
+  String routeKey(Uri uri) => [
+    proxyFor(uri),
+    _fakeIpHosts.contains(uri.host.toLowerCase()),
+    _systemDnsHosts.contains(uri.host.toLowerCase()),
+  ].join('|');
+
+  void block(Uri uri) {
+    final host = uri.host.toLowerCase();
+    _fakeIpHosts.remove(host);
+    _systemDnsHosts.remove(host);
+    _proxyByHost[host] = 'PROXY 127.0.0.1:9';
+  }
 }
 
 http.Client _createUpdateClient(
@@ -420,6 +458,7 @@ http.Client _createUpdateClient(
   if (resolve == null) return http.Client();
   final client = HttpClient()
     ..connectionTimeout = const Duration(seconds: 15)
+    ..findProxy = policy.proxyFor
     ..connectionFactory = (target, proxyHost, proxyPort) {
       if (proxyHost != null) {
         return Socket.startConnect(proxyHost, proxyPort!);
@@ -429,7 +468,7 @@ http.Client _createUpdateClient(
         proxyHost,
         proxyPort,
         allowProxyFakeIp: policy.fakeIpAllowed(target.host),
-        resolve: resolve,
+        resolve: (host) => policy.resolve(host, resolve),
       );
     };
   return IOClient(client);
@@ -443,6 +482,8 @@ class GitHubReleaseClient {
     Future<List<InternetAddress>> Function(String)? resolve,
     this.routeResolver,
   }) : _connectionPolicy = _UpdateConnectionPolicy(),
+       _ownsClient = client == null,
+       _resolve = resolve,
        _latestUri =
            latestUri ??
            Uri.https('github.com', '/$siteLensRepository/releases/latest'),
@@ -456,8 +497,11 @@ class GitHubReleaseClient {
 
   final UpdateRouteResolver? routeResolver;
   final _UpdateConnectionPolicy _connectionPolicy;
+  final bool _ownsClient;
+  final Future<List<InternetAddress>> Function(String)? _resolve;
 
-  late final http.Client _client;
+  late http.Client _client;
+  String? _clientRouteKey;
   final Future<String?> Function()? tokenLoader;
   final Uri _latestUri;
   final Uri _latestApiUri;
@@ -474,17 +518,25 @@ class GitHubReleaseClient {
     if (resolver == null) return;
     try {
       final route = await resolver(uri);
-      final tunnelOwnsFakeIp =
-          (route.routeKind == 'vpn_tun_fake_ip' ||
-              route.routeKind == 'router_fake_ip') &&
-          route.targetDnsMode == 'system_route' &&
-          route.directAllowed;
-      _connectionPolicy.setFakeIpAllowed(uri, tunnelOwnsFakeIp);
+      _connectionPolicy.setRoute(uri, route);
+      final routeKey = _connectionPolicy.routeKey(uri);
+      if (_ownsClient &&
+          _clientRouteKey != null &&
+          _clientRouteKey != routeKey) {
+        _client.close();
+        _client = _createUpdateClient(_resolve, _connectionPolicy);
+      }
+      _clientRouteKey = routeKey;
     } catch (_) {
       // Route evidence is advisory for the update check. If it cannot be
-      // read, leave Fake-IP disallowed and let the normal transport error
-      // surface rather than turning an unproven private answer into DIRECT.
-      _connectionPolicy.setFakeIpAllowed(uri, false);
+      // read, block this host rather than turning an unproven route into
+      // DIRECT or reusing a route selected for an earlier request.
+      _connectionPolicy.block(uri);
+      if (_ownsClient && _clientRouteKey != null) {
+        _client.close();
+        _client = _createUpdateClient(_resolve, _connectionPolicy);
+      }
+      _clientRouteKey = _connectionPolicy.routeKey(uri);
     }
   }
 
@@ -850,6 +902,7 @@ class GitHubReleaseClient {
 
   Future<String> _resolveLatestTag() async {
     _trustedUri(_latestUri.toString());
+    await _prepareRoute(_latestUri);
     final request = http.Request('GET', _latestUri)..followRedirects = false;
     request.headers['User-Agent'] = 'SiteLens/$siteLensRepository';
     request.headers['Accept'] = 'text/html';

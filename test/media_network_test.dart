@@ -9,6 +9,22 @@ import 'package:site_lens/network/transport.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('local test page gate is explicit and loopback-only', () {
+    expect(
+      isLocalTestPage(Uri.parse('http://127.0.0.2:1234/'), enabled: true),
+      isTrue,
+    );
+    expect(
+      isLocalTestPage(Uri.parse('http://localhost:1234/'), enabled: true),
+      isTrue,
+    );
+    expect(
+      isLocalTestPage(Uri.parse('http://192.168.1.2:1234/'), enabled: true),
+      isFalse,
+    );
+    expect(isLocalTestPage(Uri.parse('http://127.0.0.2:1234/')), isFalse);
+  });
+
   test(
     'cancel during route preflight never submits a native transfer',
     () async {

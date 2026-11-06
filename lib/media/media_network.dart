@@ -218,6 +218,19 @@ class MediaNetwork {
     Uri? document,
   }) async {
     if (!_nativeAvailable) return const MediaNetworkRoute();
+    // Android's production route validator deliberately rejects loopback and
+    // private targets. Integration fixtures opt into local pages through the
+    // debug-only ALLOW_LOCAL_TEST_PAGES define, so they must not be sent to
+    // the native production route resolver first.
+    if (isLocalTestPage(uri)) {
+      return MediaNetworkRoute(
+        routeKind: 'public_direct',
+        dnsOwner: 'system_dns',
+        targetDnsMode: 'test_local',
+        directAllowed: true,
+        networkEpoch: _networkEpoch,
+      );
+    }
     final value = await _channel.invokeMapMethod<String, Object?>(
       media ? 'route' : 'probeRoute',
       {
