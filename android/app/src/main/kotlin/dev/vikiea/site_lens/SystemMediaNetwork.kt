@@ -331,11 +331,12 @@ object SystemMediaNetwork {
             ?: return false
         return runCatching {
             val tunnel = network.socketFactory
+            val trust = defaultTrustManager()
+            // Both OkHttp slots come from the same tunnel. The TLS slot must be
+            // our wrapper: the platform has no network-scoped TLS factory, and a
+            // default one would open the handshake on the underlay.
             builder.socketFactory(tunnel)
-            builder.sslSocketFactory(
-                TunnelSslSocketFactory(tunnel, defaultTrustManager()),
-                defaultTrustManager(),
-            )
+            builder.sslSocketFactory(TunnelSslSocketFactory(tunnel, trust), trust)
             true
         }.getOrDefault(false)
     }
