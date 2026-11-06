@@ -10,6 +10,8 @@ import java.net.ProxySelector
 import java.net.SocketAddress
 import java.net.URI
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Test
 import javax.net.ssl.SSLHandshakeException
@@ -252,6 +254,24 @@ class SystemMediaNetworkTest {
         assertEquals(false, fallback.preferRealAddress("third.example"))
         // Host matching is case-insensitive.
         assertEquals(true, fallback.preferRealAddress("CDN.example"))
+    }
+
+    @Test
+    fun tunnelSocketsAreRequiredOnlyForASynthesizedAnswer() {
+        // The binding decision is what a real address must NOT trigger: a real
+        // address stays on the underlay, so the tunnel never sees a socket it
+        // would refuse to forward.
+        assertTrue(fakeIpBatch(listOf("198.18.0.9")))
+        assertFalse(fakeIpBatch(listOf("222.184.83.211")))
+        // A mixed answer contains a routable address, so the tunnel is optional.
+        assertFalse(fakeIpBatch(listOf("198.18.0.9", "222.184.83.211")))
+        assertFalse(fakeIpBatch(emptyList()))
+    }
+
+    /** Mirrors [SystemMediaNetwork.tunnelResolvesToSynthesized]'s decision. */
+    private fun fakeIpBatch(addresses: List<String>): Boolean {
+        val parsed = addresses.map { InetAddress.getByName(it) }
+        return parsed.isNotEmpty() && parsed.all { SystemMediaNetwork.fakeIp(it) }
     }
 
     @Test

@@ -38,7 +38,7 @@ class NativeUpdateService : Service() {
      * It is rebuilt per call because the tunnel can come up or go away between
      * transfers, and a bound client pins the network it was created for.
      */
-    private fun httpClient(): OkHttpClient {
+    private fun httpClient(target: String): OkHttpClient {
         val builder = OkHttpClient.Builder()
             .followRedirects(false)
             .followSslRedirects(false)
@@ -46,27 +46,29 @@ class NativeUpdateService : Service() {
             .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
             .callTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
             .retryOnConnectionFailure(false)
-        if (SystemMediaNetwork.bindToVpn(this, builder)) {
+        val tunnel = SystemMediaNetwork.vpnNetwork(
+            getSystemService(android.net.ConnectivityManager::class.java),
+        )
+        // Only a synthesized answer expects tunnel sockets; a real address must
+        // leave through the underlay or the tunnel drops it.
+        val tunnelSocketsNeeded = tunnel != null && runCatching {
+            SystemMediaNetwork.tunnelResolvesToSynthesized(tunnel, java.net.URI(target))
+        }.getOrDefault(false)
+        if (tunnelSocketsNeeded) SystemMediaNetwork.bindToVpn(this, builder)
+        if (tunnel != null) {
             // Resolve inside the tunnel, but never accept a synthesized address:
-            // a tunnelled host that the tunnel routes DIRECT would be pointed at
-            // an address nothing answers. The real address works either way.
-            val tunnel = SystemMediaNetwork.vpnNetwork(
-                getSystemService(android.net.ConnectivityManager::class.java),
-            )
-            if (tunnel != null) {
-                builder.dns(object : okhttp3.Dns {
-                    override fun lookup(hostname: String): List<java.net.InetAddress> {
-                        val answer = tunnel.getAllByName(hostname).toList()
-                        if (answer.isEmpty() ||
-                            answer.any { !SystemMediaNetwork.fakeIp(it) }
-                        ) {
-                            return answer
-                        }
-                        return runCatching { okhttp3.Dns.SYSTEM.lookup(hostname) }
-                            .getOrElse { answer }
+            // a host the tunnel routes DIRECT would point at an address nothing
+            // answers. A real address is reachable either way.
+            builder.dns(object : okhttp3.Dns {
+                override fun lookup(hostname: String): List<java.net.InetAddress> {
+                    val answer = tunnel.getAllByName(hostname).toList()
+                    if (answer.isEmpty() || answer.any { !SystemMediaNetwork.fakeIp(it) }) {
+                        return answer
                     }
-                })
-            }
+                    return runCatching { okhttp3.Dns.SYSTEM.lookup(hostname) }
+                        .getOrElse { answer }
+                }
+            })
         }
         return builder.build()
     }
@@ -388,7 +390,7 @@ class NativeUpdateService : Service() {
                 builder.header("Range", "bytes=$offset-")
                 if (!ifRange.isNullOrBlank()) builder.header("If-Range", ifRange)
             }
-            val call = httpClient().newCall(builder.get().build())
+            val call = httpClient(target).newCall(builder.get().build())
             activeCall.set(call)
             val response = try { call.execute() } finally { activeCall.compareAndSet(call, null) }
             if (response.code !in REDIRECTS) return response

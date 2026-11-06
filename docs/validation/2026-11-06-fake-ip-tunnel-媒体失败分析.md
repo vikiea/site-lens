@@ -163,3 +163,32 @@ return runCatching { Dns.SYSTEM.lookup(hostname) }.getOrElse { answer }
 - 使用真实地址后，按域名分流对这些流量不再生效——这是有意的取舍，媒体需要的是可达性；
 - 私网与回环地址的拒绝逻辑未放宽：降级路径同样要求答案不是本机/私网地址；
 - `Network.getSSLSocketFactory()` 自 API 29 起存在，更低版本只绑定明文槽位。
+
+## 8. 后续修正：绑定顺序错误（alpha35 → alpha36）
+
+alpha35 把 `openOkHttpConnection` 的 `bindVpn` 默认值设成了 `true`，导致**所有**路由
+（包括 `public_direct`）都把 socket 绑到隧道。设备日志暴露了后果：
+
+```
+attempt 0..3: route=public_direct  targetDnsMode=direct_validated  failureCategory=io
+attempt 4:    route=vpn_tun_fake_ip  targetDnsMode=system_route    failureCategory=tls_handshake
+```
+
+前四次走的是真实地址，但 socket 仍被绑进隧道。规则模式隧道不转发它没有接管的真实地址，
+于是连接在 TLS 之前就失败（`io`）。
+
+修正原则：**先解析，再决定是否绑定。**
+
+- `openOkHttpConnection` 的 `bindVpn` 默认值改回 `false`，由调用方按路由显式给出；
+- `openMediaConnection` 传入 `bindVpn = (路由是隧道)`；
+- 新增 `SystemMediaNetwork.tunnelResolvesToSynthesized(tunnel, uri)`：只有隧道返回的答案
+  **全部**是合成地址时才认为需要隧道 socket；
+- 播放（Media3）与更新（`NativeUpdateService`）改为先解析目标、再按结果决定绑定。
+
+这样两种隧道行为都能工作：
+
+| 隧道 DNS 行为 | 解析结果 | socket | 结果 |
+|---|---|---|---|
+| Fake-IP（clash 规则模式） | 合成地址 | 绑隧道 | 由隧道接管 |
+| 真实地址（sing-box） | 真实地址 | 不绑定 | 走底层网络 |
+| 混合答案 | 含真实地址 | 不绑定 | 走底层网络 |

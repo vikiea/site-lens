@@ -609,6 +609,20 @@ object SystemMediaNetwork {
     fun configuration(plan: RoutePlan): String = renderConfiguration(listOf(plan.proxy), 0)
 
     /**
+     * Whether the tunnel answers [uri]'s host with only synthesized addresses.
+     *
+     * Only then is the socket expected inside the tunnel: a synthesized address
+     * exists solely for the tunnel to translate, while a real address must
+     * leave through the underlay. Deciding this before binding avoids pushing a
+     * real address into a tunnel that will not carry it.
+     */
+    fun tunnelResolvesToSynthesized(tunnel: Network, uri: URI): Boolean {
+        val host = uri.host ?: return false
+        val answer = runCatching { tunnel.getAllByName(host).toList() }.getOrDefault(emptyList())
+        return answer.isNotEmpty() && answer.all(::fakeIp)
+    }
+
+    /**
      * Tracks hosts whose synthesized address already failed inside the tunnel.
      *
      * A Fake-IP answer only works while the tunnel agrees to carry it. When the
@@ -651,6 +665,10 @@ object SystemMediaNetwork {
                 ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
         return openOkHttpConnection(
             context, uri, plan.proxy, plan.addresses.takeIf { it.isNotEmpty() },
+            // Only a tunnel route may use tunnel sockets. Forcing the bind on a
+            // public-direct hop sends a real address into a tunnel that will not
+            // carry it, which fails before TLS even starts.
+            bindVpn = vpn,
             beforeConnect = {
                 // Recheck the tunnel that owns this socket. Comparing with
                 // activeNetwork is wrong for rule-mode tunnels, where the
@@ -809,6 +827,8 @@ object SystemMediaNetwork {
                     proxyAttempted = true
                     return (open?.invoke(uri, proxy) ?: openOkHttpConnection(
                         context, uri, proxy, addresses.toList(),
+                        bindVpn = preferredRoute == RouteKind.VPN_TUN_FAKE_IP ||
+                            preferredRoute == RouteKind.ROUTER_FAKE_IP,
                     )).also {
                         onSelectedRoute(preferredRoute?.wireName ?: "direct")
                         it.connectTimeout = 15000
@@ -818,6 +838,10 @@ object SystemMediaNetwork {
                 proxyAttempted = true
                 return (open?.invoke(uri, proxy) ?: openOkHttpConnection(
                     context, uri, proxy,
+                    // A proxied hop keeps the tunnel only when the tunnel is
+                    // the selected route; otherwise the proxy owns the socket.
+                    bindVpn = preferredRoute == RouteKind.VPN_TUN_FAKE_IP ||
+                        preferredRoute == RouteKind.ROUTER_FAKE_IP,
                 )).also {
                     onSelectedRoute(
                         preferredRoute?.wireName
@@ -840,8 +864,12 @@ object SystemMediaNetwork {
         uri: URI,
         proxy: Proxy,
         validatedAddresses: List<InetAddress>? = null,
-        /** Bind the tunnel's socket factories; decided by [bindToVpn] itself. */
-        bindVpn: Boolean = true,
+        /**
+         * Bind the tunnel's socket factories. Off by default: a caller on a
+         * direct route must not push a real address into a tunnel that will
+         * not carry it.
+         */
+        bindVpn: Boolean = false,
         beforeConnect: () -> Unit = {},
     ): HttpURLConnection {
         val builder = OkHttpClient.Builder()
