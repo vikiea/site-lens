@@ -561,6 +561,26 @@ assert.equal(mappedEpisode.length, 1);
 assert.equal(mappedEpisode[0].episodeNumber, 7);
 console.log('Single playlist entry binds the explicit episode marker PASS.');
 
+// A broken or late page-data block must not hide the actual player source.
+// Episode mapping may be unavailable for this snapshot, but media sniffing
+// still has to publish the playable URL so the picker can recover on resniff.
+window.history.replaceState({}, '', '/video/42/ep-1');
+initialData = new JsonElement('{"id":42,"epPlaySrcs":');
+dataElements.length = 0;
+nodes.forEach(node => { node.isConnected = false; });
+nodes.length = 0;
+const playerWithBrokenEpisodeData = new Media();
+playerWithBrokenEpisodeData.currentSrc = 'https://cdn.example.test/live/episode-1.m3u8';
+playerWithBrokenEpisodeData.src = playerWithBrokenEpisodeData.currentSrc;
+nodes.push(playerWithBrokenEpisodeData);
+mutation();
+await waitForReport();
+const brokenEpisodeDataCandidates = outbound.filter(value => value.kind === 'candidates').at(-1).candidates;
+assert.ok(brokenEpisodeDataCandidates.some(value =>
+  value.url.includes('/live/episode-1.m3u8'),
+));
+console.log('Broken episode metadata keeps the live media candidate visible PASS.');
+
 nodes.push(new Media());
 await nodes[0].play();
 await native('pause');

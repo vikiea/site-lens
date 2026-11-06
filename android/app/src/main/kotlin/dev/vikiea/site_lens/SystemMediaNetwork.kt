@@ -32,7 +32,10 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 
 class MediaRouteIOException(
     val category: String,
@@ -205,6 +208,16 @@ object SystemMediaNetwork {
         val network: Network? = null,
     )
 
+    data class BufferedResponse(
+        val statusCode: Int,
+        val headers: Map<String, String>,
+        val body: ByteArray,
+        val finalUri: URI,
+        val routeKind: String,
+        val targetDnsMode: String,
+        val networkEpoch: Long,
+    )
+
     fun routeInfo(
         context: Context,
         uri: URI,
@@ -234,22 +247,23 @@ object SystemMediaNetwork {
         val visible = visibleProxyEndpoints(selector, linkHttpProxies(links?.httpProxy))
         val http = visible.filter { it.type() == Proxy.Type.HTTP }
         val vpn = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
-        // Mirror planFor: with a proxy configured and no VPN/TUN, the proxy is
-        // the route. With VPN and DIRECT only, the VPN owns the socket.
+        // This snapshot deliberately does not resolve the target. A VPN alone
+        // proves tunnel presence, not Fake-IP DNS ownership, so report an
+        // unknown route until the connection-time planner confirms the answer.
         val kind = when {
             http.isNotEmpty() -> RouteKind.HTTP_PROXY
-            vpn -> RouteKind.VPN_TUN_FAKE_IP
+            vpn -> RouteKind.UNKNOWN
             else -> RouteKind.PUBLIC_DIRECT
         }
         return RouteInfo(
             kind,
             if (http.isEmpty()) DnsOwner.SYSTEM_DNS else DnsOwner.PROXY,
-            fakeIpAllowed = kind == RouteKind.VPN_TUN_FAKE_IP,
+            fakeIpAllowed = false,
             proxyConfigured = http.isNotEmpty(),
             preferVpnTun = vpn && http.isNotEmpty(),
-            directAllowed = http.isEmpty(),
+            directAllowed = http.isEmpty() && !vpn,
             dnsClass = if (http.isEmpty()) "unknown" else "proxy",
-            targetDnsMode = if (http.isEmpty()) "system_route" else "proxy_remote",
+            targetDnsMode = if (http.isEmpty()) "unknown" else "proxy_remote",
             vpnTransport = vpn,
         )
     }
@@ -329,6 +343,10 @@ object SystemMediaNetwork {
     fun bindToVpn(context: Context, builder: OkHttpClient.Builder): Boolean {
         val network = vpnNetwork(context.getSystemService(ConnectivityManager::class.java))
             ?: return false
+        return bindToNetwork(network, builder)
+    }
+
+    private fun bindToNetwork(network: Network, builder: OkHttpClient.Builder): Boolean {
         return runCatching {
             val tunnel = network.socketFactory
             val trust = defaultTrustManager()
@@ -339,6 +357,84 @@ object SystemMediaNetwork {
             builder.sslSocketFactory(TunnelSslSocketFactory(tunnel, trust), trust)
             true
         }.getOrDefault(false)
+    }
+
+    /**
+     * Builds the shared native OkHttp client for one route plan. Consumers pass
+     * the plan through unchanged; proxy, DNS and VPN binding are decided here.
+     */
+    fun buildOkHttpClient(
+        context: Context,
+        uri: URI,
+        plan: RoutePlan,
+        beforeConnect: () -> Unit = {},
+    ): OkHttpClient = buildOkHttpClient(
+        context = context,
+        uri = uri,
+        proxy = plan.proxy,
+        validatedAddresses = plan.addresses.takeIf { it.isNotEmpty() },
+        bindVpn = shouldBindVpnSocket(plan.info, plan.proxy),
+        network = plan.network,
+        beforeConnect = beforeConnect,
+    )
+
+    /** Executes a bounded, non-streaming request using the shared route plan. */
+    fun requestBuffered(
+        context: Context,
+        uri: URI,
+        method: String = "GET",
+        headers: Map<String, String> = emptyMap(),
+        body: ByteArray? = null,
+        maxBytes: Int = 2 * 1024 * 1024,
+        attempt: Int = 0,
+    ): BufferedResponse {
+        require(maxBytes in 1..(8 * 1024 * 1024)) { "网络响应大小上限无效" }
+        require(method in setOf("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")) {
+            "不支持 HTTP 方法"
+        }
+        validateTarget(uri)
+        val plan = routePlan(context, uri, attempt)
+        val client = buildOkHttpClient(context, uri, plan)
+        val contentType = headers.entries.firstOrNull {
+            it.key.equals("Content-Type", ignoreCase = true)
+        }?.value?.toMediaTypeOrNull()
+        val requestBody = when {
+            method == "GET" || method == "HEAD" -> null
+            body != null -> body.toRequestBody(contentType)
+            method in setOf("POST", "PUT", "PATCH") -> ByteArray(0).toRequestBody(contentType)
+            else -> null
+        }
+        val request = Request.Builder()
+            .url(uri.toURL())
+            .method(method, requestBody)
+            .apply { headers.forEach { (name, value) -> header(name, value) } }
+            .build()
+        client.newCall(request).execute().use { response ->
+            val output = ByteArrayOutputStream()
+            val stream = response.body?.byteStream()
+            if (stream != null && method != "HEAD") {
+                stream.use { input ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        if (output.size() + count > maxBytes) {
+                            throw IOException("网络响应超过大小限制")
+                        }
+                        output.write(buffer, 0, count)
+                    }
+                }
+            }
+            return BufferedResponse(
+                statusCode = response.code,
+                headers = response.headers.toMultimap().mapValues { it.value.joinToString(", ") },
+                body = output.toByteArray(),
+                finalUri = uri,
+                routeKind = plan.info.kind.wireName,
+                targetDnsMode = plan.info.targetDnsMode,
+                networkEpoch = networkEpoch(),
+            )
+        }
     }
 
     /**
@@ -672,6 +768,7 @@ object SystemMediaNetwork {
         return openOkHttpConnection(
             context, uri, plan.proxy, plan.addresses.takeIf { it.isNotEmpty() },
             bindVpn = bindVpn,
+            network = plan.network,
             beforeConnect = {
                 // Recheck the tunnel that owns this socket. Comparing with
                 // activeNetwork is wrong for rule-mode tunnels, where the
@@ -872,8 +969,30 @@ object SystemMediaNetwork {
          * not carry it.
          */
         bindVpn: Boolean = false,
+        network: Network? = null,
         beforeConnect: () -> Unit = {},
     ): HttpURLConnection {
+        val client = buildOkHttpClient(
+            context = context,
+            uri = uri,
+            proxy = proxy,
+            validatedAddresses = validatedAddresses,
+            bindVpn = bindVpn,
+            network = network,
+            beforeConnect = beforeConnect,
+        )
+        return OkHttpMediaConnection(uri, client, proxy.type() == Proxy.Type.HTTP, beforeConnect)
+    }
+
+    private fun buildOkHttpClient(
+        context: Context?,
+        uri: URI,
+        proxy: Proxy,
+        validatedAddresses: List<InetAddress>? = null,
+        bindVpn: Boolean = false,
+        network: Network? = null,
+        beforeConnect: () -> Unit = {},
+    ): OkHttpClient {
         val builder = OkHttpClient.Builder()
             .proxy(proxy)
             .followRedirects(false)
@@ -886,10 +1005,19 @@ object SystemMediaNetwork {
         if (validatedAddresses != null) {
             builder.dns(object : Dns {
                 override fun lookup(hostname: String): List<InetAddress> {
-                    if (!hostname.equals(uri.host, ignoreCase = true)) {
-                        throw UnknownHostException("媒体 DNS 主机不匹配")
+                    if (hostname.equals(uri.host, ignoreCase = true)) {
+                        return validatedAddresses
                     }
-                    return validatedAddresses
+                    // HLS playlists may move segments, keys, or maps to a
+                    // different host. Keep those lookups on the same tunnel
+                    // when this plan owns system DNS; a single-resource
+                    // address pin must not turn a valid multi-CDN playlist
+                    // into an UnknownHost failure.
+                    return if (bindVpn && network != null) {
+                        network.getAllByName(hostname).toList()
+                    } else {
+                        Dns.SYSTEM.lookup(hostname)
+                    }
                 }
             })
         }
@@ -897,24 +1025,26 @@ object SystemMediaNetwork {
         // socket factory; binding only the latter leaves the handshake on the
         // underlay network.
         if (bindVpn && context != null) {
-            check(bindToVpn(context, builder)) { "VPN/TUN socket binding unavailable" }
+            val selectedNetwork = network ?: vpnNetwork(
+                context.getSystemService(ConnectivityManager::class.java),
+            )
+            check(selectedNetwork != null && bindToNetwork(selectedNetwork, builder)) {
+                "VPN/TUN socket binding unavailable"
+            }
             // Name resolution must also happen inside the tunnel, otherwise a
             // split-DNS name is answered by the underlay and the tunnelled
             // socket then connects to the wrong address.
-            val tunnel = vpnNetwork(
-                context.getSystemService(ConnectivityManager::class.java),
-            )
+            val tunnel = selectedNetwork
             // `validatedAddresses` already carries the address this hop must
             // use (including a Fake-IP), so it wins over a second lookup.
-            if (tunnel != null && validatedAddresses == null) {
+            if (validatedAddresses == null) {
                 builder.dns(object : Dns {
                     override fun lookup(hostname: String): List<InetAddress> =
                         tunnel.getAllByName(hostname).toList()
                 })
             }
         }
-        val client = builder.build()
-        return OkHttpMediaConnection(uri, client, proxy.type() == Proxy.Type.HTTP, beforeConnect)
+        return builder.build()
     }
 
     fun classifyTransportFailure(error: IOException, proxyRoute: Boolean): IOException {

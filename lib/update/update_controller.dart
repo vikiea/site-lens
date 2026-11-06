@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../media/media_network.dart';
+import '../network/native_system_http.dart';
 import '../settings/app_settings.dart';
 import '../ui/app_controller.dart';
 import '../ui/navigation_observer.dart';
@@ -25,9 +26,13 @@ final updateControllerProvider = Provider<UpdateController>((ref) {
   final mediaNetwork = MediaNetwork();
   final controller = UpdateController(
     service: UpdateService(
+      client: Platform.isAndroid
+          ? GitHubReleaseClient(client: NativeSystemHttpClient())
+          : null,
       tokenLoader: tokenStore.read,
-      resolve: app.secureDnsResolver.resolve,
-      routeResolver: mediaNetwork.route,
+      resolve: Platform.isAndroid ? null : app.secureDnsResolver.resolve,
+      routeResolver: Platform.isAndroid ? null : mediaNetwork.route,
+      nativeBackend: Platform.isAndroid ? MethodChannelUpdateBackend() : null,
     ),
   );
   ref.onDispose(controller.dispose);

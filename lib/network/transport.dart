@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/services.dart';
 
 import '../domain/models.dart';
+import 'native_system_http.dart';
 
 /// Coarse network class used to pick homepage-ready budget: WiFi is cheaper to
 /// wait on than cellular, so it gets the tighter bound.
@@ -619,6 +621,7 @@ class ControlledHttp {
   ControlledHttp({
     this.resolve = InternetAddress.lookup,
     this.allowLocal = false,
+    this.nativeTransport,
     this.mediaRoute,
     this.mediaRouteForAttempt,
     this.mediaRouteForAttemptWithDocument,
@@ -626,6 +629,7 @@ class ControlledHttp {
   });
   final bool allowLocal;
   final Future<List<InternetAddress>> Function(String) resolve;
+  final NativeSystemHttpTransport? nativeTransport;
   final Future<MediaNetworkRoute> Function(Uri)? mediaRoute;
   final Future<MediaNetworkRoute> Function(Uri, int)? mediaRouteForAttempt;
   final Future<MediaNetworkRoute> Function(Uri, int, Uri)?
@@ -853,6 +857,22 @@ class ControlledHttp {
       throw StateError('不支持 HTTP 方法');
     }
     _validateHeaders(headers);
+    final native = nativeTransport;
+    if (native != null && !mediaRequest) {
+      return _fetchNative(
+        uri,
+        connect,
+        document,
+        cancel,
+        method,
+        headers,
+        body,
+        maxBytes,
+        timeout,
+        routeAttempt,
+        native,
+      );
+    }
     final retryableMethod =
         !mediaRequest && const {'GET', 'HEAD', 'OPTIONS'}.contains(method);
     final maxTransportAttempts = _singleMediaTransportAttempt
@@ -963,6 +983,110 @@ class ControlledHttp {
         status: response.statusCode,
         bytes: bytes,
         headers: responseHeaders,
+      );
+    }
+    throw StateError('重定向过多');
+  }
+
+  Future<FetchResponse> _fetchNative(
+    Uri uri,
+    Set<String> connect,
+    Uri document,
+    Cancellation cancel,
+    String method,
+    Map<String, String> headers,
+    String? body,
+    int maxBytes,
+    Duration timeout,
+    int routeAttempt,
+    NativeSystemHttpTransport native,
+  ) async {
+    final retryable = const {'GET', 'HEAD', 'OPTIONS'}.contains(method);
+    var currentRouteAttempt = routeAttempt;
+    for (var redirect = 0; redirect <= 5; redirect++) {
+      cancel.check();
+      if (!allowLocal) NetworkPolicy.validateTarget(uri, connect, document);
+      NativeSystemHttpResponse? response;
+      NativeSystemHttpException? lastError;
+      for (
+        var transportAttempt = 0;
+        transportAttempt < _maxTransportAttempts;
+        transportAttempt++
+      ) {
+        cancel.check();
+        try {
+          response = await cancel.waitFor(
+            native
+                .request(
+                  url: uri,
+                  method: method,
+                  headers: headers,
+                  body: body == null ? null : utf8.encode(body),
+                  maxBytes: maxBytes,
+                  attempt: currentRouteAttempt,
+                )
+                .timeout(timeout),
+          );
+          break;
+        } on Cancelled {
+          rethrow;
+        } on NativeSystemHttpException catch (error) {
+          lastError = error;
+          final retryableError = const {
+            'dns',
+            'io',
+            'timeout',
+            'proxy_connect',
+            'tls_handshake',
+          }.contains(error.category);
+          if (!retryable ||
+              !retryableError ||
+              transportAttempt + 1 >= _maxTransportAttempts) {
+            rethrow;
+          }
+          currentRouteAttempt = nextRouteAttempt(currentRouteAttempt);
+        } on TimeoutException {
+          if (!retryable || transportAttempt + 1 >= _maxTransportAttempts) {
+            rethrow;
+          }
+          currentRouteAttempt = nextRouteAttempt(currentRouteAttempt);
+        }
+      }
+      if (response == null) throw lastError ?? StateError('系统网络没有返回响应');
+      final location = response.headers.entries
+          .where((entry) => entry.key.toLowerCase() == 'location')
+          .map((entry) => entry.value)
+          .firstOrNull;
+      if ([301, 302, 303, 307, 308].contains(response.statusCode) &&
+          location != null) {
+        if (redirect == 5) throw StateError('重定向过多');
+        final next = webUri(uri.resolve(location).toString());
+        if (uri.scheme == 'https' && next.scheme != 'https') {
+          throw StateError('禁止 HTTPS 降级重定向');
+        }
+        if (next.origin != uri.origin) {
+          headers = const {};
+          if (response.statusCode != 303 &&
+              method != 'GET' &&
+              method != 'HEAD') {
+            throw StateError('禁止跨来源转发请求体');
+          }
+        }
+        if (response.statusCode == 303 ||
+            ((response.statusCode == 301 || response.statusCode == 302) &&
+                method == 'POST')) {
+          method = 'GET';
+          body = null;
+        }
+        uri = next;
+        continue;
+      }
+      cancel.check();
+      return FetchResponse(
+        url: response.url,
+        status: response.statusCode,
+        bytes: response.body,
+        headers: response.headers,
       );
     }
     throw StateError('重定向过多');
@@ -1211,17 +1335,23 @@ class ControlledHttp {
 class HttpProbe {
   static const _maxRouteAttempts = 2;
   static const candidateDeadline = Duration(seconds: 5);
+  // A route resolver can be waiting on Android's ConnectivityManager or a
+  // proxy snapshot. Do not let one stalled route consume the whole candidate
+  // budget and prevent the second system candidate from being tried.
+  static const _routeLookupTimeout = Duration(milliseconds: 1500);
   static const _probeAttemptTimeout = candidateDeadline;
 
   HttpProbe({
     this.allowLocal = allowLocalTestPages,
     this.routeForAttempt,
     this.resolve = InternetAddress.lookup,
+    this.nativeTransport,
     this.onFailure,
   });
   final bool allowLocal;
   final Future<MediaNetworkRoute> Function(Uri, int)? routeForAttempt;
   final Future<List<InternetAddress>> Function(String) resolve;
+  final NativeSystemHttpTransport? nativeTransport;
   final void Function(Object error, StackTrace stack, String context)?
   onFailure;
   Future<ProbeResult> run(
@@ -1274,6 +1404,33 @@ class HttpProbe {
           if (!allowLocal) {
             NetworkPolicy.validateTarget(current, const {'*'}, current);
           }
+          final native = nativeTransport;
+          if (native != null) {
+            final response =
+                await ControlledHttp(
+                  allowLocal: allowLocal,
+                  nativeTransport: native,
+                ).fetch(
+                  current,
+                  connect: const {'*'},
+                  document: current,
+                  cancel: requestCancel,
+                  method: 'GET',
+                  headers: const {'Range': 'bytes=0-1023'},
+                  timeout: remaining(),
+                  maxBytes: 1024 * 1024,
+                );
+            current = response.url;
+            if (response.status >= 200 && response.status < 300) {
+              return result(ProbeStatus.reachable, 'HTTP 初筛通过，首页尚未验证');
+            }
+            return result(
+              response.status == 401 || response.status == 403
+                  ? ProbeStatus.interactionRequired
+                  : ProbeStatus.unavailable,
+              'HTTP ${response.status}',
+            );
+          }
           HttpClientResponse? response;
           Object? lastRouteError;
           StackTrace? lastRouteStack;
@@ -1285,6 +1442,9 @@ class HttpProbe {
           ) {
             try {
               final client = clients.next();
+              final routeTimeout = remaining() < _routeLookupTimeout
+                  ? remaining()
+                  : _routeLookupTimeout;
               lastRoute = await transport._configureRoute(
                 client,
                 current,
@@ -1292,7 +1452,7 @@ class HttpProbe {
                 false,
                 requestCancel,
                 routeAttempt,
-                remaining(),
+                routeTimeout,
               );
               final request = await client.getUrl(current).timeout(remaining());
               request.followRedirects = false;

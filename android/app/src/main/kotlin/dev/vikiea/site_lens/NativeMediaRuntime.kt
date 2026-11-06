@@ -16,7 +16,6 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
@@ -30,11 +29,7 @@ import io.flutter.view.TextureRegistry
 import java.io.File
 import java.io.Closeable
 import java.util.UUID
-import java.net.InetAddress
-import java.net.Proxy
 import java.net.URI
-import okhttp3.Dns
-import okhttp3.OkHttpClient
 import kotlin.math.roundToInt
 
 /**
@@ -51,7 +46,6 @@ class NativeMediaRuntime(
     private var candidateId: String? = null
     private var speed: Float = 1f
     private var channel: MethodChannel? = null
-    private val secureDnsResolver = SecureDnsResolver()
     private var textureEntry: TextureRegistry.SurfaceTextureEntry? = null
     private var surface: Surface? = null
     private var state: String = "stopped"
@@ -444,90 +438,12 @@ class NativeMediaRuntime(
                     ?: AndroidCookieReader.get(referer)
                 if (!cookie.isNullOrBlank()) put("Cookie", cookie)
             }
-            val secureDnsProvider = call.argument<String>("secureDnsProvider")?.trim().orEmpty()
-            val routeOwnsDns = runCatching {
-                SystemMediaNetwork.routeInfo(context, URI(uri.toString())).fakeIpAllowed
-            }.getOrDefault(false)
-            // The in-process player must follow the same OS proxy as the
-            // browser and the download queue. DefaultHttpDataSource ignores
-            // system proxies entirely, so a proxied page would open media that
-            // the player could never fetch.
-            val systemProxy = runCatching {
-                SystemMediaNetwork.mediaProxy(context, URI(uri.toString()))
-            }.getOrDefault(Proxy.NO_PROXY)
-            val useSecureDns =
-                secureDnsProvider.isNotBlank() && secureDnsProvider != "off" && !routeOwnsDns
-            // Playback must follow the same route as the browser and the
-            // download queue: the tunnel owns the sockets, and the system
-            // proxy (if any) owns the CONNECT.
-            val vpnBound = runCatching {
-                SystemMediaNetwork.vpnNetwork(
-                    context.getSystemService(android.net.ConnectivityManager::class.java),
-                ) != null
-            }.getOrDefault(false)
-            val http: DataSource.Factory = if (
-                useSecureDns || systemProxy != Proxy.NO_PROXY || vpnBound
-            ) {
-                val client = OkHttpClient.Builder()
-                    .proxy(systemProxy)
-                    .retryOnConnectionFailure(true)
-                    .apply {
-                        if (useSecureDns) {
-                            dns(object : Dns {
-                                override fun lookup(hostname: String): List<InetAddress> =
-                                    runCatching {
-                                        secureDnsResolver.lookup(secureDnsProvider, hostname)
-                                            .map(InetAddress::getByName)
-                                    }.getOrElse { Dns.SYSTEM.lookup(hostname) }
-                            })
-                        }
-                        // Bind both socket slots: an HTTPS segment needs the
-                        // tunnel's TLS factory, not only its plain socket.
-                        // Resolve first, bind second. A synthesized address only
-                        // works while the tunnel carries it; a real address must
-                        // leave through the underlay, so binding the socket
-                        // before knowing the answer produced addresses the
-                        // tunnel would never forward.
-                        val tunnel = if (vpnBound && !useSecureDns) {
-                            SystemMediaNetwork.vpnNetwork(
-                                context.getSystemService(android.net.ConnectivityManager::class.java),
-                            )
-                        } else {
-                            null
-                        }
-                        // `uri` here is android.net.Uri; the route helper takes
-                        // a java.net.URI.
-                        val needsTunnelSockets = tunnel != null && runCatching {
-                            SystemMediaNetwork.tunnelResolvesToSynthesized(
-                                tunnel, URI(uri.toString()),
-                            )
-                        }.getOrDefault(false)
-                        if (needsTunnelSockets) SystemMediaNetwork.bindToVpn(context, this)
-                        if (tunnel != null) {
-                            dns(object : Dns {
-                                override fun lookup(hostname: String): List<InetAddress> {
-                                    val answer = tunnel.getAllByName(hostname).toList()
-                                    if (answer.isEmpty() || answer.any { !SystemMediaNetwork.fakeIp(it) }) {
-                                        return answer
-                                    }
-                                    return runCatching { Dns.SYSTEM.lookup(hostname) }
-                                        .getOrElse { answer }
-                                }
-                            })
-                        }
-                    }
-                    .build()
-                OkHttpDataSource.Factory(client)
-                    .setUserAgent(WebSettings.getDefaultUserAgent(context))
-                    .setDefaultRequestProperties(requestProperties)
-            } else {
-                DefaultHttpDataSource.Factory()
-                    .setAllowCrossProtocolRedirects(true)
-                    .setConnectTimeoutMs(30_000)
-                    .setReadTimeoutMs(30_000)
-                    .setUserAgent(WebSettings.getDefaultUserAgent(context))
-                    .setDefaultRequestProperties(requestProperties)
-            }
+            val target = URI(uri.toString())
+            val plan = SystemMediaNetwork.routePlan(context, target, attempt = 0)
+            val client = SystemMediaNetwork.buildOkHttpClient(context, target, plan)
+            val http: DataSource.Factory = OkHttpDataSource.Factory(client)
+                .setUserAgent(WebSettings.getDefaultUserAgent(context))
+                .setDefaultRequestProperties(requestProperties)
             playerBuilder.setMediaSourceFactory(DefaultMediaSourceFactory(http))
             dataSourceFactory = http
         } else {

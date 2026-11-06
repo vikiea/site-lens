@@ -38,6 +38,7 @@ class MainActivity : FlutterActivity() {
     private var nativeDownloads: NativeDownloadRuntime? = null
     private var nativeExport: NativeExportRuntime? = null
     private var nativeUpdate: NativeUpdateRuntime? = null
+    private var nativeSystemNetwork: NativeSystemNetworkRuntime? = null
     private var deviceDiagnostics: NativeDeviceDiagnostics? = null
     private var dlnaMulticastLock: WifiManager.MulticastLock? = null
     private var diagnosticsExecutor: ExecutorService? = null
@@ -113,6 +114,7 @@ class MainActivity : FlutterActivity() {
         registerNativeMediaChannel(flutterEngine)
         registerMediaAuthChannel(flutterEngine)
         registerNativeDownloadChannel(flutterEngine)
+        registerSystemNetworkChannel(flutterEngine)
         registerNativeExportChannel(flutterEngine)
         registerDlnaChannel(flutterEngine)
     }
@@ -310,6 +312,17 @@ class MainActivity : FlutterActivity() {
         nativeDownloads = NativeDownloadRuntime(this).also { channel.setMethodCallHandler(it) }
     }
 
+    private fun registerSystemNetworkChannel(flutterEngine: FlutterEngine) {
+        val channel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "site_lens/system_network",
+        )
+        nativeSystemNetwork?.dispose()
+        nativeSystemNetwork = NativeSystemNetworkRuntime(this).also {
+            channel.setMethodCallHandler(it)
+        }
+    }
+
     private fun registerNativeExportChannel(flutterEngine: FlutterEngine) {
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/native_export")
         nativeExport = NativeExportRuntime(this).also {
@@ -455,6 +468,7 @@ class MainActivity : FlutterActivity() {
         nativeDownloads?.dispose(); nativeDownloads = null
         nativeExport?.dispose(); nativeExport = null
         nativeUpdate?.dispose(); nativeUpdate = null
+        nativeSystemNetwork?.dispose(); nativeSystemNetwork = null
         dlnaMulticastLock?.takeIf { it.isHeld }?.release()
         dlnaMulticastLock = null
         super.cleanUpFlutterEngine(flutterEngine)

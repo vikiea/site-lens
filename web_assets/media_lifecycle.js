@@ -855,11 +855,16 @@
     const episodeSeen = new Map();
     const explicit = syncEpisodeSeries();
     const context = routeSeriesContext();
-    // A recognized page-data schema must catch up with its SPA route before
-    // any source can be rebound. Playback controls keep their existing owner.
-    const awaitingSeriesData = context && initialDataElement() && !episodeContext();
-    const mapped = [...explicit.filter(item => !episodeResponses.has(item.number)), ...episodeResponses.values()]
-      .sort((left, right) => left.number - right.number);
+    // A malformed or temporarily unavailable page-data block must only disable
+    // episode mapping. It must never hide the actual media element or manifest
+    // that the page is already playing.
+    const episodeMappingUnavailable = Boolean(
+      context && initialDataElement() && !episodeContext(),
+    );
+    const mapped = episodeMappingUnavailable
+      ? []
+      : [...explicit.filter(item => !episodeResponses.has(item.number)), ...episodeResponses.values()]
+          .sort((left, right) => left.number - right.number);
     // Reserve the leading slots for actual media, especially the playing
     // element. A full episode map must never evict the current stream.
     const mediaNodes = [...nodes].sort((left, right) =>
@@ -869,14 +874,12 @@
         rememberForeignSource(node, node.currentSrc || node.src || '');
         continue;
       }
-      if (awaitingSeriesData) continue;
       if (!isFreshNode(node)) continue;
       const raw = node.currentSrc || node.src || '';
       addCandidate(candidates, seen, raw, node.type, Number.isFinite(node.duration) ? node.duration * 1000 : undefined,
         true, undefined, node.poster || '', null, '', 3);
     }
     for (const item of mapped) {
-      if (awaitingSeriesData) continue;
       let mappedKey = '';
       try { mappedKey = candidateKey(new URL(item.url, document.baseURI)); }
       catch (_) { mappedKey = ''; }
@@ -914,7 +917,6 @@
         }
         return;
       }
-      if (awaitingSeriesData) return;
       const retired = staleElementSources.get(element);
       const mime = element.getAttribute('type') || '';
       const poster = element.getAttribute('poster') || element.getAttribute('data-poster') || '';
@@ -956,14 +958,14 @@
     const currentNodes = Array.from(nodes).filter(node => isCurrentPlaybackNode(node));
     const hasPlayingNode = currentNodes.some(node => !node.paused && !node.ended);
     const hasConfirmedPlayback = currentNodes.some(node => {
-      if (!belongsToSeries(node, context) || awaitingSeriesData) return false;
+      if (!belongsToSeries(node, context)) return false;
       if (!isFreshNode(node)) return false;
       const raw = node.currentSrc || node.src || '';
       return /^https?:/i.test(raw) && looksMedia(raw, node.type || '') &&
         !node.paused && !node.ended;
     });
     const hasMeaningfulMediaElement = currentNodes.some(node => {
-      if (!belongsToSeries(node, context) || awaitingSeriesData) return false;
+      if (!belongsToSeries(node, context)) return false;
       if (!isFreshNode(node)) return false;
       const raw = node.currentSrc || node.src || '';
       // A paused HTTP element can suppress a redirected timing duplicate when
@@ -983,7 +985,7 @@
       ? performance.getEntriesByType('resource').slice(-4096)
         .filter(entry => !isTransportResource(entry.name) && looksMedia(entry.name, '')).slice(-256)
       : [];
-    if (!awaitingSeriesData) {
+    {
       for (const entry of [...Array.from(networkResources.values()).reverse(), ...timingEntries]) {
         const requestObserved = entry.initiatorType === null;
         const manifestRequest = hasConfirmedPlayback && isManifest(entry.name, entry.mime || '') &&
@@ -1001,8 +1003,9 @@
         // Resource timing has no element/series owner. On a recognized series
         // page it may corroborate an explicit map, never invent another
         // playable episode from a recommendation or background fetch.
-        if (context && initialDataElement() && (!resourceUrl || !mapped.some(item =>
-          candidateKey(new URL(item.url, document.baseURI)) === candidateKey(resourceUrl)))) continue;
+        if (context && initialDataElement() && !episodeMappingUnavailable &&
+            (!resourceUrl || !mapped.some(item =>
+              candidateKey(new URL(item.url, document.baseURI)) === candidateKey(resourceUrl)))) continue;
         // Resource timing has no page-owned episode identity. Strip any
         // stale episode marker from the document title instead of presenting
         // a prefetched/new manifest as the currently visible episode.

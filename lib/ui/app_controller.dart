@@ -32,6 +32,7 @@ import '../discovery/health_checker.dart';
 import '../discovery/probe_coordinator.dart';
 import '../domain/models.dart';
 import '../network/transport.dart';
+import '../network/native_system_http.dart';
 import '../network/secure_dns_resolver.dart';
 import '../scripts/metadata.dart';
 import '../scripts/script_service.dart';
@@ -157,6 +158,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     settingsRepository = SettingsRepository(db);
     backgroundAssets = BackgroundAssetStore();
     secureDnsResolver = SecureDnsResolver();
+    final nativeSystemTransport = Platform.isAndroid
+        ? NativeSystemHttpTransport()
+        : null;
     if (bootstrap != null) _applySettings();
     transientCache = TransientCacheService(runtime: AppRuntimeApi());
     errorLogger = AppErrorLogger(db);
@@ -164,12 +168,18 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     this.sessionStore = sessionStore ?? BrowserSessionStore(db);
     scripts = ScriptService(
       db,
-      ControlledHttp(resolve: secureDnsResolver.resolve),
+      ControlledHttp(
+        resolve: secureDnsResolver.resolve,
+        nativeTransport: nativeSystemTransport,
+      ),
     );
     hosts = NativeHosts(
       db,
       scripts,
-      ControlledHttp(resolve: secureDnsResolver.resolve),
+      ControlledHttp(
+        resolve: secureDnsResolver.resolve,
+        nativeTransport: nativeSystemTransport,
+      ),
       api: api,
       probeRoute: Platform.isAndroid ? MediaNetwork().probeRoute : null,
       activeRoute: Platform.isAndroid ? MediaNetwork().activeRoute : null,
@@ -225,6 +235,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       native: nativeDownloads,
       http: ControlledHttp(
         resolve: secureDnsResolver.resolve,
+        nativeTransport: nativeSystemTransport,
         mediaRouteForAttemptWithDocument: (uri, attempt, document) =>
             MediaNetwork().route(uri, attempt: attempt, document: document),
         mediaRouteForAttempt: (uri, attempt) =>
@@ -341,6 +352,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           httpProbe ??
           HttpProbe(
             resolve: secureDnsResolver.resolve,
+            nativeTransport: nativeSystemTransport,
             routeForAttempt: Platform.isAndroid
                 ? (uri, attempt) =>
                       MediaNetwork().probeRoute(uri, attempt: attempt)

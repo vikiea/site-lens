@@ -38,37 +38,10 @@ class NativeUpdateService : Service() {
      * It is rebuilt per call because the tunnel can come up or go away between
      * transfers, and a bound client pins the network it was created for.
      */
-    private fun httpClient(target: String): OkHttpClient {
+    private fun httpClient(target: String, attempt: Int = 0): OkHttpClient {
         val uri = java.net.URI(target)
-        val plan = SystemMediaNetwork.routePlan(applicationContext, uri, attempt = 0)
-        val bindVpn = SystemMediaNetwork.shouldBindVpnSocket(plan.info, plan.proxy)
-        val builder = OkHttpClient.Builder()
-            .followRedirects(false)
-            .followSslRedirects(false)
-            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
-            .callTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
-            .retryOnConnectionFailure(false)
-            .proxy(plan.proxy)
-        // The APK stream uses the same per-hop route policy as media. HTTP
-        // proxy hops connect to the proxy and never bind VPN sockets. Only a
-        // confirmed VPN Fake-IP DIRECT hop gets tunnel socket factories.
-        if (bindVpn) {
-            check(SystemMediaNetwork.bindToVpn(this, builder)) {
-                "VPN/TUN 路由不可用"
-            }
-            builder.dns(object : okhttp3.Dns {
-                override fun lookup(hostname: String): List<java.net.InetAddress> {
-                    if (hostname.equals(uri.host, ignoreCase = true) &&
-                        plan.addresses.isNotEmpty()
-                    ) {
-                        return plan.addresses
-                    }
-                    return okhttp3.Dns.SYSTEM.lookup(hostname)
-                }
-            })
-        }
-        return builder.build()
+        val plan = SystemMediaNetwork.routePlan(applicationContext, uri, attempt = attempt)
+        return SystemMediaNetwork.buildOkHttpClient(applicationContext, uri, plan)
     }
     private val pauseRequested = AtomicBoolean(false)
     private val userPause = AtomicBoolean(true)
@@ -204,7 +177,7 @@ class NativeUpdateService : Service() {
                     return
                 }
                 try {
-                    val response = open(request, received, etag ?: lastModified)
+                    val response = open(request, received, etag ?: lastModified, attempt)
                     response.use {
                         when (it.code) {
                             416 -> {
@@ -377,7 +350,12 @@ class NativeUpdateService : Service() {
         return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
     }
 
-    private fun open(request: UpdateRequest, offset: Long, ifRange: String?): Response {
+    private fun open(
+        request: UpdateRequest,
+        offset: Long,
+        ifRange: String?,
+        attempt: Int,
+    ): Response {
         var url = NativeUpdatePolicy.initialUrl(request.apkUrl, request.tagName, request.apkName)
         for (hop in 0..NativeUpdatePolicy.MAX_REDIRECTS) {
             val builder = HttpRequest.Builder()
@@ -388,7 +366,7 @@ class NativeUpdateService : Service() {
                 builder.header("Range", "bytes=$offset-")
                 if (!ifRange.isNullOrBlank()) builder.header("If-Range", ifRange)
             }
-            val call = httpClient(url.toString()).newCall(builder.get().build())
+            val call = httpClient(url.toString(), attempt).newCall(builder.get().build())
             activeCall.set(call)
             val response = try { call.execute() } finally { activeCall.compareAndSet(call, null) }
             if (response.code !in REDIRECTS) return response
