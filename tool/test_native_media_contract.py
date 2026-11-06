@@ -68,8 +68,14 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn('enqueue(record)', runtime)
         self.assertIn('ownedTransfer?.abort()', worker)
         self.assertIn('partial plus resume', runtime)
-        self.assertIn('openMediaConnection(applicationContext, uri, attempt)', worker)
-        self.assertIn('openMediaConnection(context, uri, attempt)', media_network)
+        # The worker and the foreground runtime must hand every hop to the
+        # route-aware connection helper instead of resolving a target first.
+        # The helper gained a trailing Fake-IP fallback argument; the contract
+        # is the call itself, not its exact argument list.
+        self.assertIn('SystemMediaNetwork.openMediaConnection(', worker)
+        self.assertIn('applicationContext, uri, attempt', worker)
+        self.assertIn('SystemMediaNetwork.openMediaConnection(', media_network)
+        self.assertIn('context, uri, attempt', media_network)
         self.assertNotIn('hasDirectRoute(uri)', worker)
         self.assertNotIn('hasDirectRoute(uri)', media_network)
         self.assertIn('NativeMediaSessionService.detachSurface(context)', NATIVE_MEDIA)
