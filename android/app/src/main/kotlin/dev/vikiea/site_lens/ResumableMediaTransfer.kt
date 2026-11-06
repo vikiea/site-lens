@@ -38,9 +38,7 @@ class MediaTransferFailure(
 class ResumableMediaTransfer(
     private val cancelled: () -> Boolean = { false },
     private val connect: ((URI) -> HttpURLConnection)? = null,
-    private val connectForAttempt: (URI, Int) -> HttpURLConnection = { uri, attempt ->
-        SystemMediaNetwork.openConnection(uri, attempt = attempt, context = context)
-    },
+    private val connectForAttempt: ((URI, Int) -> HttpURLConnection)? = null,
     private val validate: (URI) -> Unit = SystemMediaNetwork::validateTarget,
     private val routeForConnection: (HttpURLConnection) -> String = {
         if (it.usingProxy()) "http_proxy" else "direct"
@@ -53,6 +51,21 @@ class ResumableMediaTransfer(
     /** Required to pin media sockets to the active tunnel; null keeps tests pure. */
     private val context: Context? = null,
 ) {
+    /**
+     * A default argument cannot read [context], because default expressions are
+     * evaluated before the property list is built. The accessor resolves the
+     * route lazily instead, once every constructor property is available.
+     */
+    private val routeConnect: (URI, Int) -> HttpURLConnection =
+        connectForAttempt
+            ?: { uri, attempt ->
+                SystemMediaNetwork.openConnection(
+                    uri,
+                    attempt = attempt,
+                    context = context,
+                )
+            }
+
     var finalUrl: URI? = null
         private set
     var attemptsUsed: Int = 0
@@ -122,7 +135,7 @@ class ResumableMediaTransfer(
                             failedUri = uri
                             val routeKey = uri.toString()
                             val current = connect?.invoke(uri)
-                                ?: connectForAttempt(uri, routeAttempts[routeKey] ?: startAttempt)
+                                ?: routeConnect(uri, routeAttempts[routeKey] ?: startAttempt)
                             failureRoute = routeForConnection(current)
                             connection = current
                             current.instanceFollowRedirects = false
