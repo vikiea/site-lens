@@ -396,8 +396,26 @@ class GitHubApiException implements Exception {
   String toString() => message;
 }
 
+typedef UpdateRouteResolver = Future<MediaNetworkRoute> Function(Uri uri);
+
+class _UpdateConnectionPolicy {
+  final _fakeIpHosts = <String>{};
+
+  void setFakeIpAllowed(Uri uri, bool allowed) {
+    final host = uri.host.toLowerCase();
+    if (allowed) {
+      _fakeIpHosts.add(host);
+    } else {
+      _fakeIpHosts.remove(host);
+    }
+  }
+
+  bool fakeIpAllowed(String host) => _fakeIpHosts.contains(host.toLowerCase());
+}
+
 http.Client _createUpdateClient(
   Future<List<InternetAddress>> Function(String)? resolve,
+  _UpdateConnectionPolicy policy,
 ) {
   if (resolve == null) return http.Client();
   final client = HttpClient()
@@ -410,6 +428,7 @@ http.Client _createUpdateClient(
         target,
         proxyHost,
         proxyPort,
+        allowProxyFakeIp: policy.fakeIpAllowed(target.host),
         resolve: resolve,
       );
     };
@@ -422,7 +441,8 @@ class GitHubReleaseClient {
     Uri? latestUri,
     this.tokenLoader,
     Future<List<InternetAddress>> Function(String)? resolve,
-  }) : _client = client ?? _createUpdateClient(resolve),
+    this.routeResolver,
+  }) : _connectionPolicy = _UpdateConnectionPolicy(),
        _latestUri =
            latestUri ??
            Uri.https('github.com', '/$siteLensRepository/releases/latest'),
@@ -430,9 +450,14 @@ class GitHubReleaseClient {
          'api.github.com',
          '/repos/$siteLensRepository/releases/latest',
        ),
-       _releasesUri = Uri.https('github.com', '/$siteLensRepository/releases');
+       _releasesUri = Uri.https('github.com', '/$siteLensRepository/releases') {
+    _client = client ?? _createUpdateClient(resolve, _connectionPolicy);
+  }
 
-  final http.Client _client;
+  final UpdateRouteResolver? routeResolver;
+  final _UpdateConnectionPolicy _connectionPolicy;
+
+  late final http.Client _client;
   final Future<String?> Function()? tokenLoader;
   final Uri _latestUri;
   final Uri _latestApiUri;
@@ -443,6 +468,25 @@ class GitHubReleaseClient {
     {'per_page': '30'},
   );
   static const _timeout = Duration(seconds: 20);
+
+  Future<void> _prepareRoute(Uri uri) async {
+    final resolver = routeResolver;
+    if (resolver == null) return;
+    try {
+      final route = await resolver(uri);
+      final tunnelOwnsFakeIp =
+          (route.routeKind == 'vpn_tun_fake_ip' ||
+              route.routeKind == 'router_fake_ip') &&
+          route.targetDnsMode == 'system_route' &&
+          route.directAllowed;
+      _connectionPolicy.setFakeIpAllowed(uri, tunnelOwnsFakeIp);
+    } catch (_) {
+      // Route evidence is advisory for the update check. If it cannot be
+      // read, leave Fake-IP disallowed and let the normal transport error
+      // surface rather than turning an unproven private answer into DIRECT.
+      _connectionPolicy.setFakeIpAllowed(uri, false);
+    }
+  }
 
   /// Validate every redirect, including GitHub's release asset CDN redirects.
   Future<http.StreamedResponse> _request(
@@ -469,6 +513,7 @@ class GitHubReleaseClient {
           request.headers['Authorization'] = 'Bearer $token';
         }
       }
+      await _prepareRoute(uri);
       final response = await _client.send(request).timeout(_timeout);
       if (![301, 302, 303, 307, 308].contains(response.statusCode)) {
         return response;
@@ -1186,12 +1231,17 @@ class UpdateService {
     this.channel = UpdateChannel.stable,
     this.tokenLoader,
     Future<List<InternetAddress>> Function(String)? resolve,
+    this.routeResolver,
     this.progressMinBytes = 256 * 1024,
     this.progressMinInterval = const Duration(milliseconds: 200),
     UpdateDownloadBackend? nativeBackend,
   }) : _client =
            client ??
-           GitHubReleaseClient(tokenLoader: tokenLoader, resolve: resolve),
+           GitHubReleaseClient(
+             tokenLoader: tokenLoader,
+             resolve: resolve,
+             routeResolver: routeResolver,
+           ),
        platform = platform ?? MethodChannelUpdatePlatform(),
        retryDelays =
            retryDelays ??
@@ -1209,6 +1259,7 @@ class UpdateService {
 
   final GitHubReleaseClient _client;
   final Future<String?> Function()? tokenLoader;
+  final UpdateRouteResolver? routeResolver;
   UpdateChannel channel;
   final UpdatePlatform platform;
   final Future<PackageInfo> Function()? packageInfoLoader;

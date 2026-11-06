@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../media/media_network.dart';
 import '../settings/app_settings.dart';
 import '../ui/app_controller.dart';
 import '../ui/navigation_observer.dart';
@@ -21,10 +22,12 @@ import 'update_service.dart';
 final updateControllerProvider = Provider<UpdateController>((ref) {
   final tokenStore = GitHubTokenStore();
   final app = ref.watch(appControllerProvider);
+  final mediaNetwork = MediaNetwork();
   final controller = UpdateController(
     service: UpdateService(
       tokenLoader: tokenStore.read,
       resolve: app.secureDnsResolver.resolve,
+      routeResolver: mediaNetwork.route,
     ),
   );
   ref.onDispose(controller.dispose);
