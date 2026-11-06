@@ -297,7 +297,11 @@ object SystemMediaNetwork {
         isValidated: (N) -> Boolean,
     ): N? {
         if (active != null && activeIsVpn) return active
-        val tunnels = candidates.filter { isVpn(it) && isUsable(it) }
+        // A rule-mode TUN can deliberately omit NET_CAPABILITY_INTERNET:
+        // the underlay owns validation while the tunnel owns the app socket.
+        // VALIDATED is the second proof that such a tunnel is still live;
+        // reject a VPN that has neither capability.
+        val tunnels = candidates.filter { isVpn(it) && (isUsable(it) || isValidated(it)) }
         // A validated tunnel outranks one that has not completed validation yet.
         return tunnels.firstOrNull(isValidated) ?: tunnels.firstOrNull()
     }
@@ -366,14 +370,21 @@ object SystemMediaNetwork {
         selected: List<Proxy>,
         linkProxies: List<Proxy>,
     ): List<Proxy> {
+        val selectedHttp = selected.filter { it.type() == Proxy.Type.HTTP }
+        val selectedDirect = selected.filter { it.type() == Proxy.Type.DIRECT }
         val merged = ArrayList<Proxy>(selected.size + linkProxies.size)
-        merged += selected
+        // Once ProxySelector already supplies an HTTP route, DIRECT is only a
+        // fallback token from that PAC result. Keeping it would allow a failed
+        // proxy attempt to leak to the public socket. A LinkProperties proxy
+        // is still an additional candidate after the explicit selector list.
+        merged += selectedHttp
         for (candidate in linkProxies) {
             val duplicate = merged.any { existing ->
                 existing.type() == Proxy.Type.HTTP && sameEndpoint(existing, candidate)
             }
             if (!duplicate) merged += candidate
         }
+        if (selectedHttp.isEmpty()) merged += selectedDirect
         // DIRECT is present only because the OS offered it, so a dead proxy
         // never silently becomes a direct connection.
         return if (merged.isEmpty()) listOf(Proxy.NO_PROXY) else merged

@@ -172,6 +172,10 @@ class SystemMediaNetworkTest {
             "tun0",
             pick(wifi, listOf(wifi, Net("tun0", vpn = true, internet = false, validated = true))),
         )
+        assertEquals(
+            null,
+            pick(wifi, listOf(wifi, Net("dead-tun", vpn = true, internet = false, validated = false))),
+        )
     }
 
     @Test
