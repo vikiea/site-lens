@@ -495,8 +495,13 @@ class NativeMediaRuntime(
                         } else {
                             null
                         }
-                        val needsTunnelSockets =
-                            if (tunnel != null) SystemMediaNetwork.tunnelResolvesToSynthesized(tunnel, uri) else false
+                        // `uri` here is android.net.Uri; the route helper takes
+                        // a java.net.URI.
+                        val needsTunnelSockets = tunnel != null && runCatching {
+                            SystemMediaNetwork.tunnelResolvesToSynthesized(
+                                tunnel, URI(uri.toString()),
+                            )
+                        }.getOrDefault(false)
                         if (needsTunnelSockets) SystemMediaNetwork.bindToVpn(context, this)
                         if (tunnel != null) {
                             dns(object : Dns {

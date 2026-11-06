@@ -390,7 +390,7 @@ class NativeUpdateService : Service() {
                 builder.header("Range", "bytes=$offset-")
                 if (!ifRange.isNullOrBlank()) builder.header("If-Range", ifRange)
             }
-            val call = httpClient(target).newCall(builder.get().build())
+            val call = httpClient(url).newCall(builder.get().build())
             activeCall.set(call)
             val response = try { call.execute() } finally { activeCall.compareAndSet(call, null) }
             if (response.code !in REDIRECTS) return response
