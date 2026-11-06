@@ -46,7 +46,28 @@ class NativeUpdateService : Service() {
             .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
             .callTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
             .retryOnConnectionFailure(false)
-        SystemMediaNetwork.bindToVpn(this, builder)
+        if (SystemMediaNetwork.bindToVpn(this, builder)) {
+            // Resolve inside the tunnel, but never accept a synthesized address:
+            // a tunnelled host that the tunnel routes DIRECT would be pointed at
+            // an address nothing answers. The real address works either way.
+            val tunnel = SystemMediaNetwork.vpnNetwork(
+                getSystemService(android.net.ConnectivityManager::class.java),
+            )
+            if (tunnel != null) {
+                builder.dns(object : okhttp3.Dns {
+                    override fun lookup(hostname: String): List<java.net.InetAddress> {
+                        val answer = tunnel.getAllByName(hostname).toList()
+                        if (answer.isEmpty() ||
+                            answer.any { !SystemMediaNetwork.fakeIp(it) }
+                        ) {
+                            return answer
+                        }
+                        return runCatching { okhttp3.Dns.SYSTEM.lookup(hostname) }
+                            .getOrElse { answer }
+                    }
+                })
+            }
+        }
         return builder.build()
     }
     private val pauseRequested = AtomicBoolean(false)

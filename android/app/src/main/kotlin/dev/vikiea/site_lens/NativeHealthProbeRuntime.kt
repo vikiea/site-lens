@@ -47,7 +47,9 @@ class NativeHealthProbeRuntime(private val context: Context) : HealthProbePlugin
         val url = call.argument<String>("url")
         val attempt = call.argument<Int>("attempt") ?: 0
         val probe = HealthHttpProbe { uri, index, onRoute ->
-            SystemMediaNetwork.openMediaConnection(context, uri, index, onRoute)
+            SystemMediaNetwork.openMediaConnection(
+                context, uri, index, onRoute = onRoute,
+            )
         }
         active = probe
         pendingResult = result

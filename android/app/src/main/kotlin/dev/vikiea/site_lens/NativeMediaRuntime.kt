@@ -484,6 +484,29 @@ class NativeMediaRuntime(
                         // Bind both socket slots: an HTTPS segment needs the
                         // tunnel's TLS factory, not only its plain socket.
                         if (vpnBound) SystemMediaNetwork.bindToVpn(context, this)
+                        // Resolve inside the tunnel as well, so split-DNS names
+                        // are answered by the tunnel's own resolver. A name the
+                        // tunnel only answers with a synthesized address is
+                        // resolved normally instead: the tunnel may route that
+                        // host DIRECT, and the synthesized address would then
+                        // point at nothing.
+                        if (vpnBound && !useSecureDns) {
+                            val tunnel = SystemMediaNetwork.vpnNetwork(
+                                context.getSystemService(android.net.ConnectivityManager::class.java),
+                            )
+                            if (tunnel != null) {
+                                dns(object : Dns {
+                                    override fun lookup(hostname: String): List<InetAddress> {
+                                        val answer = tunnel.getAllByName(hostname).toList()
+                                        if (answer.isEmpty() || answer.any { !SystemMediaNetwork.fakeIp(it) }) {
+                                            return answer
+                                        }
+                                        return runCatching { Dns.SYSTEM.lookup(hostname) }
+                                            .getOrElse { answer }
+                                    }
+                                })
+                            }
+                        }
                     }
                     .build()
                 OkHttpDataSource.Factory(client)

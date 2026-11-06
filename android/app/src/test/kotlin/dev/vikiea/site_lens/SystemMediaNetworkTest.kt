@@ -192,6 +192,69 @@ class SystemMediaNetworkTest {
     }
 
     @Test
+    fun aSynthesizedAddressFallsBackToTheRealOne() {
+        val target = URI("https://cdn.example/a")
+        val fake = arrayOf(InetAddress.getByName("198.18.0.147"))
+        val real = arrayOf(InetAddress.getByName("222.184.83.211"))
+
+        // Default: the tunnel's synthesized answer is used as-is.
+        val synthesized = SystemMediaNetwork.planFor(
+            target,
+            listOf(Proxy.NO_PROXY),
+            vpnTransport = true,
+            routerTrusted = false,
+            resolve = { fake },
+            resolveReal = { real },
+        )
+        assertEquals("fake_ip", synthesized.info.dnsClass)
+        assertEquals(listOf(fake[0]), synthesized.addresses)
+
+        // Once the host is known to fail, the real address wins while the
+        // route stays a tunnel route.
+        val downgraded = SystemMediaNetwork.planFor(
+            target,
+            listOf(Proxy.NO_PROXY),
+            vpnTransport = true,
+            routerTrusted = false,
+            preferRealAddress = true,
+            resolve = { fake },
+            resolveReal = { real },
+        )
+        assertEquals("real_address", downgraded.info.dnsClass)
+        assertEquals(listOf(real[0]), downgraded.addresses)
+        assertEquals(SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP, downgraded.info.kind)
+
+        // A private or loopback answer never replaces the synthesized one:
+        // downgrading must not weaken the address policy.
+        val poisoned = SystemMediaNetwork.planFor(
+            target,
+            listOf(Proxy.NO_PROXY),
+            vpnTransport = true,
+            routerTrusted = false,
+            preferRealAddress = true,
+            resolve = { fake },
+            resolveReal = { arrayOf(InetAddress.getByName("127.0.0.1")) },
+        )
+        assertEquals("fake_ip", poisoned.info.dnsClass)
+        assertEquals(listOf(fake[0]), poisoned.addresses)
+    }
+
+    @Test
+    fun onlyAFakeIpTunnelFailureMarksTheHost() {
+        val fallback = SystemMediaNetwork.FakeIpFallback()
+        fallback.observe("cdn.example", "vpn_tun_fake_ip", "tls_handshake")
+        assertEquals(true, fallback.preferRealAddress("cdn.example"))
+
+        // A different route or a different failure keeps the synthesized path.
+        fallback.observe("other.example", "http_proxy", "tls_handshake")
+        assertEquals(false, fallback.preferRealAddress("other.example"))
+        fallback.observe("third.example", "vpn_tun_fake_ip", "timeout")
+        assertEquals(false, fallback.preferRealAddress("third.example"))
+        // Host matching is case-insensitive.
+        assertEquals(true, fallback.preferRealAddress("CDN.example"))
+    }
+
+    @Test
     fun explicitProxySelectorRemainsAuthoritativeOverLinkProperties() {
         val selectedProxy = Proxy(
             Proxy.Type.HTTP,
