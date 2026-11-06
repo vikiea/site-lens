@@ -33,14 +33,22 @@ class NativeUpdateService : Service() {
     private val worker: ExecutorService = Executors.newSingleThreadExecutor { task ->
         Thread(task, "site-lens-update").apply { isDaemon = true }
     }
-    private val http = OkHttpClient.Builder()
-        .followRedirects(false)
-        .followSslRedirects(false)
-        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
-        .callTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
-        .retryOnConnectionFailure(false)
-        .build()
+    /**
+     * The APK download uses the same route as the browser and the media queue.
+     * It is rebuilt per call because the tunnel can come up or go away between
+     * transfers, and a bound client pins the network it was created for.
+     */
+    private fun httpClient(): OkHttpClient {
+        val builder = OkHttpClient.Builder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+            .retryOnConnectionFailure(false)
+        SystemMediaNetwork.bindToVpn(this, builder)
+        return builder.build()
+    }
     private val pauseRequested = AtomicBoolean(false)
     private val userPause = AtomicBoolean(true)
     private val deleteRequested = AtomicBoolean(false)
@@ -359,7 +367,7 @@ class NativeUpdateService : Service() {
                 builder.header("Range", "bytes=$offset-")
                 if (!ifRange.isNullOrBlank()) builder.header("If-Range", ifRange)
             }
-            val call = http.newCall(builder.get().build())
+            val call = httpClient().newCall(builder.get().build())
             activeCall.set(call)
             val response = try { call.execute() } finally { activeCall.compareAndSet(call, null) }
             if (response.code !in REDIRECTS) return response

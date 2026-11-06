@@ -6,6 +6,9 @@ import android.net.NetworkCapabilities
 import android.net.Network
 import android.net.ProxyInfo
 import javax.net.SocketFactory
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.X509TrustManager
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.InetAddress
@@ -15,6 +18,7 @@ import java.net.Proxy
 import java.net.ProxySelector
 import java.net.URI
 import java.net.ProtocolException
+import java.net.Socket
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.security.cert.CertificateException
@@ -310,6 +314,91 @@ object SystemMediaNetwork {
     fun routeNetwork(manager: ConnectivityManager?): Network? =
         vpnNetwork(manager) ?: manager?.activeNetwork
 
+    /**
+     * Bind an in-process HTTP client to the tunnel that owns routing.
+     *
+     * [Network] exposes a plain [SocketFactory] and no network-scoped TLS
+     * factory. An HTTPS connection stays on the tunnel only when both halves do:
+     * the TCP socket is created by that factory, and the handshake runs on that
+     * same socket. [TunnelSslSocketFactory] supplies the TLS slot, so OkHttp
+     * never falls back to a default-network handshake. Certificate validation
+     * stays with the platform trust manager.
+     *
+     * Returns true when the client was bound, false when there is no tunnel.
+     */
+    fun bindToVpn(context: Context, builder: OkHttpClient.Builder): Boolean {
+        val network = vpnNetwork(context.getSystemService(ConnectivityManager::class.java))
+            ?: return false
+        return runCatching {
+            val tunnel = network.socketFactory
+            builder.socketFactory(tunnel)
+            builder.sslSocketFactory(
+                TunnelSslSocketFactory(tunnel, defaultTrustManager()),
+                defaultTrustManager(),
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * An [SSLSocketFactory] that dials through the tunnel and then hands the
+     * socket to the default TLS implementation.
+     */
+    private class TunnelSslSocketFactory(
+        private val tunnel: SocketFactory,
+        /** Kept so callers can assert the validation policy this factory uses. */
+        val trust: X509TrustManager,
+    ) : SSLSocketFactory() {
+        override fun getDefaultCipherSuites(): Array<String> = delegate.defaultCipherSuites
+
+        override fun getSupportedCipherSuites(): Array<String> = delegate.supportedCipherSuites
+
+        override fun createSocket(): Socket = tunnel.createSocket()
+
+        override fun createSocket(host: String, port: Int): Socket =
+            tunnel.createSocket(host, port)
+
+        override fun createSocket(
+            host: String,
+            port: Int,
+            localHost: InetAddress,
+            localPort: Int,
+        ): Socket = tunnel.createSocket(host, port, localHost, localPort)
+
+        override fun createSocket(host: InetAddress, port: Int): Socket =
+            tunnel.createSocket(host, port)
+
+        override fun createSocket(
+            address: InetAddress,
+            port: Int,
+            localAddress: InetAddress,
+            localPort: Int,
+        ): Socket = tunnel.createSocket(address, port, localAddress, localPort)
+
+        /** Called by OkHttp once the TCP socket is already inside the tunnel. */
+        override fun createSocket(
+            socket: Socket,
+            host: String,
+            port: Int,
+            autoClose: Boolean,
+        ): Socket = delegate.createSocket(socket, host, port, autoClose).also {
+            (it as? SSLSocket)?.startHandshake()
+        }
+
+        private val delegate: SSLSocketFactory
+            get() = SSLSocketFactory.getDefault() as SSLSocketFactory
+    }
+
+    /** The platform's own trust manager; certificate checks stay enforced. */
+    private fun defaultTrustManager(): X509TrustManager {
+        val factory = javax.net.ssl.TrustManagerFactory.getInstance(
+            javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm(),
+        )
+        factory.init(null as java.security.KeyStore?)
+        return factory.trustManagers.filterIsInstance<X509TrustManager>().firstOrNull()
+            ?: throw IllegalStateException("系统缺少证书校验器")
+    }
+
     /** One snapshot for the proxy, system DNS, and socket owner of this hop. */
     fun routePlan(context: Context, uri: URI, attempt: Int = 0): RoutePlan {
         val manager = context.getSystemService(ConnectivityManager::class.java)
@@ -489,11 +578,14 @@ object SystemMediaNetwork {
     ): HttpURLConnection {
         val plan = routePlan(context, uri, attempt)
         onRoute(plan.info)
-        val vpn = usesVpnNetwork(plan.info.vpnTransport, plan.proxy)
         val manager = context.getSystemService(ConnectivityManager::class.java)
+        // Bind whenever the hop is carried by a tunnel, including a proxied hop
+        // whose CONNECT must still leave through the tunnel's sockets.
+        val vpn = plan.network != null &&
+            manager?.getNetworkCapabilities(plan.network)
+                ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
         return openOkHttpConnection(
-            uri, plan.proxy, plan.addresses.takeIf { it.isNotEmpty() },
-            socketFactory = if (vpn) plan.network?.socketFactory else null,
+            context, uri, plan.proxy, plan.addresses.takeIf { it.isNotEmpty() },
             beforeConnect = {
                 // Recheck the tunnel that owns this socket. Comparing with
                 // activeNetwork is wrong for rule-mode tunnels, where the
@@ -608,6 +700,7 @@ object SystemMediaNetwork {
         resolve: (String) -> Array<InetAddress> = InetAddress::getAllByName,
         open: ((URI, Proxy) -> HttpURLConnection)? = null,
         onSelectedRoute: (String) -> Unit = {},
+        context: Context? = null,
     ): HttpURLConnection {
         val selected = proxies(uri, selector)
         val http = selected.filter { it.type() == Proxy.Type.HTTP }
@@ -649,14 +742,18 @@ object SystemMediaNetwork {
                         }
                     }) { "DNS 返回本机/私网地址，已拒绝连接；请检查系统代理、VPN 或 DNS 设置" }
                     proxyAttempted = true
-                    return (open?.invoke(uri, proxy) ?: openOkHttpConnection(uri, proxy, addresses.toList())).also {
+                    return (open?.invoke(uri, proxy) ?: openOkHttpConnection(
+                        context, uri, proxy, addresses.toList(),
+                    )).also {
                         onSelectedRoute(preferredRoute?.wireName ?: "direct")
                         it.connectTimeout = 15000
                         it.readTimeout = 20000
                     }
                 }
                 proxyAttempted = true
-                return (open?.invoke(uri, proxy) ?: openOkHttpConnection(uri, proxy)).also {
+                return (open?.invoke(uri, proxy) ?: openOkHttpConnection(
+                    context, uri, proxy,
+                )).also {
                     onSelectedRoute(
                         preferredRoute?.wireName
                             ?: if (proxy.type() == Proxy.Type.HTTP) "http_proxy" else "direct",
@@ -674,10 +771,12 @@ object SystemMediaNetwork {
     }
 
     private fun openOkHttpConnection(
+        context: Context?,
         uri: URI,
         proxy: Proxy,
         validatedAddresses: List<InetAddress>? = null,
-        socketFactory: SocketFactory? = null,
+        /** Bind the tunnel's socket factories; decided by [bindToVpn] itself. */
+        bindVpn: Boolean = true,
         beforeConnect: () -> Unit = {},
     ): HttpURLConnection {
         val builder = OkHttpClient.Builder()
@@ -699,7 +798,10 @@ object SystemMediaNetwork {
                 }
             })
         }
-        if (socketFactory != null) builder.socketFactory(socketFactory)
+        // An HTTPS hop needs the tunnel's TLS factory as well as its plain
+        // socket factory; binding only the latter leaves the handshake on the
+        // underlay network.
+        if (bindVpn && context != null) bindToVpn(context, builder)
         val client = builder.build()
         return OkHttpMediaConnection(uri, client, proxy.type() == Proxy.Type.HTTP, beforeConnect)
     }

@@ -131,7 +131,7 @@ class SystemMediaNetworkTest {
         candidates = all,
         activeIsVpn = active.vpn,
         isVpn = { it.vpn },
-        isUsable = { it.internet },
+        isUsable = { true },
         isValidated = { it.validated },
     )?.name
 
@@ -176,6 +176,19 @@ class SystemMediaNetworkTest {
             null,
             pick(wifi, listOf(wifi, Net("dead-tun", vpn = true, internet = false, validated = false))),
         )
+    }
+
+    @Test
+    fun aProxiedHopOnTheTunnelStillBelongsToTheTunnel() {
+        // TUN mode: the OS hands out DIRECT, so the plan travels through tun0.
+        // The underlay must never win while a tunnel exists.
+        val wifi = Net("wifi", vpn = false, internet = true, validated = true)
+        val tun = Net("tun0", vpn = true, internet = true, validated = true)
+        assertEquals("tun0", pick(wifi, listOf(wifi, tun)))
+        // Even when the tunnel looks less "capable" than the underlay, it wins:
+        // the underlay must never be picked while a tunnel exists.
+        val leanTun = Net("tun0", vpn = true, internet = false, validated = false)
+        assertEquals("tun0", pick(wifi, listOf(wifi, leanTun)))
     }
 
     @Test

@@ -78,6 +78,7 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
                         SystemMediaNetwork.openMediaConnection(applicationContext, uri, attempt)
                     },
                     onAttemptStarted = { used -> repository.setAttemptsUsed(taskId, attemptsUsed + used) },
+                    context = applicationContext,
                 )
                 ownedTransfer = transfer
                 transfers[taskId] = transfer

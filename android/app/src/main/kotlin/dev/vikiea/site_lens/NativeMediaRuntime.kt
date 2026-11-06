@@ -457,7 +457,17 @@ class NativeMediaRuntime(
             }.getOrDefault(Proxy.NO_PROXY)
             val useSecureDns =
                 secureDnsProvider.isNotBlank() && secureDnsProvider != "off" && !routeOwnsDns
-            val http: DataSource.Factory = if (useSecureDns || systemProxy != Proxy.NO_PROXY) {
+            // Playback must follow the same route as the browser and the
+            // download queue: the tunnel owns the sockets, and the system
+            // proxy (if any) owns the CONNECT.
+            val vpnBound = runCatching {
+                SystemMediaNetwork.vpnNetwork(
+                    context.getSystemService(android.net.ConnectivityManager::class.java),
+                ) != null
+            }.getOrDefault(false)
+            val http: DataSource.Factory = if (
+                useSecureDns || systemProxy != Proxy.NO_PROXY || vpnBound
+            ) {
                 val client = OkHttpClient.Builder()
                     .proxy(systemProxy)
                     .retryOnConnectionFailure(true)
@@ -471,6 +481,9 @@ class NativeMediaRuntime(
                                     }.getOrElse { Dns.SYSTEM.lookup(hostname) }
                             })
                         }
+                        // Bind both socket slots: an HTTPS segment needs the
+                        // tunnel's TLS factory, not only its plain socket.
+                        if (vpnBound) SystemMediaNetwork.bindToVpn(context, this)
                     }
                     .build()
                 OkHttpDataSource.Factory(client)

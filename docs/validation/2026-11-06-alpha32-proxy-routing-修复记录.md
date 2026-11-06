@@ -110,3 +110,24 @@ node runtime / filter / page_inspector /
 - alpha32 的正式签名包由 `Release Site Lens` 工作流产出，本记录不涉及产物校验。
 
 发布成功只说明 CI 构建与打包通过，不构成设备验收证据。
+
+## 6. alpha32 装包后补充：媒体与更新未走 VPN
+
+alpha32 装到设备后，站点检测与 WebView 正常，但媒体下载、媒体播放和更新链路仍从底层网络出行。根因与上一节不同：这三条链路不是"没找到 VPN"，而是**找到了却没有把 TLS 绑定上去**。
+
+| 链路 | 缺陷 | 修复 |
+|---|---|---|
+| 媒体下载 | `openOkHttpConnection` 只设置 `socketFactory`，没有设置 `sslSocketFactory` | 两个槽位都由同一 `Network` 提供 |
+| 媒体播放 | Media3 的 OkHttp 数据源只挂了 `proxy`，完全没有绑定隧道 | 有隧道时调用 `bindToVpn` |
+| 更新下载 | `NativeUpdateService` 用独立 OkHttp 客户端，未绑定任何路由 | 每次传输按当前隧道重建客户端 |
+
+OkHttp 的两处 socket 槽位相互独立：`socketFactory` 只覆盖明文和 TLS 的 TCP 段，TLS 握手由 `sslSocketFactory` 建。只设前者会让一个 HTTPS 请求横跨两个网络——TCP 进隧道、握手从底层出去，表现为"看着走了代理，实际 TLS 没走"。
+
+其它约束：
+
+- `Network.getSSLSocketFactory()` 自 API 29 起存在，minSdk 为 26，因此在更低版本只绑定明文槽位。
+- 证书校验保持系统默认信任管理器，不引入自定义校验。
+- `openConnection` 的 `context` 为可空参数，既有单测传 `open=` 注入时行为不变；`ResumableMediaTransfer` 同样以可空 `context` 传递。
+- 代理跳同样需要绑定：CONNECT 本身就是一个 socket。
+
+本地证据：`dart analyze` 干净，`SystemMediaNetworkTest` 现有 37 个用例（新增 1 个隧道优先用例）。`flutter test` 与 Gradle 单测仍需 CI 与真机确认。

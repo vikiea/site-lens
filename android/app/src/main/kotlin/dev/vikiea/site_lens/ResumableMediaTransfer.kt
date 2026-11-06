@@ -1,5 +1,7 @@
 package dev.vikiea.site_lens
 
+import android.content.Context
+
 import java.io.File
 import java.io.IOException
 import java.io.InterruptedIOException
@@ -37,7 +39,7 @@ class ResumableMediaTransfer(
     private val cancelled: () -> Boolean = { false },
     private val connect: ((URI) -> HttpURLConnection)? = null,
     private val connectForAttempt: (URI, Int) -> HttpURLConnection = { uri, attempt ->
-        SystemMediaNetwork.openConnection(uri, attempt = attempt)
+        SystemMediaNetwork.openConnection(uri, attempt = attempt, context = context)
     },
     private val validate: (URI) -> Unit = SystemMediaNetwork::validateTarget,
     private val routeForConnection: (HttpURLConnection) -> String = {
@@ -48,6 +50,8 @@ class ResumableMediaTransfer(
     private val dnsModeForConnection: () -> String = { "unknown" },
     private val networkEpochForAttempt: () -> Long = { 0L },
     private val routeBeforeConnect: () -> String = { "unknown" },
+    /** Required to pin media sockets to the active tunnel; null keeps tests pure. */
+    private val context: Context? = null,
 ) {
     var finalUrl: URI? = null
         private set

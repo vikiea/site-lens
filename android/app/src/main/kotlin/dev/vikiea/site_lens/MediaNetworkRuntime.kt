@@ -160,6 +160,7 @@ class MediaNetworkRuntime(
                 dnsModeForConnection = { targetDnsMode },
                 networkEpochForAttempt = { SystemMediaNetwork.networkEpoch() },
                 routeBeforeConnect = { selectedRoute },
+                context = context,
                 onAttempt = { diagnostics ->
                     if (attempts.size < 5) attempts += diagnostics + mapOf("resourceKind" to resourceKind)
                     if ((diagnostics["elapsedMs"] as? Long ?: 0L) >= 2_000L ||
