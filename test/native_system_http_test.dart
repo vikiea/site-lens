@@ -221,4 +221,40 @@ void main() {
       expect(lanes, ['probe', 'probe']);
     },
   );
+
+  test('the first native attempt is not squeezed below a usable budget', () async {
+    final timeouts = <int>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      final args = (call.arguments as Map).cast<Object?, Object?>();
+      timeouts.add((args['timeoutMs'] as num).toInt());
+      // Fail every attempt so the retry path is exercised too.
+      throw PlatformException(code: 'timeout', message: 'timeout');
+    });
+
+    final transport = NativeSystemHttpTransport(channel: channel);
+    final client = ControlledHttp(nativeTransport: transport);
+    await expectLater(
+      client.fetch(
+        Uri.parse('https://example.com/probe'),
+        connect: const {'*'},
+        document: Uri.parse('https://example.com/probe'),
+        cancel: Cancellation(),
+        timeout: const Duration(seconds: 5),
+      ),
+      throwsA(anything),
+    );
+
+    expect(timeouts, isNotEmpty);
+    // 5s split in half used to grant 2499ms, which expired inside a tunnelled
+    // DNS lookup plus handshake.
+    expect(
+      timeouts.first,
+      greaterThanOrEqualTo(4000),
+      reason: 'the first attempt must clear the DNS + TLS floor',
+    );
+    // A retry never starts on a sliver of the remaining budget.
+    for (final value in timeouts.skip(1)) {
+      expect(value, greaterThanOrEqualTo(2000));
+    }
+  });
 }

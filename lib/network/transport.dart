@@ -618,6 +618,16 @@ class ControlledHttp {
   /// would replay the same failing proxy for the whole budget.
   int nextRouteAttempt(int current) => current + 1;
 
+  /// Lower bound for one native attempt. A tunnelled request needs a DNS
+  /// lookup, a TCP connect and a TLS handshake; splitting the caller's budget
+  /// by attempt count alone produced sub-second slices that expired mid-
+  /// handshake and were reported as a timeout rather than a route problem.
+  static const _nativeAttemptFloor = Duration(seconds: 4);
+
+  /// A retry needs at least this much of the caller's budget to be worth
+  /// starting; below it the attempt would expire mid-handshake again.
+  static const _nativeRetryFloor = Duration(seconds: 2);
+
   Future<MediaNetworkRoute> _configureRoute(
     HttpClient client,
     Uri uri,
@@ -974,6 +984,7 @@ class ControlledHttp {
     int nativeTransportAttempts,
   ) async {
     final retryable = const {'GET', 'HEAD', 'OPTIONS'}.contains(method);
+    final watch = Stopwatch()..start();
     var currentRouteAttempt = routeAttempt;
     for (var redirect = 0; redirect <= 5; redirect++) {
       cancel.check();
@@ -986,12 +997,27 @@ class ControlledHttp {
         transportAttempt++
       ) {
         cancel.check();
-        final attemptTimeout = Duration(
-          microseconds: math.max(
-            1,
-            timeout.inMicroseconds ~/ nativeTransportAttempts,
-          ),
-        );
+        // Squeezing the budget into two halves left each attempt too short for
+        // a tunnelled DNS lookup plus TLS handshake, so a healthy site could
+        // time out before its first byte. The first attempt gets a usable floor;
+        // a retry only runs while the caller's own budget still allows it.
+        final remaining = timeout - watch.elapsed;
+        if (transportAttempt > 0 && remaining < _nativeRetryFloor) {
+          if (response != null) break;
+          if (lastError != null) throw lastError;
+          throw const NativeSystemHttpException('timeout', '系统网络请求超时');
+        }
+        final attemptTimeout = transportAttempt == 0
+            ? Duration(
+                microseconds: math.min(
+                  timeout.inMicroseconds,
+                  math.max(
+                    timeout.inMicroseconds ~/ nativeTransportAttempts,
+                    _nativeAttemptFloor.inMicroseconds,
+                  ),
+                ),
+              )
+            : remaining;
         final requestId = native.nextRequestId();
         final detachNativeCancel = cancel.onCancel(() {
           unawaited(native.cancel(requestId));
