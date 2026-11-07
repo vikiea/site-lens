@@ -362,11 +362,11 @@ object SystemMediaNetwork {
      * Bind an in-process HTTP client to the tunnel that owns routing.
      *
      * [Network] exposes a plain [SocketFactory] and no network-scoped TLS
-     * factory. An HTTPS connection stays on the tunnel only when both halves do:
-     * the TCP socket is created by that factory, and the handshake runs on that
-     * same socket. [TunnelSslSocketFactory] supplies the TLS slot, so OkHttp
-     * never falls back to a default-network handshake. Certificate validation
-     * stays with the platform trust manager.
+     * factory. OkHttp creates the socket from our factory, connects it through
+     * the tunnel, then asks the sslSocketFactory to wrap that same socket. The
+     * TLS slot therefore only needs to delegate to the platform default:
+     * handshaking in place inherits the binding, and certificate validation
+     * stays exactly as the platform performs it.
      *
      * Returns true when the client was bound, false when there is no tunnel.
      */
@@ -378,13 +378,13 @@ object SystemMediaNetwork {
 
     private fun bindToNetwork(network: Network, builder: OkHttpClient.Builder): Boolean {
         return runCatching {
-            val tunnel = network.socketFactory
             val trust = defaultTrustManager()
-            // Both OkHttp slots come from the same tunnel. The TLS slot must be
-            // our wrapper: the platform has no network-scoped TLS factory, and a
-            // default one would open the handshake on the underlay.
-            builder.socketFactory(tunnel)
-            builder.sslSocketFactory(TunnelSslSocketFactory(tunnel, trust), trust)
+            // The socket factory owns transport: every socket it creates is
+            // already bound to this network. TLS then wraps that socket in
+            // place, so the handshake inherits the binding and the platform
+            // still validates the certificate.
+            builder.socketFactory(network.socketFactory)
+            builder.sslSocketFactory(TunnelSslSocketFactory(), trust)
             true
         }.getOrDefault(false)
     }
@@ -494,52 +494,62 @@ object SystemMediaNetwork {
     }
 
     /**
-     * An [SSLSocketFactory] that dials through the tunnel and then hands the
-     * socket to the default TLS implementation.
+     * Empty shell that satisfies OkHttp's TLS slot without altering TLS.
+     *
+     * OkHttp builds the TLS socket itself:
+     *
+     * ```
+     * raw = socketFactory.createSocket()      // our tunnel socket
+     * raw.connect(...)                        // through the tunnel
+     * ssl = sslSocketFactory.createSocket(raw, host, port, true)
+     * ```
+     *
+     * That last call is the only overload OkHttp uses, and it wraps the socket
+     * we just connected. Delegating every method to the platform default keeps
+     * the certificate chain and hostname verification untouched.
+     *
+     * An earlier version replaced these methods with raw tunnel sockets and
+     * called startHandshake() itself. OkHttp then started a second handshake on
+     * the same stream, so TLS state desynchronised and the request hung until
+     * the timeout even though the TCP connection had reached the proxy.
      */
-    private class TunnelSslSocketFactory(
-        private val tunnel: SocketFactory,
-        /** Kept so callers can assert the validation policy this factory uses. */
-        val trust: X509TrustManager,
-    ) : SSLSocketFactory() {
+    private class TunnelSslSocketFactory : SSLSocketFactory() {
+        private val delegate: SSLSocketFactory
+            get() = SSLSocketFactory.getDefault() as SSLSocketFactory
+
         override fun getDefaultCipherSuites(): Array<String> = delegate.defaultCipherSuites
 
         override fun getSupportedCipherSuites(): Array<String> = delegate.supportedCipherSuites
 
-        override fun createSocket(): Socket = tunnel.createSocket()
+        override fun createSocket(): Socket = delegate.createSocket()
 
         override fun createSocket(host: String, port: Int): Socket =
-            tunnel.createSocket(host, port)
+            delegate.createSocket(host, port)
 
         override fun createSocket(
             host: String,
             port: Int,
             localHost: InetAddress,
             localPort: Int,
-        ): Socket = tunnel.createSocket(host, port, localHost, localPort)
+        ): Socket = delegate.createSocket(host, port, localHost, localPort)
 
         override fun createSocket(host: InetAddress, port: Int): Socket =
-            tunnel.createSocket(host, port)
+            delegate.createSocket(host, port)
 
         override fun createSocket(
             address: InetAddress,
             port: Int,
             localAddress: InetAddress,
             localPort: Int,
-        ): Socket = tunnel.createSocket(address, port, localAddress, localPort)
+        ): Socket = delegate.createSocket(address, port, localAddress, localPort)
 
-        /** Called by OkHttp once the TCP socket is already inside the tunnel. */
+        /** OkHttp's TLS entry point. Handshake policy stays with the platform. */
         override fun createSocket(
             socket: Socket,
             host: String,
             port: Int,
             autoClose: Boolean,
-        ): Socket = delegate.createSocket(socket, host, port, autoClose).also {
-            (it as? SSLSocket)?.startHandshake()
-        }
-
-        private val delegate: SSLSocketFactory
-            get() = SSLSocketFactory.getDefault() as SSLSocketFactory
+        ): Socket = delegate.createSocket(socket, host, port, autoClose)
     }
 
     /** The platform's own trust manager; certificate checks stay enforced. */
