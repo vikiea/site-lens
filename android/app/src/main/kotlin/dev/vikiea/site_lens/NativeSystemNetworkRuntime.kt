@@ -36,7 +36,10 @@ class NativeSystemNetworkRuntime(appContext: Context) : MethodChannel.MethodCall
     // Keep discovery probes from consuming the update and script lanes. The
     // probe lane still has a bounded queue for its eight-worker coordinator,
     // while update metadata always retains two native request slots.
-    private val probeExecutor = executor("probe", core = 2, max = 4, queue = 8)
+    // Sized for the coordinator's 8 concurrent candidates. Each slot can block
+    // for several seconds on a tunnel, so an undersized pool turned a slow link
+    // into an immediate "busy" rejection.
+    private val probeExecutor = executor("probe", core = 4, max = 8, queue = 16)
     private val updateExecutor = executor("update", core = 1, max = 2, queue = 4)
     private val generalExecutor = executor("general", core = 2, max = 2, queue = 8)
     private val main = Handler(Looper.getMainLooper())

@@ -66,9 +66,14 @@ object SystemMediaNetwork {
             ThreadPoolExecutor.AbortPolicy(),
         )
 
-    private val probeResolver = resolverExecutor("probe", core = 1, max = 2, queue = 4)
-    private val updateResolver = resolverExecutor("update", core = 1, max = 2, queue = 4)
-    private val generalResolver = resolverExecutor("general", core = 1, max = 2, queue = 8)
+    // The probe coordinator runs up to 8 candidates at once, and each request
+    // resolves a name (plus every redirect hop). With core=1/max=2/queue=4 a
+    // slow tunnel filled this pool and later lookups were rejected outright as
+    // "DNS resolver busy", which surfaced as a generic request failure rather
+    // than as a DNS problem.
+    private val probeResolver = resolverExecutor("probe", core = 4, max = 8, queue = 16)
+    private val updateResolver = resolverExecutor("update", core = 2, max = 4, queue = 8)
+    private val generalResolver = resolverExecutor("general", core = 2, max = 4, queue = 8)
 
     private fun resolverFor(lane: String): ThreadPoolExecutor = when (lane.lowercase()) {
         "probe" -> probeResolver
