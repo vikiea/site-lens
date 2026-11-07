@@ -99,6 +99,12 @@ object SystemMediaNetwork {
         val dnsClass: String = "unknown",
         val targetDnsMode: String = "unknown",
         val vpnTransport: Boolean = false,
+        /**
+         * Whether the tunnel is the OS default route. When it is not - a
+         * per-app or rule-mode tunnel - an unbound socket leaves through the
+         * underlay and never reaches the tunnel at all.
+         */
+        val vpnIsDefault: Boolean = true,
     )
 
     fun fakeIpRouteKind(vpnTransport: Boolean): RouteKind =
@@ -646,8 +652,12 @@ object SystemMediaNetwork {
                 ) { InetAddress.getAllByName(host) }
             },
         )
+        // A tunnel that is not the OS default route only carries traffic whose
+        // sockets were bound to it. Record that so the binding decision does
+        // not have to re-derive it.
+        val vpnIsDefault = !vpn || manager?.activeNetwork == network
         return planned.copy(
-            info = planned.info.copy(vpnTransport = vpn),
+            info = planned.info.copy(vpnTransport = vpn, vpnIsDefault = vpnIsDefault),
             network = network,
         )
     }
@@ -723,14 +733,24 @@ object SystemMediaNetwork {
         vpnTransport && proxy.type() == Proxy.Type.DIRECT
 
     /**
-     * Binds an OkHttp client to the VPN only when this hop uses a synthesized
-     * Fake-IP answer through a direct route. HTTP proxy hops and real-address
-     * fallbacks must use their normal socket owner even when a VPN is present.
+     * Decides whether an OkHttp client must own the tunnel's sockets.
+     *
+     * Two independent reasons:
+     *
+     * 1. the hop uses a synthesized Fake-IP, which only the tunnel can
+     *    translate;
+     * 2. the tunnel exists but is *not* the OS default route, so an unbound
+     *    socket would leave through the underlay and bypass the proxy
+     *    completely. A per-app or rule-mode tunnel is exactly this case.
+     *
+     * HTTP proxy hops keep their normal socket owner: the proxy, not the
+     * tunnel, carries the CONNECT.
      */
-    fun shouldBindVpnSocket(info: RouteInfo, proxy: Proxy): Boolean =
-        info.kind == RouteKind.VPN_TUN_FAKE_IP &&
-            info.dnsClass == "fake_ip" &&
-            proxy.type() == Proxy.Type.DIRECT
+    fun shouldBindVpnSocket(info: RouteInfo, proxy: Proxy): Boolean {
+        if (proxy.type() != Proxy.Type.DIRECT) return false
+        if (info.kind == RouteKind.VPN_TUN_FAKE_IP && info.dnsClass == "fake_ip") return true
+        return !info.vpnIsDefault
+    }
 
     /**
      * Pure policy. HTTP proxies own origin DNS unless VPN Fake-IP is proven.

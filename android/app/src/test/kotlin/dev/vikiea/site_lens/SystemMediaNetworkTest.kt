@@ -313,6 +313,38 @@ class SystemMediaNetworkTest {
     }
 
     @Test
+    fun aNonDefaultTunnelForcesSocketBinding() {
+        val direct = Proxy.NO_PROXY
+        // Per-app / rule-mode tunnel: it exists but is not the default route,
+        // so an unbound socket would leave through the underlay.
+        val nonDefault = SystemMediaNetwork.RouteInfo(
+            SystemMediaNetwork.RouteKind.PUBLIC_DIRECT,
+            SystemMediaNetwork.DnsOwner.SYSTEM_DNS,
+            fakeIpAllowed = false,
+            dnsClass = "public",
+            vpnTransport = true,
+            vpnIsDefault = false,
+        )
+        assertEquals(true, SystemMediaNetwork.shouldBindVpnSocket(nonDefault, direct))
+
+        // A default-route tunnel carries traffic on its own.
+        val isDefault = nonDefault.copy(vpnIsDefault = true)
+        assertEquals(false, SystemMediaNetwork.shouldBindVpnSocket(isDefault, direct))
+
+        // A synthesized address always needs the tunnel that made it.
+        val synthesized = nonDefault.copy(
+            kind = SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP,
+            dnsClass = "fake_ip",
+            vpnIsDefault = true,
+        )
+        assertEquals(true, SystemMediaNetwork.shouldBindVpnSocket(synthesized, direct))
+
+        // A proxy hop keeps its own socket owner.
+        val proxied = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7890))
+        assertEquals(false, SystemMediaNetwork.shouldBindVpnSocket(nonDefault, proxied))
+    }
+
+    @Test
     fun explicitProxySelectorRemainsAuthoritativeOverLinkProperties() {
         val selectedProxy = Proxy(
             Proxy.Type.HTTP,
