@@ -27,7 +27,11 @@ final updateControllerProvider = Provider<UpdateController>((ref) {
   final controller = UpdateController(
     service: UpdateService(
       client: Platform.isAndroid
-          ? GitHubReleaseClient(client: NativeSystemHttpClient())
+          ? GitHubReleaseClient(
+              client: NativeSystemHttpClient(
+                requestTimeout: const Duration(seconds: 4),
+              ),
+            )
           : null,
       tokenLoader: tokenStore.read,
       resolve: Platform.isAndroid ? null : app.secureDnsResolver.resolve,

@@ -22,11 +22,17 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.security.cert.CertificateException
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLHandshakeException
 import javax.net.ssl.SSLPeerUnverifiedException
 import javax.net.ssl.SSLProtocolException
 import okhttp3.ConnectionPool
+import okhttp3.Call
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -46,6 +52,26 @@ class MediaRouteIOException(
 object SystemMediaNetwork {
     private val epoch = java.util.concurrent.atomic.AtomicLong(0)
     private val observedNetwork = java.util.concurrent.atomic.AtomicReference<String?>(null)
+    private fun resolverExecutor(name: String, core: Int, max: Int, queue: Int): ThreadPoolExecutor =
+        ThreadPoolExecutor(
+            core,
+            max,
+            30L,
+            TimeUnit.SECONDS,
+            ArrayBlockingQueue(queue),
+            { runnable -> Thread(runnable, "site-lens-system-dns-$name").apply { isDaemon = true } },
+            ThreadPoolExecutor.AbortPolicy(),
+        )
+
+    private val probeResolver = resolverExecutor("probe", core = 1, max = 2, queue = 4)
+    private val updateResolver = resolverExecutor("update", core = 1, max = 2, queue = 4)
+    private val generalResolver = resolverExecutor("general", core = 1, max = 2, queue = 8)
+
+    private fun resolverFor(lane: String): ThreadPoolExecutor = when (lane.lowercase()) {
+        "probe" -> probeResolver
+        "update" -> updateResolver
+        else -> generalResolver
+    }
     fun networkEpoch(): Long = epoch.get()
 
     enum class RouteKind(val wireName: String) {
@@ -368,6 +394,7 @@ object SystemMediaNetwork {
         uri: URI,
         plan: RoutePlan,
         beforeConnect: () -> Unit = {},
+        timeoutMs: Long? = null,
     ): OkHttpClient = buildOkHttpClient(
         context = context,
         uri = uri,
@@ -376,6 +403,7 @@ object SystemMediaNetwork {
         bindVpn = shouldBindVpnSocket(plan.info, plan.proxy),
         network = plan.network,
         beforeConnect = beforeConnect,
+        timeoutMs = timeoutMs,
     )
 
     /** Executes a bounded, non-streaming request using the shared route plan. */
@@ -387,14 +415,34 @@ object SystemMediaNetwork {
         body: ByteArray? = null,
         maxBytes: Int = 2 * 1024 * 1024,
         attempt: Int = 0,
+        timeoutMs: Long = 15_000L,
+        isCancelled: (() -> Boolean)? = null,
+        resolverLane: String = "general",
+        registerCall: ((Call) -> Unit)? = null,
+        unregisterCall: ((Call) -> Unit)? = null,
     ): BufferedResponse {
         require(maxBytes in 1..(8 * 1024 * 1024)) { "网络响应大小上限无效" }
+        require(timeoutMs in 1..60_000L) { "网络请求超时无效" }
         require(method in setOf("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")) {
             "不支持 HTTP 方法"
         }
+        if (isCancelled?.invoke() == true) throw java.io.InterruptedIOException("请求已取消")
         validateTarget(uri)
-        val plan = routePlan(context, uri, attempt)
-        val client = buildOkHttpClient(context, uri, plan)
+        val plan = routePlan(
+            context,
+            uri,
+            attempt,
+            lookupTimeoutMs = timeoutMs.coerceAtMost(1_500L),
+            isCancelled = isCancelled,
+            resolverLane = resolverLane,
+        )
+        if (isCancelled?.invoke() == true) throw java.io.InterruptedIOException("请求已取消")
+        val client = buildOkHttpClient(
+            context,
+            uri,
+            plan,
+            timeoutMs = timeoutMs,
+        )
         val contentType = headers.entries.firstOrNull {
             it.key.equals("Content-Type", ignoreCase = true)
         }?.value?.toMediaTypeOrNull()
@@ -409,31 +457,37 @@ object SystemMediaNetwork {
             .method(method, requestBody)
             .apply { headers.forEach { (name, value) -> header(name, value) } }
             .build()
-        client.newCall(request).execute().use { response ->
-            val output = ByteArrayOutputStream()
-            val stream = response.body?.byteStream()
-            if (stream != null && method != "HEAD") {
-                stream.use { input ->
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        if (output.size() + count > maxBytes) {
-                            throw IOException("网络响应超过大小限制")
+        val call = client.newCall(request)
+        registerCall?.invoke(call)
+        try {
+            call.execute().use { response ->
+                val output = ByteArrayOutputStream()
+                val stream = response.body?.byteStream()
+                if (stream != null && method != "HEAD") {
+                    stream.use { input ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            if (output.size() + count > maxBytes) {
+                                throw IOException("网络响应超过大小限制")
+                            }
+                            output.write(buffer, 0, count)
                         }
-                        output.write(buffer, 0, count)
                     }
                 }
+                return BufferedResponse(
+                    statusCode = response.code,
+                    headers = response.headers.toMultimap().mapValues { it.value.joinToString(", ") },
+                    body = output.toByteArray(),
+                    finalUri = uri,
+                    routeKind = plan.info.kind.wireName,
+                    targetDnsMode = plan.info.targetDnsMode,
+                    networkEpoch = networkEpoch(),
+                )
             }
-            return BufferedResponse(
-                statusCode = response.code,
-                headers = response.headers.toMultimap().mapValues { it.value.joinToString(", ") },
-                body = output.toByteArray(),
-                finalUri = uri,
-                routeKind = plan.info.kind.wireName,
-                targetDnsMode = plan.info.targetDnsMode,
-                networkEpoch = networkEpoch(),
-            )
+        } finally {
+            unregisterCall?.invoke(call)
         }
     }
 
@@ -496,12 +550,60 @@ object SystemMediaNetwork {
             ?: throw IllegalStateException("系统缺少证书校验器")
     }
 
+    private fun resolveBounded(
+        timeoutMs: Long,
+        isCancelled: (() -> Boolean)? = null,
+        resolverLane: String = "general",
+        block: () -> Array<InetAddress>,
+    ): Array<InetAddress> {
+        val future = try {
+            resolverFor(resolverLane).submit(Callable { block() })
+        } catch (_: RejectedExecutionException) {
+            throw SocketTimeoutException("DNS resolver busy")
+        }
+        val deadline = System.nanoTime() + timeoutMs.coerceIn(100L, 10_000L) * 1_000_000L
+        try {
+            while (true) {
+                if (isCancelled?.invoke() == true) {
+                    future.cancel(true)
+                    throw java.io.InterruptedIOException("请求已取消")
+                }
+                val remainingNanos = deadline - System.nanoTime()
+                if (remainingNanos <= 0L) {
+                    future.cancel(true)
+                    throw SocketTimeoutException("DNS resolution timeout")
+                }
+                try {
+                    return future.get(
+                        minOf(remainingNanos, 50_000_000L),
+                        TimeUnit.NANOSECONDS,
+                    )
+                } catch (_: java.util.concurrent.TimeoutException) {
+                    // Poll briefly so Dart cancellation can stop waiting even
+                    // when the platform resolver itself ignores interruption.
+                }
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            future.cancel(true)
+            throw SocketTimeoutException("DNS resolution interrupted")
+        } catch (error: ExecutionException) {
+            val cause = error.cause
+            if (cause is IOException) throw cause
+            throw IOException("DNS resolution failed", cause)
+        }
+        throw AssertionError("unreachable DNS resolution state")
+    }
+
     /** One snapshot for the proxy, system DNS, and socket owner of this hop. */
     fun routePlan(
         context: Context,
         uri: URI,
         attempt: Int = 0,
         preferRealAddress: Boolean = false,
+        lookupTimeoutMs: Long = 5_000L,
+        isCancelled: (() -> Boolean)? = null,
+        resolverLane: String = "general",
     ): RoutePlan {
         val manager = context.getSystemService(ConnectivityManager::class.java)
         val network = routeNetwork(manager)
@@ -526,10 +628,27 @@ object SystemMediaNetwork {
         )
         val planned = planFor(
             uri, selected, vpn, routerTrusted, attempt, preferRealAddress,
-            resolve = { host -> network?.getAllByName(host) ?: InetAddress.getAllByName(host) },
+            resolve = { host ->
+                resolveBounded(
+                    lookupTimeoutMs,
+                    isCancelled,
+                    resolverLane,
+                ) {
+                    if (isCancelled?.invoke() == true) {
+                        throw java.io.InterruptedIOException("请求已取消")
+                    }
+                    network?.getAllByName(host) ?: InetAddress.getAllByName(host)
+                }
+            },
             // The tunnel owns the resolver, so a real answer has to come from
             // the underlay's view of the name instead.
-            resolveReal = { host -> InetAddress.getAllByName(host) },
+            resolveReal = { host ->
+                resolveBounded(
+                    lookupTimeoutMs,
+                    isCancelled,
+                    resolverLane,
+                ) { InetAddress.getAllByName(host) }
+            },
         )
         return planned.copy(
             info = planned.info.copy(vpnTransport = vpn),
@@ -992,6 +1111,7 @@ object SystemMediaNetwork {
         bindVpn: Boolean = false,
         network: Network? = null,
         beforeConnect: () -> Unit = {},
+        timeoutMs: Long? = null,
     ): OkHttpClient {
         val builder = OkHttpClient.Builder()
             .proxy(proxy)
@@ -1002,6 +1122,13 @@ object SystemMediaNetwork {
             .readTimeout(20, TimeUnit.SECONDS)
             .callTimeout(0, TimeUnit.MILLISECONDS)
             .connectionPool(ConnectionPool(0, 1, TimeUnit.MILLISECONDS))
+        timeoutMs?.let { timeout ->
+            val duration = timeout.coerceIn(1L, 60_000L)
+            builder
+                .connectTimeout(duration, TimeUnit.MILLISECONDS)
+                .readTimeout(duration, TimeUnit.MILLISECONDS)
+                .callTimeout(duration, TimeUnit.MILLISECONDS)
+        }
         if (validatedAddresses != null) {
             builder.dns(object : Dns {
                 override fun lookup(hostname: String): List<InetAddress> {

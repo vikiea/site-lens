@@ -41,6 +41,21 @@ class NativeSystemHttpTransport {
     : _channel = channel ?? const MethodChannel('site_lens/system_network');
 
   final MethodChannel _channel;
+  int _nextRequestId = 0;
+
+  String nextRequestId() =>
+      'sys_${DateTime.now().microsecondsSinceEpoch}_${_nextRequestId++}';
+
+  Future<void> cancel(String requestId) async {
+    try {
+      await _channel.invokeMethod<void>('cancel', {'requestId': requestId});
+    } on PlatformException {
+      // The native call may already have completed or the engine may be
+      // shutting down. Cancellation is best effort at this boundary.
+    } on MissingPluginException {
+      // Older installations do not expose the cancellation method.
+    }
+  }
 
   Future<NativeSystemHttpResponse> request({
     required Uri url,
@@ -49,15 +64,22 @@ class NativeSystemHttpTransport {
     List<int>? body,
     int maxBytes = 2 * 1024 * 1024,
     int attempt = 0,
+    Duration timeout = const Duration(seconds: 15),
+    String? requestId,
+    String lane = 'general',
   }) async {
+    final id = requestId ?? nextRequestId();
     try {
       final value = await _channel.invokeMapMethod<String, Object?>('request', {
+        'requestId': id,
         'url': url.toString(),
         'method': method,
         'headers': headers,
         if (body != null && body.isNotEmpty) 'body': Uint8List.fromList(body),
         'maxBytes': maxBytes,
         'attempt': attempt,
+        'timeoutMs': timeout.inMilliseconds,
+        'lane': lane,
       });
       if (value == null) {
         throw const NativeSystemHttpException('empty_response', '系统网络没有返回响应');
@@ -94,10 +116,15 @@ class NativeSystemHttpTransport {
 
 /// `http.Client` facade for update metadata and other buffered callers.
 class NativeSystemHttpClient extends http.BaseClient {
-  NativeSystemHttpClient({NativeSystemHttpTransport? transport})
-    : _transport = transport ?? NativeSystemHttpTransport();
+  NativeSystemHttpClient({
+    NativeSystemHttpTransport? transport,
+    this.requestTimeout = const Duration(seconds: 4),
+    this.lane = 'update',
+  }) : _transport = transport ?? NativeSystemHttpTransport();
 
   final NativeSystemHttpTransport _transport;
+  final Duration requestTimeout;
+  final String lane;
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
@@ -110,12 +137,16 @@ class NativeSystemHttpClient extends http.BaseClient {
     NativeSystemHttpResponse? response;
     for (var attempt = 0; attempt < 5; attempt++) {
       try {
+        final requestId = _transport.nextRequestId();
         response = await _transport.request(
+          requestId: requestId,
           url: request.url,
           method: request.method,
           headers: request.headers,
           body: body.isEmpty ? null : body,
           attempt: attempt,
+          timeout: requestTimeout,
+          lane: lane,
         );
         break;
       } on NativeSystemHttpException catch (error) {

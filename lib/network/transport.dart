@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/services.dart';
@@ -626,6 +627,7 @@ class ControlledHttp {
     this.mediaRouteForAttempt,
     this.mediaRouteForAttemptWithDocument,
     this.routeForAttempt,
+    this.nativeLane = 'general',
   });
   final bool allowLocal;
   final Future<List<InternetAddress>> Function(String) resolve;
@@ -639,6 +641,7 @@ class ControlledHttp {
   /// The route is deliberately resolved per redirect so PAC/proxy changes do
   /// not cause the next hop to fall back to a direct origin connection.
   final Future<MediaNetworkRoute> Function(Uri, int)? routeForAttempt;
+  final String nativeLane;
 
   /// Next OS route index for one transport sequence.
   ///
@@ -871,6 +874,7 @@ class ControlledHttp {
         timeout,
         routeAttempt,
         native,
+        _maxTransportAttempts,
       );
     }
     final retryableMethod =
@@ -1000,6 +1004,7 @@ class ControlledHttp {
     Duration timeout,
     int routeAttempt,
     NativeSystemHttpTransport native,
+    int nativeTransportAttempts,
   ) async {
     final retryable = const {'GET', 'HEAD', 'OPTIONS'}.contains(method);
     var currentRouteAttempt = routeAttempt;
@@ -1010,22 +1015,35 @@ class ControlledHttp {
       NativeSystemHttpException? lastError;
       for (
         var transportAttempt = 0;
-        transportAttempt < _maxTransportAttempts;
+        transportAttempt < nativeTransportAttempts;
         transportAttempt++
       ) {
         cancel.check();
+        final attemptTimeout = Duration(
+          microseconds: math.max(
+            1,
+            timeout.inMicroseconds ~/ nativeTransportAttempts,
+          ),
+        );
+        final requestId = native.nextRequestId();
+        final detachNativeCancel = cancel.onCancel(() {
+          unawaited(native.cancel(requestId));
+        });
         try {
           response = await cancel.waitFor(
             native
                 .request(
+                  requestId: requestId,
                   url: uri,
                   method: method,
                   headers: headers,
                   body: body == null ? null : utf8.encode(body),
                   maxBytes: maxBytes,
                   attempt: currentRouteAttempt,
+                  timeout: attemptTimeout,
+                  lane: nativeLane,
                 )
-                .timeout(timeout),
+                .timeout(attemptTimeout),
           );
           break;
         } on Cancelled {
@@ -1041,15 +1059,18 @@ class ControlledHttp {
           }.contains(error.category);
           if (!retryable ||
               !retryableError ||
-              transportAttempt + 1 >= _maxTransportAttempts) {
+              transportAttempt + 1 >= nativeTransportAttempts) {
             rethrow;
           }
           currentRouteAttempt = nextRouteAttempt(currentRouteAttempt);
         } on TimeoutException {
-          if (!retryable || transportAttempt + 1 >= _maxTransportAttempts) {
+          unawaited(native.cancel(requestId));
+          if (!retryable || transportAttempt + 1 >= nativeTransportAttempts) {
             rethrow;
           }
           currentRouteAttempt = nextRouteAttempt(currentRouteAttempt);
+        } finally {
+          detachNativeCancel();
         }
       }
       if (response == null) throw lastError ?? StateError('系统网络没有返回响应');
@@ -1347,6 +1368,7 @@ class HttpProbe {
     this.resolve = InternetAddress.lookup,
     this.nativeTransport,
     this.onFailure,
+    this.nativeLane = 'probe',
   });
   final bool allowLocal;
   final Future<MediaNetworkRoute> Function(Uri, int)? routeForAttempt;
@@ -1354,6 +1376,7 @@ class HttpProbe {
   final NativeSystemHttpTransport? nativeTransport;
   final void Function(Object error, StackTrace stack, String context)?
   onFailure;
+  final String nativeLane;
   Future<ProbeResult> run(
     Candidate candidate,
     int round,
@@ -1410,6 +1433,7 @@ class HttpProbe {
                 await ControlledHttp(
                   allowLocal: allowLocal,
                   nativeTransport: native,
+                  nativeLane: nativeLane,
                 ).fetch(
                   current,
                   connect: const {'*'},
