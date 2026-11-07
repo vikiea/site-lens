@@ -6,8 +6,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../media/media_network.dart';
-import '../network/native_system_http.dart';
 import '../settings/app_settings.dart';
 import '../ui/app_controller.dart';
 import '../ui/navigation_observer.dart';
@@ -23,19 +21,18 @@ import 'update_service.dart';
 final updateControllerProvider = Provider<UpdateController>((ref) {
   final tokenStore = GitHubTokenStore();
   final app = ref.watch(appControllerProvider);
-  final mediaNetwork = MediaNetwork();
   final controller = UpdateController(
     service: UpdateService(
-      client: Platform.isAndroid
-          ? GitHubReleaseClient(
-              client: NativeSystemHttpClient(
-                requestTimeout: const Duration(seconds: 4),
-              ),
-            )
-          : null,
       tokenLoader: tokenStore.read,
-      resolve: Platform.isAndroid ? null : app.secureDnsResolver.resolve,
-      routeResolver: Platform.isAndroid ? null : mediaNetwork.route,
+      // Secure DNS answers with real addresses, so a tunnel that synthesizes
+      // them no longer decides whether metadata can be fetched. The native
+      // client this replaces capped every attempt at 4s, which a tunnelled
+      // GitHub request routinely exceeded.
+      resolve: app.secureDnsResolver.resolve,
+      // Deliberately null: _prepareRoute blocks a host on
+      // `PROXY 127.0.0.1:9` when a resolver throws, which would turn a slow
+      // metadata request into a guaranteed failure.
+      routeResolver: null,
       nativeBackend: Platform.isAndroid ? MethodChannelUpdateBackend() : null,
     ),
   );

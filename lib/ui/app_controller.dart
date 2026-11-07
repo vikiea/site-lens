@@ -233,9 +233,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     mediaDownloads = MediaDownloadService(
       tasks: mediaTasks,
       native: nativeDownloads,
+      // Media transfers are carried by [policyTransfer] (native Kotlin). This
+      // client only handles authorization and metadata, so it must not open a
+      // second native path that decides routing again.
       http: ControlledHttp(
         resolve: secureDnsResolver.resolve,
-        nativeTransport: nativeSystemTransport,
         mediaRouteForAttemptWithDocument: (uri, attempt, document) =>
             MediaNetwork().route(uri, attempt: attempt, document: document),
         mediaRouteForAttempt: (uri, attempt) =>
@@ -350,9 +352,12 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       candidates: _enabledCandidates,
       httpProbe:
           httpProbe ??
+          // Dart's HttpClient leaves socket ownership, DNS and proxy to the
+          // system route, which every tunnel implementation already handles.
+          // The native transport decided those again and turned any mismatch
+          // into one indistinguishable timeout.
           HttpProbe(
             resolve: secureDnsResolver.resolve,
-            nativeTransport: nativeSystemTransport,
             routeForAttempt: Platform.isAndroid
                 ? (uri, attempt) =>
                       MediaNetwork().probeRoute(uri, attempt: attempt)
