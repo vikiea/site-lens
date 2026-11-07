@@ -577,6 +577,7 @@ object SystemMediaNetwork {
                 "failed route=" + plan.info.kind.wireName +
                     " dns=" + plan.info.dnsClass +
                     " bind=" + shouldBindVpnSocket(plan.info, plan.proxy) +
+                    " vpnDefault=" + plan.info.vpnIsDefault +
                     " timeoutMs=" + timeoutMs +
                     " " + probe.describe() +
                     " error=" + error.javaClass.simpleName + ": " + error.message,
@@ -839,21 +840,25 @@ object SystemMediaNetwork {
     /**
      * Decides whether an OkHttp client must own the tunnel's sockets.
      *
-     * Two independent reasons:
+     * Only one case genuinely needs the binding: a synthesized Fake-IP answer
+     * exists solely for the tunnel to translate, so the socket must be the
+     * tunnel's.
      *
-     * 1. the hop uses a synthesized Fake-IP, which only the tunnel can
-     *    translate;
-     * 2. the tunnel exists but is *not* the OS default route, so an unbound
-     *    socket would leave through the underlay and bypass the proxy
-     *    completely. A per-app or rule-mode tunnel is exactly this case.
+     * A tunnel that is not the OS default route must *not* be bound. Such a
+     * tunnel declares 0.0.0.0/0 to ConnectivityManager but keeps only its own
+     * /30 in the kernel routing table; interception happens in fwmark/iptables
+     * rules keyed on the app's uid. Binding a socket bypasses those rules
+     * without adding a default route, so the destination becomes unroutable and
+     * the connect hangs until the caller's timeout. Leaving the socket on the
+     * underlay is what lets the tunnel's own rules carry it - the same path the
+     * WebView already takes.
      *
      * HTTP proxy hops keep their normal socket owner: the proxy, not the
      * tunnel, carries the CONNECT.
      */
     fun shouldBindVpnSocket(info: RouteInfo, proxy: Proxy): Boolean {
         if (proxy.type() != Proxy.Type.DIRECT) return false
-        if (info.kind == RouteKind.VPN_TUN_FAKE_IP && info.dnsClass == "fake_ip") return true
-        return !info.vpnIsDefault
+        return info.kind == RouteKind.VPN_TUN_FAKE_IP && info.dnsClass == "fake_ip"
     }
 
     /**

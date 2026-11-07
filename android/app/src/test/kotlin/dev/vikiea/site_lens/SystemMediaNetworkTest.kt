@@ -313,10 +313,12 @@ class SystemMediaNetworkTest {
     }
 
     @Test
-    fun aNonDefaultTunnelForcesSocketBinding() {
+    fun onlyASynthesizedAnswerBindsTheTunnelSocket() {
         val direct = Proxy.NO_PROXY
-        // Per-app / rule-mode tunnel: it exists but is not the default route,
-        // so an unbound socket would leave through the underlay.
+        // A rule-mode tunnel is not the default route and keeps only its /30 in
+        // the kernel table. Binding a socket there bypasses the tunnel's
+        // fwmark rules without adding a default route, so the connect hangs.
+        // The socket must stay on the underlay and let the tunnel capture it.
         val nonDefault = SystemMediaNetwork.RouteInfo(
             SystemMediaNetwork.RouteKind.PUBLIC_DIRECT,
             SystemMediaNetwork.DnsOwner.SYSTEM_DNS,
@@ -325,23 +327,24 @@ class SystemMediaNetworkTest {
             vpnTransport = true,
             vpnIsDefault = false,
         )
-        assertEquals(true, SystemMediaNetwork.shouldBindVpnSocket(nonDefault, direct))
+        assertEquals(false, SystemMediaNetwork.shouldBindVpnSocket(nonDefault, direct))
 
-        // A default-route tunnel carries traffic on its own.
-        val isDefault = nonDefault.copy(vpnIsDefault = true)
-        assertEquals(false, SystemMediaNetwork.shouldBindVpnSocket(isDefault, direct))
+        // Same conclusion on a tunnel that is the default route.
+        assertEquals(
+            false,
+            SystemMediaNetwork.shouldBindVpnSocket(nonDefault.copy(vpnIsDefault = true), direct),
+        )
 
-        // A synthesized address always needs the tunnel that made it.
+        // A synthesized address exists only for the tunnel to translate.
         val synthesized = nonDefault.copy(
             kind = SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP,
             dnsClass = "fake_ip",
-            vpnIsDefault = true,
         )
         assertEquals(true, SystemMediaNetwork.shouldBindVpnSocket(synthesized, direct))
 
         // A proxy hop keeps its own socket owner.
         val proxied = Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 7890))
-        assertEquals(false, SystemMediaNetwork.shouldBindVpnSocket(nonDefault, proxied))
+        assertEquals(false, SystemMediaNetwork.shouldBindVpnSocket(synthesized, proxied))
     }
 
     @Test
