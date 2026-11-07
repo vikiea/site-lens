@@ -1058,6 +1058,13 @@ class ControlledHttp {
           currentRouteAttempt = nextRouteAttempt(currentRouteAttempt);
         } on TimeoutException {
           unawaited(native.cancel(requestId));
+          // Record it before retrying. Dropping it here left `lastError` null,
+          // so the next attempt reported a bare "timeout" and every real cause
+          // - DNS, connect, handshake or first byte - looked identical.
+          lastError = NativeSystemHttpException(
+            'timeout',
+            '系统网络请求超时（${attemptTimeout.inMilliseconds}ms 内无响应）',
+          );
           if (!retryable || transportAttempt + 1 >= nativeTransportAttempts) {
             rethrow;
           }

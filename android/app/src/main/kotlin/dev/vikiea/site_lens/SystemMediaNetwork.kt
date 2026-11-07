@@ -1,6 +1,7 @@
 package dev.vikiea.site_lens
 
 import android.content.Context
+import android.util.Log
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Network
@@ -34,6 +35,8 @@ import javax.net.ssl.SSLProtocolException
 import okhttp3.ConnectionPool
 import okhttp3.Call
 import okhttp3.Dns
+import okhttp3.EventListener
+import okhttp3.Protocol
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -399,6 +402,7 @@ object SystemMediaNetwork {
         plan: RoutePlan,
         beforeConnect: () -> Unit = {},
         timeoutMs: Long? = null,
+        listener: EventListener? = null,
     ): OkHttpClient = buildOkHttpClient(
         context = context,
         uri = uri,
@@ -408,7 +412,77 @@ object SystemMediaNetwork {
         network = plan.network,
         beforeConnect = beforeConnect,
         timeoutMs = timeoutMs,
+        listener = listener,
     )
+
+    /**
+     * Phase timing for one request, logged only when a hop fails.
+     *
+     * A timed-out call reported nothing beyond "network timed out", so a DNS
+     * stall, a TCP refusal, a TLS mismatch and a silent first byte all looked
+     * identical. Recording the phase boundaries makes the failing stage
+     * explicit without touching request behaviour.
+     */
+    private class PhaseProbe(
+        private val uri: URI,
+        private val attempt: Int,
+    ) : EventListener() {
+        private val start = System.nanoTime()
+        private val phases = LinkedHashMap<String, Long>()
+
+        private fun mark(name: String) {
+            phases[name] = (System.nanoTime() - start) / 1_000_000
+        }
+
+        fun summary(): String =
+            phases.entries.joinToString(" ") { "${it.key}=${it.value}ms" }
+
+        fun reached(): String = phases.keys.lastOrNull() ?: "none"
+
+        override fun callStart(call: Call) = mark("start")
+
+        override fun dnsStart(call: Call, domainName: String) = mark("dnsStart")
+
+        override fun dnsEnd(call: Call, domainName: String, inetAddressList: List<java.net.InetAddress>) =
+            mark("dnsEnd(" + inetAddressList.joinToString(",") { it.hostAddress ?: "?" } + ")")
+
+        override fun connectStart(call: Call, inetSocketAddress: java.net.InetSocketAddress, proxy: java.net.Proxy) =
+            mark("connectStart")
+
+        override fun connectEnd(
+            call: Call,
+            inetSocketAddress: java.net.InetSocketAddress,
+            proxy: java.net.Proxy,
+            protocol: Protocol?,
+        ) = mark("connectEnd(${protocol?.name ?: "?"})")
+
+        override fun connectFailed(
+            call: Call,
+            inetSocketAddress: java.net.InetSocketAddress,
+            proxy: java.net.Proxy,
+            protocol: Protocol?,
+            ioe: java.io.IOException,
+        ) = mark("connectFailed(${ioe.javaClass.simpleName})")
+
+        override fun secureConnectStart(call: Call) = mark("tlsStart")
+
+        override fun secureConnectEnd(call: Call, handshake: okhttp3.Handshake?) = mark("tlsEnd")
+
+        override fun requestHeadersStart(call: Call) = mark("requestStart")
+
+        override fun requestHeadersEnd(call: Call, request: Request) = mark("requestSent")
+
+        override fun responseHeadersStart(call: Call) = mark("responseHeaders")
+
+        override fun callFailed(call: Call, ioe: java.io.IOException) =
+            mark("failed(${ioe.javaClass.simpleName}:${ioe.message})")
+
+        override fun callEnd(call: Call) = mark("end")
+
+        fun describe(): String =
+            "uri=" + uri.host + " attempt=" + attempt +
+                " reached=" + reached() + " " + summary()
+    }
 
     /** Executes a bounded, non-streaming request using the shared route plan. */
     fun requestBuffered(
@@ -441,11 +515,13 @@ object SystemMediaNetwork {
             resolverLane = resolverLane,
         )
         if (isCancelled?.invoke() == true) throw java.io.InterruptedIOException("请求已取消")
+        val probe = PhaseProbe(uri, attempt)
         val client = buildOkHttpClient(
             context,
             uri,
             plan,
             timeoutMs = timeoutMs,
+            listener = probe,
         )
         val contentType = headers.entries.firstOrNull {
             it.key.equals("Content-Type", ignoreCase = true)
@@ -488,6 +564,19 @@ object SystemMediaNetwork {
                     networkEpoch = networkEpoch(),
                 )
             }
+        } catch (error: IOException) {
+            // One line per failed hop: the route that was chosen, whether the
+            // socket was bound, and the last phase OkHttp reached.
+            Log.w(
+                "SiteLensNetDiag",
+                "failed route=" + plan.info.kind.wireName +
+                    " dns=" + plan.info.dnsClass +
+                    " bind=" + shouldBindVpnSocket(plan.info, plan.proxy) +
+                    " timeoutMs=" + timeoutMs +
+                    " " + probe.describe() +
+                    " error=" + error.javaClass.simpleName + ": " + error.message,
+            )
+            throw error
         } finally {
             unregisterCall?.invoke(call)
         }
@@ -1138,6 +1227,7 @@ object SystemMediaNetwork {
         network: Network? = null,
         beforeConnect: () -> Unit = {},
         timeoutMs: Long? = null,
+        listener: EventListener? = null,
     ): OkHttpClient {
         val builder = OkHttpClient.Builder()
             .proxy(proxy)
@@ -1148,6 +1238,7 @@ object SystemMediaNetwork {
             .readTimeout(20, TimeUnit.SECONDS)
             .callTimeout(0, TimeUnit.MILLISECONDS)
             .connectionPool(ConnectionPool(0, 1, TimeUnit.MILLISECONDS))
+        listener?.let { builder.eventListener(it) }
         timeoutMs?.let { timeout ->
             val duration = timeout.coerceIn(1L, 60_000L)
             builder
