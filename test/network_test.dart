@@ -547,18 +547,14 @@ void main() {
   });
 
   test(
-    'navigation policy does not resolve the origin behind an HTTP proxy',
+    'navigation validates URLs without taking ownership of system DNS',
     () async {
-      var resolutions = 0;
       await NetworkPolicy.publicNavigation(
-        Uri.parse('https://site.example/watch'),
-        route: const MediaNetworkRoute(proxy: 'PROXY 127.0.0.1:7890'),
-        resolve: (_) async {
-          resolutions++;
-          return [InternetAddress('198.18.0.1')];
-        },
+        // `.invalid` must never be resolved successfully. If this path starts
+        // doing Dart-side DNS again, the test fails instead of masking it with
+        // a route fixture.
+        Uri.parse('https://site.invalid/watch'),
       );
-      expect(resolutions, 0);
     },
   );
 
@@ -641,52 +637,6 @@ void main() {
       } finally {
         await server.close(force: true);
       }
-    },
-  );
-
-  test('HTTP proxy navigation does not resolve the origin locally', () async {
-    var resolved = false;
-    await NetworkPolicy.publicNavigation(
-      Uri.parse('https://proxy-only.example/'),
-      route: const MediaNetworkRoute(
-        proxy: 'PROXY 127.0.0.1:7890',
-        routeKind: 'http_proxy',
-        dnsOwner: 'proxy',
-        targetDnsMode: 'proxy_remote',
-      ),
-      resolve: (_) async {
-        resolved = true;
-        return <InternetAddress>[InternetAddress.loopbackIPv4];
-      },
-    );
-    expect(resolved, isFalse);
-  });
-
-  test(
-    'navigation leaves system DNS and Fake-IP ownership to Android',
-    () async {
-      var secureDnsResolved = false;
-      var systemResolved = false;
-      await NetworkPolicy.publicNavigation(
-        Uri.parse('https://fake-ip.example/'),
-        route: const MediaNetworkRoute(
-          proxy: 'DIRECT',
-          routeKind: 'vpn_tun_fake_ip',
-          dnsOwner: 'system_dns',
-          targetDnsMode: 'system_route',
-          allowProxyFakeIp: true,
-        ),
-        resolve: (_) async {
-          secureDnsResolved = true;
-          return <InternetAddress>[InternetAddress('8.8.8.8')];
-        },
-        systemResolve: (_) async {
-          systemResolved = true;
-          return <InternetAddress>[InternetAddress('198.18.0.7')];
-        },
-      );
-      expect(secureDnsResolved, isFalse);
-      expect(systemResolved, isFalse);
     },
   );
 }

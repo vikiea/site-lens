@@ -797,20 +797,7 @@ class NativeHosts extends WebHostEvents {
     await _applyFilter(session, url: url);
     if (session.purpose != HostPurpose.browsing) {
       final uri = webUri(url);
-      final route = await session.cancellation.waitFor(
-        (probeRoute?.call(uri) ?? Future.value(const MediaNetworkRoute()))
-            .timeout(const Duration(seconds: 6)),
-      );
-      session.routeKind = route.routeKind;
-      session.dnsOwner = route.dnsOwner;
-      session.targetDnsMode = route.targetDnsMode;
-      session.networkEpoch = route.networkEpoch;
-      await NetworkPolicy.publicNavigation(
-        uri,
-        route: route,
-        cancel: session.cancellation,
-        resolve: http.resolve,
-      );
+      await NetworkPolicy.publicNavigation(uri, cancel: session.cancellation);
       if (session.disposed || session.generation != generation) {
         throw const Cancelled();
       }

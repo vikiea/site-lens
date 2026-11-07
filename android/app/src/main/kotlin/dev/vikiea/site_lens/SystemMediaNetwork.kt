@@ -239,8 +239,6 @@ object SystemMediaNetwork {
         val headers: Map<String, String>,
         val body: ByteArray,
         val finalUri: URI,
-        val routeKind: String,
-        val targetDnsMode: String,
         val networkEpoch: Long,
     )
 
@@ -481,8 +479,6 @@ object SystemMediaNetwork {
                     headers = response.headers.toMultimap().mapValues { it.value.joinToString(", ") },
                     body = output.toByteArray(),
                     finalUri = uri,
-                    routeKind = plan.info.kind.wireName,
-                    targetDnsMode = plan.info.targetDnsMode,
                     networkEpoch = networkEpoch(),
                 )
             }

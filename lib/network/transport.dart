@@ -365,19 +365,7 @@ class NetworkPolicy {
     }
   }
 
-  static Future<void> publicNavigation(
-    Uri uri, {
-
-    /// Kept for diagnostic-call compatibility. Route ownership belongs to the
-    /// Android system network executor; this business-layer validator never
-    /// uses route kind or Fake-IP classification to authorize navigation.
-    MediaNetworkRoute route = const MediaNetworkRoute(),
-    Cancellation? cancel,
-    Future<List<InternetAddress>> Function(String) resolve =
-        InternetAddress.lookup,
-    Future<List<InternetAddress>> Function(String) systemResolve =
-        InternetAddress.lookup,
-  }) async {
+  static Future<void> publicNavigation(Uri uri, {Cancellation? cancel}) async {
     webUri(uri.toString());
     if (allowLocalTestPages) return;
     validateTarget(uri, {'*'}, uri);
