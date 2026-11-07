@@ -367,6 +367,10 @@ class NetworkPolicy {
 
   static Future<void> publicNavigation(
     Uri uri, {
+
+    /// Kept for diagnostic-call compatibility. Route ownership belongs to the
+    /// Android system network executor; this business-layer validator never
+    /// uses route kind or Fake-IP classification to authorize navigation.
     MediaNetworkRoute route = const MediaNetworkRoute(),
     Cancellation? cancel,
     Future<List<InternetAddress>> Function(String) resolve =
@@ -378,35 +382,10 @@ class NetworkPolicy {
     if (allowLocalTestPages) return;
     validateTarget(uri, {'*'}, uri);
     cancel?.check();
-    // WebView follows the OS route. Resolve the origin only when DIRECT is
-    // selected, never merely because PAC lists it after an HTTP proxy.
-    final first = route.proxy.split(';').first.trim();
-    if (route.targetDnsMode == 'proxy_remote' ||
-        route.routeKind == 'http_proxy' ||
-        first.startsWith('PROXY ')) {
-      return;
-    }
-    if (first != 'DIRECT') throw StateError('系统代理没有可用路由');
-    final resolver = route.targetDnsMode == 'system_route'
-        ? systemResolve
-        : resolve;
-    final addresses = await resolver(uri.host)
-        .timeout(const Duration(seconds: 5));
-    cancel?.check();
-    // A gateway Fake-IP route (OpenClash/Mihomo on the LAN router) hands every
-    // origin name to the router. Accept the reserved range for that route kind
-    // exactly as the VPN/TUN route does. This accepts reserve-range answers on
-    // the strength of the native route kind alone: the authority that decides
-    // whether a gateway may own DNS is SystemMediaNetwork.routerFakeIpEligible
-    // on the platform side. Real private and loopback answers still fail below.
-    final fakeIpAllowed =
-        route.allowProxyFakeIp || routeOwnsDns(route.routeKind);
-    if (addresses.isEmpty ||
-        addresses.any(
-          (a) => !publicAddress(a) && !(fakeIpAllowed && proxyFakeIp(a)),
-        )) {
-      throw AddressPolicyException(blockedAddressReason(addresses));
-    }
+    // WebView follows Android's system network. The app keeps URL and
+    // @connect policy here, while proxy/VPN/DNS ownership stays in the
+    // Android native network executor. Do not resolve the target in Dart and
+    // do not classify Fake-IP answers here.
   }
 
   static Future<ConnectionTask<Socket>> connect(

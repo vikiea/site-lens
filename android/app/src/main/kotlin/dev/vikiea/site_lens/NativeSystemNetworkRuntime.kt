@@ -179,8 +179,6 @@ class NativeSystemNetworkRuntime(appContext: Context) : MethodChannel.MethodCall
             "headers" to response.headers,
             "body" to response.body,
             "url" to response.finalUri.toString(),
-            "routeKind" to response.routeKind,
-            "targetDnsMode" to response.targetDnsMode,
             "networkEpoch" to response.networkEpoch,
         )
     }

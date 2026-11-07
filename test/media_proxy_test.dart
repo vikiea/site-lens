@@ -444,14 +444,15 @@ void main() {
     expect(result.reason, contains('127.0.0.1:$deadPort'));
   });
 
-  test('gateway Fake-IP is accepted only for routing gateway kinds', () async {
-    Future<List<InternetAddress>> resolver(String _) async => [
-      InternetAddress('198.18.0.7'),
-    ];
+  test('navigation leaves gateway Fake-IP ownership to the native route', () async {
+    var resolutions = 0;
+    Future<List<InternetAddress>> resolver(String _) async {
+      resolutions++;
+      return [InternetAddress('198.18.0.7')];
+    }
+
     final uri = Uri.parse('https://origin.example/');
 
-    // A LAN OpenClash router answers 198.18.0.0/15 for every proxied name and
-    // owns the socket, so the reserved answer is a valid route.
     await NetworkPolicy.publicNavigation(
       uri,
       route: const MediaNetworkRoute(
@@ -464,15 +465,12 @@ void main() {
       systemResolve: resolver,
     );
 
-    // The same answer without a routing-gateway route stays a policy failure.
-    await expectLater(
-      NetworkPolicy.publicNavigation(
-        uri,
-        route: const MediaNetworkRoute(routeKind: 'public_direct'),
-        resolve: resolver,
-      ),
-      throwsA(isA<AddressPolicyException>()),
+    await NetworkPolicy.publicNavigation(
+      uri,
+      route: const MediaNetworkRoute(routeKind: 'public_direct'),
+      resolve: resolver,
     );
+    expect(resolutions, 0);
   });
 
   test('route kinds that own DNS are classified explicitly', () {

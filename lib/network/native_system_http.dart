@@ -19,8 +19,6 @@ class NativeSystemHttpResponse {
     required this.headers,
     required this.body,
     required this.url,
-    required this.routeKind,
-    required this.targetDnsMode,
     required this.networkEpoch,
   });
 
@@ -28,8 +26,6 @@ class NativeSystemHttpResponse {
   final Map<String, String> headers;
   final Uint8List body;
   final Uri url;
-  final String routeKind;
-  final String targetDnsMode;
   final int networkEpoch;
 }
 
@@ -98,8 +94,6 @@ class NativeSystemHttpTransport {
         ),
         body: Uint8List.fromList(rawBody.cast<int>()),
         url: Uri.tryParse(value['url']?.toString() ?? '') ?? url,
-        routeKind: value['routeKind']?.toString() ?? 'unknown',
-        targetDnsMode: value['targetDnsMode']?.toString() ?? 'unknown',
         networkEpoch: (value['networkEpoch'] as num?)?.toInt() ?? 0,
       );
     } on NativeSystemHttpException {

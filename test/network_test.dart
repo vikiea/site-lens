@@ -233,37 +233,41 @@ void main() {
     route.complete(const MediaNetworkRoute());
   });
 
-  test('a stalled route lookup yields to the next candidate within the deadline', () async {
-    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    addTearDown(() => server.close(force: true));
-    server.listen((request) {
-      request.response.statusCode = HttpStatus.ok;
-      request.response.close();
-    });
-    final stalled = Completer<MediaNetworkRoute>();
-    var attempts = 0;
-    final watch = Stopwatch()..start();
-    final result = await HttpProbe(
-      allowLocal: true,
-      routeForAttempt: (_, attempt) {
-        attempts = attempt;
-        return attempt == 0
-            ? stalled.future
-            : Future.value(const MediaNetworkRoute(proxy: 'DIRECT'));
-      },
-    ).run(
-      Candidate(
-        id: 1,
-        url: Uri.parse('http://127.0.0.1:${server.port}/'),
-        label: 'route-timeout',
-      ),
-      1,
-      Cancellation(),
-    );
-    expect(result.status, ProbeStatus.reachable);
-    expect(attempts, 1);
-    expect(watch.elapsed, lessThan(const Duration(seconds: 5)));
-  });
+  test(
+    'a stalled route lookup yields to the next candidate within the deadline',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      server.listen((request) {
+        request.response.statusCode = HttpStatus.ok;
+        request.response.close();
+      });
+      final stalled = Completer<MediaNetworkRoute>();
+      var attempts = 0;
+      final watch = Stopwatch()..start();
+      final result =
+          await HttpProbe(
+            allowLocal: true,
+            routeForAttempt: (_, attempt) {
+              attempts = attempt;
+              return attempt == 0
+                  ? stalled.future
+                  : Future.value(const MediaNetworkRoute(proxy: 'DIRECT'));
+            },
+          ).run(
+            Candidate(
+              id: 1,
+              url: Uri.parse('http://127.0.0.1:${server.port}/'),
+              label: 'route-timeout',
+            ),
+            1,
+            Cancellation(),
+          );
+      expect(result.status, ProbeStatus.reachable);
+      expect(attempts, 1);
+      expect(watch.elapsed, lessThan(const Duration(seconds: 5)));
+    },
+  );
 
   test(
     'cancelling while reading the system route prevents a late connection',
@@ -659,7 +663,7 @@ void main() {
   });
 
   test(
-    'system-route navigation uses system DNS for confirmed Fake-IP',
+    'navigation leaves system DNS and Fake-IP ownership to Android',
     () async {
       var secureDnsResolved = false;
       var systemResolved = false;
@@ -682,7 +686,7 @@ void main() {
         },
       );
       expect(secureDnsResolved, isFalse);
-      expect(systemResolved, isTrue);
+      expect(systemResolved, isFalse);
     },
   );
 }

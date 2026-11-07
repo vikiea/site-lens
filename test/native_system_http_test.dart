@@ -28,8 +28,6 @@ void main() {
         },
         'body': Uint8List.fromList([1, 2, 3]),
         'url': 'https://example.com/start',
-        'routeKind': 'http_proxy',
-        'targetDnsMode': 'proxy_remote',
         'networkEpoch': 7,
       };
     });
@@ -54,8 +52,6 @@ void main() {
     expect(response.headers['location'], 'https://cdn.example/next');
     expect(response.headers['x-test'], 'ok');
     expect(response.body, Uint8List.fromList([1, 2, 3]));
-    expect(response.routeKind, 'http_proxy');
-    expect(response.targetDnsMode, 'proxy_remote');
     expect(response.networkEpoch, 7);
   });
 
@@ -125,8 +121,6 @@ void main() {
         'headers': <String, String>{'Location': '/release'},
         'body': Uint8List(0),
         'url': 'https://github.com/example',
-        'routeKind': 'vpn_tun_fake_ip',
-        'targetDnsMode': 'system_route',
         'networkEpoch': 2,
       };
     });
@@ -164,8 +158,6 @@ void main() {
           'headers': const <String, String>{},
           'body': Uint8List(0),
           'url': 'https://github.com/example',
-          'routeKind': 'http_proxy',
-          'targetDnsMode': 'proxy_remote',
           'networkEpoch': 3,
         };
       });
