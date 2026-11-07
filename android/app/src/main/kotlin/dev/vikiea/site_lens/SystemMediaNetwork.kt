@@ -284,7 +284,8 @@ object SystemMediaNetwork {
         }
         val visible = visibleProxyEndpoints(selector, linkHttpProxies(links?.httpProxy))
         val http = visible.filter { it.type() == Proxy.Type.HTTP }
-        val vpn = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+        val vpn = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true ||
+            (network != null && looksLikeTunnelInterface(manager, network))
         // This snapshot deliberately does not resolve the target. A VPN alone
         // proves tunnel presence, not Fake-IP DNS ownership, so report an
         // unknown route until the connection-time planner confirms the answer.
@@ -325,18 +326,45 @@ object SystemMediaNetwork {
         if (manager == null) return null
         val all = runCatching { manager.allNetworks }.getOrDefault(emptyArray())
         fun caps(network: Network) = manager.getNetworkCapabilities(network)
+        fun isTunnel(network: Network): Boolean =
+            caps(network)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true ||
+                looksLikeTunnelInterface(manager, network)
         return pickVpnNetwork(
             active = manager.activeNetwork,
             candidates = all.toList(),
-            activeIsVpn = manager.activeNetwork
-                ?.let(::caps)
-                ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true,
-            isVpn = { caps(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true },
+            activeIsVpn = manager.activeNetwork?.let(::isTunnel) == true,
+            isVpn = ::isTunnel,
             isUsable = { caps(it)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) != false },
             isValidated = {
                 caps(it)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
             },
         )
+    }
+
+    /**
+     * Recognises a tunnel from its link, not only from its capabilities.
+     *
+     * On recent Android the capability object an app receives for a VPN it did
+     * not create can omit TRANSPORT_VPN while the network itself still works:
+     * name resolution through it succeeds and its routes carry traffic. Trusting
+     * the flag alone therefore reported "no tunnel" while DNS answers were
+     * demonstrably coming from the tunnel's own resolver.
+     *
+     * A tunnel link is identified by its interface family (tun/ppp/wireguard and
+     * the Android VPN family) together with either a point-to-point /30 link or
+     * a default route it declares. Real Wi-Fi and cellular links have neither.
+     */
+    private fun looksLikeTunnelInterface(manager: ConnectivityManager, network: Network): Boolean {
+        val links = runCatching { manager.getLinkProperties(network) }.getOrNull() ?: return false
+        val name = links.interfaceName.orEmpty().lowercase()
+        val named = name.startsWith("tun") || name.startsWith("ppp") ||
+            name.startsWith("utun") || name.startsWith("wg") || name.startsWith("tap")
+        if (!named) return false
+        // A /30 point-to-point link is the shape every Android tunnel uses for
+        // its own leg; a declared 0.0.0.0/0 route is the other common shape.
+        val pointToPoint = links.linkAddresses.any { it.prefixLength == 30 }
+        val declaresDefault = links.routes.any { it.destination.prefixLength == 0 }
+        return pointToPoint || declaresDefault
     }
 
     /**
@@ -722,7 +750,12 @@ object SystemMediaNetwork {
         )
         val fingerprint = "${network?.networkHandle}:${links?.httpProxy}:${links?.dnsServers}"
         if (observedNetwork.getAndSet(fingerprint) != fingerprint) epoch.incrementAndGet()
-        val vpn = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+        // The capability flag can be withheld for a VPN this app did not create,
+        // so the interface shape is the second proof. Without it the hop was
+        // misclassified as public-direct while its DNS answers were still being
+        // served by the tunnel.
+        val vpn = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true ||
+            (network != null && looksLikeTunnelInterface(manager, network))
         val routerTrusted = routerFakeIpEligible(
             capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true,
             capabilities?.let {
@@ -933,26 +966,36 @@ object SystemMediaNetwork {
                 Proxy.NO_PROXY, addresses,
             )
         }
+        // A rule-mode tunnel answers per rule, so one name can come back with
+        // both a synthesized address and a real one - or with a real address on
+        // one lookup and a synthesized one on the next. Only an all-synthesized
+        // answer belongs to the tunnel; as soon as a real public address is
+        // present, that address works whichever way the tunnel routes the host.
+        val realAddresses = addresses.filter { publicAddress(it) }
         if (http.isNotEmpty()) return proxyPlan(attempt,
-            if (addresses.all(::publicAddress)) "public" else "blocked")
+            if (realAddresses.isNotEmpty() || onlyFakeIp) "public" else "blocked")
         if (onlyFakeIp && routerTrusted) return RoutePlan(
             RouteInfo(RouteKind.ROUTER_FAKE_IP, DnsOwner.SYSTEM_DNS, true,
                 directAllowed = true, dnsClass = "fake_ip",
                 targetDnsMode = "system_route"),
             Proxy.NO_PROXY, addresses,
         )
-        require(addresses.isNotEmpty() && addresses.all(::publicAddress)) {
-            // Do not guess at a cause. A loopback or link-local answer may be a
-            // poisoned resolver rather than a proxy setting, so the message
-            // states the rejection only and leaves the diagnosis to the
-            // caller's route evidence.
-            "DNS 返回本机/私网地址，已拒绝连接；请检查系统代理、VPN 或 DNS 设置"
+        if (realAddresses.isNotEmpty()) {
+            return RoutePlan(
+                RouteInfo(RouteKind.PUBLIC_DIRECT, DnsOwner.SYSTEM_DNS, false,
+                    directAllowed = true,
+                    dnsClass = if (addresses.size == realAddresses.size) "public" else "mixed",
+                    targetDnsMode = "direct_validated"),
+                Proxy.NO_PROXY, realAddresses,
+            )
         }
-        return RoutePlan(
-            RouteInfo(RouteKind.PUBLIC_DIRECT, DnsOwner.SYSTEM_DNS, false,
-                directAllowed = true, dnsClass = "public",
-                targetDnsMode = "direct_validated"),
-            Proxy.NO_PROXY, addresses,
+        // Nothing usable came back. Do not guess at a cause: a loopback or
+        // link-local answer may be a poisoned resolver rather than a proxy
+        // setting, so the message states the rejection only and leaves the
+        // diagnosis to the caller's route evidence.
+        throw MediaRouteIOException(
+            "private_address",
+            IOException("DNS 返回本机/私网地址，已拒绝连接；请检查系统代理、VPN 或 DNS 设置"),
         )
     }
 
@@ -1017,9 +1060,10 @@ object SystemMediaNetwork {
                 // Recheck the tunnel that owns this socket. Comparing with
                 // activeNetwork is wrong for rule-mode tunnels, where the
                 // underlay Wi-Fi legitimately stays the active network.
-                val stillVpn = plan.network != null &&
-                    manager?.getNetworkCapabilities(plan.network)
-                        ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+                val stillVpn = plan.network != null && manager != null &&
+                    (manager.getNetworkCapabilities(plan.network)
+                        ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true ||
+                        looksLikeTunnelInterface(manager, plan.network))
                 if (bindVpn && !stillVpn) {
                     throw MediaRouteIOException("route_changed", IOException("媒体网络已变化"))
                 }

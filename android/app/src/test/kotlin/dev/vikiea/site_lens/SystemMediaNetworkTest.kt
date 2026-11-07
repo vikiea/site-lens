@@ -348,6 +348,49 @@ class SystemMediaNetworkTest {
     }
 
     @Test
+    fun aMixedAnswerKeepsTheRealAddress() {
+        val target = URI("https://example.com/a")
+        // A rule-mode tunnel answers per rule, so one name can return both a
+        // synthesized address and a real one. The real address works whichever
+        // way the tunnel routes the host, so it must win.
+        val mixed = arrayOf(
+            InetAddress.getByName("198.18.0.42"),
+            InetAddress.getByName("13.35.163.40"),
+        )
+        val plan = SystemMediaNetwork.planFor(
+            target,
+            listOf(Proxy.NO_PROXY),
+            vpnTransport = true,
+            routerTrusted = false,
+            resolve = { mixed },
+        )
+        assertEquals(SystemMediaNetwork.RouteKind.PUBLIC_DIRECT, plan.info.kind)
+        assertEquals("mixed", plan.info.dnsClass)
+        assertEquals(listOf(InetAddress.getByName("13.35.163.40")), plan.addresses)
+
+        // An all-real answer stays classified as plain public.
+        val real = SystemMediaNetwork.planFor(
+            target,
+            listOf(Proxy.NO_PROXY),
+            vpnTransport = true,
+            routerTrusted = false,
+            resolve = { arrayOf(InetAddress.getByName("13.35.163.40")) },
+        )
+        assertEquals("public", real.info.dnsClass)
+
+        // An all-synthesized answer still belongs to the tunnel.
+        val synthesized = SystemMediaNetwork.planFor(
+            target,
+            listOf(Proxy.NO_PROXY),
+            vpnTransport = true,
+            routerTrusted = false,
+            resolve = { arrayOf(InetAddress.getByName("198.18.0.42")) },
+        )
+        assertEquals(SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP, synthesized.info.kind)
+        assertEquals("fake_ip", synthesized.info.dnsClass)
+    }
+
+    @Test
     fun explicitProxySelectorRemainsAuthoritativeOverLinkProperties() {
         val selectedProxy = Proxy(
             Proxy.Type.HTTP,
