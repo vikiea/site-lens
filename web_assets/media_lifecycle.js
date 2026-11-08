@@ -588,25 +588,36 @@
   // route, so the check is on the shape of the path rather than one exact
   // string; the episode number is read from whichever segment carries it.
   const PLAYBACK_PATH = /^\/api\/videos\/([1-9]\d{0,11})(?:\/(?:episodes\/)?(\d{1,5}))?(?:\/(?:play|playback))?\/?$/i;
+  // Every rejection below is counted so a missing observation names its
+  // reason instead of leaving an empty payload unexplained.
+  let requestDiagnostics = {};
+  function noteRequestReject(reason) {
+    requestDiagnostics[reason] = (requestDiagnostics[reason] || 0) + 1;
+  }
   function playbackRequest(raw, method) {
     const verb = String(method || 'GET').toUpperCase();
     if (verb !== 'GET' && verb !== 'POST') return null;
     const context = episodeContext();
-    if (!context) return null;
+    if (!context) { noteRequestReject('no_context'); return null; }
     try {
       const url = new URL(raw, document.baseURI);
-      if (url.origin !== context.origin || url.username || url.password) return null;
+      if (url.origin !== context.origin || url.username || url.password) {
+        noteRequestReject('origin');
+        return null;
+      }
       const match = PLAYBACK_PATH.exec(url.pathname);
-      if (!match || match[1] !== context.id) return null;
+      if (!match) { noteRequestReject('path_shape'); return null; }
+      if (match[1] !== context.id) { noteRequestReject('id_mismatch'); return null; }
       // Prefer the path segment, then the query, then the current episode.
       const fromPath = match[2] ? Number(match[2]) : null;
       const queryValues = url.searchParams.getAll('ep');
       const fromQuery = queryValues.length === 1 && /^[1-9]\d{0,4}$/.test(queryValues[0])
         ? Number(queryValues[0]) : null;
       const episode = fromPath ?? fromQuery ?? initialEpisode() ?? null;
-      if (!episode) return null;
+      if (!episode) { noteRequestReject('no_episode'); return null; }
+      requestDiagnostics['accepted'] = (requestDiagnostics['accepted'] || 0) + 1;
       return {...context, episode, url: url.href};
-    } catch (_) { return null; }
+    } catch (_) { noteRequestReject('parse'); return null; }
   }
   function startEpisodeRequest(raw, method) {
     if (!alive) return null;
@@ -1252,6 +1263,7 @@
         episodeMappingUnavailable,
         context: Boolean(context),
         playing,
+        requests: requestDiagnostics,
       });
     }
     const candidatePayloadKey = JSON.stringify(candidates);
