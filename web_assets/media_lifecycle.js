@@ -1240,7 +1240,8 @@
       lastState = stateKey;
       // Counts only: a missing candidate is then attributable to the stage
       // that produced nothing instead of to the whole pipeline.
-      post('state', {...state, diag: {
+      post('state', state);
+      post('diag', {
         nodes: nodes.size,
         contexts: contexts.size,
         explicit: explicit.length,
@@ -1250,7 +1251,8 @@
         candidates: candidates.length,
         episodeMappingUnavailable,
         context: Boolean(context),
-      }});
+        playing,
+      });
     }
     const candidatePayloadKey = JSON.stringify(candidates);
     if (candidatePayloadKey === lastCandidates) return;

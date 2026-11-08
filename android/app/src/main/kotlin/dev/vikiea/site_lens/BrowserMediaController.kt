@@ -111,13 +111,12 @@ class BrowserMediaController(
                 when (kind) {
                     "state" -> {
                         val evidence = data.optJSONObject("evidence")
-                        val diag = data.optJSONObject("diag")
                         " playing=" + data.optBoolean("playing") +
                             " ep=" + evidence?.optString("episodeNumber") +
                             " confirmed=" + evidence?.optBoolean("confirmed") +
-                            " src=" + evidence?.optString("sourceUrl")?.take(60) +
-                            " diag=" + diag
+                            " src=" + evidence?.optString("sourceUrl")?.take(60)
                     }
+                    "diag" -> " " + data.toString().take(400)
                     "candidates" -> " count=" + (data.optJSONArray("candidates")?.length() ?: 0)
                     else -> ""
                 },
