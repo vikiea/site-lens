@@ -601,7 +601,9 @@
       const text = String(raw && raw.url ? raw.url : raw || '');
       if (text.length > 512) return;
       const path = new URL(text, document.baseURI).pathname;
-      if (!/play|manifest|m3u8|video|episode/i.test(path)) return;
+      // Skip only static assets. Any other path can be the one the match rule
+      // rejects, and a keyword filter here would hide exactly that case.
+      if (/\.(?:js|css|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf|ts|m4s)$/i.test(path)) return;
       // Path only: a query string can push the counters past the log budget,
       // and the path is what decides whether the match rule is wrong.
       const key = String(method || 'GET').toUpperCase() + ' ' + path.slice(0, 80);
@@ -650,7 +652,10 @@
     beginSnapshotIfNeeded();
     syncEpisodeSeries();
     const current = episodeContext();
-    const finalRequest = episodeRequest(finalUrl, 'GET');
+    // Re-check with the same rule that accepted the request: a POST playback
+    // call has no GET equivalent, so validating the final URL with the legacy
+    // matcher discarded every response the modern rule had accepted.
+    const finalRequest = playbackRequest(finalUrl, 'GET') || episodeRequest(finalUrl, 'GET');
     if (request.visit !== seriesVisit || latestEpisodeRequests.get(request.episode) !== request.sequence ||
         !current || current.series !== request.series || !finalRequest ||
         finalRequest.episode !== request.episode) return;
