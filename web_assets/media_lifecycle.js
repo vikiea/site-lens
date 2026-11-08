@@ -418,12 +418,10 @@
       if (!response?.ok || !current || current.series !== request.series ||
           request.visit !== seriesVisit || finalUrl.origin !== current.origin ||
           typeof response.text !== 'function') return;
-      let item = await playbackApiSource(request, current);
-      // Sites that still ship sources in the document are handled there, and
-      // the page is only read when the API has nothing to offer.
-      if (!item && typeof response.text === 'function') {
-        item = episodePageSource(await response.text(), request, current, finalUrl.href);
-      }
+      // Read the document first: a site that names its sources needs no extra
+      // request, and the playback API is only consulted when it names none.
+      let item = episodePageSource(await response.text(), request, current, finalUrl.href);
+      if (!item) item = await playbackApiSource(request, current);
       if (!item || episodePageRequests.get(request.number)?.sequence !== request.sequence) return;
       episodeResponses.delete(request.number);
       episodeResponses.set(request.number, item);
