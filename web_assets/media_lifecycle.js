@@ -1236,7 +1236,22 @@
         : {...evidence, sourceUrl: null, sourceKey: '', title: '', seriesKey: null, confirmed: false},
     };
     const stateKey = JSON.stringify(state);
-    if (stateKey !== lastState) { lastState = stateKey; post('state', state); }
+    if (stateKey !== lastState) {
+      lastState = stateKey;
+      // Counts only: a missing candidate is then attributable to the stage
+      // that produced nothing instead of to the whole pipeline.
+      post('state', {...state, diag: {
+        nodes: nodes.size,
+        contexts: contexts.size,
+        explicit: explicit.length,
+        episodeResponses: episodeResponses.size,
+        networkResources: networkResources.size,
+        mapped: mapped.length,
+        candidates: candidates.length,
+        episodeMappingUnavailable,
+        context: Boolean(context),
+      }});
+    }
     const candidatePayloadKey = JSON.stringify(candidates);
     if (candidatePayloadKey === lastCandidates) return;
     lastCandidates = candidatePayloadKey;

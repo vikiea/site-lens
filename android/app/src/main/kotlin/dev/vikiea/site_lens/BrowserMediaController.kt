@@ -106,7 +106,22 @@ class BrowserMediaController(
             trace("recv_drop kind=$kind reason=document doc=$document")
             return
         }
-        trace("recv kind=$kind main=$main frame=$id")
+        trace(
+            "recv kind=$kind main=$main frame=$id" +
+                when (kind) {
+                    "state" -> {
+                        val evidence = data.optJSONObject("evidence")
+                        val diag = data.optJSONObject("diag")
+                        " playing=" + data.optBoolean("playing") +
+                            " ep=" + evidence?.optString("episodeNumber") +
+                            " confirmed=" + evidence?.optBoolean("confirmed") +
+                            " src=" + evidence?.optString("sourceUrl")?.take(60) +
+                            " diag=" + diag
+                    }
+                    "candidates" -> " count=" + (data.optJSONArray("candidates")?.length() ?: 0)
+                    else -> ""
+                },
+        )
         if (kind == "hello") {
             val parent = if (main) null else data.optString("parentFrame").takeIf {
                 it.matches(Regex("[a-zA-Z0-9_-]{1,96}"))
