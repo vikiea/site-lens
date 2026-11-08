@@ -602,7 +602,9 @@
       if (text.length > 512) return;
       const path = new URL(text, document.baseURI).pathname;
       if (!/play|manifest|m3u8|video|episode/i.test(path)) return;
-      const key = String(method || 'GET').toUpperCase() + ' ' + path.slice(0, 120);
+      // Path only: a query string can push the counters past the log budget,
+      // and the path is what decides whether the match rule is wrong.
+      const key = String(method || 'GET').toUpperCase() + ' ' + path.slice(0, 80);
       requestDiagnostics['seen:' + key] = (requestDiagnostics['seen:' + key] || 0) + 1;
     } catch (_) {}
   }

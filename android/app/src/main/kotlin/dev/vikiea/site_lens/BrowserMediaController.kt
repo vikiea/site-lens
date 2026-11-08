@@ -116,7 +116,10 @@ class BrowserMediaController(
                             " confirmed=" + evidence?.optBoolean("confirmed") +
                             " src=" + evidence?.optString("sourceUrl")?.take(60)
                     }
-                    "diag" -> " " + data.toString().take(400)
+                    // The counters are the whole point of this message; a
+                    // truncated payload cannot name the endpoint that was not
+                    // observed.
+                    "diag" -> " " + data.toString().take(1800)
                     "candidates" -> " count=" + (data.optJSONArray("candidates")?.length() ?: 0)
                     else -> ""
                 },
