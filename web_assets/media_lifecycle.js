@@ -350,6 +350,51 @@
     } catch (_) { return null; }
   }
 
+  // The playback API a site may expose instead of shipping sources in its
+  // document. It answers with the manifest for one episode, so every episode
+  // in the picker list can be resolved without touching the player.
+  async function playbackApiSource(request, context) {
+    if (typeof window.fetch !== 'function') return null;
+    const url = new URL(
+      `/api/videos/${encodeURIComponent(context.id)}/episodes/${encodeURIComponent(String(request.number))}/playback`,
+      context.origin,
+    );
+    let controller = null;
+    let timer = null;
+    try {
+      if (typeof AbortController === 'function') controller = new AbortController();
+      timer = typeof setTimeout === 'function' ? setTimeout(() => controller?.abort(), 10000) : null;
+      const response = await window.fetch(url.href, {
+        method: 'POST',
+        credentials: 'same-origin',
+        redirect: 'follow',
+        headers: {'Content-Type': 'application/json'},
+        body: '{}',
+        ...(controller ? {signal: controller.signal} : {}),
+      });
+      if (!response?.ok || typeof response.json !== 'function') return null;
+      const payload = await response.json();
+      const found = mediaUrlsIn(payload);
+      if (!found.length) return null;
+      const current = episodeContext();
+      if (!alive || !current || current.series !== request.series) return null;
+      const media = explicitMediaUrl(found[0]);
+      if (!media || !acceptSeriesSource(media.href, current)) return null;
+      const title = String(payload?.data?.title || '').trim();
+      return {
+        number: request.number,
+        url: media.href,
+        pageUrl: request.url,
+        title: title ? `${title} - 第${request.number}集` : request.title,
+        poster: '',
+        priority: 2,
+      };
+    } catch (_) {
+      return null;
+    } finally {
+      if (timer != null) clearTimeout(timer);
+    }
+  }
   async function resolveEpisodePage(request) {
     const context = episodeContext();
     if (!alive || !context || context.series !== request.series ||
@@ -373,7 +418,12 @@
       if (!response?.ok || !current || current.series !== request.series ||
           request.visit !== seriesVisit || finalUrl.origin !== current.origin ||
           typeof response.text !== 'function') return;
-      const item = episodePageSource(await response.text(), request, current, finalUrl.href);
+      let item = await playbackApiSource(request, current);
+      // Sites that still ship sources in the document are handled there, and
+      // the page is only read when the API has nothing to offer.
+      if (!item && typeof response.text === 'function') {
+        item = episodePageSource(await response.text(), request, current, finalUrl.href);
+      }
       if (!item || episodePageRequests.get(request.number)?.sequence !== request.sequence) return;
       episodeResponses.delete(request.number);
       episodeResponses.set(request.number, item);
