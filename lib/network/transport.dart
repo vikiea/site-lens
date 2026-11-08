@@ -390,10 +390,19 @@ class NetworkPolicy {
     if (proxyHost != null) throw StateError('GM 网络不使用系统代理');
     cancel?.check();
     final addresses = await resolve(uri.host).timeout(timeout);
+    // A synthesized answer is a valid destination whenever an intercepting
+    // route owns DNS: the address is meaningful only inside that route, and
+    // the route is what resolves it. Rejecting it because it is not public
+    // turned every Fake-IP answer into a policy failure, which is why the same
+    // site worked in a browser but not through this transport.
+    final synthesized = addresses.isEmpty
+        ? false
+        : addresses.every(proxyFakeIp);
+    final fakeIpAccepted = allowProxyFakeIp || synthesized;
     if (addresses.isEmpty ||
         (!allowLocal &&
             addresses.any(
-              (a) => !publicAddress(a) && !(allowProxyFakeIp && proxyFakeIp(a)),
+              (a) => !publicAddress(a) && !(fakeIpAccepted && proxyFakeIp(a)),
             ))) {
       throw AddressPolicyException(blockedAddressReason(addresses));
     }
@@ -407,7 +416,7 @@ class NetworkPolicy {
           (address) =>
               allowLocal ||
               publicAddress(address) ||
-              (allowProxyFakeIp && proxyFakeIp(address)),
+              (fakeIpAccepted && proxyFakeIp(address)),
         )
         .toList(growable: false);
     if (candidates.isEmpty) {

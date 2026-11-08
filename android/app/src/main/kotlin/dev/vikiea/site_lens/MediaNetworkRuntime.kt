@@ -147,12 +147,11 @@ class MediaNetworkRuntime(
             val resourceKind = call.argument<String>("resourceKind")
                 ?.takeIf { it in setOf("manifest", "key", "segment", "map", "file") } ?: "file"
             val networkEpoch = call.argument<Int>("networkEpoch") ?: 0
-            val fallback = SystemMediaNetwork.FakeIpFallback()
             val transfer = ResumableMediaTransfer(
                 connectForAttempt = { uri, attempt ->
                     selectedRoute = "unknown"
                     targetDnsMode = "unknown"
-                    SystemMediaNetwork.openMediaConnection(context, uri, attempt, fallback) { info ->
+                    SystemMediaNetwork.openMediaConnection(context, uri, attempt) { info ->
                         selectedRoute = info.kind.wireName
                         targetDnsMode = info.targetDnsMode
                     }
@@ -163,13 +162,6 @@ class MediaNetworkRuntime(
                 routeBeforeConnect = { selectedRoute },
                 context = context,
                 onAttempt = { diagnostics ->
-                    // A Fake-IP host that fails TLS inside the tunnel is routed
-                    // to its real address from the next attempt onwards.
-                    fallback.observe(
-                        diagnostics["host"] as? String,
-                        diagnostics["routeKind"] as? String,
-                        diagnostics["failureCategory"] as? String,
-                    )
                     if (attempts.size < 5) attempts += diagnostics + mapOf("resourceKind" to resourceKind)
                     if ((diagnostics["elapsedMs"] as? Long ?: 0L) >= 2_000L ||
                         diagnostics["outcome"] != "completed") {

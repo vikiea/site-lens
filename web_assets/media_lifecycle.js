@@ -446,6 +446,18 @@
       return route;
     } catch (_) { return null; }
   }
+  // The page's own episode field, used only when neither the path nor the
+  // query names one. It keeps a single-resource player attributable without
+  // guessing across a series.
+  function initialEpisode() {
+    const element = initialDataElement();
+    if (!element) return null;
+    try {
+      const data = JSON.parse(element.textContent || '{}');
+      const value = Number(data.ep);
+      return Number.isFinite(value) && value > 0 && value < 100000 ? value : null;
+    } catch (_) { return null; }
+  }
   function explicitSeriesIdentity(element) {
     const candidates = [];
     const add = value => {
@@ -572,11 +584,35 @@
     explicitEpisodeIdentities = next;
     return explicit;
   }
+  // Endpoints that answer with a media address. A site is free to change its
+  // route, so the check is on the shape of the path rather than one exact
+  // string; the episode number is read from whichever segment carries it.
+  const PLAYBACK_PATH = /^\/api\/videos\/([1-9]\d{0,11})(?:\/(?:episodes\/)?(\d{1,5}))?(?:\/(?:play|playback))?\/?$/i;
+  function playbackRequest(raw, method) {
+    const verb = String(method || 'GET').toUpperCase();
+    if (verb !== 'GET' && verb !== 'POST') return null;
+    const context = episodeContext();
+    if (!context) return null;
+    try {
+      const url = new URL(raw, document.baseURI);
+      if (url.origin !== context.origin || url.username || url.password) return null;
+      const match = PLAYBACK_PATH.exec(url.pathname);
+      if (!match || match[1] !== context.id) return null;
+      // Prefer the path segment, then the query, then the current episode.
+      const fromPath = match[2] ? Number(match[2]) : null;
+      const queryValues = url.searchParams.getAll('ep');
+      const fromQuery = queryValues.length === 1 && /^[1-9]\d{0,4}$/.test(queryValues[0])
+        ? Number(queryValues[0]) : null;
+      const episode = fromPath ?? fromQuery ?? initialEpisode() ?? null;
+      if (!episode) return null;
+      return {...context, episode, url: url.href};
+    } catch (_) { return null; }
+  }
   function startEpisodeRequest(raw, method) {
     if (!alive) return null;
     beginSnapshotIfNeeded();
     syncEpisodeSeries();
-    const request = episodeRequest(raw, method);
+    const request = playbackRequest(raw, method) || episodeRequest(raw, method);
     if (!request) return null;
     const sequence = ++requestSequence;
     latestEpisodeRequests.delete(request.episode);
@@ -595,16 +631,53 @@
         finalRequest.episode !== request.episode) return;
     try {
       const response = JSON.parse(text);
-      const data = response && response.status === 1 ? response.data : null;
-      if (!data || String(data.id) !== request.id || data.ep_num !== request.episode ||
-          typeof data.video_url !== 'string') return;
-      const url = explicitMediaUrl(data.video_url);
-      if (!url || !acceptSeriesSource(url.href, current)) return;
-      episodeResponses.delete(request.episode);
-      episodeResponses.set(request.episode, {number: request.episode, url: url.href, priority: 2});
-      while (episodeResponses.size > 256) episodeResponses.delete(episodeResponses.keys().next().value);
-      scheduleReport();
+      // The address is not required to sit at a fixed field. Any string that
+      // names a media manifest is a candidate, as long as the payload still
+      // identifies this series and this episode.
+      const found = mediaUrlsIn(response);
+      if (!found.length) return;
+      if (!payloadMatchesEpisode(response, request)) return;
+      for (const raw of found) {
+        const url = explicitMediaUrl(raw);
+        if (!url || !acceptSeriesSource(url.href, current)) continue;
+        episodeResponses.delete(request.episode);
+        episodeResponses.set(request.episode, {number: request.episode, url: url.href, priority: 2});
+        while (episodeResponses.size > 256) episodeResponses.delete(episodeResponses.keys().next().value);
+        scheduleReport();
+        return;
+      }
     } catch (_) {}
+  }
+  // Every string in the payload that names a manifest, bounded so a large
+  // response cannot turn into an unbounded scan.
+  function mediaUrlsIn(value, depth = 0, out = []) {
+    if (depth > 6 || out.length >= 32) return out;
+    if (typeof value === 'string') {
+      if (value.length <= 2048 && looksMedia(value, '')) out.push(value);
+      return out;
+    }
+    if (!value || typeof value !== 'object') return out;
+    const entries = Array.isArray(value) ? value.slice(0, 64) : Object.values(value);
+    for (const entry of entries) mediaUrlsIn(entry, depth + 1, out);
+    return out;
+  }
+  // A payload may describe many episodes. Only its own identity fields may
+  // confirm which one it answers; when they are absent the request is trusted,
+  // because the caller already matched the series and the episode.
+  function payloadMatchesEpisode(response, request) {
+    const ids = [];
+    const episodes = [];
+    (function walk(value, depth) {
+      if (depth > 6 || !value || typeof value !== 'object') return;
+      for (const [key, entry] of Object.entries(value)) {
+        if (/^(id|video_id|series_id)$/i.test(key)) ids.push(String(entry));
+        if (/^(ep_num|ep_num_id|episode|ep|episode_num)$/i.test(key)) episodes.push(String(entry));
+        walk(entry, depth + 1);
+      }
+    })(response, 0);
+    if (ids.length && !ids.includes(String(request.id))) return false;
+    if (episodes.length && !episodes.includes(String(request.episode))) return false;
+    return true;
   }
   function networkRequest(raw, method) {
     beginSnapshotIfNeeded();

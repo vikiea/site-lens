@@ -72,24 +72,14 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
                     return@withFileLock success(finalFile)
                 }
                 val attemptsUsed = repository.attemptsUsed(taskId)
-                val fallback = SystemMediaNetwork.FakeIpFallback()
                 val transfer = ResumableMediaTransfer(
                     cancelled = { isObsolete() || SystemClock.elapsedRealtime() >= deadline },
                     connectForAttempt = { uri, attempt ->
                         SystemMediaNetwork.openMediaConnection(
-                            applicationContext, uri, attempt, fallback,
+                            applicationContext, uri, attempt,
                         )
                     },
                     onAttemptStarted = { used -> repository.setAttemptsUsed(taskId, attemptsUsed + used) },
-                    onAttempt = { diagnostics ->
-                        // Within one worker invocation, keep the downgrade local:
-                        // a later WorkManager retry re-probes from scratch.
-                        fallback.observe(
-                            diagnostics["host"] as? String,
-                            diagnostics["routeKind"] as? String,
-                            diagnostics["failureCategory"] as? String,
-                        )
-                    },
                     context = applicationContext,
                 )
                 ownedTransfer = transfer

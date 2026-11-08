@@ -735,7 +735,6 @@ object SystemMediaNetwork {
         context: Context,
         uri: URI,
         attempt: Int = 0,
-        preferRealAddress: Boolean = false,
         lookupTimeoutMs: Long = 5_000L,
         isCancelled: (() -> Boolean)? = null,
         resolverLane: String = "general",
@@ -767,7 +766,7 @@ object SystemMediaNetwork {
             selected.none { it.type() == Proxy.Type.HTTP },
         )
         val planned = planFor(
-            uri, selected, vpn, routerTrusted, attempt, preferRealAddress,
+            uri, selected, vpn, routerTrusted, attempt,
             resolve = { host ->
                 resolveBounded(
                     lookupTimeoutMs,
@@ -779,15 +778,6 @@ object SystemMediaNetwork {
                     }
                     network?.getAllByName(host) ?: InetAddress.getAllByName(host)
                 }
-            },
-            // The tunnel owns the resolver, so a real answer has to come from
-            // the underlay's view of the name instead.
-            resolveReal = { host ->
-                resolveBounded(
-                    lookupTimeoutMs,
-                    isCancelled,
-                    resolverLane,
-                ) { InetAddress.getAllByName(host) }
             },
         )
         // A tunnel that is not the OS default route only carries traffic whose
@@ -897,11 +887,6 @@ object SystemMediaNetwork {
     /**
      * Pure policy. HTTP proxies own origin DNS unless VPN Fake-IP is proven.
      *
-     * [preferRealAddress] asks for a direct-connect address that the tunnel can
-     * still route. A rule-mode TUN may answer every name with a synthesized
-     * Fake-IP and then decide the host is DIRECT by rule; the Fake-IP then
-     * points at nothing and TLS dies inside the tunnel. Resolving the name to
-     * its real address keeps such a host reachable either way.
      */
     fun planFor(
         uri: URI,
@@ -909,9 +894,7 @@ object SystemMediaNetwork {
         vpnTransport: Boolean,
         routerTrusted: Boolean,
         attempt: Int = 0,
-        preferRealAddress: Boolean = false,
         resolve: (String) -> Array<InetAddress> = InetAddress::getAllByName,
-        resolveReal: (String) -> Array<InetAddress> = InetAddress::getAllByName,
     ): RoutePlan {
         validateTarget(uri)
         check(selected.isNotEmpty() && selected.all {
@@ -939,64 +922,58 @@ object SystemMediaNetwork {
             throw error
         }
         val onlyFakeIp = addresses.isNotEmpty() && addresses.all(::fakeIp)
-        if (onlyFakeIp && vpnTransport) {
-            // The tunnel synthesized this address, so the socket only exists
-            // while the tunnel agrees to carry it. When the caller asks for a
-            // real address - or the tunnel already failed this host - prefer a
-            // direct answer that survives either routing decision.
-            if (preferRealAddress) {
-                val real = runCatching { resolveReal(uri.host).toList() }.getOrDefault(emptyList())
-                // Same fail-closed rule as a direct route: a downgraded
-                // address must be public, not merely non-synthesized.
-                if (real.isNotEmpty() && real.all(::publicAddress)) {
-                    return RoutePlan(
-                        RouteInfo(RouteKind.VPN_TUN_FAKE_IP, DnsOwner.SYSTEM_DNS, true,
-                            proxyConfigured = http.isNotEmpty(), preferVpnTun = true,
-                            directAllowed = true, dnsClass = "real_address",
-                            targetDnsMode = "system_route"),
-                        Proxy.NO_PROXY, real,
-                    )
-                }
-            }
+        // The tunnel does not exempt a name from Fake-IP just because its rule
+        // ends in DIRECT: a domestic name is answered with a synthesized
+        // address too, and the rule only chooses the outbound at connect time.
+        // The synthesized answer therefore stays as it is, and the system route
+        // carries it exactly like the WebView does.
+        if (vpnTransport) {
+            requireUsableAnswer(addresses)
             return RoutePlan(
                 RouteInfo(RouteKind.VPN_TUN_FAKE_IP, DnsOwner.SYSTEM_DNS, true,
                     proxyConfigured = http.isNotEmpty(), preferVpnTun = true,
-                    directAllowed = true, dnsClass = "fake_ip",
+                    directAllowed = true,
+                    dnsClass = if (onlyFakeIp) "fake_ip" else "public",
                     targetDnsMode = "system_route"),
                 Proxy.NO_PROXY, addresses,
             )
         }
-        // A rule-mode tunnel answers per rule, so one name can come back with
-        // both a synthesized address and a real one - or with a real address on
-        // one lookup and a synthesized one on the next. Only an all-synthesized
-        // answer belongs to the tunnel; as soon as a real public address is
-        // present, that address works whichever way the tunnel routes the host.
         val realAddresses = addresses.filter { publicAddress(it) }
         if (http.isNotEmpty()) return proxyPlan(attempt,
             if (realAddresses.isNotEmpty() || onlyFakeIp) "public" else "blocked")
+        // A soft router intercepts at the gateway, so no local tunnel exists and
+        // a synthesized answer is the router's own contract.
         if (onlyFakeIp && routerTrusted) return RoutePlan(
             RouteInfo(RouteKind.ROUTER_FAKE_IP, DnsOwner.SYSTEM_DNS, true,
                 directAllowed = true, dnsClass = "fake_ip",
                 targetDnsMode = "system_route"),
             Proxy.NO_PROXY, addresses,
         )
-        if (realAddresses.isNotEmpty()) {
-            return RoutePlan(
-                RouteInfo(RouteKind.PUBLIC_DIRECT, DnsOwner.SYSTEM_DNS, false,
-                    directAllowed = true,
-                    dnsClass = if (addresses.size == realAddresses.size) "public" else "mixed",
-                    targetDnsMode = "direct_validated"),
-                Proxy.NO_PROXY, realAddresses,
+        requireUsableAnswer(addresses)
+        return RoutePlan(
+            RouteInfo(RouteKind.PUBLIC_DIRECT, DnsOwner.SYSTEM_DNS, false,
+                directAllowed = true, dnsClass = "public",
+                targetDnsMode = "direct_validated"),
+            Proxy.NO_PROXY, realAddresses,
+        )
+    }
+
+    /**
+     * Rejects an answer that can never name a remote service.
+     *
+     * A loopback, link-local or private answer is a poisoned resolver, not a
+     * routing decision, so it stays fail-closed. A synthesized address is not
+     * rejected here: it belongs to the intercepting route that produced it.
+     */
+    private fun requireUsableAnswer(addresses: List<InetAddress>) {
+        val usable = addresses.isNotEmpty() &&
+            addresses.all { publicAddress(it) || fakeIp(it) }
+        if (!usable) {
+            throw MediaRouteIOException(
+                "private_address",
+                IOException("DNS 返回本机/私网地址，已拒绝连接；请检查系统代理、VPN 或 DNS 设置"),
             )
         }
-        // Nothing usable came back. Do not guess at a cause: a loopback or
-        // link-local answer may be a poisoned resolver rather than a proxy
-        // setting, so the message states the rejection only and leaves the
-        // diagnosis to the caller's route evidence.
-        throw MediaRouteIOException(
-            "private_address",
-            IOException("DNS 返回本机/私网地址，已拒绝连接；请检查系统代理、VPN 或 DNS 设置"),
-        )
     }
 
     fun configuration(plan: RoutePlan): String = renderConfiguration(listOf(plan.proxy), 0)
@@ -1015,40 +992,13 @@ object SystemMediaNetwork {
         return answer.isNotEmpty() && answer.all(::fakeIp)
     }
 
-    /**
-     * Tracks hosts whose synthesized address already failed inside the tunnel.
-     *
-     * A Fake-IP answer only works while the tunnel agrees to carry it. When the
-     * tunnel decides the host is DIRECT and drops it, every retry with the same
-     * address fails identically, so the caller switches that host to a real
-     * address for the rest of the transfer.
-     */
-    class FakeIpFallback {
-        private val failed = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
-
-        fun preferRealAddress(host: String?): Boolean =
-            host != null && failed.containsKey(host.lowercase())
-
-        /** Records one attempt; only a Fake-IP TLS failure marks the host. */
-        fun observe(host: String?, route: String?, category: String?) {
-            if (host == null || route == null || category == null) return
-            if (!route.contains("fake_ip")) return
-            if (category != "tls_handshake" && category != "certificate") return
-            failed[host.lowercase()] = true
-        }
-    }
-
     fun openMediaConnection(
         context: Context,
         uri: URI,
         attempt: Int,
-        fallback: FakeIpFallback? = null,
         onRoute: (RouteInfo) -> Unit = {},
     ): HttpURLConnection {
-        val plan = routePlan(
-            context, uri, attempt,
-            preferRealAddress = fallback?.preferRealAddress(uri.host) == true,
-        )
+        val plan = routePlan(context, uri, attempt)
         onRoute(plan.info)
         val manager = context.getSystemService(ConnectivityManager::class.java)
         val bindVpn = shouldBindVpnSocket(plan.info, plan.proxy)

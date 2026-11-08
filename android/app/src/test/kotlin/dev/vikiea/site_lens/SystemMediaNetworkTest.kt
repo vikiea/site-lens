@@ -232,66 +232,63 @@ class SystemMediaNetworkTest {
     }
 
     @Test
-    fun aSynthesizedAddressFallsBackToTheRealOne() {
+    fun aTunnelKeepsWhateverAnswerItsResolverProduced() {
         val target = URI("https://cdn.example/a")
-        val fake = arrayOf(InetAddress.getByName("198.18.0.147"))
+        val synthesized = arrayOf(InetAddress.getByName("198.18.0.147"))
         val real = arrayOf(InetAddress.getByName("222.184.83.211"))
 
-        // Default: the tunnel's synthesized answer is used as-is.
-        val synthesized = SystemMediaNetwork.planFor(
-            target,
-            listOf(Proxy.NO_PROXY),
-            vpnTransport = true,
-            routerTrusted = false,
-            resolve = { fake },
-            resolveReal = { real },
-        )
-        assertEquals("fake_ip", synthesized.info.dnsClass)
-        assertEquals(listOf(fake[0]), synthesized.addresses)
+        // A rule-mode tunnel answers domestic names with a synthesized address
+        // too; the rule only picks the outbound at connect time. The answer is
+        // therefore carried unchanged, exactly as the WebView carries it.
+        for (answer in listOf(synthesized, real)) {
+            val plan = SystemMediaNetwork.planFor(
+                target,
+                listOf(Proxy.NO_PROXY),
+                vpnTransport = true,
+                routerTrusted = false,
+                resolve = { answer },
+            )
+            assertEquals(SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP, plan.info.kind)
+            assertEquals(listOf(answer[0]), plan.addresses)
+            assertEquals("system_route", plan.info.targetDnsMode)
+        }
 
-        // Once the host is known to fail, the real address wins while the
-        // route stays a tunnel route.
-        val downgraded = SystemMediaNetwork.planFor(
+        val fake = SystemMediaNetwork.planFor(
             target,
             listOf(Proxy.NO_PROXY),
             vpnTransport = true,
             routerTrusted = false,
-            preferRealAddress = true,
-            resolve = { fake },
-            resolveReal = { real },
+            resolve = { synthesized },
         )
-        assertEquals("real_address", downgraded.info.dnsClass)
-        assertEquals(listOf(real[0]), downgraded.addresses)
-        assertEquals(SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP, downgraded.info.kind)
+        assertEquals("fake_ip", fake.info.dnsClass)
 
-        // A private or loopback answer never replaces the synthesized one:
-        // downgrading must not weaken the address policy.
-        val poisoned = SystemMediaNetwork.planFor(
+        val routable = SystemMediaNetwork.planFor(
             target,
             listOf(Proxy.NO_PROXY),
             vpnTransport = true,
             routerTrusted = false,
-            preferRealAddress = true,
-            resolve = { fake },
-            resolveReal = { arrayOf(InetAddress.getByName("127.0.0.1")) },
+            resolve = { real },
         )
-        assertEquals("fake_ip", poisoned.info.dnsClass)
-        assertEquals(listOf(fake[0]), poisoned.addresses)
+        assertEquals("public", routable.info.dnsClass)
     }
 
     @Test
-    fun onlyAFakeIpTunnelFailureMarksTheHost() {
-        val fallback = SystemMediaNetwork.FakeIpFallback()
-        fallback.observe("cdn.example", "vpn_tun_fake_ip", "tls_handshake")
-        assertEquals(true, fallback.preferRealAddress("cdn.example"))
-
-        // A different route or a different failure keeps the synthesized path.
-        fallback.observe("other.example", "http_proxy", "tls_handshake")
-        assertEquals(false, fallback.preferRealAddress("other.example"))
-        fallback.observe("third.example", "vpn_tun_fake_ip", "timeout")
-        assertEquals(false, fallback.preferRealAddress("third.example"))
-        // Host matching is case-insensitive.
-        assertEquals(true, fallback.preferRealAddress("CDN.example"))
+    fun aPoisonedAnswerIsRejectedEvenInsideATunnel() {
+        val target = URI("https://cdn.example/a")
+        // A loopback or private answer is not a routing decision; it stays
+        // fail-closed so a hijacked resolver cannot redirect the app inwards.
+        for (poisoned in listOf("127.0.0.1", "10.0.0.7", "192.168.1.1", "172.19.0.1")) {
+            val error = assertThrows(MediaRouteIOException::class.java) {
+                SystemMediaNetwork.planFor(
+                    target,
+                    listOf(Proxy.NO_PROXY),
+                    vpnTransport = true,
+                    routerTrusted = false,
+                    resolve = { arrayOf(InetAddress.getByName(poisoned)) },
+                )
+            }
+            assertEquals("private_address", error.category)
+        }
     }
 
     @Test
@@ -348,11 +345,11 @@ class SystemMediaNetworkTest {
     }
 
     @Test
-    fun aMixedAnswerKeepsTheRealAddress() {
+    fun aMixedAnswerIsCarriedUnchangedInsideATunnel() {
         val target = URI("https://example.com/a")
-        // A rule-mode tunnel answers per rule, so one name can return both a
-        // synthesized address and a real one. The real address works whichever
-        // way the tunnel routes the host, so it must win.
+        // Under a tunnel the answer is not reclassified: the route carries
+        // whatever the resolver produced, so a mixed answer needs no special
+        // handling of its own.
         val mixed = arrayOf(
             InetAddress.getByName("198.18.0.42"),
             InetAddress.getByName("13.35.163.40"),
@@ -364,30 +361,19 @@ class SystemMediaNetworkTest {
             routerTrusted = false,
             resolve = { mixed },
         )
-        assertEquals(SystemMediaNetwork.RouteKind.PUBLIC_DIRECT, plan.info.kind)
-        assertEquals("mixed", plan.info.dnsClass)
-        assertEquals(listOf(InetAddress.getByName("13.35.163.40")), plan.addresses)
+        assertEquals(SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP, plan.info.kind)
+        assertEquals(mixed.toList(), plan.addresses)
 
-        // An all-real answer stays classified as plain public.
-        val real = SystemMediaNetwork.planFor(
+        // Without a tunnel the real address is what a direct route can use.
+        val direct = SystemMediaNetwork.planFor(
             target,
             listOf(Proxy.NO_PROXY),
-            vpnTransport = true,
+            vpnTransport = false,
             routerTrusted = false,
-            resolve = { arrayOf(InetAddress.getByName("13.35.163.40")) },
+            resolve = { mixed },
         )
-        assertEquals("public", real.info.dnsClass)
-
-        // An all-synthesized answer still belongs to the tunnel.
-        val synthesized = SystemMediaNetwork.planFor(
-            target,
-            listOf(Proxy.NO_PROXY),
-            vpnTransport = true,
-            routerTrusted = false,
-            resolve = { arrayOf(InetAddress.getByName("198.18.0.42")) },
-        )
-        assertEquals(SystemMediaNetwork.RouteKind.VPN_TUN_FAKE_IP, synthesized.info.kind)
-        assertEquals("fake_ip", synthesized.info.dnsClass)
+        assertEquals(SystemMediaNetwork.RouteKind.PUBLIC_DIRECT, direct.info.kind)
+        assertEquals(listOf(InetAddress.getByName("13.35.163.40")), direct.addresses)
     }
 
     @Test
