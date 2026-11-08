@@ -433,9 +433,19 @@ class _UpdateConnectionPolicy {
   Future<List<InternetAddress>> resolve(
     String host,
     Future<List<InternetAddress>> Function(String) fallback,
-  ) => _systemDnsHosts.contains(host.toLowerCase())
-      ? InternetAddress.lookup(host)
-      : fallback(host);
+  ) async {
+    final addresses = _systemDnsHosts.contains(host.toLowerCase())
+        ? await InternetAddress.lookup(host)
+        : await fallback(host);
+    // An intercepting route answers with a synthesized address. That address is
+    // only usable inside the route, and the route is what resolved it, so the
+    // host is marked here rather than from a separate route probe: the probe is
+    // unavailable on Android, which left every Fake-IP answer blocked.
+    if (addresses.isNotEmpty && addresses.every(NetworkPolicy.proxyFakeIp)) {
+      _fakeIpHosts.add(host.toLowerCase());
+    }
+    return addresses;
+  }
 
   String routeKey(Uri uri) => [
     proxyFor(uri),
