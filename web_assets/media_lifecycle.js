@@ -970,6 +970,62 @@
     }
     return newest === entry.name ? entry.name : null;
   }
+  // The episode the page is showing, taken from its own markup.
+  //
+  // A series page lists every episode as a link carrying data-ep-id and marks
+  // the visible one as active. That is page-owned data, so it survives a site
+  // that ships no playable sources and never loads an episode API.
+  function episodeFromMarkup() {
+    if (typeof document.querySelectorAll !== 'function') return null;
+    let elements = [];
+    try {
+      elements = Array.from(document.querySelectorAll(
+        '[data-ep-id],[data-episode],[data-episode-index],[data-num],a[href*="/ep-"]',
+      ));
+    } catch (_) { return null; }
+    const numbers = new Set();
+    let active = null;
+    for (const element of elements) {
+      if (!element || typeof element.getAttribute !== 'function') continue;
+      const explicit = element.getAttribute('data-ep-id') ||
+        element.getAttribute('data-episode') ||
+        element.getAttribute('data-episode-index') || element.getAttribute('data-num');
+      let number = episodeNumber(explicit);
+      if (number == null) {
+        const rawHref = element.getAttribute('href') || '';
+        try {
+          const route = /\/ep-([1-9]\d{0,4})\/?$/.exec(new URL(rawHref, document.baseURI).pathname);
+          number = route ? episodeNumber(route[1]) : null;
+        } catch (_) { number = null; }
+      }
+      if (number == null) continue;
+      numbers.add(number);
+      const className = typeof element.className === 'string' ? element.className : '';
+      if (/\b(?:is-active|active|current|selected)\b/i.test(className) ||
+          element.getAttribute('aria-current') === 'true' ||
+          element.getAttribute('aria-selected') === 'true') active = number;
+    }
+    if (!numbers.size) return null;
+    const sorted = [...numbers].sort((left, right) => left - right);
+    // The URL names the episode when the markup marks none: this site uses
+    // /video/{id}/ep-{n}/ and the visible link always agrees with it.
+    let locator = null;
+    try {
+      const route = /\/ep-([1-9]\d{0,4})\/?$/.exec(new URL(pageUrl()).pathname);
+      locator = route ? episodeNumber(route[1]) : null;
+    } catch (_) { locator = null; }
+    const current = active ?? locator ?? null;
+    if (current == null) return null;
+    return {current, total: sorted[sorted.length - 1]};
+  }
+  function episodeCandidateTitle() {
+    const seenEpisodes = episodeFromMarkup();
+    if (!seenEpisodes) return genericDiscoveryTitle();
+    const series = String(document.title || '')
+      .replace(/第\s*\d+\s*[集话期]|\b(?:episode|ep)\s*[:=_-]?\s*\d+\b/gi, '')
+      .replace(/\s+/g, ' ').replace(/\s*[-–—|]\s*$/g, '').trim();
+    return `${series || '媒体'} - 第${seenEpisodes.current}集（共${seenEpisodes.total}集）`;
+  }
   function genericDiscoveryTitle() {
     const raw = String(document.title || '').slice(0, 512);
     const series = raw.replace(/第\s*\d+\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*\d+\b/gi, '')
@@ -1163,7 +1219,7 @@
         // stale episode marker from the document title instead of presenting
         // a prefetched/new manifest as the currently visible episode.
         addCandidate(candidates, seen, entry.name, entry.mime || entry.initiatorType || '',
-          undefined, false, genericDiscoveryTitle());
+          undefined, false, episodeCandidateTitle());
       }
     }
     const episodeByUrl = new Map();
