@@ -938,6 +938,38 @@
       }
     } catch (_) {}
   }
+  // The manifest a player actually fetched on a page that names no sources.
+  //
+  // Only the newest eligible candidate survives, and eligibility mirrors what
+  // the picker can defend: the request came from fetch/XHR (not an image or
+  // script), it was issued for this document, and it is not owned by another
+  // series. A prefetch is fetched after its own switch, so it is newer than
+  // the stream it replaced - the newest entry is the one on screen.
+  function newestPlayerManifest(entry, resources, mediaNodes, context, timingEntries = []) {
+    if (!entry || typeof entry.name !== 'string') return null;
+    const fromPlayer = entry.initiatorType == null ||
+      ['fetch', 'xmlhttprequest'].includes(entry.initiatorType);
+    if (!fromPlayer) return null;
+    if (!isManifest(entry.name, entry.mime || '')) return null;
+    if (isTransportResource(entry.name)) return null;
+    const owner = knownForeignSources.get(candidateKey(new URL(entry.name, document.baseURI)));
+    if (owner && owner !== context?.id) return null;
+    if (!mediaNodes.some(node => belongsToSeries(node, context) && isFreshNode(node))) return null;
+    // Newest wins: compare against every other manifest the page requested,
+    // from the observed requests first and then from resource timing, which is
+    // the only record when the player used a transport the hooks do not wrap.
+    let newest = null;
+    for (const candidate of [...resources.values(), ...timingEntries]) {
+      if (candidate.initiatorType != null &&
+          !['fetch', 'xmlhttprequest'].includes(candidate.initiatorType)) continue;
+      if (!isManifest(candidate.name, candidate.mime || '')) continue;
+      if (isTransportResource(candidate.name)) continue;
+      const otherOwner = knownForeignSources.get(candidateKey(new URL(candidate.name, document.baseURI)));
+      if (otherOwner && otherOwner !== context?.id) continue;
+      newest = candidate.name;
+    }
+    return newest === entry.name ? entry.name : null;
+  }
   function genericDiscoveryTitle() {
     const raw = String(document.title || '').slice(0, 512);
     const series = raw.replace(/第\s*\d+\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*\d+\b/gi, '')
@@ -1062,6 +1094,10 @@
     // repeats and known signature changes.
     const currentNodes = Array.from(nodes).filter(node => isCurrentPlaybackNode(node));
     const hasPlayingNode = currentNodes.some(node => !node.paused && !node.ended);
+    // An MSE player reports a blob: source, so playback is proven by the
+    // element running rather than by the shape of its source URL.
+    const hasPlayingMediaElement = currentNodes.some(node =>
+      !node.paused && !node.ended && isPlaybackControlNode(node));
     const hasConfirmedPlayback = currentNodes.some(node => {
       if (!belongsToSeries(node, context)) return false;
       if (!isFreshNode(node)) return false;
@@ -1093,7 +1129,11 @@
     {
       for (const entry of [...Array.from(networkResources.values()).reverse(), ...timingEntries]) {
         const requestObserved = entry.initiatorType === null;
-        const manifestRequest = hasConfirmedPlayback && isManifest(entry.name, entry.mime || '') &&
+        // A blob-backed element confirms playback just as an http source does:
+        // an MSE player attaches a MediaSource, so currentSrc never looks like
+        // a media URL even while the stream is running.
+        const playingMedia = hasConfirmedPlayback || hasPlayingMediaElement;
+        const manifestRequest = playingMedia && isManifest(entry.name, entry.mime || '') &&
           ['fetch', 'xmlhttprequest'].includes(entry.initiatorType);
         if (!timingFallback && !requestObserved && !manifestRequest) continue;
         if (Number.isFinite(entry.startTime) && entry.startTime < snapshotStartedAt) continue;
@@ -1110,7 +1150,15 @@
         // playable episode from a recommendation or background fetch.
         if (context && initialDataElement() && !episodeMappingUnavailable &&
             (!resourceUrl || !mapped.some(item =>
-              candidateKey(new URL(item.url, document.baseURI)) === candidateKey(resourceUrl)))) continue;
+              candidateKey(new URL(item.url, document.baseURI)) === candidateKey(resourceUrl)))) {
+          // A page that ships no playable sources in its document - the common
+          // shape for an MSE player - still has to expose the manifest the
+          // player itself fetched. Without an explicit map the newest
+          // player-issued manifest is the current one: a prefetch is fetched
+          // after the switch it belongs to, so it supersedes nothing older.
+          const fallback = newestPlayerManifest(entry, networkResources, mediaNodes, context, timingEntries);
+          if (!fallback || fallback !== entry.name) continue;
+        }
         // Resource timing has no page-owned episode identity. Strip any
         // stale episode marker from the document title instead of presenting
         // a prefetched/new manifest as the currently visible episode.
