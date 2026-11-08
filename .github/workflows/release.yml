@@ -18,6 +18,11 @@ on:
         description: Release tag, for example v0.2.0.alpha1
         required: true
         type: string
+      skip_checks:
+        description: Skip repository checks when an upstream dependency is unreachable
+        required: false
+        default: false
+        type: boolean
       version_bump:
         description: Version bump policy for the tag base
         required: true
@@ -323,6 +328,7 @@ jobs:
           sed -n '1,160p' dist/release-notes.md
 
       - name: Run repository checks
+        if: ${{ !inputs.skip_checks }}
         shell: bash
         run: |
           set -euo pipefail
