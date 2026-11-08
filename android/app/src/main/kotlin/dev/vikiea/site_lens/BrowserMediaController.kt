@@ -290,6 +290,15 @@ class BrowserMediaController(
             WebViewCompat.addDocumentStartJavaScript(view,
                 script.replace("__SITE_LENS_MEDIA_CONFIG__", config.toString()), setOf("*"))
         }.onFailure { diagnostic("injection_failed") }.getOrNull()
+        // One line per injection so a missing candidate report can be traced to
+        // the script never being installed rather than to the page.
+        android.util.Log.i(
+            "SiteLensMedia",
+            "inject=" + (injection != null) + " supported=$supported browsing=$browsing " +
+                "script=" + script.length + " features=" + WebViewFeature.isFeatureSupported(
+                    WebViewFeature.DOCUMENT_START_SCRIPT,
+                ),
+        )
     }
     fun activity(current: Boolean, visible: Boolean, foreground: Boolean, background: Boolean): Boolean {
         this.current = current; this.visible = visible; requestedForeground = foreground
