@@ -154,6 +154,20 @@ class MediaNetworkRuntime(
                     SystemMediaNetwork.openMediaConnection(context, uri, attempt) { info ->
                         selectedRoute = info.kind.wireName
                         targetDnsMode = info.targetDnsMode
+                        // One line per attempt: the route the planner chose, the
+                        // DNS class it saw and whether the socket was bound. A
+                        // download that misses the tunnel is then attributable
+                        // to a decision instead of to a generic failure.
+                        Log.i(
+                            "SiteLensMediaNetwork",
+                            "route=" + info.kind.wireName +
+                                " dns=" + info.dnsClass +
+                                " targetDns=" + info.targetDnsMode +
+                                " vpnTransport=" + info.vpnTransport +
+                                " vpnDefault=" + info.vpnIsDefault +
+                                " host=" + uri.host +
+                                " attempt=" + attempt,
+                        )
                     }
                 },
                 routeForConnection = { selectedRoute },
