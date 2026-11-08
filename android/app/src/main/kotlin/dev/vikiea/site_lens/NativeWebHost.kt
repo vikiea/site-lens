@@ -480,6 +480,9 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         destroy = { finishDispose() },
     )
     private val popupProbes = mutableMapOf<WebView, () -> Unit>()
+    init {
+        android.util.Log.e("SiteLensMedia", "host_created id=" + id + " purpose=" + purpose)
+    }
     val available get() = !viewLifetime.closing && !destroyed && !rendererGone && !activity.isFinishing && !activity.isDestroyed
 
     fun clearHttpCache() {
@@ -508,6 +511,13 @@ class NativeWebHost(private val activity: Activity, val id: Long, val purpose: H
         webView,
         purpose == HostPurpose.BROWSING,
     ) { candidate ->
+        val traceKind = candidate["kind"]?.toString() ?: "?"
+        android.util.Log.e(
+            "SiteLensMedia",
+            "host_candidate host=" + id + " kind=" + traceKind +
+                " url=" + (candidate["url"] as? String)?.take(96) +
+                " eps=" + (candidate["episodes"] as? Collection<*>)?.size,
+        )
         if (candidate["kind"] == "clear") {
             event("mediaCandidatesClear", JSONObject(candidate).toString())
         } else if (candidate["kind"] == "playbackEvidence") {

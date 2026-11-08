@@ -60,28 +60,54 @@ class BrowserMediaController(
     private val script = activity.assets.open("flutter_assets/web_assets/media_lifecycle.js").bufferedReader().use { it.readText() }
 
     init {
+        // Every branch below is traced: a silent candidate list cannot be told
+        // apart from a controller that never installed its script.
+        trace(
+            "init supported=$supported browsing=$browsing" +
+                " mute=" + WebViewFeature.isFeatureSupported(WebViewFeature.MUTE_AUDIO) +
+                " docStart=" + WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) +
+                " msgListener=" + WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) +
+                " script=" + script.length,
+        )
         mute(true)
         if (supported && browsing) {
-            WebViewCompat.addWebMessageListener(view, bridge, setOf("*")) { sourceView, message, sourceOrigin, main, proxy ->
-                if (!disposed && sourceView === view) {
-                    try {
-                        val text = message.data ?: ""
-                        if (text.length > 4096) { diagnostic("oversize"); return@addWebMessageListener }
-                        receive(JSONObject(text), main, proxy, sourceOrigin)
-                    } catch (_: Exception) { /* Untrusted page telemetry. */ }
+            val listener = runCatching {
+                WebViewCompat.addWebMessageListener(view, bridge, setOf("*")) { sourceView, message, sourceOrigin, main, proxy ->
+                    if (!disposed && sourceView === view) {
+                        try {
+                            val text = message.data ?: ""
+                            if (text.length > 4096) { diagnostic("oversize"); return@addWebMessageListener }
+                            trace("inbound len=" + text.length + " main=" + main)
+                            receive(JSONObject(text), main, proxy, sourceOrigin)
+                        } catch (error: Exception) { trace("inbound_failed " + error.javaClass.simpleName) }
+                    }
                 }
             }
+            trace("listener=" + listener.isSuccess + " reason=" + listener.exceptionOrNull()?.javaClass?.simpleName)
             refreshInjection()
+        } else {
+            trace("skipped_install")
         }
     }
 
     private fun receive(data: JSONObject, main: Boolean, proxy: JavaScriptReplyProxy, sourceOrigin: Uri) {
-        if (data.optString("token") != documentToken) return
+        val kind = data.optString("kind")
+        if (data.optString("token") != documentToken) {
+            trace("recv_drop kind=$kind reason=token")
+            return
+        }
         val id = data.optString("frame")
         val document = data.optString("document")
-        if (!id.matches(Regex("[a-zA-Z0-9_-]{1,96}")) || id in retired) return
-        if (!document.matches(Regex("[a-zA-Z0-9_-]{1,96}")) || document in retiredDocuments) return
-        if (data.optString("kind") == "hello") {
+        if (!id.matches(Regex("[a-zA-Z0-9_-]{1,96}")) || id in retired) {
+            trace("recv_drop kind=$kind reason=frame id=$id")
+            return
+        }
+        if (!document.matches(Regex("[a-zA-Z0-9_-]{1,96}")) || document in retiredDocuments) {
+            trace("recv_drop kind=$kind reason=document doc=$document")
+            return
+        }
+        trace("recv kind=$kind main=$main frame=$id")
+        if (kind == "hello") {
             val parent = if (main) null else data.optString("parentFrame").takeIf {
                 it.matches(Regex("[a-zA-Z0-9_-]{1,96}"))
             }
@@ -281,23 +307,25 @@ class BrowserMediaController(
         return promote
     }
     private fun refreshInjection() {
-        if (!supported || !browsing || disposed) return
+        if (!supported || !browsing || disposed) {
+            trace("inject_skip supported=$supported browsing=$browsing disposed=$disposed")
+            return
+        }
         runCatching { injection?.remove() }
         // New frames start blocked until their own native handshake receives the
         // current policy. Late iframes must not inherit stale injection policy.
         val config = JSONObject().put("bridge", bridge).put("token", documentToken).put("blocked", true)
+        val replaced = script.replace("__SITE_LENS_MEDIA_CONFIG__", config.toString())
         injection = runCatching {
-            WebViewCompat.addDocumentStartJavaScript(view,
-                script.replace("__SITE_LENS_MEDIA_CONFIG__", config.toString()), setOf("*"))
-        }.onFailure { diagnostic("injection_failed") }.getOrNull()
-        // One line per injection so a missing candidate report can be traced to
-        // the script never being installed rather than to the page.
-        android.util.Log.i(
-            "SiteLensMedia",
-            "inject=" + (injection != null) + " supported=$supported browsing=$browsing " +
-                "script=" + script.length + " features=" + WebViewFeature.isFeatureSupported(
-                    WebViewFeature.DOCUMENT_START_SCRIPT,
-                ),
+            WebViewCompat.addDocumentStartJavaScript(view, replaced, setOf("*"))
+        }.onFailure {
+            trace("inject_threw " + it.javaClass.simpleName + ": " + it.message)
+        }.getOrNull()
+        trace(
+            "inject ok=" + (injection != null) +
+                " configReplaced=" + (replaced != script) +
+                " script=" + script.length +
+                " bridge=" + bridge,
         )
     }
     fun activity(current: Boolean, visible: Boolean, foreground: Boolean, background: Boolean): Boolean {
@@ -319,7 +347,12 @@ class BrowserMediaController(
     }
     fun pageFinished() {
         if (disposed) return
-        runCatching { view.evaluateJavascript("window.__siteLensMediaControl?.connect();", null) }
+        val outcome = runCatching {
+            view.evaluateJavascript("window.__siteLensMediaControl?.connect();") { value ->
+                trace("connect_result value=" + value)
+            }
+        }
+        trace("page_finished ok=" + outcome.isSuccess + " err=" + outcome.exceptionOrNull()?.javaClass?.simpleName)
         enforce()
     }
     fun userGesture() { if (foreground && visible && current && !disposed) { manualPause = false; enforce() } }
@@ -406,6 +439,10 @@ class BrowserMediaController(
                 manualPause = true; mute(true); broadcast("pause")
             }
         }
+    }
+    /** Unconditional, greppable trace; logs at error level so nothing filters it. */
+    private fun trace(message: String) {
+        android.util.Log.e("SiteLensMedia", message)
     }
     private fun diagnostic(code: String, action: String = "policy") {
         if (!reported.add("$code:$action")) return
