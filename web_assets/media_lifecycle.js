@@ -594,6 +594,18 @@
   function noteRequestReject(reason) {
     requestDiagnostics[reason] = (requestDiagnostics[reason] || 0) + 1;
   }
+  // Names the endpoints the page actually calls, so a missing match can be
+  // traced to the hook never seeing that URL at all.
+  function noteSeen(raw, method) {
+    try {
+      const text = String(raw && raw.url ? raw.url : raw || '');
+      if (text.length > 512) return;
+      const path = new URL(text, document.baseURI).pathname;
+      if (!/play|manifest|m3u8|video|episode/i.test(path)) return;
+      const key = String(method || 'GET').toUpperCase() + ' ' + path.slice(0, 120);
+      requestDiagnostics['seen:' + key] = (requestDiagnostics['seen:' + key] || 0) + 1;
+    } catch (_) {}
+  }
   function playbackRequest(raw, method) {
     const verb = String(method || 'GET').toUpperCase();
     if (verb !== 'GET' && verb !== 'POST') return null;
@@ -731,6 +743,7 @@
     window.XMLHttpRequest.prototype.open = function (method, url, ...rest) {
       const result = Reflect.apply(originalOpen, this, [method, url, ...rest]);
       try {
+        noteSeen(url, method);
         requests.set(this, startEpisodeRequest(url, method));
         resourceRequests.set(this, networkRequest(url, method));
         if (!listening.has(this)) {
@@ -763,6 +776,7 @@
       try {
         const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url;
         const method = init?.method || input?.method;
+        noteSeen(raw, method);
         const request = startEpisodeRequest(raw, method);
         const resourceRequest = networkRequest(raw, method);
         Promise.resolve(result).then(response => {
