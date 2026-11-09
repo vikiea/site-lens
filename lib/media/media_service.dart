@@ -1035,17 +1035,19 @@ class MediaTaskStore extends ChangeNotifier {
 
   /// Keep one batch's rows in one folder.
   ///
-  /// A row that already existed keeps whatever folder it was placed in, so a
-  /// batch that re-selects an episode only placed the new rows under the batch
-  /// directory. Aligning the stored folder makes the folder name and its
-  /// contents agree; rows without one keep the series directory as before.
+  /// A row that already carries a batch folder keeps it: a retry must not be
+  /// relocated, and the directory it was recorded under is the one its bytes
+  /// already live in. A row that has no batch folder at all is the case this
+  /// fixes - it was created by a single download and would otherwise appear
+  /// beside the batch folder instead of inside it. Series-directory rows stay
+  /// untouched when the caller states no batch.
   Future<MediaTask> _withTaskOrganization(
     Future<MediaTask> pending,
     String? batchDirectory,
   ) async {
     final task = await pending;
     final directory = _preserveBatchDirectory(batchDirectory);
-    if (directory == null || task.batchDirectory == directory) return task;
+    if (directory == null || task.batchDirectory != null) return task;
     final updated = task.copyWith(
       batchDirectory: directory,
       updatedAt: DateTime.now().toUtc(),
@@ -2152,6 +2154,10 @@ class MediaRetryBudget {
   int attemptsUsed = 0;
   Object? lastError;
 
+  /// Final URL of the last successful native transfer, including a redirect.
+  /// Playlists resolve relative resources against it.
+  Uri? lastFinalUrl;
+
   int get remaining => maxAttempts - attemptsUsed;
   bool get exhausted => remaining <= 0;
 
@@ -2406,7 +2412,9 @@ class MediaDownloadService {
         final used = response.attemptsUsed;
         budget.consume(used >= 1 && used <= granted ? used : granted);
         cancel.check();
-        return response.finalUrl ?? url;
+        final finalUrl = response.finalUrl ?? url;
+        budget.lastFinalUrl = finalUrl;
+        return finalUrl;
       }
       // Compatibility callbacks cannot be given a policy. A successful mock
       // represents one call; an unaccounted failure consumes the whole grant.
@@ -3597,13 +3605,18 @@ class MediaDownloadService {
           .toString();
       final partial = File('${staging.path}/.playlist_$key.part');
       try {
-        final finalUrl = await _transferNative(
+        // The manifest is the first request of every task, so a route that
+        // only fails TLS there must get the same second-family retry the
+        // resource path has; otherwise the whole task dies before any segment
+        // is attempted.
+        final manifestBudget = retryBudget;
+        final finalUrl = await _transferNativeWithAlternateRoute(
           url,
           document,
           partial,
           16 * 1024 * 1024,
           cancel,
-          budget: retryBudget,
+          budget: manifestBudget,
           headers: headers,
           resourceKind: 'manifest',
         );
@@ -4359,6 +4372,53 @@ class MediaDownloadService {
         }
         throw lastError;
       }
+    }
+  }
+
+  /// [ _transferNative ], plus one retry through the other transport family.
+  ///
+  /// Callers that do not stream a body (the HLS manifest) have no segment loop
+  /// around them to absorb a route-only failure, so the alternate-route retry
+  /// is decided here, with the same evidence rule as the resource path.
+  Future<Uri> _transferNativeWithAlternateRoute(
+    Uri url,
+    Uri document,
+    File destination,
+    int maxBytes,
+    Cancellation cancel, {
+    required MediaRetryBudget budget,
+    Map<String, String> headers = const {},
+    required String resourceKind,
+  }) async {
+    try {
+      return await _transferNative(
+        url,
+        document,
+        destination,
+        maxBytes,
+        cancel,
+        budget: budget,
+        headers: headers,
+        resourceKind: resourceKind,
+      );
+    } on PlatformException catch (error) {
+      final alternate = await _alternateRouteRetry(
+        error,
+        url,
+        destination,
+        cancel,
+        policy: policyTransfer,
+        document: document,
+        maxBytes: maxBytes,
+        onProgress: null,
+        headers: headers,
+        resourceKind: resourceKind,
+        retryBudget: budget,
+      );
+      if (alternate) {
+        return budget.lastFinalUrl ?? url;
+      }
+      rethrow;
     }
   }
 

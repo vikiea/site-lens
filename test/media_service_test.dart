@@ -1117,10 +1117,10 @@ void main() {
     );
   });
 
-  test('every row of one batch keeps the batch directory', () async {
-    // A batch selection reuses rows that a previous download already created.
-    // Only the rows created by the batch carried its directory, so the folder
-    // named after the series listed a subset of what the batch downloaded.
+  test('a batch adopts a row that had no batch folder', () async {
+    // A batch selection reuses rows that a previous single download created.
+    // Such a row had no batch folder, so the folder named after the series
+    // listed everything except it. It now joins the batch it was selected in.
     final store = MediaTaskStore();
     final solo = await store.create(
       candidate(
@@ -1143,7 +1143,9 @@ void main() {
     expect(batched.storageDirectoryName, '示例剧');
   });
 
-  test('a batch never renames a row it did not create', () async {
+  test('a batch never relocates a row that already has a batch folder', () async {
+    // The recorded batch directory names the folder the bytes already live in.
+    // A retry or a second selection must not move the row out of it.
     final store = MediaTaskStore();
     final existing = await store.create(
       candidate(
@@ -1159,7 +1161,7 @@ void main() {
         title: '示例剧 - 第2集',
         url: 'https://cdn.example/kept.mp4',
       ),
-      batchDirectory: null,
+      batchDirectory: '第二批',
     );
     expect(again.id, existing.id);
     expect(again.batchDirectory, '第一批');
