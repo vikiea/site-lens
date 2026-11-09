@@ -1301,10 +1301,12 @@ object SystemMediaNetwork {
                     // The plan's DNS owner answers every other name. A bound
                     // tunnel resolves inside itself; a direct hop on the
                     // underlay asks the OS like the WebView; a proxy hop never
-                    // resolves locally at all.
+                    // resolves locally at all. A routed lookup without a bound
+                    // network falls back to the OS resolver because there is
+                    // nothing else to hand the name to.
                     return when (secondaryDns) {
-                        SecondaryDns.ROUTE ->
-                            (network ?: Dns.SYSTEM).getAllByName(hostname).toList()
+                        SecondaryDns.ROUTE -> network?.getAllByName(hostname)?.toList()
+                            ?: Dns.SYSTEM.lookup(hostname)
                         else -> Dns.SYSTEM.lookup(hostname)
                     }
                 }
