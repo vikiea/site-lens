@@ -334,7 +334,7 @@ void main() {
       source: MediaCandidateSource.dom,
     );
     await db.saveMediaCandidate(candidate);
-    task = tasks.create(candidate);
+    task = await tasks.create(candidate);
     task = tasks.transition(task.id, MediaTaskState.downloading);
     task = tasks.transition(task.id, MediaTaskState.playable);
     await db.saveMediaTask(task);
@@ -569,7 +569,7 @@ void main() {
       db: failing,
       directoryProvider: () async => root,
     );
-    final current = store.create(candidate);
+    final current = await store.create(candidate);
     store.transition(current.id, MediaTaskState.downloading);
     store.transition(current.id, MediaTaskState.playable);
     store.setLocalRef(current.id, output.path);
@@ -621,7 +621,7 @@ void main() {
       db: failing,
       directoryProvider: () async => root,
     );
-    final current = store.create(candidate);
+    final current = await store.create(candidate);
     store.transition(current.id, MediaTaskState.downloading);
     store.transition(current.id, MediaTaskState.playable);
     store.setLocalRef(current.id, output.path);
@@ -744,7 +744,7 @@ void main() {
         source: MediaCandidateSource.dom,
       );
       await db.saveMediaCandidate(batchedCandidate);
-      final batched = tasks.create(
+      final batched = await tasks.create(
         batchedCandidate,
         batchDirectory: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
       );

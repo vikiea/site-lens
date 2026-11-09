@@ -849,11 +849,11 @@ class MediaTaskStore extends ChangeNotifier {
     return id == null ? null : task(id);
   }
 
-  MediaTask rebindCandidate(
+  Future<MediaTask> rebindCandidate(
     String taskId,
     MediaCandidate candidate, {
     bool allowAuthorizationRefresh = false,
-  }) {
+  }) async {
     _requireReady();
     const validator = MediaCandidateValidator();
     validator.validate(candidate);
@@ -923,12 +923,12 @@ class MediaTaskStore extends ChangeNotifier {
     return sha256.convert(utf8.encode(input)).toString();
   }
 
-  MediaTask create(
+  Future<MediaTask> create(
     MediaCandidate candidate, {
     String quality = '',
     String audio = '',
     String? batchDirectory,
-  }) {
+  }) async {
     _requireReady();
     const validator = MediaCandidateValidator();
     validator.validate(candidate);
@@ -956,10 +956,13 @@ class MediaTaskStore extends ChangeNotifier {
       existingId = existing?.id;
     }
     if (existing?.state == MediaTaskState.reauthorize) {
-      return rebindCandidate(
-        existing!.id,
-        candidate,
-        allowAuthorizationRefresh: true,
+      return _withTaskOrganization(
+        rebindCandidate(
+          existing!.id,
+          candidate,
+          allowAuthorizationRefresh: true,
+        ),
+        batchDirectory,
       );
     }
     if (existing != null) {
@@ -971,22 +974,28 @@ class MediaTaskStore extends ChangeNotifier {
             existing.generation != candidate.generation ||
             mediaDocumentIdentity(existing.sourceUrl) !=
                 mediaDocumentIdentity(candidate.sourceUrl);
-        return needsRebind
-            ? rebindCandidate(
-                existing.id,
-                candidate,
-                allowAuthorizationRefresh: true,
-              )
-            : existing;
+        if (!needsRebind) {
+          return _withTaskOrganization(Future.value(existing), batchDirectory);
+        }
+        return _withTaskOrganization(
+          rebindCandidate(
+            existing.id,
+            candidate,
+            allowAuthorizationRefresh: true,
+          ),
+          batchDirectory,
+        );
       }
       if (existing.state != MediaTaskState.cancelled &&
           existing.state != MediaTaskState.failed) {
-        return existing;
+        // Finished work keeps its bytes and its folder; only the grouping a
+        // caller asked for is aligned with the rest of the batch.
+        return _withTaskOrganization(Future.value(existing), batchDirectory);
       }
       if (!canDelete(existing.id)) throw StateError('媒体任务仍在使用，请稍后重试');
       final rebound = existing.candidateId == candidate.id
           ? existing
-          : rebindCandidate(existing.id, candidate);
+          : await rebindCandidate(existing.id, candidate);
       final retry = rebound.copyWith(
         state: MediaTaskState.queued,
         errorCode: null,
@@ -994,7 +1003,7 @@ class MediaTaskStore extends ChangeNotifier {
       );
       _tasks[retry.id] = retry;
       _saveTask(retry);
-      return retry;
+      return _withTaskOrganization(Future.value(retry), batchDirectory);
     }
     // Deriving the row identity from the logical selection makes two stores
     // racing to enqueue the same structured candidate converge even when the
@@ -1021,7 +1030,29 @@ class MediaTaskStore extends ChangeNotifier {
     _logicalKeys[id] = mediaCandidateLogicalIdentity(candidate);
     _byCacheKey[key] = id;
     _saveTask(task);
-    return task;
+    return _withTaskOrganization(Future.value(task), batchDirectory);
+  }
+
+  /// Keep one batch's rows in one folder.
+  ///
+  /// A row that already existed keeps whatever folder it was placed in, so a
+  /// batch that re-selects an episode only placed the new rows under the batch
+  /// directory. Aligning the stored folder makes the folder name and its
+  /// contents agree; rows without one keep the series directory as before.
+  Future<MediaTask> _withTaskOrganization(
+    Future<MediaTask> pending,
+    String? batchDirectory,
+  ) async {
+    final task = await pending;
+    final directory = _preserveBatchDirectory(batchDirectory);
+    if (directory == null || task.batchDirectory == directory) return task;
+    final updated = task.copyWith(
+      batchDirectory: directory,
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _tasks[updated.id] = updated;
+    _saveTask(updated);
+    return updated;
   }
 
   static String? _preserveBatchDirectory(String? value) {
@@ -4066,7 +4097,25 @@ class MediaDownloadService {
         cancel.check();
         return;
       } on PlatformException catch (error) {
-        if (policyTransfer != null || !_isRetryableNativeHeaderFailure(error)) {
+        if (!_isRetryableNativeHeaderFailure(error)) {
+          // A native answer never explains why TLS failed on a route. When the
+          // attempts it reports cover both a tunnel and a proxy, the Dart
+          // transport gets its own budget to settle which route the host needs.
+          final alternate = policyTransfer != null &&
+              await _alternateRouteRetry(
+                error,
+                url,
+                partial,
+                cancel,
+                policy: policyTransfer,
+                document: document,
+                maxBytes: maxBytes,
+                onProgress: onProgress,
+                headers: headers,
+                resourceKind: resourceKind,
+                retryBudget: retryBudget,
+              );
+          if (alternate) return;
           rethrow;
         }
         if (retryBudget.exhausted) retryBudget.extend();
@@ -4264,7 +4313,26 @@ class MediaDownloadService {
             cancel.check();
             return;
           } on PlatformException catch (error) {
-            if (!_isRetryableNativeHeaderFailure(error)) rethrow;
+            if (!_isRetryableNativeHeaderFailure(error)) {
+              final policy = policyTransfer;
+              final alternate =
+                  policy != null &&
+                  await _alternateRouteRetry(
+                    error,
+                    url,
+                    partial,
+                    cancel,
+                    policy: policy,
+                    document: document,
+                    maxBytes: maxBytes,
+                    onProgress: onProgress,
+                    headers: headers,
+                    resourceKind: resourceKind,
+                    retryBudget: retryBudget,
+                  );
+              if (alternate) return;
+              rethrow;
+            }
             if (retryBudget.exhausted) retryBudget.extend();
             // The native response-header retry also failed without writing
             // content. Re-enter the Dart path once, with native fallback
@@ -4292,6 +4360,103 @@ class MediaDownloadService {
         throw lastError;
       }
     }
+  }
+
+  /// One extra round trip across a different route family.
+  ///
+  /// Native retries rotate the OS route, but their TLS failures all look the
+  /// same and the preferred order is fixed, so a host that rejects the tunnel
+  /// address keeps failing there first until the budget is gone. Two
+  /// transports already exist - native, which is bound to VPN/TUN or the HTTP
+  /// proxy, and Dart, which resolves the route again with a fresh connection
+  /// pool. When the failed answer used both families, the other one is tried
+  /// once with its own budget instead of retrying the family that already
+  /// failed.
+  Future<bool> _alternateRouteRetry(
+    PlatformException error,
+    Uri url,
+    File partial,
+    Cancellation cancel, {
+    required NativeTlsTransferWithPolicy? policy,
+    required Uri document,
+    required int maxBytes,
+    void Function(int bytesWritten)? onProgress,
+    required Map<String, String> headers,
+    required String resourceKind,
+    required MediaRetryBudget retryBudget,
+  }) async {
+    if (error.code != 'media_transfer' || error.details is! Map) return false;
+    final details = error.details as Map;
+    // Flushed bytes belong to the route that wrote them; switching transport
+    // is only safe before any content arrived.
+    if (_detailInt(details['offset']) != 0 ||
+        _detailInt(details['bytesWritten']) != 0) {
+      return false;
+    }
+    if (!_nativeRoutesSpanTransports(details['attempts'])) return false;
+    if (!retryBudget.exhausted) return false;
+    retryBudget.extend();
+    await _prepareNativeResumeState(url, partial);
+    try {
+      if (policy != null) {
+        await _downloadFileDart(
+          url,
+          partial,
+          cancel,
+          document: document,
+          maxBytes: maxBytes,
+          onProgress: onProgress,
+          allowNativeFallback: false,
+          headers: headers,
+          resourceKind: resourceKind,
+          retryBudget: retryBudget,
+        );
+      } else {
+        await _transferNative(
+          url,
+          document,
+          partial,
+          maxBytes,
+          cancel,
+          budget: retryBudget,
+          onProgress: onProgress,
+          headers: headers,
+          resourceKind: resourceKind,
+        );
+      }
+    } on PlatformException catch (retryError) {
+      // The alternate transport failed too. Reporting the original answer keeps
+      // the route the user's proxy setting produced, which is the one they can
+      // act on, and avoids a second retry round on an already spent budget.
+      if (retryError.code == 'media_transfer') return false;
+      rethrow;
+    } on StateError {
+      // A policy or cache failure is not a route problem; let it reach the
+      // task so the row shows the real reason.
+      rethrow;
+    }
+    cancel.check();
+    return true;
+  }
+
+  /// Whether the native attempts used both a tunnelled route and a proxy.
+  ///
+  /// Those are the two families with distinct DNS and socket owners in the
+  /// native executor, so a host reachable on one of them is unreachable only
+  /// through the preferred order, not through the whole environment.
+  static bool _nativeRoutesSpanTransports(Object? attempts) {
+    if (attempts is! List || attempts.isEmpty) return false;
+    var tunnel = false;
+    var proxy = false;
+    for (final attempt in attempts) {
+      final route = attempt is Map ? attempt['route'] : null;
+      if (route == 'vpn_tun_fake_ip' || route == 'router_fake_ip') {
+        tunnel = true;
+      } else if (route == 'http_proxy') {
+        proxy = true;
+      }
+    }
+    return tunnel && proxy;
   }
 
   bool _isRetryableNativeHeaderFailure(PlatformException error) {

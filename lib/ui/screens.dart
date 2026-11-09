@@ -3985,7 +3985,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
         candidate.id,
       );
       await widget.app.mediaTasks.ready;
-      final task = widget.app.mediaTasks.create(authorized);
+      final task = await widget.app.mediaTasks.create(authorized);
       final run = widget.app.mediaDownloads.start(task, authorized);
       final ready = await _waitForTaskPlayback(task.id, run);
       if (!mounted) return;
@@ -4061,7 +4061,7 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
           continue;
         }
         await widget.app.mediaTasks.ready;
-        final task = widget.app.mediaTasks.create(
+        final task = await widget.app.mediaTasks.create(
           authorized,
           batchDirectory: batchDirectory,
         );

@@ -580,7 +580,7 @@ void main() {
       );
       await seed.saveMediaCandidate(candidate);
       final store = MediaTaskStore(db: seed);
-      final task = store.create(candidate);
+      final task = await store.create(candidate);
       await store.flush(task.id);
       await seed.close();
       final before = sqlite3.open(file.path);
@@ -680,7 +680,7 @@ void main() {
       );
       await seed.saveMediaCandidate(candidate);
       final tasks = MediaTaskStore(db: seed);
-      final task = tasks.create(candidate);
+      final task = await tasks.create(candidate);
       await tasks.flush(task.id);
       await seed.close();
 

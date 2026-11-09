@@ -246,7 +246,29 @@ object SystemMediaNetwork {
         val proxy: Proxy,
         val addresses: List<InetAddress> = emptyList(),
         val network: Network? = null,
+        /**
+         * Who answers a name that [addresses] does not cover.
+         *
+         * A multi-CDN playlist moves segments, keys and maps to other hosts.
+         * Those lookups only stay on the hop this plan describes when the plan
+         * itself owns DNS; a DIRECT plan on the underlay must let the system
+         * resolver answer, and a proxy plan must keep them remote.
+         */
+        val secondaryDns: SecondaryDns = SecondaryDns.UNKNOWN,
     )
+
+    /** Lookup owner for names other than the planned origin host. */
+    enum class SecondaryDns(val wireName: String) {
+        /** The plan owns the answer; use [RoutePlan.network] when present. */
+        ROUTE("route"),
+
+        /** The OS resolver carries the name, as the WebView does. */
+        SYSTEM("system"),
+
+        /** The proxy resolves the name; no local lookup happens. */
+        REMOTE("remote"),
+        UNKNOWN("unknown"),
+    }
 
     data class BufferedResponse(
         val statusCode: Int,
@@ -784,9 +806,19 @@ object SystemMediaNetwork {
         // sockets were bound to it. Record that so the binding decision does
         // not have to re-derive it.
         val vpnIsDefault = !vpn || manager?.activeNetwork == network
+        // A proxied hop resolves the origin remotely and must keep doing so for
+        // every redirect target. A local hop that is not the tunnel asks the OS,
+        // exactly like the WebView. Only a socket bound to the tunnel takes
+        // extra names through the tunnel resolver.
+        val secondaryDns = when {
+            planned.proxy.type() == Proxy.Type.HTTP -> SecondaryDns.REMOTE
+            shouldBindVpnSocket(planned.info, planned.proxy) -> SecondaryDns.ROUTE
+            else -> SecondaryDns.SYSTEM
+        }
         return planned.copy(
             info = planned.info.copy(vpnTransport = vpn, vpnIsDefault = vpnIsDefault),
             network = network,
+            secondaryDns = secondaryDns,
         )
     }
 
@@ -1006,6 +1038,7 @@ object SystemMediaNetwork {
             context, uri, plan.proxy, plan.addresses.takeIf { it.isNotEmpty() },
             bindVpn = bindVpn,
             network = plan.network,
+            secondaryDns = plan.secondaryDns,
             beforeConnect = {
                 // Recheck the tunnel that owns this socket. Comparing with
                 // activeNetwork is wrong for rule-mode tunnels, where the
@@ -1208,6 +1241,7 @@ object SystemMediaNetwork {
          */
         bindVpn: Boolean = false,
         network: Network? = null,
+        secondaryDns: SecondaryDns = SecondaryDns.UNKNOWN,
         beforeConnect: () -> Unit = {},
     ): HttpURLConnection {
         val client = buildOkHttpClient(
@@ -1217,6 +1251,7 @@ object SystemMediaNetwork {
             validatedAddresses = validatedAddresses,
             bindVpn = bindVpn,
             network = network,
+            secondaryDns = secondaryDns,
             beforeConnect = beforeConnect,
         )
         return OkHttpMediaConnection(uri, client, proxy.type() == Proxy.Type.HTTP, beforeConnect)
@@ -1229,6 +1264,7 @@ object SystemMediaNetwork {
         validatedAddresses: List<InetAddress>? = null,
         bindVpn: Boolean = false,
         network: Network? = null,
+        secondaryDns: SecondaryDns = SecondaryDns.UNKNOWN,
         beforeConnect: () -> Unit = {},
         timeoutMs: Long? = null,
         listener: EventListener? = null,
@@ -1250,21 +1286,26 @@ object SystemMediaNetwork {
                 .readTimeout(duration, TimeUnit.MILLISECONDS)
                 .callTimeout(duration, TimeUnit.MILLISECONDS)
         }
-        if (validatedAddresses != null) {
+        // One resolver for every name a single request can reach. A pinned
+        // address only covers the planned origin; redirects and the resources
+        // a playlist names move to other hosts, and those must follow the same
+        // DNS owner the plan recorded, not whichever one this hop happened to
+        // have bound.
+        if (validatedAddresses != null || secondaryDns != SecondaryDns.UNKNOWN) {
             builder.dns(object : Dns {
                 override fun lookup(hostname: String): List<InetAddress> {
-                    if (hostname.equals(uri.host, ignoreCase = true)) {
+                    if (hostname.equals(uri.host, ignoreCase = true) &&
+                        validatedAddresses != null) {
                         return validatedAddresses
                     }
-                    // HLS playlists may move segments, keys, or maps to a
-                    // different host. Keep those lookups on the same tunnel
-                    // when this plan owns system DNS; a single-resource
-                    // address pin must not turn a valid multi-CDN playlist
-                    // into an UnknownHost failure.
-                    return if (bindVpn && network != null) {
-                        network.getAllByName(hostname).toList()
-                    } else {
-                        Dns.SYSTEM.lookup(hostname)
+                    // The plan's DNS owner answers every other name. A bound
+                    // tunnel resolves inside itself; a direct hop on the
+                    // underlay asks the OS like the WebView; a proxy hop never
+                    // resolves locally at all.
+                    return when (secondaryDns) {
+                        SecondaryDns.ROUTE ->
+                            (network ?: Dns.SYSTEM).getAllByName(hostname).toList()
+                        else -> Dns.SYSTEM.lookup(hostname)
                     }
                 }
             })
@@ -1281,11 +1322,13 @@ object SystemMediaNetwork {
             }
             // Name resolution must also happen inside the tunnel, otherwise a
             // split-DNS name is answered by the underlay and the tunnelled
-            // socket then connects to the wrong address.
+            // socket then connects to the wrong address. The plan's DNS owner
+            // already recorded that decision, so this is only the fallback for
+            // a caller that built the client without one.
             val tunnel = selectedNetwork
             // `validatedAddresses` already carries the address this hop must
             // use (including a Fake-IP), so it wins over a second lookup.
-            if (validatedAddresses == null) {
+            if (validatedAddresses == null && secondaryDns == SecondaryDns.UNKNOWN) {
                 builder.dns(object : Dns {
                     override fun lookup(hostname: String): List<InetAddress> =
                         tunnel.getAllByName(hostname).toList()

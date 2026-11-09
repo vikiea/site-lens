@@ -46,7 +46,7 @@ void main() {
     );
     final old = candidate('old');
     await db.saveMediaCandidate(old);
-    final task = app.mediaTasks.create(old);
+    final task = await app.mediaTasks.create(old);
     app.mediaTasks.transition(task.id, MediaTaskState.downloading);
     final failed = app.mediaTasks.transition(
       task.id,
@@ -124,7 +124,7 @@ void main() {
 
       final old = make('old', 'edge-wifi.example', host.generation);
       await db.saveMediaCandidate(old);
-      final task = app.mediaTasks.create(old);
+      final task = await app.mediaTasks.create(old);
       app.mediaTasks.transition(task.id, MediaTaskState.downloading);
       final failed = app.mediaTasks.transition(
         task.id,

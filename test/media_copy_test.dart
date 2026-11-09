@@ -43,7 +43,7 @@ void main() {
     () async {
       final candidate = _candidate();
       await db.saveMediaCandidate(candidate);
-      var task = tasks.create(candidate);
+      var task = await tasks.create(candidate);
       task = tasks.transition(task.id, MediaTaskState.downloading);
       task = tasks.transition(task.id, MediaTaskState.playable);
 
@@ -71,7 +71,7 @@ void main() {
   test('copyCompleted refuses a busy lease', () async {
     final candidate = _candidate(id: 'busy-copy-candidate');
     await db.saveMediaCandidate(candidate);
-    var task = tasks.create(candidate);
+    var task = await tasks.create(candidate);
     task = tasks.transition(task.id, MediaTaskState.downloading);
     task = tasks.transition(task.id, MediaTaskState.playable);
     final source = File(

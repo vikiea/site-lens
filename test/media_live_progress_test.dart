@@ -33,7 +33,7 @@ void main() {
           source: MediaCandidateSource.dom,
         );
         final tasks = MediaTaskStore(directoryProvider: () async => root);
-        final task = tasks.create(candidate);
+        final task = await tasks.create(candidate);
         final progress = <int>[];
         tasks.addListener(() {
           final current = tasks.task(task.id);
@@ -89,7 +89,7 @@ void main() {
         mime: 'application/vnd.apple.mpegurl',
         source: MediaCandidateSource.dom,
       );
-      final task = tasks.create(candidate);
+      final task = await tasks.create(candidate);
       final progress = <int>[];
       tasks.addListener(() {
         final current = tasks.task(task.id);
@@ -130,7 +130,7 @@ void main() {
           source: MediaCandidateSource.dom,
         );
         final tasks = MediaTaskStore(directoryProvider: () async => root);
-        final task = tasks.create(candidate);
+        final task = await tasks.create(candidate);
         if (resumed) {
           final directory = await tasks.cacheDirectory(
             storageDirectory: task.storageDirectoryName,

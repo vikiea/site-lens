@@ -27,7 +27,7 @@ void main() {
 
   test(
     'row descriptions show exact playable, progress and retry information',
-    () {
+    () async {
       final candidate = MediaCandidate(
         id: 'row-candidate',
         hostId: 1,
@@ -40,7 +40,7 @@ void main() {
         episodeNumber: 1,
       );
       final store = MediaTaskStore();
-      var task = store.create(candidate);
+      var task = await store.create(candidate);
       task = store.transition(task.id, MediaTaskState.downloading);
       task = store.updateProgress(task.id, 50, totalBytes: 100);
 
@@ -69,7 +69,7 @@ void main() {
     },
   );
 
-  test('HLS progress does not claim an exact total before completion', () {
+  test('HLS progress does not claim an exact total before completion', () async {
     final candidate = MediaCandidate(
       id: 'hls-row-candidate',
       hostId: 1,
@@ -82,7 +82,7 @@ void main() {
       episodeNumber: 1,
     );
     final store = MediaTaskStore();
-    var task = store.create(candidate);
+    var task = await store.create(candidate);
     task = store.transition(task.id, MediaTaskState.downloading);
     task = store.updateProgress(task.id, 512, totalBytes: 1024);
 

@@ -48,6 +48,16 @@ class ResumableMediaTransfer(
     private val dnsModeForConnection: () -> String = { "unknown" },
     private val networkEpochForAttempt: () -> Long = { 0L },
     private val routeBeforeConnect: () -> String = { "unknown" },
+    /**
+     * Per-attempt route override.
+     *
+     * The retry budget rotates the OS route, but a redirect inside one attempt
+     * used to keep the route of the *previous* attempt: the route key is the
+     * redirect target, which no attempt had planned yet, so the recorded
+     * override still described the hop that had just failed. Returning null
+     * lets the transport plan that target itself.
+     */
+    private val routeForAttempt: (URI, Int) -> String? = { _, _ -> null },
     /** Required to pin media sockets to the active tunnel; null keeps tests pure. */
     private val context: Context? = null,
 ) {
@@ -134,9 +144,11 @@ class ResumableMediaTransfer(
                             checkActive(); validate(uri); failurePhase = "connect"
                             failedUri = uri
                             val routeKey = uri.toString()
+                            val plannedAttempt = routeAttempts[routeKey] ?: startAttempt
                             val current = connect?.invoke(uri)
-                                ?: routeConnect(uri, routeAttempts[routeKey] ?: startAttempt)
-                            failureRoute = routeForConnection(current)
+                                ?: routeConnect(uri, plannedAttempt)
+                            failureRoute = routeForAttempt(uri, plannedAttempt)
+                                ?: routeForConnection(current)
                             connection = current
                             current.instanceFollowRedirects = false
                             current.connectTimeout = 15000
@@ -159,9 +171,13 @@ class ResumableMediaTransfer(
                                 current.setRequestProperty("If-Range", validator)
                             }
                             // Cookie selection is recalculated for every redirect target.
+                            // connect() is where OkHttp runs DNS, TCP and the
+                            // tunnel recheck, so a handshake or route failure
+                            // belongs to this phase until a response exists.
+                            failurePhase = "connect"
+                            val status = current.responseCode
                             failurePhase = "response_headers"
                             failureOffset = offset
-                            val status = current.responseCode
                             responseStatus = status
                             if (status in listOf(301, 302, 303, 307, 308)) {
                                 check(redirect < 5) { "重定向过多" }

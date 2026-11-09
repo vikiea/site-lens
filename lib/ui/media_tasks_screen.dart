@@ -4748,7 +4748,14 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
       );
 
   String _taskTitle(MediaTask task) {
-    return _shortMediaName(task.episodeFileName.trim());
+    // A row is identified by the episode it holds. Falling back to the stored
+    // episode label keeps that identity when the file name cannot carry it
+    // (missing episode number) instead of showing a placeholder row name.
+    final file = task.episodeFileName.trim();
+    if (_shortMediaName(file).trim().isEmpty) {
+      return task.episodeLabel?.trim() ?? '';
+    }
+    return _shortMediaName(file);
   }
 }
 

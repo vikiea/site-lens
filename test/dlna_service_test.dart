@@ -10,7 +10,7 @@ import 'package:site_lens/media/media_service.dart';
 
 void main() {
   _httpTests();
-  test('rotated-token cast preparation never owns an existing download', () {
+  test('rotated-token cast preparation never owns an existing download', () async {
     final tasks = MediaTaskStore();
     MediaCandidate candidate(String token) => MediaCandidate(
       id: 'candidate-$token',
@@ -22,12 +22,12 @@ void main() {
       mime: 'application/vnd.apple.mpegurl',
       source: MediaCandidateSource.dom,
     );
-    final task = tasks.create(candidate('old'));
+    final task = await tasks.create(candidate('old'));
     tasks.transition(task.id, MediaTaskState.downloading);
     tasks.updateProgress(task.id, 1024, totalBytes: 4096);
     tasks.transition(task.id, MediaTaskState.reauthorize);
     final cast = DlnaCastController(CastSessionController(tasks: tasks));
-    final prepared = cast.prepareTask(candidate('new'));
+    final prepared = await cast.prepareTask(candidate('new'));
     expect(prepared.temporary, isFalse);
     expect(prepared.task.id, task.id);
     expect(prepared.task.bytesDownloaded, 1024);
@@ -69,9 +69,9 @@ void main() {
     expect(info.mimeFor('audio/flac'), isNull);
   });
 
-  test('failed cast releases the task and allows a new session', () {
+  test('failed cast releases the task and allows a new session', () async {
     final tasks = MediaTaskStore();
-    final task = tasks.create(
+    final task = await tasks.create(
       MediaCandidate(
         id: 'cast-candidate',
         hostId: 1,
@@ -253,7 +253,7 @@ void _httpTests() {
         ..writeAsBytesSync(List.generate(32, (index) => index));
       receiver = await _Receiver.start();
       tasks = MediaTaskStore();
-      task = tasks.create(
+      task = await tasks.create(
         MediaCandidate(
           id: 'media',
           hostId: 1,

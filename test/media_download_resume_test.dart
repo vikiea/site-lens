@@ -63,7 +63,7 @@ void main() {
             return MediaTransferResult(attemptsUsed: 1, finalUrl: url);
           },
     );
-    final task = tasks.create(candidate);
+    final task = await tasks.create(candidate);
     await expectLater(
       service.start(task, candidate),
       throwsA(isA<PlatformException>()),
@@ -124,6 +124,126 @@ void main() {
     );
   });
 
+  test(
+    'route-spanning native TLS failure retries the other transport family',
+    () async {
+      // Everything the native transport may use failed TLS: the tunnel first,
+      // then the proxy, then the direct path. The answer proves the preferred
+      // route order, not the host, so the Dart transport must get its own
+      // budget instead of repeating the family that already failed.
+      final root = await Directory.systemTemp.createTemp('native-route-fallback-');
+      addTearDown(() => root.delete(recursive: true));
+      final candidate = _candidate(Uri.parse('https://cdn.example/index.m3u8'));
+      final tasks = MediaTaskStore(directoryProvider: () async => root);
+      final nativeCalls = <String>[];
+      final service = MediaDownloadService(
+        tasks: tasks,
+        policyTransfer:
+            (
+              url,
+              document,
+              destination,
+              maxBytes,
+              cancel, {
+              onProgress,
+              headers,
+              requestContextId,
+              required maxAttempts,
+              required startAttempt,
+              resourceKind = 'file',
+            }) async {
+              nativeCalls.add(resourceKind);
+              if (nativeCalls.length == 1) {
+                throw PlatformException(
+                  code: 'media_transfer',
+                  message: '媒体连接失败，已保留缓存，可重试',
+                  details: {
+                    'resource': resourceKind,
+                    'phase': 'connect',
+                    'reason': 'tls_handshake',
+                    'offset': 0,
+                    'bytesWritten': 0,
+                    'attemptsUsed': 5,
+                    'attempts': [
+                      {'route': 'vpn_tun_fake_ip', 'failureCategory': 'tls_handshake'},
+                      {'route': 'http_proxy', 'failureCategory': 'tls_handshake'},
+                      {'route': 'vpn_tun_fake_ip', 'failureCategory': 'tls_handshake'},
+                      {'route': 'http_proxy', 'failureCategory': 'tls_handshake'},
+                      {'route': 'public_direct', 'failureCategory': 'io'},
+                    ],
+                  },
+                );
+              }
+              await destination.writeAsString(
+                '#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nsegment.ts\n#EXT-X-ENDLIST\n',
+              );
+              return MediaTransferResult(attemptsUsed: 1, finalUrl: url);
+            },
+      );
+      final task = await tasks.create(candidate);
+      await service.start(task, candidate);
+      // The manifest went native once and then came from Dart; the resource
+      // never failed twice on the same transport.
+      expect(nativeCalls, ['manifest', 'manifest']);
+      expect(tasks.task(task.id)!.state, MediaTaskState.playable);
+    },
+  );
+
+  test(
+    'a single-family native failure keeps its task failure',
+    () async {
+      // Only the tunnel was tried. Falling back would silently reroute a host
+      // the user's proxy setting had deliberately sent through the tunnel.
+      final root = await Directory.systemTemp.createTemp('native-single-family-');
+      addTearDown(() => root.delete(recursive: true));
+      final candidate = _candidate(Uri.parse('https://cdn.example/index.m3u8'));
+      final tasks = MediaTaskStore(directoryProvider: () async => root);
+      var calls = 0;
+      final service = MediaDownloadService(
+        tasks: tasks,
+        policyTransfer:
+            (
+              url,
+              document,
+              destination,
+              maxBytes,
+              cancel, {
+              onProgress,
+              headers,
+              requestContextId,
+              required maxAttempts,
+              required startAttempt,
+              resourceKind = 'file',
+            }) async {
+              calls++;
+              throw PlatformException(
+                code: 'media_transfer',
+                message: '媒体连接失败，已保留缓存，可重试',
+                details: {
+                  'resource': resourceKind,
+                  'phase': 'connect',
+                  'reason': 'tls_handshake',
+                  'offset': 0,
+                  'bytesWritten': 0,
+                  'attemptsUsed': 5,
+                  'attempts': [
+                    for (var index = 0; index < 5; index++)
+                      {'route': 'vpn_tun_fake_ip', 'failureCategory': 'tls_handshake'},
+                  ],
+                },
+              );
+            },
+      );
+      final task = await tasks.create(candidate);
+      await expectLater(
+        service.start(task, candidate),
+        throwsA(isA<PlatformException>()),
+      );
+      expect(calls, 1);
+      expect(tasks.task(task.id)!.state, MediaTaskState.failed);
+    },
+  );
+
   for (final resource in ['key', 'map', 'segment']) {
     test(
       'native HLS $resource failure retains safe transfer context',
@@ -172,7 +292,7 @@ void main() {
                 );
               },
         );
-        final task = tasks.create(candidate);
+        final task = await tasks.create(candidate);
         await expectLater(
           service.start(task, candidate),
           throwsA(
@@ -220,7 +340,7 @@ void main() {
         db: db,
         resourceCoordinator: coordinator,
       );
-      final task = tasks.create(candidate);
+      final task = await tasks.create(candidate);
       final service = MediaDownloadService(
         tasks: tasks,
         resourceCoordinator: coordinator,
@@ -286,7 +406,7 @@ void main() {
     final store = MediaTaskStore(directoryProvider: () async => root, db: db);
     final candidate = _candidate(playlist);
     await db.saveMediaCandidate(candidate);
-    final task = store.create(candidate);
+    final task = await store.create(candidate);
 
     await expectLater(
       MediaDownloadService(
@@ -329,7 +449,7 @@ void main() {
       Uri.parse('http://127.0.0.1:${server.port}/index.m3u8'),
     );
     final store = MediaTaskStore(directoryProvider: () async => root);
-    final task = store.create(candidate);
+    final task = await store.create(candidate);
     await MediaDownloadService(
       tasks: store,
       http: ControlledHttp(allowLocal: true),
@@ -364,7 +484,7 @@ void main() {
           Uri.parse('https://cdn.example/index.m3u8'),
         );
         final store = MediaTaskStore(directoryProvider: () async => root);
-        final task = store.create(candidate);
+        final task = await store.create(candidate);
         final http = _RotatingHlsHttp(changed: changed);
         final service = MediaDownloadService(tasks: store, http: http);
         await expectLater(service.start(task, candidate), throwsStateError);
@@ -392,7 +512,7 @@ void main() {
       addTearDown(() => root.delete(recursive: true));
       final candidate = _candidate(Uri.parse('https://cdn.example/index.m3u8'));
       final store = MediaTaskStore(directoryProvider: () async => root);
-      final task = store.create(candidate);
+      final task = await store.create(candidate);
       final http = _RotatingHlsHttp(changed: false, versionChanged: true);
       final service = MediaDownloadService(tasks: store, http: http);
       await expectLater(service.start(task, candidate), throwsStateError);
@@ -424,7 +544,7 @@ void main() {
         source: oldCandidate.source,
       );
       final store = MediaTaskStore(directoryProvider: () async => root);
-      final task = store.create(oldCandidate);
+      final task = await store.create(oldCandidate);
       final http = _RotatingHlsHttp(changed: false);
       final service = MediaDownloadService(
         tasks: store,
@@ -462,7 +582,7 @@ void main() {
       final result = await MediaDownloadService(
         tasks: store,
         http: http,
-      ).start(store.create(candidate), candidate);
+      ).start(await store.create(candidate), candidate);
       expect(result.state, MediaTaskState.playable);
       expect(http.manifestCalls, 2);
     });
@@ -503,7 +623,7 @@ void main() {
                 await destination.writeAsBytes([4, 5, 6], flush: true);
                 onProgress?.call(3);
               },
-        ).start(tasks.create(candidate), candidate);
+        ).start(await tasks.create(candidate), candidate);
         expect(result.state, MediaTaskState.playable);
         expect(http.attempts, [0, 1, 2, 3]);
         expect(nativeCalls, 1);
@@ -545,7 +665,7 @@ void main() {
               );
               onProgress?.call(28);
             },
-      ).start(tasks.create(candidate), candidate);
+      ).start(await tasks.create(candidate), candidate);
 
       expect(result.state, MediaTaskState.playable);
       expect(http.manifestAttempts, [0, 1, 2]);
@@ -604,7 +724,7 @@ void main() {
               );
               onProgress?.call(28);
             },
-      ).start(tasks.create(candidate), candidate);
+      ).start(await tasks.create(candidate), candidate);
 
       expect(result.state, MediaTaskState.playable);
       expect(observed, {'x-cdn-auth': 'signed-value', 'x-cdn-app': '150'});
@@ -647,7 +767,7 @@ void main() {
                 },
               );
             },
-      ).start(tasks.create(candidate), candidate);
+      ).start(await tasks.create(candidate), candidate);
 
       expect(result.state, MediaTaskState.playable);
       expect(nativeCalls, 1);
@@ -751,7 +871,7 @@ void main() {
       mime: 'application/vnd.apple.mpegurl',
       source: MediaCandidateSource.dom,
     );
-    final task = store.create(candidate);
+    final task = await store.create(candidate);
     store.addListener(() {
       final current = store.task(task.id);
       if (current?.state == MediaTaskState.downloading) {
@@ -788,7 +908,7 @@ void main() {
     final http = _HlsResumeHttp(playlistUrl, segmentUrl);
     final store = MediaTaskStore(directoryProvider: () async => root);
     final candidate = _candidate(playlistUrl);
-    final task = store.create(candidate);
+    final task = await store.create(candidate);
     final result = await MediaDownloadService(
       tasks: store,
       http: http,
@@ -855,8 +975,8 @@ void main() {
         http: http,
         resourceCoordinator: coordinator,
       );
-      final first = store.create(firstCandidate);
-      final second = store.create(secondCandidate);
+      final first = await store.create(firstCandidate);
+      final second = await store.create(secondCandidate);
       await service.start(first, firstCandidate);
       await service.start(second, secondCandidate);
       final resourceKey = (await store.db!.mediaResourceKeys()).firstWhere(
@@ -903,7 +1023,7 @@ void main() {
         http: http,
         resourceCoordinator: coordinator,
       );
-      final task = store.create(candidate);
+      final task = await store.create(candidate);
 
       await service.start(task, candidate);
       final firstKey = (await db.mediaResourceKeys()).firstWhere(
@@ -915,7 +1035,7 @@ void main() {
       );
 
       store.transition(task.id, MediaTaskState.failed);
-      final retry = store.create(candidate);
+      final retry = await store.create(candidate);
       http.phase = 1;
       await service.start(retry, candidate);
 
@@ -944,7 +1064,7 @@ void main() {
       mime: 'application/vnd.apple.mpegurl',
       source: MediaCandidateSource.dom,
     );
-    final task = store.create(candidate);
+    final task = await store.create(candidate);
     final result = await MediaDownloadService(
       tasks: store,
       http: http,
@@ -985,7 +1105,7 @@ void main() {
         mime: 'application/vnd.apple.mpegurl',
         source: MediaCandidateSource.dom,
       );
-      final task = store.create(candidate);
+      final task = await store.create(candidate);
       await expectLater(
         MediaDownloadService(tasks: store, http: http).start(task, candidate),
         throwsA(isA<HttpException>()),
@@ -1011,7 +1131,7 @@ void main() {
       mime: 'application/vnd.apple.mpegurl',
       source: MediaCandidateSource.dom,
     );
-    final task = store.create(candidate);
+    final task = await store.create(candidate);
     await expectLater(
       MediaDownloadService(tasks: store, http: http).start(task, candidate),
       throwsA(isA<StateError>()),

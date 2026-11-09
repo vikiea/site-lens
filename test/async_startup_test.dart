@@ -123,7 +123,7 @@ void main() {
       expect(app.activeBrowser!.loadedHost, isNull);
       expect(app.mediaReady, isFalse);
       expect(api.created, isEmpty);
-      expect(() => app.mediaTasks.create(candidate()), throwsStateError);
+      await expectLater(app.mediaTasks.create(candidate()), throwsStateError);
       final loading = app.activateTab(app.activeBrowser!);
       await Future<void>.delayed(Duration.zero);
       expect(api.created, isEmpty);
@@ -134,7 +134,7 @@ void main() {
       db.mediaRelease.complete();
       await app.startupSettled;
       await db.saveMediaCandidate(candidate());
-      final task = app.mediaTasks.create(candidate());
+      final task = await app.mediaTasks.create(candidate());
       await app.mediaTasks.flush(task.id);
       expect((await db.mediaTasks()).single.id, task.id);
     },
@@ -166,7 +166,7 @@ void main() {
       await app.startupSettled;
       expect(app.mediaReady, isFalse);
       expect(app.mediaStartupError, isNotNull);
-      expect(() => app.mediaTasks.create(candidate()), throwsStateError);
+      await expectLater(app.mediaTasks.create(candidate()), throwsStateError);
       await app.activateTab(app.activeBrowser!);
       expect(api.created, hasLength(1));
     },

@@ -287,6 +287,33 @@ assert.equal(conflictingJson.length, 1);
 assert.equal(conflictingJson[0].episodeNumber, undefined);
 assert.match(conflictingJson[0].title, /集数未确认/);
 console.log('Malformed/oversized JSON and same-address episode conflicts are fail closed PASS.');
+
+// A page-data block that names the series must be preferred over the document
+// title, which on this site names the episode. The check runs on the explicit
+// map scenario, whose URL and page data already agree.
+{
+  const before = outbound.length;
+  const saveInitialData = initialData;
+  try {
+    const data = JSON.parse(initialData.value);
+    data.title = '示例剧';
+    initialData.value = JSON.stringify(data);
+    mutation();
+    await waitForReport();
+    const snapshot = outbound.slice(before).filter(value => value.kind === 'candidates').at(-1);
+    const labels = snapshot ? snapshot.candidates.map(item => item.title) : [];
+    assert.ok(labels.length > 0, 'the mapped episode stays visible');
+    // Nothing may be labelled from the document title when the page names its
+    // series; the stale title is "测试媒体".
+    assert.ok(
+      labels.every(label => !label.startsWith('测试媒体')),
+      JSON.stringify(labels),
+    );
+    console.log('Page-stated series name reaches candidate labels PASS.');
+  } finally {
+    initialData = saveInitialData;
+  }
+}
 dataElements.length = 0;
 window.history.replaceState({}, '', '/video/42/');
 initialData.value = JSON.stringify({id: 42, epPlaySrcs: {}});
@@ -646,6 +673,7 @@ performanceEntries.push({name: 'https://cdn.example.test/video/series-1.m3u8?tok
 mutation();
 await waitForReport();
 const redirectedCandidates = outbound.filter(value => value.kind === 'candidates').at(-1).candidates;
+console.log('REDIR', JSON.stringify(outbound.filter(v => v.kind === 'candidates').slice(-2).map(v => v.candidates.map(c => [c.url, c.title]))));
 assert.equal(redirectedCandidates.length, 1);
 assert.ok(redirectedCandidates[0].url.includes('/play/series/1.m3u8'));
 console.log('Meaningful media element suppresses redirected Resource Timing duplicates PASS.');

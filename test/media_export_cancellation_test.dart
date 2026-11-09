@@ -69,7 +69,7 @@ void main() {
     );
     addTearDown(() => root.delete(recursive: true));
     final tasks = MediaTaskStore(directoryProvider: () async => root);
-    final task = tasks.create(
+    final task = await tasks.create(
       MediaCandidate(
         id: 'cancel-fixture',
         hostId: 1,

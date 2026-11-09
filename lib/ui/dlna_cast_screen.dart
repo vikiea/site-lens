@@ -112,7 +112,7 @@ class _DlnaCastScreenState extends State<DlnaCastScreen> {
     if (pending != null && widget.app.mediaTasks.task(pending.id) != null) {
       return widget.app.mediaTasks.task(pending.id)!;
     }
-    final prepared = cast.prepareTask(candidate);
+    final prepared = await cast.prepareTask(candidate);
     _createdRemoteTask = prepared.task;
     _ownsRemoteTask = prepared.temporary;
     return prepared.task;

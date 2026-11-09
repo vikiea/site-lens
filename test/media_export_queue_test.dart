@@ -8,7 +8,7 @@ import 'package:site_lens/media/media_export_queue.dart';
 import 'package:site_lens/media/media_library.dart';
 import 'package:site_lens/media/media_service.dart';
 
-MediaTask _taskFor(MediaTaskStore store) => store.create(
+Future<MediaTask> _taskFor(MediaTaskStore store) => store.create(
   MediaCandidate(
     id: 'export-queue-candidate',
     hostId: 1,
@@ -30,10 +30,10 @@ MediaArtifact _artifactFor(MediaTask task) => MediaArtifact(
 );
 
 void main() {
-  test('emits named retain/release and exclusive availability snapshots', () {
+  test('emits named retain/release and exclusive availability snapshots', () async {
     final tasks = ExportNotifyingMediaTaskStore();
     addTearDown(tasks.dispose);
-    final task = _taskFor(tasks);
+    final task = await _taskFor(tasks);
     final events = <MediaTaskAvailabilityEvent>[];
     final subscription = tasks.availabilityEvents.listen(events.add);
     addTearDown(subscription.cancel);
@@ -60,7 +60,7 @@ void main() {
   test('waits for a retained task and wakes after release', () async {
     final tasks = ExportNotifyingMediaTaskStore();
     addTearDown(tasks.dispose);
-    final task = _taskFor(tasks);
+    final task = await _taskFor(tasks);
     tasks.retain(task.id);
     var executions = 0;
     final queue = MediaExportQueue(
@@ -87,7 +87,7 @@ void main() {
   test('coalesces automatic and manual requests by task id', () async {
     final tasks = MediaTaskStore();
     addTearDown(tasks.dispose);
-    final task = _taskFor(tasks);
+    final task = await _taskFor(tasks);
     final started = Completer<void>();
     final finish = Completer<void>();
     var executions = 0;
@@ -118,7 +118,7 @@ void main() {
   test('retries unexpected failures within the bounded retry budget', () async {
     final tasks = MediaTaskStore();
     addTearDown(tasks.dispose);
-    final task = _taskFor(tasks);
+    final task = await _taskFor(tasks);
     var executions = 0;
     final queue = MediaExportQueue(
       tasks: tasks,
@@ -152,7 +152,7 @@ void main() {
       source: MediaCandidateSource.dom,
     );
     await db.saveMediaCandidate(candidate);
-    final task = tasks.create(candidate);
+    final task = await tasks.create(candidate);
     await tasks.flush(task.id);
     tasks.retain(task.id);
     final queue = MediaExportQueue(

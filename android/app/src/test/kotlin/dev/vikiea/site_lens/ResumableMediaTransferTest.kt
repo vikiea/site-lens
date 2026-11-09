@@ -166,6 +166,52 @@ class ResumableMediaTransferTest {
     }
 
     @Test
+    fun redirectTargetIsReportedWithItsOwnRoute() = fixture { root ->
+        // A TLS failure during connect() belongs to the connect phase, and the
+        // redirect target must be attributed to the route planned for it
+        // instead of the hop that had just failed.
+        val first = FakeConnection(
+            302,
+            mapOf("Location" to "https://other.example/video"),
+            ByteArrayInputStream(byteArrayOf()),
+        )
+        val planned = mutableListOf<String>()
+        val diagnostics = mutableListOf<Map<String, Any>>()
+        val transfer = ResumableMediaTransfer(
+            connectForAttempt = { uri, _ ->
+                if (uri.host == "other.example") {
+                    throw javax.net.ssl.SSLHandshakeException("private details")
+                }
+                first
+            },
+            routeForAttempt = { uri, _ ->
+                planned += uri.host
+                if (uri.host == "other.example") "http_proxy" else "vpn_tun_fake_ip"
+            },
+            routeForConnection = { "vpn_tun_fake_ip" },
+            onAttempt = { diagnostics += it },
+        )
+        assertThrows(IOException::class.java) {
+            transfer.transfer(
+                URL("https://cdn.example/video").toURI(),
+                URL("https://cdn.example/video").toURI(),
+                File(root, "video.part"),
+                "test",
+                maxAttempts = 1,
+            )
+        }
+        assertEquals(listOf("cdn.example", "other.example"), planned)
+        // A raw handshake throw inside connect() is not classified by the
+        // transport, so the category stays io; the phase and the route are what
+        // this case pins. The old code reported response_headers and the
+        // previous hop's route here.
+        assertEquals("other.example", diagnostics.last()["host"])
+        assertEquals("http_proxy", diagnostics.last()["route"])
+        assertEquals("connect", diagnostics.last()["phase"])
+        assertFalse(diagnostics.toString().contains("private details"))
+    }
+
+    @Test
     fun interruptedBodyResumesWithRangeAndIfRange() = fixture { root ->
         val first = FakeConnection(
             200,

@@ -781,9 +781,11 @@ class DlnaCastController extends ChangeNotifier {
 
   /// create() can reuse a reauthorization row after the token changes. Only
   /// rows actually created by this attempt belong to the temporary cast.
-  ({MediaTask task, bool temporary}) prepareTask(MediaCandidate candidate) {
+  Future<({MediaTask task, bool temporary})> prepareTask(
+    MediaCandidate candidate,
+  ) async {
     final existingIds = sessions.tasks.tasks.map((task) => task.id).toSet();
-    final task = sessions.tasks.create(candidate);
+    final task = await sessions.tasks.create(candidate);
     return (task: task, temporary: !existingIds.contains(task.id));
   }
 

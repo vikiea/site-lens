@@ -1293,16 +1293,29 @@ String mediaResourceKeyForCandidate(MediaCandidate candidate) {
 /// Picks one human-readable directory for a user-triggered batch. Generic
 /// active-player labels must not win over explicit episode titles; when every
 /// candidate is generic, the caller can use a neutral batch fallback.
+///
+/// "集数未确认" is a missing episode number, not a missing series: such an entry
+/// still names its series and shares one folder with the labelled episodes of
+/// the same selection. It only stops counting as a title when the page named
+/// nothing at all, in which case it reduces to the neutral noun that the
+/// generic-label check below drops.
 String? mediaBatchDirectoryName(Iterable<MediaCandidate> candidates) {
   final counts = <String, int>{};
   final firstSeen = <String, int>{};
   var order = 0;
   for (final candidate in candidates) {
-    final title = candidate.title.trim();
+    final title = candidate.title
+        .trim()
+        .replaceAll(
+          RegExp(
+            r'\s*(?:[·・|][^·・|]{0,24})?集数未确认\s*$',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .trim();
     final lower = title.toLowerCase();
-    if (title.isEmpty ||
-        {'媒体', 'video', 'media'}.contains(lower) ||
-        lower.contains('集数未确认')) {
+    if (title.isEmpty || {'媒体', 'video', 'media'}.contains(lower)) {
       order++;
       continue;
     }

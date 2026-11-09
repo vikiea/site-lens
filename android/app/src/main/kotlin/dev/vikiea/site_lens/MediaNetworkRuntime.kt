@@ -141,6 +141,11 @@ class MediaNetworkRuntime(
         try {
             val job = call.argument<String>("jobId") ?: "invalid"
             require(job.matches(Regex("[A-Za-z0-9_-]{1,100}"))) { "下载任务无效" }
+            // Route label per planned URL and attempt. A redirect target has
+            // no label of its own, and reporting the previous hop's route there
+            // made a TLS failure look like it happened on a route that was
+            // never tried.
+            val routeLabels = java.util.concurrent.ConcurrentHashMap<String, String>()
             var selectedRoute = "unknown"
             var targetDnsMode = "unknown"
             val attempts = mutableListOf<Map<String, Any>>()
@@ -151,8 +156,10 @@ class MediaNetworkRuntime(
                 connectForAttempt = { uri, attempt ->
                     selectedRoute = "unknown"
                     targetDnsMode = "unknown"
+                    routeLabels.remove(routeLabelKey(uri, attempt))
                     SystemMediaNetwork.openMediaConnection(context, uri, attempt) { info ->
                         selectedRoute = info.kind.wireName
+                        routeLabels[routeLabelKey(uri, attempt)] = info.kind.wireName
                         targetDnsMode = info.targetDnsMode
                         // One line per attempt: the route the planner chose, the
                         // DNS class it saw and whether the socket was bound. A
@@ -171,6 +178,7 @@ class MediaNetworkRuntime(
                     }
                 },
                 routeForConnection = { selectedRoute },
+                routeForAttempt = { uri, attempt -> routeLabels[routeLabelKey(uri, attempt)] },
                 dnsModeForConnection = { targetDnsMode },
                 networkEpochForAttempt = { SystemMediaNetwork.networkEpoch() },
                 routeBeforeConnect = { selectedRoute },
@@ -259,6 +267,8 @@ class MediaNetworkRuntime(
     }
 
     companion object {
+        private fun routeLabelKey(uri: URI, attempt: Int): String = "$attempt\u0000$uri"
+
         private val executor = Executors.newSingleThreadExecutor()
         private val transferExecutor = Executors.newFixedThreadPool(2)
     }
