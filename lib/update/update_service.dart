@@ -6,11 +6,9 @@ import 'dart:math' as math;
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:http/io_client.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
-import '../network/transport.dart';
 import '../settings/app_settings.dart';
 
 const siteLensRepository = 'vikiea/site-lens';
@@ -396,122 +394,20 @@ class GitHubApiException implements Exception {
   String toString() => message;
 }
 
-typedef UpdateRouteResolver = Future<MediaNetworkRoute> Function(Uri uri);
-
-class _UpdateConnectionPolicy {
-  final _fakeIpHosts = <String>{};
-  final _proxyByHost = <String, String>{};
-  final _systemDnsHosts = <String>{};
-
-  void setRoute(Uri uri, MediaNetworkRoute route) {
-    final host = uri.host.toLowerCase();
-    final tunnelOwnsFakeIp =
-        (route.routeKind == 'vpn_tun_fake_ip' ||
-            route.routeKind == 'router_fake_ip') &&
-        route.targetDnsMode == 'system_route' &&
-        route.directAllowed;
-    if (tunnelOwnsFakeIp) {
-      _fakeIpHosts.add(host);
-    } else {
-      _fakeIpHosts.remove(host);
-    }
-    _proxyByHost[host] = route.proxy.trim().isEmpty ? 'DIRECT' : route.proxy;
-    if (route.targetDnsMode == 'system_route') {
-      _systemDnsHosts.add(host);
-    } else {
-      _systemDnsHosts.remove(host);
-    }
-  }
-
-  bool fakeIpAllowed(String host) => _fakeIpHosts.contains(host.toLowerCase());
-
-  String proxyFor(Uri uri) {
-    final host = uri.host.toLowerCase();
-    return host.isEmpty ? 'DIRECT' : (_proxyByHost[host] ?? 'DIRECT');
-  }
-
-  Future<List<InternetAddress>> resolve(
-    String host,
-    Future<List<InternetAddress>> Function(String) fallback,
-  ) async {
-    final addresses = _systemDnsHosts.contains(host.toLowerCase())
-        ? await InternetAddress.lookup(host)
-        : await fallback(host);
-    // An intercepting route answers with a synthesized address. That address is
-    // only usable inside the route, and the route is what resolved it, so the
-    // host is marked here rather than from a separate route probe: the probe is
-    // unavailable on Android, which left every Fake-IP answer blocked.
-    if (addresses.isNotEmpty && addresses.every(NetworkPolicy.proxyFakeIp)) {
-      _fakeIpHosts.add(host.toLowerCase());
-    }
-    return addresses;
-  }
-
-  String routeKey(Uri uri) => [
-    proxyFor(uri),
-    _fakeIpHosts.contains(uri.host.toLowerCase()),
-    _systemDnsHosts.contains(uri.host.toLowerCase()),
-  ].join('|');
-
-  void block(Uri uri) {
-    final host = uri.host.toLowerCase();
-    _fakeIpHosts.remove(host);
-    _systemDnsHosts.remove(host);
-    _proxyByHost[host] = 'PROXY 127.0.0.1:9';
-  }
-}
-
-http.Client _createUpdateClient(
-  Future<List<InternetAddress>> Function(String)? resolve,
-  _UpdateConnectionPolicy policy,
-) {
-  if (resolve == null) return http.Client();
-  final client = HttpClient()
-    ..connectionTimeout = const Duration(seconds: 15)
-    ..findProxy = policy.proxyFor
-    ..connectionFactory = (target, proxyHost, proxyPort) {
-      if (proxyHost != null) {
-        return Socket.startConnect(proxyHost, proxyPort!);
-      }
-      return NetworkPolicy.connect(
-        target,
-        proxyHost,
-        proxyPort,
-        allowProxyFakeIp: policy.fakeIpAllowed(target.host),
-        resolve: (host) => policy.resolve(host, resolve),
-      );
-    };
-  return IOClient(client);
-}
-
 class GitHubReleaseClient {
-  GitHubReleaseClient({
-    http.Client? client,
-    Uri? latestUri,
-    this.tokenLoader,
-    Future<List<InternetAddress>> Function(String)? resolve,
-    this.routeResolver,
-  }) : _connectionPolicy = _UpdateConnectionPolicy(),
-       _ownsClient = client == null,
-       _resolve = resolve,
-       _latestUri =
-           latestUri ??
-           Uri.https('github.com', '/$siteLensRepository/releases/latest'),
-       _latestApiUri = Uri.https(
-         'api.github.com',
-         '/repos/$siteLensRepository/releases/latest',
-       ),
-       _releasesUri = Uri.https('github.com', '/$siteLensRepository/releases') {
-    _client = client ?? _createUpdateClient(resolve, _connectionPolicy);
+  GitHubReleaseClient({http.Client? client, Uri? latestUri, this.tokenLoader})
+    : _latestUri =
+          latestUri ??
+          Uri.https('github.com', '/$siteLensRepository/releases/latest'),
+      _latestApiUri = Uri.https(
+        'api.github.com',
+        '/repos/$siteLensRepository/releases/latest',
+      ),
+      _releasesUri = Uri.https('github.com', '/$siteLensRepository/releases') {
+    _client = client ?? http.Client();
   }
-
-  final UpdateRouteResolver? routeResolver;
-  final _UpdateConnectionPolicy _connectionPolicy;
-  final bool _ownsClient;
-  final Future<List<InternetAddress>> Function(String)? _resolve;
 
   late http.Client _client;
-  String? _clientRouteKey;
   final Future<String?> Function()? tokenLoader;
   final Uri _latestUri;
   final Uri _latestApiUri;
@@ -522,33 +418,6 @@ class GitHubReleaseClient {
     {'per_page': '30'},
   );
   static const _timeout = Duration(seconds: 20);
-
-  Future<void> _prepareRoute(Uri uri) async {
-    final resolver = routeResolver;
-    if (resolver == null) return;
-    try {
-      final route = await resolver(uri);
-      _connectionPolicy.setRoute(uri, route);
-      final routeKey = _connectionPolicy.routeKey(uri);
-      if (_ownsClient &&
-          _clientRouteKey != null &&
-          _clientRouteKey != routeKey) {
-        _client.close();
-        _client = _createUpdateClient(_resolve, _connectionPolicy);
-      }
-      _clientRouteKey = routeKey;
-    } catch (_) {
-      // Route evidence is advisory for the update check. If it cannot be
-      // read, block this host rather than turning an unproven route into
-      // DIRECT or reusing a route selected for an earlier request.
-      _connectionPolicy.block(uri);
-      if (_ownsClient && _clientRouteKey != null) {
-        _client.close();
-        _client = _createUpdateClient(_resolve, _connectionPolicy);
-      }
-      _clientRouteKey = _connectionPolicy.routeKey(uri);
-    }
-  }
 
   /// Validate every redirect, including GitHub's release asset CDN redirects.
   Future<http.StreamedResponse> _request(
@@ -575,7 +444,6 @@ class GitHubReleaseClient {
           request.headers['Authorization'] = 'Bearer $token';
         }
       }
-      await _prepareRoute(uri);
       final response = await _client.send(request).timeout(_timeout);
       if (![301, 302, 303, 307, 308].contains(response.statusCode)) {
         return response;
@@ -912,7 +780,6 @@ class GitHubReleaseClient {
 
   Future<String> _resolveLatestTag() async {
     _trustedUri(_latestUri.toString());
-    await _prepareRoute(_latestUri);
     final request = http.Request('GET', _latestUri)..followRedirects = false;
     request.headers['User-Agent'] = 'SiteLens/$siteLensRepository';
     request.headers['Accept'] = 'text/html';
@@ -1293,18 +1160,10 @@ class UpdateService {
     List<Duration>? retryDelays,
     this.channel = UpdateChannel.stable,
     this.tokenLoader,
-    Future<List<InternetAddress>> Function(String)? resolve,
-    this.routeResolver,
     this.progressMinBytes = 256 * 1024,
     this.progressMinInterval = const Duration(milliseconds: 200),
     UpdateDownloadBackend? nativeBackend,
-  }) : _client =
-           client ??
-           GitHubReleaseClient(
-             tokenLoader: tokenLoader,
-             resolve: resolve,
-             routeResolver: routeResolver,
-           ),
+  }) : _client = client ?? GitHubReleaseClient(tokenLoader: tokenLoader),
        platform = platform ?? MethodChannelUpdatePlatform(),
        retryDelays =
            retryDelays ??
@@ -1322,7 +1181,6 @@ class UpdateService {
 
   final GitHubReleaseClient _client;
   final Future<String?> Function()? tokenLoader;
-  final UpdateRouteResolver? routeResolver;
   UpdateChannel channel;
   final UpdatePlatform platform;
   final Future<PackageInfo> Function()? packageInfoLoader;

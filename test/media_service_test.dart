@@ -195,73 +195,83 @@ void main() {
     expect(mediaExportFileName(second), isNot(mediaExportFileName(first)));
   });
 
-  test('typed episode identity survives task creation and JSON roundtrip', () async {
-    final source = candidate(
-      id: 'typed-episode',
-      title: '系列 - 第4集',
-      seriesKey: 'https://example.com/video/42',
-      episodeNumber: 4,
-      representationRank: 2,
-      qualityLabel: '1080p',
-      audioLabel: '国语',
-    );
-    final task = await MediaTaskStore().create(source);
-    final restoredCandidate = MediaCandidate.fromJson(source.toJson());
-    final restoredTask = MediaTask.fromJson(task.toJson());
+  test(
+    'typed episode identity survives task creation and JSON roundtrip',
+    () async {
+      final source = candidate(
+        id: 'typed-episode',
+        title: '系列 - 第4集',
+        seriesKey: 'https://example.com/video/42',
+        episodeNumber: 4,
+        representationRank: 2,
+        qualityLabel: '1080p',
+        audioLabel: '国语',
+      );
+      final task = await MediaTaskStore().create(source);
+      final restoredCandidate = MediaCandidate.fromJson(source.toJson());
+      final restoredTask = MediaTask.fromJson(task.toJson());
 
-    expect(restoredCandidate.seriesKey, source.seriesKey);
-    expect(restoredCandidate.episodeNumber, 4);
-    expect(restoredCandidate.representationRank, 2);
-    expect(restoredCandidate.qualityLabel, '1080p');
-    expect(restoredCandidate.audioLabel, '国语');
-    expect(restoredTask.seriesKey, source.seriesKey);
-    expect(restoredTask.episodeNumber, 4);
-  });
+      expect(restoredCandidate.seriesKey, source.seriesKey);
+      expect(restoredCandidate.episodeNumber, 4);
+      expect(restoredCandidate.representationRank, 2);
+      expect(restoredCandidate.qualityLabel, '1080p');
+      expect(restoredCandidate.audioLabel, '国语');
+      expect(restoredTask.seriesKey, source.seriesKey);
+      expect(restoredTask.episodeNumber, 4);
+    },
+  );
 
-  test('typed playlist groups by series identity instead of display title', () async {
-    final store = MediaTaskStore();
-    final first = await store.create(
-      candidate(
-        id: 'typed-1',
-        title: '同名显示 - 第1集',
-        url: 'https://cdn.example/typed-1.mp4',
-        seriesKey: 'series:42',
-        episodeNumber: 1,
-      ),
-    );
-    final second = await store.create(
-      candidate(
-        id: 'typed-2',
-        title: '完全不同的标题',
-        url: 'https://cdn.example/typed-2.mp4',
-        seriesKey: 'series:42',
-        episodeNumber: 2,
-      ),
-    );
-    final foreign = await store.create(
-      candidate(
-        id: 'typed-foreign',
-        title: '同名显示 - 第3集',
-        url: 'https://cdn.example/typed-3.mp4',
-        seriesKey: 'series:77',
-        episodeNumber: 3,
-      ),
-    );
-    for (final task in [first, second, foreign]) {
-      store.transition(task.id, MediaTaskState.downloading);
-      store.transition(task.id, MediaTaskState.completed);
-      store.transition(task.id, MediaTaskState.playable);
-    }
+  test(
+    'typed playlist groups by series identity instead of display title',
+    () async {
+      final store = MediaTaskStore();
+      final first = await store.create(
+        candidate(
+          id: 'typed-1',
+          title: '同名显示 - 第1集',
+          url: 'https://cdn.example/typed-1.mp4',
+          seriesKey: 'series:42',
+          episodeNumber: 1,
+        ),
+      );
+      final second = await store.create(
+        candidate(
+          id: 'typed-2',
+          title: '完全不同的标题',
+          url: 'https://cdn.example/typed-2.mp4',
+          seriesKey: 'series:42',
+          episodeNumber: 2,
+        ),
+      );
+      final foreign = await store.create(
+        candidate(
+          id: 'typed-foreign',
+          title: '同名显示 - 第3集',
+          url: 'https://cdn.example/typed-3.mp4',
+          seriesKey: 'series:77',
+          episodeNumber: 3,
+        ),
+      );
+      for (final task in [first, second, foreign]) {
+        store.transition(task.id, MediaTaskState.downloading);
+        store.transition(task.id, MediaTaskState.completed);
+        store.transition(task.id, MediaTaskState.playable);
+      }
 
-    expect(mediaPlaylistForTasks(store.tasks, first).map((task) => task.id), [
-      first.id,
-      second.id,
-    ]);
-  });
+      expect(mediaPlaylistForTasks(store.tasks, first).map((task) => task.id), [
+        first.id,
+        second.id,
+      ]);
+    },
+  );
 
   test('resource identity survives host and generation changes', () async {
-    final first = await MediaTaskStore().create(candidate(hostId: 7, generation: 3));
-    final later = await MediaTaskStore().create(candidate(hostId: 8, generation: 4));
+    final first = await MediaTaskStore().create(
+      candidate(hostId: 7, generation: 3),
+    );
+    final later = await MediaTaskStore().create(
+      candidate(hostId: 8, generation: 4),
+    );
     expect(later.cacheKey, isNot(first.cacheKey));
     expect(later.resourceKey, first.resourceKey);
   });
@@ -374,12 +384,18 @@ void main() {
     },
   );
 
-  test('media task falls back to a media URL marker for a generic title', () async {
-    final task = await MediaTaskStore().create(
-      candidate(title: 'video', url: 'https://cdn.example/episode-3/video.mp4'),
-    );
-    expect(task.episodeLabel, '第3集');
-  });
+  test(
+    'media task falls back to a media URL marker for a generic title',
+    () async {
+      final task = await MediaTaskStore().create(
+        candidate(
+          title: 'video',
+          url: 'https://cdn.example/episode-3/video.mp4',
+        ),
+      );
+      expect(task.episodeLabel, '第3集');
+    },
+  );
 
   test('explicit episode titles replace stale page episode markers', () {
     expect(mediaTitleForEpisode('母衣半暖默许春朝 - 第4集', 7), '母衣半暖默许春朝 - 第7集');
@@ -397,7 +413,8 @@ void main() {
       );
       await db.saveMediaCandidate(original);
       final firstStore = MediaTaskStore(db: db);
-      final task = (await firstStore.create(original)).copyWith(resourceKey: '');
+      final task = (await firstStore.create(original))
+          .copyWith(resourceKey: '');
       await db.saveMediaTask(task);
       final replacement = candidate(
         id: 'reused',
@@ -532,13 +549,12 @@ void main() {
       addTearDown(db.close);
       final source = candidate(id: 'legacy-alias');
       await db.saveMediaCandidate(source);
-      final seed = (await MediaTaskStore().create(source))
-          .copyWith(
-            id: 'legacy-task-id',
-            state: MediaTaskState.downloading,
-            bytesDownloaded: 42,
-            totalBytes: 100,
-          );
+      final seed = (await MediaTaskStore().create(source)).copyWith(
+        id: 'legacy-task-id',
+        state: MediaTaskState.downloading,
+        bytesDownloaded: 42,
+        totalBytes: 100,
+      );
       await db.saveMediaTask(seed);
 
       final store = MediaTaskStore(db: db);
@@ -776,17 +792,20 @@ void main() {
     expect(await File(migratedArtifact.location).readAsBytes(), [4, 5, 6]);
   });
 
-  test('legacy cache identity stays stable at its persisted directory', () async {
-    final store = MediaTaskStore();
-    final task = await store.create(
-      candidate(title: '系统带我攻略弟弟（漫剧版） - 第1集'),
-      batchDirectory: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
-    );
+  test(
+    'legacy cache identity stays stable at its persisted directory',
+    () async {
+      final store = MediaTaskStore();
+      final task = await store.create(
+        candidate(title: '系统带我攻略弟弟（漫剧版） - 第1集'),
+        batchDirectory: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
+      );
 
-    expect(task.batchDirectory, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
-    expect(task.storageDirectoryName, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
-    expect(mediaFolderDisplayName(task.batchDirectory!), '系统带我攻略弟弟（漫剧版）');
-  });
+      expect(task.batchDirectory, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
+      expect(task.storageDirectoryName, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
+      expect(mediaFolderDisplayName(task.batchDirectory!), '系统带我攻略弟弟（漫剧版）');
+    },
+  );
 
   test('batch directory survives media task persistence and restore', () async {
     final db = AppDatabase(NativeDatabase.memory());
@@ -873,45 +892,48 @@ void main() {
     expect(playlist.indexWhere((task) => task.id == current.id), 2);
   });
 
-  test('folder playlist does not add tasks outside the supplied folder', () async {
-    final store = MediaTaskStore();
-    final first = await store.create(
-      candidate(
-        id: 'folder-a-1',
-        title: '系列甲 - 第1集',
-        url: 'https://cdn.example/folder-a-1.mp4',
-      ),
-      batchDirectory: '文件夹甲',
-    );
-    final second = await store.create(
-      candidate(
-        id: 'folder-a-2',
-        title: '系列甲 - 第2集',
-        url: 'https://cdn.example/folder-a-2.mp4',
-      ),
-      batchDirectory: '文件夹甲',
-    );
-    final foreign = await store.create(
-      candidate(
-        id: 'folder-b-1',
-        title: '系列乙 - 第1集',
-        url: 'https://cdn.example/folder-b-1.mp4',
-      ),
-      batchDirectory: '文件夹乙',
-    );
-    for (final task in [first, second, foreign]) {
-      store.transition(task.id, MediaTaskState.downloading);
-      store.transition(task.id, MediaTaskState.completed);
-      store.transition(task.id, MediaTaskState.playable);
-    }
+  test(
+    'folder playlist does not add tasks outside the supplied folder',
+    () async {
+      final store = MediaTaskStore();
+      final first = await store.create(
+        candidate(
+          id: 'folder-a-1',
+          title: '系列甲 - 第1集',
+          url: 'https://cdn.example/folder-a-1.mp4',
+        ),
+        batchDirectory: '文件夹甲',
+      );
+      final second = await store.create(
+        candidate(
+          id: 'folder-a-2',
+          title: '系列甲 - 第2集',
+          url: 'https://cdn.example/folder-a-2.mp4',
+        ),
+        batchDirectory: '文件夹甲',
+      );
+      final foreign = await store.create(
+        candidate(
+          id: 'folder-b-1',
+          title: '系列乙 - 第1集',
+          url: 'https://cdn.example/folder-b-1.mp4',
+        ),
+        batchDirectory: '文件夹乙',
+      );
+      for (final task in [first, second, foreign]) {
+        store.transition(task.id, MediaTaskState.downloading);
+        store.transition(task.id, MediaTaskState.completed);
+        store.transition(task.id, MediaTaskState.playable);
+      }
 
-    final playlist = mediaPlaylistForFolder([
-      store.task(first.id)!,
-      store.task(second.id)!,
-    ], store.task(second.id)!);
-    expect(playlist.map((task) => task.episodeLabel), ['第1集', '第2集']);
-    expect(playlist.map((task) => task.id), isNot(contains(foreign.id)));
-  });
+      final playlist = mediaPlaylistForFolder([
+        store.task(first.id)!,
+        store.task(second.id)!,
+      ], store.task(second.id)!);
+      expect(playlist.map((task) => task.episodeLabel), ['第1集', '第2集']);
+      expect(playlist.map((task) => task.id), isNot(contains(foreign.id)));
+    },
+  );
 
   test('unknown episode names remain after known numeric episodes', () async {
     final store = MediaTaskStore();
@@ -1188,21 +1210,24 @@ void main() {
     );
   });
 
-  test('media retry clears the previous human-readable failure reason', () async {
-    final store = MediaTaskStore();
-    final task = await store.create(candidate());
-    store.transition(task.id, MediaTaskState.downloading);
-    final failed = store.transition(
-      task.id,
-      MediaTaskState.failed,
-      errorCode: MediaErrorCode.network,
-      errorReason: '网络连接中断，请重试',
-    );
-    expect(failed.errorReason, '网络连接中断，请重试');
-    final retrying = store.transition(task.id, MediaTaskState.downloading);
-    expect(retrying.errorCode, isNull);
-    expect(retrying.errorReason, isNull);
-  });
+  test(
+    'media retry clears the previous human-readable failure reason',
+    () async {
+      final store = MediaTaskStore();
+      final task = await store.create(candidate());
+      store.transition(task.id, MediaTaskState.downloading);
+      final failed = store.transition(
+        task.id,
+        MediaTaskState.failed,
+        errorCode: MediaErrorCode.network,
+        errorReason: '网络连接中断，请重试',
+      );
+      expect(failed.errorReason, '网络连接中断，请重试');
+      final retrying = store.transition(task.id, MediaTaskState.downloading);
+      expect(retrying.errorCode, isNull);
+      expect(retrying.errorReason, isNull);
+    },
+  );
 
   test('native playback controller enforces one session and safe controls', () {
     final controller = NativePlaybackController();
@@ -1870,47 +1895,55 @@ void main() {
     },
   );
 
-  test(
-    'native TLS fallback receives the Dart partial and validator sidecar',
-    () async {
-      final root = await Directory.systemTemp.createTemp(
-        'site-lens-native-resume-',
-      );
-      addTearDown(() => root.delete(recursive: true));
-      final store = MediaTaskStore(directoryProvider: () async => root);
-      final media = candidate(url: 'https://cdn.example/native-resume.mp4');
-      final task = await store.create(media);
-      final http = _NativeFallbackHttp();
-      final result = await MediaDownloadService(
-        tasks: store,
-        http: http,
-        tlsTransfer:
-            (url, document, destination, maxBytes, cancel, {onProgress}) async {
-              expect(await destination.length(), 3);
-              final state = await File('${destination.path}.resume')
-                  .readAsString();
-              expect(state, contains('validator="v1"'));
-              await destination.writeAsBytes(
-                [4, 5, 6],
-                mode: FileMode.append,
-                flush: true,
-              );
-              onProgress?.call(6);
-            },
-      ).start(task, media);
+  test('policy native transfer receives Dart partial bytes', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'site-lens-native-resume-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final store = MediaTaskStore(directoryProvider: () async => root);
+    final media = candidate(url: 'https://cdn.example/native-resume.mp4');
+    final task = await store.create(media);
+    final directory = await store.cacheDirectoryForTask(task);
+    final partial = File('${directory.path}/${task.cacheKey}.part');
+    await partial.writeAsBytes([1, 2, 3], flush: true);
 
-      expect(result.state, MediaTaskState.playable);
-      expect(await (await store.cachedFile(task.id))!.readAsBytes(), [
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-      ]);
-      expect(http.calls, 4);
-    },
-  );
+    final result = await MediaDownloadService(
+      tasks: store,
+      policyTransfer:
+          (
+            url,
+            document,
+            destination,
+            maxBytes,
+            cancel, {
+            onProgress,
+            headers,
+            requestContextId,
+            required maxAttempts,
+            required startAttempt,
+            resourceKind = 'file',
+          }) async {
+            expect(await destination.length(), 3);
+            await destination.writeAsBytes(
+              [4, 5, 6],
+              mode: FileMode.append,
+              flush: true,
+            );
+            onProgress?.call(6);
+            return MediaTransferResult(attemptsUsed: 1, finalUrl: url);
+          },
+    ).start(task, media);
+
+    expect(result.state, MediaTaskState.playable);
+    expect(await (await store.cachedFile(task.id))!.readAsBytes(), [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+    ]);
+  });
 
   test('native task reconciliation restores progress, local URI and playable state', () async {
     final root = await Directory.systemTemp.createTemp(
@@ -2335,7 +2368,9 @@ void main() {
     final root = await Directory.systemTemp.createTemp('site-lens-zero-hls-');
     addTearDown(() => root.delete(recursive: true));
     final store = MediaTaskStore(directoryProvider: () async => root);
-    final task = await store.create(candidate(url: 'https://cdn.example/live.m3u8'));
+    final task = await store.create(
+      candidate(url: 'https://cdn.example/live.m3u8'),
+    );
     store.transition(task.id, MediaTaskState.downloading);
     store.transition(task.id, MediaTaskState.playable);
     final cache = await store.cacheDirectory(
@@ -2524,7 +2559,9 @@ void main() {
       );
     final input = await const HlsPlaylistParser().parseFile(playlist.uri);
     final tasks = MediaTaskStore(directoryProvider: () async => root);
-    final task = await tasks.create(candidate(url: 'https://cdn.example/index.m3u8'));
+    final task = await tasks.create(
+      candidate(url: 'https://cdn.example/index.m3u8'),
+    );
     tasks.transition(task.id, MediaTaskState.downloading);
     tasks.transition(task.id, MediaTaskState.completed);
     tasks.transition(task.id, MediaTaskState.playable);
@@ -3105,33 +3142,5 @@ class _InterruptingHttp extends ControlledHttp {
       totalBytes: 6,
       appended: true,
     );
-  }
-}
-
-class _NativeFallbackHttp extends ControlledHttp {
-  var calls = 0;
-
-  @override
-  Future<FetchFileResponse> fetchToFile(
-    Uri url, {
-    required Set<String> connect,
-    required Uri document,
-    required Cancellation cancel,
-    required File destination,
-    Map<String, String> headers = const {},
-    bool mediaRequest = false,
-    int resumeOffset = 0,
-    int maxBytes = 2 * 1024 * 1024 * 1024,
-    Future<void> Function(int status, Map<String, String> headers)? onHeaders,
-    void Function(int bytesWritten)? onProgress,
-    Duration timeout = const Duration(seconds: 15),
-    int routeAttempt = 0,
-  }) async {
-    calls++;
-    if (calls == 1) {
-      await onHeaders?.call(200, const {'etag': '"v1"'});
-      await destination.writeAsBytes([1, 2, 3], flush: true);
-    }
-    throw const SocketException('connection reset by peer');
   }
 }

@@ -1732,6 +1732,7 @@ class WebHostApiSetup {
 /// Generated protocol from Pigeon that represents a handler of messages from Flutter.
 protocol AppRuntimeApi {
   func resolveSecureDns(provider: String, hostname: String, completion: @escaping (Result<[String], Error>) -> Void)
+  func setSecureDnsProvider(provider: String, completion: @escaping (Result<Void, Error>) -> Void)
   func clearSecureDnsCache(completion: @escaping (Result<Void, Error>) -> Void)
   func clearWebViewHttpCache(completion: @escaping (Result<RuntimeCacheReport, Error>) -> Void)
 }
@@ -1759,6 +1760,23 @@ class AppRuntimeApiSetup {
       }
     } else {
       resolveSecureDnsChannel.setMessageHandler(nil)
+    }
+    let setSecureDnsProviderChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.site_lens.AppRuntimeApi.setSecureDnsProvider\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setSecureDnsProviderChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let providerArg = args[0] as! String
+        api.setSecureDnsProvider(provider: providerArg) { result in
+          switch result {
+          case .success:
+            reply(wrapResult(nil))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      setSecureDnsProviderChannel.setMessageHandler(nil)
     }
     let clearSecureDnsCacheChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.site_lens.AppRuntimeApi.clearSecureDnsCache\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {

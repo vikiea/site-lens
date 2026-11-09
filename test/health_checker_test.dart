@@ -87,32 +87,35 @@ void main() {
     },
   );
 
-  test('classified failures persist route and timestamp and recovery clears diagnostics', () async {
-    final probe = _DetailedProbe();
-    final at = DateTime(2026, 11, 5, 12);
-    Future<HealthRunReport> check() => ProfileHealthChecker(
-      db: db,
-      probe: probe,
-      conditions: const HealthConditions(charging: true, wifi: true),
-      now: () => at,
-      notify: (_, _) async {},
-      maxPerDay: 10,
-    ).run();
-    await check();
-    await check();
-    final failed = await db.profileHealth(profileId);
-    expect(failed.state, ProfileHealthState.failing);
-    expect(failed.lastFailureCategory, 'tls_handshake');
-    expect(failed.lastFailureRoute, 'http_proxy');
-    expect(failed.lastCheckedAt, at);
-    probe.ok = true;
-    await check();
-    final recovered = await db.profileHealth(profileId);
-    expect(recovered.consecutiveFailures, 0);
-    expect(recovered.lastFailureCategory, isNull);
-    expect(recovered.lastFailureRoute, isNull);
-    expect(recovered.lastOkAt, at);
-  });
+  test(
+    'classified failures persist timestamp and recovery clears diagnostics',
+    () async {
+      final probe = _DetailedProbe();
+      final at = DateTime(2026, 11, 5, 12);
+      Future<HealthRunReport> check() => ProfileHealthChecker(
+        db: db,
+        probe: probe,
+        conditions: const HealthConditions(charging: true, wifi: true),
+        now: () => at,
+        notify: (_, _) async {},
+        maxPerDay: 10,
+      ).run();
+      await check();
+      await check();
+      final failed = await db.profileHealth(profileId);
+      expect(failed.state, ProfileHealthState.failing);
+      expect(failed.lastFailureCategory, 'tls_handshake');
+      expect(failed.lastFailureRoute, isNull);
+      expect(failed.lastCheckedAt, at);
+      probe.ok = true;
+      await check();
+      final recovered = await db.profileHealth(profileId);
+      expect(recovered.consecutiveFailures, 0);
+      expect(recovered.lastFailureCategory, isNull);
+      expect(recovered.lastFailureRoute, isNull);
+      expect(recovered.lastOkAt, at);
+    },
+  );
 
   test('skips when not charging', () async {
     final notes = <String>[];
@@ -274,6 +277,5 @@ class _DetailedProbe implements DetailedReachabilityProbe {
   Future<HealthProbeResult> check(Uri url) async => HealthProbeResult(
     reachable: ok,
     failureCategory: ok ? null : 'tls_handshake',
-    routeKind: 'http_proxy',
   );
 }

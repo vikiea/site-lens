@@ -45,11 +45,9 @@ class NativeHealthProbeRuntime(private val context: Context) : HealthProbePlugin
             return
         }
         val url = call.argument<String>("url")
-        val attempt = call.argument<Int>("attempt") ?: 0
-        val probe = HealthHttpProbe { uri, index, onRoute ->
-            SystemMediaNetwork.openMediaConnection(
-                context, uri, index, onRoute = onRoute,
-            )
+        SystemMediaNetwork.initialize(context)
+        val probe = HealthHttpProbe { uri ->
+            SystemMediaNetwork.openMediaConnection(context, uri, attempt = 0)
         }
         active = probe
         pendingResult = result
@@ -60,15 +58,18 @@ class NativeHealthProbeRuntime(private val context: Context) : HealthProbePlugin
             probe.close()
             main.post {
                 if (!closed.get() && replied.compareAndSet(false, true)) {
-                    result.success(mapOf("status" to "unreachable", "routeKind" to "unknown",
-                        "failureCategory" to "timeout", "elapsedMs" to 5000,
-                        "networkEpoch" to SystemMediaNetwork.networkEpoch()))
+                    result.success(mapOf(
+                        "status" to "unreachable",
+                        "failureCategory" to "timeout",
+                        "elapsedMs" to 5000,
+                        "networkEpoch" to SystemMediaNetwork.networkEpoch(),
+                    ))
                 }
             }
         }, 5, TimeUnit.SECONDS)
         executor.execute {
             try {
-                val payload = probe.probe(url, attempt, SystemMediaNetwork.networkEpoch()) +
+                val payload = probe.probe(url, SystemMediaNetwork.networkEpoch()) +
                     ("networkEpoch" to SystemMediaNetwork.networkEpoch())
                 main.post {
                     if (!closed.get() && replied.compareAndSet(false, true)) result.success(payload)

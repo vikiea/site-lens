@@ -2292,6 +2292,7 @@ class MediaDownloadService {
   final _running = <String, Future<MediaTask>>{};
   final _controls = <String, Future<void>>{};
   final _stopping = <String>{};
+  final _networkPaused = <String>{};
   final _dartTasks = <String>{};
   final _progressAtMs = <String, int>{};
   final _progressClock = Stopwatch()..start();
@@ -2303,11 +2304,6 @@ class MediaDownloadService {
         String,
         ({Map<String, String> manifest, Map<String, String> resource})
       >{};
-
-  bool get _hasNativeTransfer =>
-      policyTransfer != null ||
-      tlsTransfer != null ||
-      tlsTransferWithHeaders != null;
 
   int get maxConcurrency => _transferScheduler.maxActive;
 
@@ -2330,7 +2326,7 @@ class MediaDownloadService {
         stack: stack,
       );
     }
-    final ids = _active.keys.toList(growable: false);
+    final ids = {..._active.keys, ..._networkPaused}.toList(growable: false);
     final retryBudgets = Map<String, MediaRetryBudgets>.of(_activeRetryBudgets);
     for (final budget in retryBudgets.values) {
       for (final slot in budget._slots.values) {
@@ -2358,6 +2354,7 @@ class MediaDownloadService {
       if (task == null || task.state != MediaTaskState.paused) continue;
       final candidate = await tasks.db?.mediaCandidate(task.candidateId);
       if (candidate == null) continue;
+      _networkPaused.remove(id);
       unawaited(() async {
         try {
           await start(task, candidate, retryBudgets: retryBudgets[id]);
@@ -2764,6 +2761,8 @@ class MediaDownloadService {
   Future<MediaTask> _stop(String taskId, {required bool cancelled}) {
     final id = tasks.resolveTaskId(taskId);
     // Mark synchronously so a start queued during this operation cannot race it.
+    _networkPaused.remove(id);
+    _networkPaused.remove(id);
     _stopping.add(id);
     _active[id]?.cancel();
     final current = tasks.task(id);
@@ -3115,6 +3114,7 @@ class MediaDownloadService {
   }
 
   void _fail(String id, Object error, StackTrace stack, String operation) {
+    _networkPaused.remove(id);
     AppErrorLogger.capture(
       error,
       module: 'media.download',
@@ -3143,6 +3143,7 @@ class MediaDownloadService {
     task,
     (id) => _control(id, (id) async {
       if (_stopping.contains(id)) throw const Cancelled();
+      _networkPaused.remove(id);
       final currentTask = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
       final authorized = authorize == null
           ? candidate
@@ -3213,6 +3214,7 @@ class MediaDownloadService {
       } on Cancelled {
         if (tasks.task(id)?.state == MediaTaskState.downloading) {
           tasks.transition(id, MediaTaskState.paused);
+          if (!_stopping.contains(id)) _networkPaused.add(id);
         }
         return tasks.task(id)!;
       } catch (error, stack) {
@@ -3605,18 +3607,13 @@ class MediaDownloadService {
           .toString();
       final partial = File('${staging.path}/.playlist_$key.part');
       try {
-        // The manifest is the first request of every task, so a route that
-        // only fails TLS there must get the same second-family retry the
-        // resource path has; otherwise the whole task dies before any segment
-        // is attempted.
-        final manifestBudget = retryBudget;
-        final finalUrl = await _transferNativeWithAlternateRoute(
+        final finalUrl = await _transferNative(
           url,
           document,
           partial,
           16 * 1024 * 1024,
           cancel,
-          budget: manifestBudget,
+          budget: retryBudget,
           headers: headers,
           resourceKind: 'manifest',
         );
@@ -3640,82 +3637,24 @@ class MediaDownloadService {
         }
       }
     }
-    try {
-      final response = await _fetchMediaWithRetry(
-        url,
-        connect: const {'*'},
-        document: document,
-        cancel: cancel,
-        headers: headers,
-        maxBytes: 16 * 1024 * 1024,
-        maxAttempts: 3,
-        retryBudget: retryBudget,
-      );
-      if (response.status < 200 || response.status >= 300) {
-        if (response.status == 401 || response.status == 403) {
-          throw MediaAuthorizationRequiredException(response.status);
-        }
-        throw StateError('HLS 清单 HTTP ${response.status}');
+    final response = await _fetchMediaWithRetry(
+      url,
+      connect: const {'*'},
+      document: document,
+      cancel: cancel,
+      headers: headers,
+      maxBytes: 16 * 1024 * 1024,
+      maxAttempts: 3,
+      retryBudget: retryBudget,
+    );
+    if (response.status < 200 || response.status >= 300) {
+      if (response.status == 401 || response.status == 403) {
+        throw MediaAuthorizationRequiredException(response.status);
       }
-      return (url: response.url, text: utf8.decode(response.bytes));
-    } catch (error) {
-      if (!_hasNativeTransfer || !_isMediaNetworkError(error)) {
-        rethrow;
-      }
-      if (retryBudget.exhausted) retryBudget.extend();
-      final key = sha256
-          .convert(utf8.encode(_resumeContentIdentity(url)))
-          .toString();
-      final partial = File('${staging.path}/.playlist_$key.part');
-      try {
-        final finalUrl = await _transferNative(
-          url,
-          document,
-          partial,
-          16 * 1024 * 1024,
-          cancel,
-          budget: retryBudget,
-          headers: headers,
-        );
-        cancel.check();
-        if (!await partial.exists() || await partial.length() == 0) {
-          throw StateError('HLS 清单响应为空');
-        }
-        return (url: finalUrl, text: await partial.readAsString());
-      } on PlatformException catch (nativeError) {
-        if (!_isRetryableNativeHeaderFailure(nativeError)) {
-          rethrow;
-        }
-        if (retryBudget.exhausted) retryBudget.extend();
-        final response = await _fetchMediaWithRetry(
-          url,
-          connect: const {'*'},
-          document: document,
-          cancel: cancel,
-          headers: headers,
-          maxBytes: 16 * 1024 * 1024,
-          maxAttempts: 3,
-          retryBudget: retryBudget,
-        );
-        if (response.status < 200 || response.status >= 300) {
-          throw StateError('HLS 清单 HTTP ${response.status}');
-        }
-        return (url: response.url, text: utf8.decode(response.bytes));
-      } finally {
-        for (final suffix in ['', '.resume', '.resume.tmp']) {
-          final file = File('${partial.path}$suffix');
-          if (await file.exists()) await file.delete();
-        }
-      }
+      throw StateError('HLS 清单 HTTP ${response.status}');
     }
+    return (url: response.url, text: utf8.decode(response.bytes));
   }
-
-  bool _isMediaNetworkError(Object error) =>
-      error is SocketException ||
-      error is HandshakeException ||
-      error is TlsException ||
-      error is TimeoutException ||
-      error is HttpException;
 
   Uri? _selectHlsVariant(Uri playlist, String text) {
     final variants = <({int bandwidth, Uri url})>[];
@@ -4092,8 +4031,7 @@ class MediaDownloadService {
     String resourceKind = 'file',
     void Function(int bytesWritten)? onProgress,
   }) async {
-    if (policyTransfer != null ||
-        (_hasNativeTransfer && await File('${partial.path}.resume').exists())) {
+    if (policyTransfer != null) {
       await _prepareNativeResumeState(url, partial);
       try {
         await _transferNative(
@@ -4108,45 +4046,6 @@ class MediaDownloadService {
           resourceKind: resourceKind,
         );
         cancel.check();
-        return;
-      } on PlatformException catch (error) {
-        if (!_isRetryableNativeHeaderFailure(error)) {
-          // A native answer never explains why TLS failed on a route. When the
-          // attempts it reports cover both a tunnel and a proxy, the Dart
-          // transport gets its own budget to settle which route the host needs.
-          final alternate = policyTransfer != null &&
-              await _alternateRouteRetry(
-                error,
-                url,
-                partial,
-                cancel,
-                policy: policyTransfer,
-                document: document,
-                maxBytes: maxBytes,
-                onProgress: onProgress,
-                headers: headers,
-                resourceKind: resourceKind,
-                retryBudget: retryBudget,
-              );
-          if (alternate) return;
-          rethrow;
-        }
-        if (retryBudget.exhausted) retryBudget.extend();
-        // The native transport has already exhausted its own bounded retry
-        // budget. A clean response-header failure with no flushed bytes can
-        // safely switch back to Dart, which resolves the media route again.
-        await _downloadFileDart(
-          url,
-          partial,
-          cancel,
-          document: document,
-          maxBytes: maxBytes,
-          onProgress: onProgress,
-          allowNativeFallback: false,
-          headers: headers,
-          resourceKind: resourceKind,
-          retryBudget: retryBudget,
-        );
         return;
       } on StateError catch (error) {
         if (_isAuthorizationFailure(error)) {
@@ -4164,7 +4063,6 @@ class MediaDownloadService {
       onProgress: onProgress,
       headers: headers,
       resourceKind: resourceKind,
-      allowNativeFallback: true,
       retryBudget: retryBudget,
     );
   }
@@ -4179,7 +4077,6 @@ class MediaDownloadService {
     void Function(int bytesWritten)? onProgress,
     Map<String, String> headers = const {},
     String resourceKind = 'file',
-    required bool allowNativeFallback,
   }) async {
     final identity = sha256
         .convert(utf8.encode(_resumeContentIdentity(url)))
@@ -4208,7 +4105,6 @@ class MediaDownloadService {
           mediaRequest: true,
           resumeOffset: offset,
           maxBytes: maxBytes,
-          routeAttempt: attempt,
           onProgress: onProgress,
           headers: {
             ...headers,
@@ -4303,238 +4199,9 @@ class MediaDownloadService {
         );
         attempt++;
       } else {
-        if (allowNativeFallback &&
-            (lastError is TlsException || lastError is SocketException) &&
-            _hasNativeTransfer) {
-          if (retryBudget.exhausted) retryBudget.extend();
-          // Android can recover CDN connections that reset before Dart reports
-          // a TLS error. Bridge the Dart sidecar into Android's format before
-          // handing over the same flushed prefix.
-          await _prepareNativeResumeState(url, partial);
-          try {
-            await _transferNative(
-              url,
-              document,
-              partial,
-              maxBytes,
-              cancel,
-              budget: retryBudget,
-              onProgress: onProgress,
-              headers: headers,
-              resourceKind: resourceKind,
-            );
-            cancel.check();
-            return;
-          } on PlatformException catch (error) {
-            if (!_isRetryableNativeHeaderFailure(error)) {
-              final policy = policyTransfer;
-              final alternate =
-                  policy != null &&
-                  await _alternateRouteRetry(
-                    error,
-                    url,
-                    partial,
-                    cancel,
-                    policy: policy,
-                    document: document,
-                    maxBytes: maxBytes,
-                    onProgress: onProgress,
-                    headers: headers,
-                    resourceKind: resourceKind,
-                    retryBudget: retryBudget,
-                  );
-              if (alternate) return;
-              rethrow;
-            }
-            if (retryBudget.exhausted) retryBudget.extend();
-            // The native response-header retry also failed without writing
-            // content. Re-enter the Dart path once, with native fallback
-            // disabled so the recovery remains finite.
-            await _downloadFileDart(
-              url,
-              partial,
-              cancel,
-              document: document,
-              maxBytes: maxBytes,
-              onProgress: onProgress,
-              headers: headers,
-              resourceKind: resourceKind,
-              allowNativeFallback: false,
-              retryBudget: retryBudget,
-            );
-            return;
-          } on StateError catch (error) {
-            if (_isAuthorizationFailure(error)) {
-              throw MediaAuthorizationRequiredException();
-            }
-            rethrow;
-          }
-        }
         throw lastError;
       }
     }
-  }
-
-  /// [ _transferNative ], plus one retry through the other transport family.
-  ///
-  /// Callers that do not stream a body (the HLS manifest) have no segment loop
-  /// around them to absorb a route-only failure, so the alternate-route retry
-  /// is decided here, with the same evidence rule as the resource path.
-  Future<Uri> _transferNativeWithAlternateRoute(
-    Uri url,
-    Uri document,
-    File destination,
-    int maxBytes,
-    Cancellation cancel, {
-    required MediaRetryBudget budget,
-    Map<String, String> headers = const {},
-    required String resourceKind,
-  }) async {
-    try {
-      return await _transferNative(
-        url,
-        document,
-        destination,
-        maxBytes,
-        cancel,
-        budget: budget,
-        headers: headers,
-        resourceKind: resourceKind,
-      );
-    } on PlatformException catch (error) {
-      final alternate = await _alternateRouteRetry(
-        error,
-        url,
-        destination,
-        cancel,
-        policy: policyTransfer,
-        document: document,
-        maxBytes: maxBytes,
-        onProgress: null,
-        headers: headers,
-        resourceKind: resourceKind,
-        retryBudget: budget,
-      );
-      if (alternate) {
-        return budget.lastFinalUrl ?? url;
-      }
-      rethrow;
-    }
-  }
-
-  /// One extra round trip across a different route family.
-  ///
-  /// Native retries rotate the OS route, but their TLS failures all look the
-  /// same and the preferred order is fixed, so a host that rejects the tunnel
-  /// address keeps failing there first until the budget is gone. Two
-  /// transports already exist - native, which is bound to VPN/TUN or the HTTP
-  /// proxy, and Dart, which resolves the route again with a fresh connection
-  /// pool. When the failed answer used both families, the other one is tried
-  /// once with its own budget instead of retrying the family that already
-  /// failed.
-  Future<bool> _alternateRouteRetry(
-    PlatformException error,
-    Uri url,
-    File partial,
-    Cancellation cancel, {
-    required NativeTlsTransferWithPolicy? policy,
-    required Uri document,
-    required int maxBytes,
-    void Function(int bytesWritten)? onProgress,
-    required Map<String, String> headers,
-    required String resourceKind,
-    required MediaRetryBudget retryBudget,
-  }) async {
-    if (error.code != 'media_transfer' || error.details is! Map) return false;
-    final details = error.details as Map;
-    // Flushed bytes belong to the route that wrote them; switching transport
-    // is only safe before any content arrived.
-    if (_detailInt(details['offset']) != 0 ||
-        _detailInt(details['bytesWritten']) != 0) {
-      return false;
-    }
-    if (!_nativeRoutesSpanTransports(details['attempts'])) return false;
-    if (!retryBudget.exhausted) return false;
-    retryBudget.extend();
-    await _prepareNativeResumeState(url, partial);
-    try {
-      if (policy != null) {
-        await _downloadFileDart(
-          url,
-          partial,
-          cancel,
-          document: document,
-          maxBytes: maxBytes,
-          onProgress: onProgress,
-          allowNativeFallback: false,
-          headers: headers,
-          resourceKind: resourceKind,
-          retryBudget: retryBudget,
-        );
-      } else {
-        await _transferNative(
-          url,
-          document,
-          partial,
-          maxBytes,
-          cancel,
-          budget: retryBudget,
-          onProgress: onProgress,
-          headers: headers,
-          resourceKind: resourceKind,
-        );
-      }
-    } on PlatformException catch (retryError) {
-      // The alternate transport failed too. Reporting the original answer keeps
-      // the route the user's proxy setting produced, which is the one they can
-      // act on, and avoids a second retry round on an already spent budget.
-      if (retryError.code == 'media_transfer') return false;
-      rethrow;
-    } on StateError {
-      // A policy or cache failure is not a route problem; let it reach the
-      // task so the row shows the real reason.
-      rethrow;
-    }
-    cancel.check();
-    return true;
-  }
-
-  /// Whether the native attempts used both a tunnelled route and a proxy.
-  ///
-  /// Those are the two families with distinct DNS and socket owners in the
-  /// native executor, so a host reachable on one of them is unreachable only
-  /// through the preferred order, not through the whole environment.
-  static bool _nativeRoutesSpanTransports(Object? attempts) {
-    if (attempts is! List || attempts.isEmpty) return false;
-    var tunnel = false;
-    var proxy = false;
-    for (final attempt in attempts) {
-      final route = attempt is Map ? attempt['route'] : null;
-      if (route == 'vpn_tun_fake_ip' || route == 'router_fake_ip') {
-        tunnel = true;
-      } else if (route == 'http_proxy') {
-        proxy = true;
-      }
-    }
-    return tunnel && proxy;
-  }
-
-  bool _isRetryableNativeHeaderFailure(PlatformException error) {
-    if (error.code != 'media_transfer' || error.details is! Map) return false;
-    final details = error.details as Map;
-    final phase = details['phase']?.toString();
-    final reason = details['reason']?.toString();
-    final offset = _detailInt(details['offset']);
-    final bytesWritten = _detailInt(details['bytesWritten']);
-    return phase == 'response_headers' &&
-        offset == 0 &&
-        bytesWritten == 0 &&
-        (reason == 'connection_reset' || reason == 'connection_closed');
-  }
-
-  int? _detailInt(Object? value) {
-    if (value is int) return value;
-    return int.tryParse(value?.toString() ?? '');
   }
 
   Future<void> _prepareNativeResumeState(Uri url, File partial) async {
@@ -4582,7 +4249,6 @@ class MediaDownloadService {
           headers: headers,
           mediaRequest: true,
           maxBytes: maxBytes,
-          routeAttempt: attempt,
         );
         if (!_retryableMediaStatus(response.status)) {
           return response;

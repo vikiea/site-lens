@@ -11,6 +11,7 @@ class _FakeRuntime extends AppRuntimeApi {
   String? hostname;
   bool fail = false;
   int clearCalls = 0;
+  final persistedProviders = <String>[];
 
   @override
   Future<List<String>> resolveSecureDns(
@@ -21,6 +22,11 @@ class _FakeRuntime extends AppRuntimeApi {
     this.hostname = hostname;
     if (fail) throw StateError('DoH unavailable');
     return ['203.0.113.8'];
+  }
+
+  @override
+  Future<void> setSecureDnsProvider(String provider) async {
+    persistedProviders.add(provider);
   }
 
   @override
@@ -58,6 +64,7 @@ void main() {
       expect(result.single.address, '203.0.113.8');
       expect(runtime.provider, 'cloudflare_security');
       expect(runtime.hostname, 'example.com');
+      expect(runtime.persistedProviders, ['cloudflare_security']);
       expect(resolver.resolution.status, SecureDnsResolutionStatus.success);
       expect(resolver.resolution.source, SecureDnsResolutionSource.secureDns);
       expect(resolver.resolution.succeeded, isTrue);
@@ -94,7 +101,7 @@ void main() {
     expect(resolver.resolution.source, SecureDnsResolutionSource.systemDns);
   });
 
-  test('provider changes clear the native resolver cache', () async {
+  test('provider changes persist to native and clear resolver state', () async {
     var clearCalls = 0;
     final resolver = SecureDnsResolver(
       androidEnabled: true,

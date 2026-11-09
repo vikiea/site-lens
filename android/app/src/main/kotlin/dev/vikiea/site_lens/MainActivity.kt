@@ -36,6 +36,7 @@ class MainActivity : FlutterActivity() {
     private var nativeMedia: NativeMediaRuntime? = null
     private var appRuntime: NativeAppRuntime? = null
     private var nativeDownloads: NativeDownloadRuntime? = null
+    private var mediaNetworkRuntime: MediaNetworkRuntime? = null
     private var nativeExport: NativeExportRuntime? = null
     private var nativeUpdate: NativeUpdateRuntime? = null
     private var nativeSystemNetwork: NativeSystemNetworkRuntime? = null
@@ -104,7 +105,7 @@ class MainActivity : FlutterActivity() {
             }
         }
         hosts = NativeWebHostRegistry(this, flutterEngine)
-        appRuntime = NativeAppRuntime(requireNotNull(hosts))
+        appRuntime = NativeAppRuntime(this, requireNotNull(hosts))
         AppRuntimeApi.setUp(flutterEngine.dartExecutor.binaryMessenger, appRuntime)
         deviceDiagnostics = NativeDeviceDiagnostics(this) { dlnaMulticastLock?.isHeld ?: false }
         DeviceDiagnosticsApi.setUp(flutterEngine.dartExecutor.binaryMessenger, deviceDiagnostics)
@@ -305,9 +306,12 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun registerNativeDownloadChannel(flutterEngine: FlutterEngine) {
+        mediaNetworkRuntime?.dispose()
         val mediaNetworkChannel =
             MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/media_network")
-        mediaNetworkChannel.setMethodCallHandler(MediaNetworkRuntime(this, mediaNetworkChannel))
+        mediaNetworkRuntime = MediaNetworkRuntime(this, mediaNetworkChannel).also {
+            mediaNetworkChannel.setMethodCallHandler(it)
+        }
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/native_download")
         nativeDownloads = NativeDownloadRuntime(this).also { channel.setMethodCallHandler(it) }
     }
@@ -466,6 +470,7 @@ class MainActivity : FlutterActivity() {
         hosts?.dispose(); hosts = null
         nativeMedia?.dispose(); nativeMedia = null
         nativeDownloads?.dispose(); nativeDownloads = null
+        mediaNetworkRuntime?.dispose(); mediaNetworkRuntime = null
         nativeExport?.dispose(); nativeExport = null
         nativeUpdate?.dispose(); nativeUpdate = null
         nativeSystemNetwork?.dispose(); nativeSystemNetwork = null

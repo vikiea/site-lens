@@ -59,7 +59,6 @@ class NativeSystemHttpTransport {
     Map<String, String> headers = const {},
     List<int>? body,
     int maxBytes = 2 * 1024 * 1024,
-    int attempt = 0,
     Duration timeout = const Duration(seconds: 15),
     String? requestId,
     String lane = 'general',
@@ -73,7 +72,6 @@ class NativeSystemHttpTransport {
         'headers': headers,
         if (body != null && body.isNotEmpty) 'body': Uint8List.fromList(body),
         'maxBytes': maxBytes,
-        'attempt': attempt,
         'timeoutMs': timeout.inMilliseconds,
         'lane': lane,
       });
@@ -112,7 +110,7 @@ class NativeSystemHttpTransport {
 class NativeSystemHttpClient extends http.BaseClient {
   NativeSystemHttpClient({
     NativeSystemHttpTransport? transport,
-    this.requestTimeout = const Duration(seconds: 4),
+    this.requestTimeout = const Duration(seconds: 20),
     this.lane = 'update',
   }) : _transport = transport ?? NativeSystemHttpTransport();
 
@@ -123,41 +121,16 @@ class NativeSystemHttpClient extends http.BaseClient {
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
     final body = await request.finalize().toBytes();
-    final retryableMethod = const {
-      'GET',
-      'HEAD',
-      'OPTIONS',
-    }.contains(request.method.toUpperCase());
-    NativeSystemHttpResponse? response;
-    for (var attempt = 0; attempt < 5; attempt++) {
-      try {
-        final requestId = _transport.nextRequestId();
-        response = await _transport.request(
-          requestId: requestId,
-          url: request.url,
-          method: request.method,
-          headers: request.headers,
-          body: body.isEmpty ? null : body,
-          attempt: attempt,
-          timeout: requestTimeout,
-          lane: lane,
-        );
-        break;
-      } on NativeSystemHttpException catch (error) {
-        final retryableError = const {
-          'dns',
-          'io',
-          'timeout',
-          'proxy_connect',
-          'tls_handshake',
-        }.contains(error.category);
-        if (!retryableMethod || !retryableError || attempt == 4) rethrow;
-      }
-    }
-    final resolved = response;
-    if (resolved == null) {
-      throw const NativeSystemHttpException('empty_response', '系统网络没有返回响应');
-    }
+    final requestId = _transport.nextRequestId();
+    final resolved = await _transport.request(
+      requestId: requestId,
+      url: request.url,
+      method: request.method,
+      headers: request.headers,
+      body: body.isEmpty ? null : body,
+      timeout: requestTimeout,
+      lane: lane,
+    );
     final redirect = const {
       301,
       302,

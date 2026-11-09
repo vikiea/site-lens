@@ -16,7 +16,7 @@ void main() {
 
   tearDown(() => messenger.setMockMethodCallHandler(channel, null));
 
-  test('decodes buffered responses and preserves request bytes', () async {
+  test('decodes buffered responses and sends no route attempt', () async {
     late Map<Object?, Object?> arguments;
     messenger.setMockMethodCallHandler(channel, (call) async {
       arguments = (call.arguments as Map).cast<Object?, Object?>();
@@ -38,15 +38,13 @@ void main() {
       method: 'POST',
       headers: const {'Content-Type': 'application/json'},
       body: const [9, 8],
-      attempt: 1,
     );
 
     expect(arguments['method'], 'POST');
-    expect(arguments['attempt'], 1);
+    expect(arguments.containsKey('attempt'), isFalse);
     expect(arguments['timeoutMs'], 15000);
     expect(arguments['lane'], 'general');
     expect(arguments['requestId'], isA<String>());
-    expect(arguments['body'], isA<Uint8List>());
     expect(arguments['body'], Uint8List.fromList([9, 8]));
     expect(response.statusCode, 302);
     expect(response.headers['location'], 'https://cdn.example/next');
@@ -55,8 +53,10 @@ void main() {
     expect(response.networkEpoch, 7);
   });
 
-  test('maps native route failures to a retry category', () async {
+  test('maps native transport failures without retrying the channel', () async {
+    var requests = 0;
     messenger.setMockMethodCallHandler(channel, (call) async {
+      requests++;
       throw PlatformException(
         code: 'native_network',
         message: '系统网络请求失败',
@@ -75,6 +75,7 @@ void main() {
         ),
       ),
     );
+    expect(requests, 1);
   });
 
   test('cancellation reaches the native request by request ID', () async {
@@ -89,8 +90,6 @@ void main() {
           'headers': const <String, String>{},
           'body': Uint8List(0),
           'url': 'https://example.com/',
-          'routeKind': 'unknown',
-          'targetDnsMode': 'unknown',
           'networkEpoch': 1,
         });
       }
@@ -112,94 +111,112 @@ void main() {
     expect(response.statusCode, 499);
   });
 
-  test('http client exposes normalized redirect headers', () async {
-    late Map<Object?, Object?> arguments;
+  test('logical timeout cancels the in-flight native request', () async {
+    final done = Completer<Map<String, Object?>>();
+    final calls = <String>[];
     messenger.setMockMethodCallHandler(channel, (call) async {
-      arguments = (call.arguments as Map).cast<Object?, Object?>();
-      return <String, Object?>{
-        'statusCode': 302,
-        'headers': <String, String>{'Location': '/release'},
-        'body': Uint8List(0),
-        'url': 'https://github.com/example',
-        'networkEpoch': 2,
-      };
+      calls.add(call.method);
+      if (call.method == 'request') return done.future;
+      if (call.method == 'cancel') {
+        done.completeError(
+          PlatformException(
+            code: 'native_network',
+            message: '系统网络请求已取消',
+            details: const {'category': 'cancelled'},
+          ),
+        );
+        return null;
+      }
+      return null;
     });
 
-    final client = NativeSystemHttpClient(
-      transport: NativeSystemHttpTransport(channel: channel),
+    final http = ControlledHttp(
+      allowLocal: true,
+      nativeTransport: NativeSystemHttpTransport(channel: channel),
     );
-    final response = await client.send(
-      http.Request('GET', Uri.parse('https://github.com/example')),
+    final url = Uri.parse('https://example.com/slow');
+    await expectLater(
+      http.fetch(
+        url,
+        connect: const {'*'},
+        document: url,
+        cancel: Cancellation(),
+        timeout: const Duration(milliseconds: 20),
+      ),
+      throwsA(isA<TimeoutException>()),
     );
-
-    expect(response.isRedirect, isTrue);
-    expect(response.headers['location'], '/release');
-    expect(arguments['lane'], 'update');
-    await response.stream.drain<void>();
-    client.close();
+    await Future<void>.delayed(Duration.zero);
+    expect(calls, ['request', 'cancel']);
   });
 
   test(
-    'http client advances bounded route attempts after TLS failure',
+    'http client exposes redirects and defaults to one 20 second call',
     () async {
-      final attempts = <int>[];
+      late Map<Object?, Object?> arguments;
       messenger.setMockMethodCallHandler(channel, (call) async {
-        final args = (call.arguments as Map).cast<Object?, Object?>();
-        attempts.add(args['attempt'] as int);
-        if (attempts.length == 1) {
-          throw PlatformException(
-            code: 'native_network',
-            message: '系统网络请求失败',
-            details: const {'category': 'tls_handshake'},
-          );
-        }
+        arguments = (call.arguments as Map).cast<Object?, Object?>();
         return <String, Object?>{
-          'statusCode': 200,
-          'headers': const <String, String>{},
+          'statusCode': 302,
+          'headers': <String, String>{'Location': '/release'},
           'body': Uint8List(0),
           'url': 'https://github.com/example',
-          'networkEpoch': 3,
+          'networkEpoch': 2,
         };
       });
 
       final client = NativeSystemHttpClient(
         transport: NativeSystemHttpTransport(channel: channel),
       );
-      final response = await client.get(
-        Uri.parse('https://github.com/example'),
+      final response = await client.send(
+        http.Request('GET', Uri.parse('https://github.com/example')),
       );
 
-      expect(response.statusCode, 200);
-      expect(attempts, [0, 1]);
+      expect(response.isRedirect, isTrue);
+      expect(response.headers['location'], '/release');
+      expect(arguments['lane'], 'update');
+      expect(arguments['timeoutMs'], 20000);
+      expect(arguments.containsKey('attempt'), isFalse);
+      await response.stream.drain<void>();
       client.close();
     },
   );
 
+  test('http client does not replay a failed request', () async {
+    var requests = 0;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      requests++;
+      throw PlatformException(
+        code: 'native_network',
+        message: '系统网络请求失败',
+        details: const {'category': 'tls_handshake'},
+      );
+    });
+
+    final client = NativeSystemHttpClient(
+      transport: NativeSystemHttpTransport(channel: channel),
+    );
+    await expectLater(
+      client.get(Uri.parse('https://github.com/example')),
+      throwsA(isA<NativeSystemHttpException>()),
+    );
+    expect(requests, 1);
+    client.close();
+  });
+
   test(
-    'native probe advances the system route attempt after a transport error',
+    'probe performs one bounded native request and reports transport errors',
     () async {
-      final attempts = <int>[];
+      final timeouts = <int>[];
       final lanes = <String>[];
       messenger.setMockMethodCallHandler(channel, (call) async {
         final args = (call.arguments as Map).cast<Object?, Object?>();
-        attempts.add(args['attempt'] as int);
+        timeouts.add((args['timeoutMs'] as num).toInt());
         lanes.add(args['lane'] as String);
-        if (attempts.length == 1) {
-          throw PlatformException(
-            code: 'native_network',
-            message: '系统网络请求失败',
-            details: const {'category': 'proxy_connect'},
-          );
-        }
-        return <String, Object?>{
-          'statusCode': 200,
-          'headers': const <String, String>{},
-          'body': Uint8List(0),
-          'url': 'http://127.0.0.1/',
-          'routeKind': 'http_proxy',
-          'targetDnsMode': 'proxy_remote',
-          'networkEpoch': 4,
-        };
+        throw PlatformException(
+          code: 'native_network',
+          message: '系统网络请求失败',
+          details: const {'category': 'timeout'},
+        );
       });
 
       final probe = HttpProbe(
@@ -210,51 +227,15 @@ void main() {
         Candidate(
           id: 7,
           url: Uri.parse('http://127.0.0.1/'),
-          label: 'native-route',
+          label: 'loopback',
         ),
         1,
         Cancellation(),
       );
 
-      expect(result.status, ProbeStatus.reachable);
-      expect(attempts, [0, 1]);
-      expect(lanes, ['probe', 'probe']);
+      expect(result.status, ProbeStatus.timeout);
+      expect(timeouts, [5000]);
+      expect(lanes, ['probe']);
     },
   );
-
-  test('the first native attempt is not squeezed below a usable budget', () async {
-    final timeouts = <int>[];
-    messenger.setMockMethodCallHandler(channel, (call) async {
-      final args = (call.arguments as Map).cast<Object?, Object?>();
-      timeouts.add((args['timeoutMs'] as num).toInt());
-      // Fail every attempt so the retry path is exercised too.
-      throw PlatformException(code: 'timeout', message: 'timeout');
-    });
-
-    final transport = NativeSystemHttpTransport(channel: channel);
-    final client = ControlledHttp(nativeTransport: transport);
-    await expectLater(
-      client.fetch(
-        Uri.parse('https://example.com/probe'),
-        connect: const {'*'},
-        document: Uri.parse('https://example.com/probe'),
-        cancel: Cancellation(),
-        timeout: const Duration(seconds: 5),
-      ),
-      throwsA(anything),
-    );
-
-    expect(timeouts, isNotEmpty);
-    // 5s split in half used to grant 2499ms, which expired inside a tunnelled
-    // DNS lookup plus handshake.
-    expect(
-      timeouts.first,
-      greaterThanOrEqualTo(4000),
-      reason: 'the first attempt must clear the DNS + TLS floor',
-    );
-    // A retry never starts on a sliver of the remaining budget.
-    for (final value in timeouts.skip(1)) {
-      expect(value, greaterThanOrEqualTo(2000));
-    }
-  });
 }

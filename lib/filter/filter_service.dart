@@ -1152,27 +1152,6 @@ class FilterSourceManager {
         } catch (error) {
           lastError = error;
           cancel.check();
-          // Android installations may expose the site through a configured
-          // system proxy while a direct socket is unavailable. Built-in lists
-          // are fixed public hosts, so retry them through the platform HTTP
-          // stack without extending this path to arbitrary user URLs.
-          if (db != null && source.kind == 'builtin') {
-            try {
-              final candidate = await _fetchThroughPlatform(
-                url,
-                cancel,
-                maxBytes,
-              );
-              if (candidate.status < 200 || candidate.status >= 300) {
-                throw StateError('规则源 HTTP ${candidate.status}');
-              }
-              response = candidate;
-              break;
-            } catch (platformError) {
-              lastError = platformError;
-              cancel.check();
-            }
-          }
         }
       }
       final loaded = response ?? (throw lastError ?? StateError('规则源不可用'));
@@ -1241,62 +1220,6 @@ class FilterSourceManager {
         ),
       );
       rethrow;
-    }
-  }
-
-  Future<FetchResponse> _fetchThroughPlatform(
-    Uri url,
-    Cancellation cancel,
-    int maxBytes,
-  ) async {
-    final client = HttpClient()
-      ..findProxy = HttpClient.findProxyFromEnvironment;
-    cancel.onCancel(() => client.close(force: true));
-    var current = url;
-    try {
-      for (var redirects = 0; redirects <= 5; redirects++) {
-        cancel.check();
-        NetworkPolicy.validateTarget(current, const {'*'}, url);
-        final request = await client.getUrl(current);
-        request.followRedirects = false;
-        request.headers.set(
-          HttpHeaders.userAgentHeader,
-          'Site-Lens filter refresh',
-        );
-        final response = await request.close();
-        final location = response.headers.value(HttpHeaders.locationHeader);
-        if ([301, 302, 303, 307, 308].contains(response.statusCode) &&
-            location != null) {
-          if (redirects == 5) throw StateError('规则源重定向过多');
-          final next = webUri(current.resolve(location).toString());
-          if (current.scheme == 'https' && next.scheme != 'https') {
-            throw StateError('规则源禁止 HTTPS 降级');
-          }
-          current = next;
-          continue;
-        }
-        final bytes = <int>[];
-        await for (final chunk in response) {
-          cancel.check();
-          if (bytes.length + chunk.length > maxBytes) {
-            throw StateError('规则源超过 $maxBytes 字节');
-          }
-          bytes.addAll(chunk);
-        }
-        final headers = <String, String>{};
-        response.headers.forEach((key, values) {
-          headers[key] = values.join(', ');
-        });
-        return FetchResponse(
-          url: current,
-          status: response.statusCode,
-          bytes: bytes,
-          headers: headers,
-        );
-      }
-      throw StateError('规则源重定向过多');
-    } finally {
-      client.close(force: true);
     }
   }
 }

@@ -1857,6 +1857,24 @@ class AppRuntimeApi {
     return (pigeonVar_replyValue! as List<Object?>).cast<String>();
   }
 
+  Future<void> setSecureDnsProvider(String provider) async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.site_lens.AppRuntimeApi.setSecureDnsProvider$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[provider]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: true,
+    )
+    ;
+  }
+
   Future<void> clearSecureDnsCache() async {
     final pigeonVar_channelName = 'dev.flutter.pigeon.site_lens.AppRuntimeApi.clearSecureDnsCache$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(

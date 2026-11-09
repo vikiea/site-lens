@@ -439,8 +439,8 @@ class NativeMediaRuntime(
                 if (!cookie.isNullOrBlank()) put("Cookie", cookie)
             }
             val target = URI(uri.toString())
-            val plan = SystemMediaNetwork.routePlan(context, target, attempt = 0)
-            val client = SystemMediaNetwork.buildOkHttpClient(context, target, plan)
+            SystemMediaNetwork.initialize(context)
+            val client = SystemMediaNetwork.buildOkHttpClient(target)
             val http: DataSource.Factory = OkHttpDataSource.Factory(client)
                 .setUserAgent(WebSettings.getDefaultUserAgent(context))
                 .setDefaultRequestProperties(requestProperties)

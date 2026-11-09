@@ -1,11 +1,13 @@
 package dev.vikiea.site_lens
 
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 class NativeAppRuntime(
+    private val context: Context,
     private val registry: NativeWebHostRegistry,
 ) : AppRuntimeApi {
     private val resolver = SecureDnsResolver()
@@ -13,6 +15,10 @@ class NativeAppRuntime(
         Thread(runnable, "site-lens-runtime").apply { isDaemon = true }
     }
     private val main = Handler(Looper.getMainLooper())
+
+    init {
+        SystemMediaNetwork.initialize(context)
+    }
 
     fun dispose() {
         executor.shutdownNow()
@@ -29,9 +35,22 @@ class NativeAppRuntime(
         }
     }
 
+    override fun setSecureDnsProvider(provider: String, callback: (Result<Unit>) -> Unit) {
+        executor.execute {
+            val result = runCatching {
+                SystemMediaNetwork.setSecureDnsProvider(context, provider)
+                resolver.clearCache()
+            }
+            main.post { callback(result) }
+        }
+    }
+
     override fun clearSecureDnsCache(callback: (Result<Unit>) -> Unit) {
         executor.execute {
-            val result = runCatching { resolver.clearCache() }
+            val result = runCatching {
+                resolver.clearCache()
+                SystemMediaNetwork.clearSecureDnsCache()
+            }
             main.post { callback(result) }
         }
     }

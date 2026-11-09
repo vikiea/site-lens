@@ -46,6 +46,13 @@ class NativeSystemNetworkRuntime(appContext: Context) : MethodChannel.MethodCall
     private val activeCalls = ConcurrentHashMap<String, Call>()
     private val cancelledRequests = ConcurrentHashMap.newKeySet<String>()
     private val pendingResults = ConcurrentHashMap<String, MethodChannel.Result>()
+    private val networkListener = SystemMediaNetwork.addNetworkChangeListener {
+        activeCalls.values.forEach(Call::cancel)
+    }
+
+    init {
+        SystemMediaNetwork.initialize(appContext)
+    }
 
     private fun executorFor(lane: String): ThreadPoolExecutor = when (lane.lowercase()) {
         "probe" -> probeExecutor
@@ -132,6 +139,7 @@ class NativeSystemNetworkRuntime(appContext: Context) : MethodChannel.MethodCall
         val pending = pendingResults.entries.toList()
         pendingResults.clear()
         cancelledRequests.clear()
+        networkListener()
         main.post {
             pending.forEach { (_, result) ->
                 result.error(
@@ -157,9 +165,7 @@ class NativeSystemNetworkRuntime(appContext: Context) : MethodChannel.MethodCall
             .toMap()
         val body = call.argument<ByteArray>("body")
         val maxBytes = call.argument<Number>("maxBytes")?.toInt() ?: 2 * 1024 * 1024
-        val attempt = call.argument<Int>("attempt") ?: 0
         val timeoutMs = call.argument<Number>("timeoutMs")?.toLong() ?: 15_000L
-        val lane = call.argument<String>("lane")?.trim().orEmpty()
         val response = SystemMediaNetwork.requestBuffered(
             context = context,
             uri = uri,
@@ -167,9 +173,7 @@ class NativeSystemNetworkRuntime(appContext: Context) : MethodChannel.MethodCall
             headers = headers,
             body = body,
             maxBytes = maxBytes,
-            attempt = attempt,
             timeoutMs = timeoutMs,
-            resolverLane = lane,
             isCancelled = { cancelledRequests.contains(requestId) },
             registerCall = {
                 activeCalls[requestId] = it

@@ -385,6 +385,9 @@ abstract class AppRuntimeApi {
   List<String> resolveSecureDns(String provider, String hostname);
 
   @asyncCallback
+  void setSecureDnsProvider(String provider);
+
+  @asyncCallback
   void clearSecureDnsCache();
 
   @asyncCallback

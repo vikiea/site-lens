@@ -30,7 +30,6 @@ class ResumableMediaTransferTest {
                 FakeConnection(200, mapOf("Content-Length" to "16"), ByteArrayInputStream(ByteArray(16)))
             },
             onAttempt = { diagnostics += it },
-            dnsModeForConnection = { "system_route" },
             networkEpochForAttempt = { 12L },
         )
         assertEquals(16L, transfer.transfer(url, url, File(root, "key.part"), "test", maxAttempts = 5))
@@ -107,7 +106,7 @@ class ResumableMediaTransferTest {
                 .transfer(url, url, File(root, "secret-path.part"), "test")
             throw AssertionError("expected transfer failure")
         } catch (failure: MediaTransferFailure) {
-            assertEquals("response_headers", failure.phase)
+            assertEquals("connect", failure.phase)
             assertEquals("cdn.example", failure.host)
             assertEquals(4, failure.attempt)
             assertEquals("direct", failure.route)
@@ -166,7 +165,7 @@ class ResumableMediaTransferTest {
     }
 
     @Test
-    fun redirectTargetIsReportedWithItsOwnRoute() = fixture { root ->
+    fun redirectTargetGetsAFreshSystemConnection() = fixture { root ->
         // A TLS failure during connect() belongs to the connect phase, and the
         // redirect target must be attributed to the route planned for it
         // instead of the hop that had just failed.
@@ -175,20 +174,17 @@ class ResumableMediaTransferTest {
             mapOf("Location" to "https://other.example/video"),
             ByteArrayInputStream(byteArrayOf()),
         )
-        val planned = mutableListOf<String>()
+        val connectedHosts = mutableListOf<String>()
         val diagnostics = mutableListOf<Map<String, Any>>()
         val transfer = ResumableMediaTransfer(
             connectForAttempt = { uri, _ ->
+                connectedHosts += uri.host
                 if (uri.host == "other.example") {
                     throw javax.net.ssl.SSLHandshakeException("private details")
                 }
                 first
             },
-            routeForAttempt = { uri, _ ->
-                planned += uri.host
-                if (uri.host == "other.example") "http_proxy" else "vpn_tun_fake_ip"
-            },
-            routeForConnection = { "vpn_tun_fake_ip" },
+            routeForConnection = { "system" },
             onAttempt = { diagnostics += it },
         )
         assertThrows(IOException::class.java) {
@@ -200,13 +196,13 @@ class ResumableMediaTransferTest {
                 maxAttempts = 1,
             )
         }
-        assertEquals(listOf("cdn.example", "other.example"), planned)
+        assertEquals(listOf("cdn.example", "other.example"), connectedHosts)
         // A raw handshake throw inside connect() is not classified by the
         // transport, so the category stays io; the phase and the route are what
         // this case pins. The old code reported response_headers and the
         // previous hop's route here.
         assertEquals("other.example", diagnostics.last()["host"])
-        assertEquals("http_proxy", diagnostics.last()["route"])
+        assertEquals("system", diagnostics.last()["route"])
         assertEquals("connect", diagnostics.last()["phase"])
         assertFalse(diagnostics.toString().contains("private details"))
     }
@@ -381,7 +377,7 @@ class ResumableMediaTransferTest {
     }
 
     @Test
-    fun redirectRetryAdvancesRouteForTheFailedOrigin() = fixture { root ->
+    fun redirectRetryReplansTheSystemConnectionWithoutRouteFamilyRotation() = fixture { root ->
         val start = URL("https://cdn.example/start").toURI()
         val redirected = URL("https://other.example/video").toURI()
         val attempts = mutableListOf<Pair<String, Int>>()
@@ -409,7 +405,7 @@ class ResumableMediaTransferTest {
             listOf(
                 "cdn.example" to 0,
                 "other.example" to 0,
-                "cdn.example" to 0,
+                "cdn.example" to 1,
                 "other.example" to 1,
             ),
             attempts,

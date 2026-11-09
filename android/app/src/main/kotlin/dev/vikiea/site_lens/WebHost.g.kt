@@ -1811,6 +1811,7 @@ interface WebHostApi {
  */
 interface AppRuntimeApi {
   fun resolveSecureDns(provider: String, hostname: String, callback: (Result<List<String>>) -> Unit)
+  fun setSecureDnsProvider(provider: String, callback: (Result<Unit>) -> Unit)
   fun clearSecureDnsCache(callback: (Result<Unit>) -> Unit)
   fun clearWebViewHttpCache(callback: (Result<RuntimeCacheReport>) -> Unit)
 
@@ -1837,6 +1838,25 @@ interface AppRuntimeApi {
               } else {
                 val data = result.getOrNull()
                 reply.reply(WebHostPigeonUtils.wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.site_lens.AppRuntimeApi.setSecureDnsProvider$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val providerArg = args[0] as String
+            api.setSecureDnsProvider(providerArg) { result: Result<Unit> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(WebHostPigeonUtils.wrapError(error))
+              } else {
+                reply.reply(WebHostPigeonUtils.wrapResult(null))
               }
             }
           }

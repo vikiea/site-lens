@@ -1,7 +1,5 @@
 package dev.vikiea.site_lens
 
-import android.content.Context
-
 import java.io.File
 import java.io.IOException
 import java.io.InterruptedIOException
@@ -41,40 +39,15 @@ class ResumableMediaTransfer(
     private val connectForAttempt: ((URI, Int) -> HttpURLConnection)? = null,
     private val validate: (URI) -> Unit = SystemMediaNetwork::validateTarget,
     private val routeForConnection: (HttpURLConnection) -> String = {
-        if (it.usingProxy()) "http_proxy" else "direct"
+        if (it.usingProxy()) "system_proxy" else "direct"
     },
     private val onAttempt: (Map<String, Any>) -> Unit = {},
     private val onAttemptStarted: (Int) -> Unit = {},
-    private val dnsModeForConnection: () -> String = { "unknown" },
     private val networkEpochForAttempt: () -> Long = { 0L },
-    private val routeBeforeConnect: () -> String = { "unknown" },
-    /**
-     * Per-attempt route override.
-     *
-     * The retry budget rotates the OS route, but a redirect inside one attempt
-     * used to keep the route of the *previous* attempt: the route key is the
-     * redirect target, which no attempt had planned yet, so the recorded
-     * override still described the hop that had just failed. Returning null
-     * lets the transport plan that target itself.
-     */
-    private val routeForAttempt: (URI, Int) -> String? = { _, _ -> null },
-    /** Required to pin media sockets to the active tunnel; null keeps tests pure. */
-    private val context: Context? = null,
 ) {
-    /**
-     * A default argument cannot read [context], because default expressions are
-     * evaluated before the property list is built. The accessor resolves the
-     * route lazily instead, once every constructor property is available.
-     */
     private val routeConnect: (URI, Int) -> HttpURLConnection =
         connectForAttempt
-            ?: { uri, attempt ->
-                SystemMediaNetwork.openConnection(
-                    uri,
-                    attempt = attempt,
-                    context = context,
-                )
-            }
+            ?: { _, _ -> error("生产媒体传输必须提供系统网络连接工厂") }
 
     var finalUrl: URI? = null
         private set
@@ -108,7 +81,6 @@ class ResumableMediaTransfer(
         val identity = MessageDigest.getInstance("SHA-256").digest(stableIdentity(url).toByteArray())
             .joinToString("") { "%02x".format(it) }
         var failure: IOException? = null
-        val routeAttempts = mutableMapOf<String, Int>()
         for (localAttempt in 0 until availableAttempts) {
             val attempt = startAttempt + localAttempt
             val startedAt = System.nanoTime()
@@ -143,12 +115,9 @@ class ResumableMediaTransfer(
                         for (redirect in 0..5) {
                             checkActive(); validate(uri); failurePhase = "connect"
                             failedUri = uri
-                            val routeKey = uri.toString()
-                            val plannedAttempt = routeAttempts[routeKey] ?: startAttempt
                             val current = connect?.invoke(uri)
-                                ?: routeConnect(uri, plannedAttempt)
-                            failureRoute = routeForAttempt(uri, plannedAttempt)
-                                ?: routeForConnection(current)
+                                ?: routeConnect(uri, attempt)
+                            failureRoute = routeForConnection(current)
                             connection = current
                             current.instanceFollowRedirects = false
                             current.connectTimeout = 15000
@@ -205,7 +174,7 @@ class ResumableMediaTransfer(
                         if (status == 401 || status == 403) {
                             throw MediaAuthorizationException(attemptsUsed, status)
                         }
-                        if (status == 407 && failureRoute == "http_proxy") {
+                        if (status == 407 && failureRoute !in setOf("direct", "unknown")) {
                             throw MediaRouteIOException(
                                 "proxy_connect_status",
                                 IOException("代理 CONNECT 被拒绝"),
@@ -304,7 +273,7 @@ class ResumableMediaTransfer(
                 } else {
                     SystemMediaNetwork.classifyTransportFailure(
                         error,
-                        proxyRoute = failureRoute == "http_proxy",
+                        proxyRoute = failureRoute !in setOf("direct", "unknown"),
                     )
                 }
                 val text = error.message.orEmpty().lowercase()
@@ -316,7 +285,6 @@ class ResumableMediaTransfer(
                     else -> (classified as? MediaRouteIOException)?.category ?: "io"
                 }
                 failureCategory = reason
-                if (failureRoute == "unknown") failureRoute = routeBeforeConnect()
                 failure = MediaTransferFailure(
                     phase = failurePhase,
                     host = failedUri.host ?: "unknown",
@@ -329,8 +297,6 @@ class ResumableMediaTransfer(
                     cause = error,
                     attemptsUsed = attemptsUsed,
                 )
-                val routeKey = failedUri.toString()
-                routeAttempts[routeKey] = (routeAttempts[routeKey] ?: startAttempt) + 1
             } finally {
                 connection?.disconnect(); connection = null
                 runCatching {
@@ -340,7 +306,6 @@ class ResumableMediaTransfer(
                         "attempt" to attempt,
                         "route" to failureRoute,
                         "routeKind" to failureRoute,
-                        "targetDnsMode" to dnsModeForConnection(),
                         "host" to (failedUri.host ?: "unknown"),
                         "offset" to failureOffset,
                         "failureCategory" to failureCategory,

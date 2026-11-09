@@ -161,6 +161,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final nativeSystemTransport = Platform.isAndroid
         ? NativeSystemHttpTransport()
         : null;
+    final mediaNetwork = Platform.isAndroid ? MediaNetwork() : null;
     if (bootstrap != null) _applySettings();
     transientCache = TransientCacheService(runtime: AppRuntimeApi());
     errorLogger = AppErrorLogger(db);
@@ -168,25 +169,21 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     this.sessionStore = sessionStore ?? BrowserSessionStore(db);
     scripts = ScriptService(
       db,
-      ControlledHttp(
-        resolve: secureDnsResolver.resolve,
-        nativeTransport: nativeSystemTransport,
-      ),
+      ControlledHttp(nativeTransport: nativeSystemTransport),
     );
     hosts = NativeHosts(
       db,
       scripts,
-      ControlledHttp(
-        resolve: secureDnsResolver.resolve,
-        nativeTransport: nativeSystemTransport,
-      ),
+      ControlledHttp(nativeTransport: nativeSystemTransport),
       api: api,
-      probeRoute: Platform.isAndroid ? MediaNetwork().probeRoute : null,
-      activeRoute: Platform.isAndroid ? MediaNetwork().activeRoute : null,
       beforeCreate: _ensureBrowserPrepared,
     );
     filterSnapshots = FilterSnapshotStore();
-    filterSources = FilterSourceManager(store: filterSnapshots, db: db);
+    filterSources = FilterSourceManager(
+      store: filterSnapshots,
+      db: db,
+      http: ControlledHttp(nativeTransport: nativeSystemTransport),
+    );
     final mediaResourceCoordinator = MediaResourceCoordinator(
       rootProvider: () async {
         final root = await mediaTasks.cacheRootDirectory();
@@ -236,13 +233,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       // Media transfers are carried by [policyTransfer] (native Kotlin). This
       // client only handles authorization and metadata, so it must not open a
       // second native path that decides routing again.
-      http: ControlledHttp(
-        resolve: secureDnsResolver.resolve,
-        mediaRouteForAttemptWithDocument: (uri, attempt, document) =>
-            MediaNetwork().route(uri, attempt: attempt, document: document),
-        mediaRouteForAttempt: (uri, attempt) =>
-            MediaNetwork().route(uri, attempt: attempt),
-      ),
+      http: ControlledHttp(nativeTransport: nativeSystemTransport),
       authorize: _authorizeMediaDownload,
       refreshAuthorization: (task, candidate) async {
         try {
@@ -257,11 +248,12 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           rethrow;
         }
       },
-      policyTransfer: Platform.isAndroid
-          ? MediaNetwork().transferFileWithPolicy
-          : null,
+      policyTransfer: mediaNetwork?.transferFileWithPolicy,
       resourceCoordinator: mediaResourceCoordinator,
     );
+    _mediaNetworkUnsubscribe = mediaNetwork?.onNetworkChanged(() {
+      if (!_disposed) unawaited(mediaDownloads.recoverAfterNetworkChange());
+    });
     _mediaRuntimeReady = true;
     mediaDownloads.maxConcurrency = settings.mediaDownloadConcurrency;
     if (nativeDownloads != null) {
@@ -352,16 +344,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       candidates: _enabledCandidates,
       httpProbe:
           httpProbe ??
-          // Dart's HttpClient leaves socket ownership, DNS and proxy to the
-          // system route, which every tunnel implementation already handles.
-          // The native transport decided those again and turned any mismatch
-          // into one indistinguishable timeout.
           HttpProbe(
-            resolve: secureDnsResolver.resolve,
-            routeForAttempt: Platform.isAndroid
-                ? (uri, attempt) =>
-                      MediaNetwork().probeRoute(uri, attempt: attempt)
-                : null,
+            nativeTransport: nativeSystemTransport,
             onFailure: (error, stack, context) => AppErrorLogger.capture(
               error,
               module: 'discovery.probe',
@@ -623,6 +607,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   late final WatchSaveStore watchSaves;
   late final NativePlaybackStore nativePlayback;
   late final MediaDownloadService mediaDownloads;
+  void Function()? _mediaNetworkUnsubscribe;
   var _mediaRuntimeReady = false;
   late final Mp4ExportService mediaExports;
   late final MediaExportQueue mediaExportQueue;
@@ -880,9 +865,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
                 final current = state.map((e) => e.name).join(',');
                 if (current != previous) {
                   previous = current;
-                  MediaNetwork.networkChanged();
                   unawaited(secureDnsResolver.clearCache().catchError((_) {}));
-                  unawaited(mediaDownloads.recoverAfterNetworkChange());
                   cancel('网络发生变化，请重新检测；旧结果不参与推荐');
                 }
               });
@@ -1232,6 +1215,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     themeModePreference = settings.themeMode;
     themePreset = settings.themePreset;
     secureDnsResolver.setProvider(settings.secureDnsProvider);
+    secureDnsResolver.syncNativeProvider();
     restoreBrowserSessions = settings.restoreBrowserSessions;
     allowBackgroundPlayback = settings.allowBackgroundPlayback;
     allowStreamingWhileDownloading = settings.allowStreamingWhileDownloading;
@@ -3273,6 +3257,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     mediaCast.removeListener(_observeCastForDiagnostics);
     hosts.changed.removeListener(_hostMetadataChanged);
     _network?.cancel();
+    _mediaNetworkUnsubscribe?.call();
+    _mediaNetworkUnsubscribe = null;
     _discovery.cancel();
     _recon.cancel();
     probes.dispose();

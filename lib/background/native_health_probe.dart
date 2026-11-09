@@ -35,14 +35,12 @@ class NativeHealthProbe implements DetailedReachabilityProbe {
         return HealthProbeResult(
           reachable: reachable,
           failureCategory: reachable ? null : 'http_${response.statusCode}',
-          routeKind: 'public_direct',
           networkEpoch: 0,
         );
       } catch (_) {
         return const HealthProbeResult(
           reachable: false,
           failureCategory: 'socket',
-          routeKind: 'public_direct',
           networkEpoch: 0,
         );
       } finally {
@@ -51,14 +49,12 @@ class NativeHealthProbe implements DetailedReachabilityProbe {
     }
     final result = await _channel.invokeMapMethod<String, Object?>('probe', {
       'url': url.toString(),
-      'attempt': 0,
       'networkEpoch': 0,
     });
     if (result == null) throw StateError('后台网络探测未返回结果');
     return HealthProbeResult(
       reachable: result['status'] == 'reachable',
       failureCategory: result['failureCategory'] as String?,
-      routeKind: result['routeKind'] as String?,
       networkEpoch: (result['networkEpoch'] as num?)?.toInt(),
     );
   }

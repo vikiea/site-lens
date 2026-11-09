@@ -112,7 +112,7 @@ void main() {
 
   for (final resumed in [false, true]) {
     test(
-      'native TLS ${resumed ? "resume" : "fallback"} reports before completion',
+      'policy native ${resumed ? "resume" : "transfer"} reports before completion',
       () async {
         final root = await Directory.systemTemp.createTemp(
           'media-native-progress-',
@@ -140,11 +140,9 @@ void main() {
         }
         final observed = Completer<void>();
         final finish = Completer<void>();
-        final http = _NativeProgressHttp();
         final service = MediaDownloadService(
           tasks: tasks,
-          http: http,
-          tlsTransfer:
+          policyTransfer:
               (
                 url,
                 document,
@@ -152,6 +150,11 @@ void main() {
                 maxBytes,
                 cancel, {
                 onProgress,
+                headers,
+                requestContextId,
+                required maxAttempts,
+                required startAttempt,
+                resourceKind = 'file',
               }) async {
                 await destination.parent.create(recursive: true);
                 await destination.writeAsBytes(
@@ -167,6 +170,7 @@ void main() {
                   flush: true,
                 );
                 onProgress?.call(8192);
+                return MediaTransferResult(attemptsUsed: 1, finalUrl: url);
               },
         );
         var completed = false;
@@ -178,7 +182,6 @@ void main() {
           expect(completed, isFalse);
           expect(tasks.task(task.id)!.bytesDownloaded, 4096);
           expect((await service.refreshTask(task.id)).bytesDownloaded, 4096);
-          expect(http.attempts, resumed ? 0 : 4);
         } finally {
           finish.complete();
           await running;
@@ -187,30 +190,6 @@ void main() {
         expect(tasks.task(task.id)!.bytesDownloaded, 8192);
       },
     );
-  }
-}
-
-class _NativeProgressHttp extends ControlledHttp {
-  int attempts = 0;
-
-  @override
-  Future<FetchFileResponse> fetchToFile(
-    Uri url, {
-    required Set<String> connect,
-    required Uri document,
-    required Cancellation cancel,
-    required File destination,
-    Map<String, String> headers = const {},
-    bool mediaRequest = false,
-    int resumeOffset = 0,
-    int maxBytes = 2 * 1024 * 1024 * 1024,
-    Future<void> Function(int, Map<String, String>)? onHeaders,
-    void Function(int)? onProgress,
-    Duration timeout = const Duration(seconds: 15),
-    int routeAttempt = 0,
-  }) async {
-    attempts++;
-    throw const HandshakeException('native fallback fixture');
   }
 }
 

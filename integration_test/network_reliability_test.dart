@@ -28,7 +28,6 @@ void networkReliabilityDispatcher() {
     await File('${root.path}/${input['result']}').writeAsString(
       jsonEncode({
         'reachable': result.reachable,
-        'routeKind': result.routeKind,
         'failureCategory': result.failureCategory,
         'headless': true,
       }),
@@ -43,7 +42,7 @@ void networkReliabilityDispatcher() {
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   testWidgets(
-    'headless health plugin observes current VPN route without Activity registration',
+    'headless health plugin observes current system network without Activity registration',
     (tester) async {
       final root = await getApplicationSupportDirectory();
       final name = 'health-probe-${DateTime.now().microsecondsSinceEpoch}.json';
@@ -72,18 +71,7 @@ void main() {
           isTrue,
           reason: '${result['failureCategory']}',
         );
-        expect(
-          result['routeKind'],
-          isIn([
-            'vpn_tun_fake_ip',
-            'http_proxy',
-            'router_fake_ip',
-            'public_direct',
-          ]),
-        );
-        debugPrint(
-          'HEADLESS_HEALTH_PASS route=${result['routeKind']} reachable=true',
-        );
+        debugPrint('HEADLESS_HEALTH_PASS reachable=true');
       } finally {
         await Workmanager().cancelByUniqueName(_job);
         if (await resultFile.exists()) await resultFile.delete();
@@ -106,10 +94,7 @@ void main() {
       final player = NativeMediaRuntime();
       final url = Uri.parse(_fixture);
       try {
-        final route = await network.route(url);
-        debugPrint(
-          'CURRENT_HLS_ROUTE kind=${route.routeKind} dns=${route.targetDnsMode} proxy=${route.proxyConfigured}',
-        );
+        debugPrint('CURRENT_HLS_SYSTEM_NETWORK');
         Future<File> transfer(
           Uri uri,
           String name,

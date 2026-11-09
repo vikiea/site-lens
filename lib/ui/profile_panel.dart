@@ -340,7 +340,6 @@ bool healthIsStale(ProfileHealth health, {DateTime? now}) {
 
 String healthSummary(ProfileHealth health) {
   final failure = switch (health.lastFailureCategory) {
-    'fake_ip_policy' => 'Fake-IP 路由未确认',
     'dns' => 'DNS 解析失败',
     'proxy_connect' || 'proxy_connect_status' => '代理连接失败',
     'tls_handshake' => 'TLS 握手失败',

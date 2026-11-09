@@ -42,11 +42,8 @@ class HostSession {
   String title = '';
   String? errorKind;
   String? error;
-  String routeKind = 'unknown';
-  String dnsOwner = 'unknown';
-  String targetDnsMode = 'unknown';
-  int networkEpoch = 0;
   bool autoRetryUsed = false;
+  String? lastNavigationFailureKey;
   Cancellation cancellation = Cancellation();
   final menus = <String, ScriptMenu>{};
   final registered = <String, String>{};
@@ -83,8 +80,6 @@ class NativeHosts extends WebHostEvents {
     this.scripts,
     this.http, {
     WebHostApi? api,
-    this.probeRoute,
-    this.activeRoute,
     this.beforeCreate,
   }) : api = api ?? WebHostApi() {
     WebHostEvents.setUp(this);
@@ -94,10 +89,6 @@ class NativeHosts extends WebHostEvents {
   final ControlledHttp http;
   final WebHostApi api;
   final Future<void> Function()? beforeCreate;
-  final Future<MediaNetworkRoute> Function(Uri)? probeRoute;
-
-  /// DNS-free proxy/VPN snapshot used only to explain a navigation failure.
-  final Future<MediaNetworkRoute?> Function(Uri)? activeRoute;
   final _filterPayloads = FilterPayloadStore();
   final sessions = <int, HostSession>{};
   FilterEngine? filterEngine;
@@ -642,31 +633,29 @@ class NativeHosts extends WebHostEvents {
       session.error = null;
       session.errorKind = null;
       session.autoRetryUsed = false;
+      session.lastNavigationFailureKey = null;
     }
     if (event.kind == 'started') {
       session.loaded = false;
       session.error = null;
       session.errorKind = null;
+      session.lastNavigationFailureKey = null;
     }
     if (diagnosticError) {
+      final message = readableError(event.detail, rawDetail: event.url);
+      final failureKey =
+          '${session.generation}\u0000${event.kind}\u0000${event.url}';
+      // Chromium can publish both the NetworkError and the committed error page
+      // for one failed navigation. Present and retry it once until a new load
+      // start provides evidence that this is a distinct attempt.
+      if (session.lastNavigationFailureKey == failureKey) return;
+      session.lastNavigationFailureKey = failureKey;
       session.errorKind = event.kind;
-      // WebView reports only a driver-level failure; the URL travels in the
-      // event so a proxy/VPN diagnosis can be attached to the user-facing
-      // message instead of a bare "refresh the page".
-      final routeHint = await _routeHintForFailure(event.url);
-      session.error = routeHint == null
-          ? readableError(event.detail, rawDetail: event.url)
-          : '$routeHint\n${readableError(event.detail, rawDetail: event.url)}';
-      if (session.purpose == HostPurpose.browsing) {
-        await _refreshRouteDiagnostics(session, event.url);
-      }
+      session.error = message;
       AppErrorLogger.capture(
         StateError('WebView ${event.kind}: ${event.detail}'),
         module: 'webview.navigation',
-        context:
-            'host=${session.id} generation=${session.generation} '
-            'route=${session.routeKind} dns=${session.dnsOwner} '
-            'mode=${session.targetDnsMode} epoch=${session.networkEpoch}',
+        context: 'host=${session.id} generation=${session.generation}',
         stack: StackTrace.current,
       );
       if (navigationError && session.purpose == HostPurpose.browsing) {
@@ -701,59 +690,6 @@ class NativeHosts extends WebHostEvents {
         }
       }),
     );
-  }
-
-  /// A short, actionable prefix when the system route itself is why the page
-  /// cannot load. Only a positively reported proxy/VPN route is named; a
-  /// failed or unknown diagnosis adds nothing and never masks the real error.
-  Future<String?> _routeHintForFailure(String url) async {
-    final probe = activeRoute;
-    if (probe == null || url.trim().isEmpty) return null;
-    final MediaNetworkRoute? route;
-    try {
-      route = await probe(webUri(url))
-          .timeout(const Duration(seconds: 3), onTimeout: () => null);
-    } catch (_) {
-      return null;
-    }
-    if (route == null || route.routeKind == 'unknown') return null;
-    if (route.routeKind == 'http_proxy' && route.proxyConfigured) {
-      return '系统代理已启用但站点未能通过代理访问；请确认代理应用正在运行，或关闭代理后重试';
-    }
-    if (route.routeKind == 'vpn_tun_fake_ip') {
-      return '检测到 VPN/TUN 路由；请确认代理应用的分流规则允许该站点直连或走代理';
-    }
-    if (route.routeKind == 'router_fake_ip') {
-      return '检测到网关代理路由（DNS 返回 Fake-IP）；请确认路由器的代理规则允许该站点，或临时关闭路由代理后重试';
-    }
-    return null;
-  }
-
-  Future<void> _refreshRouteDiagnostics(HostSession session, String url) async {
-    final probe = probeRoute;
-    if (probe == null || session.disposed || url.trim().isEmpty) return;
-    final generation = session.generation;
-    try {
-      final route = await probe(webUri(url))
-          .timeout(const Duration(seconds: 6));
-      if (session.disposed ||
-          sessions[session.id] != session ||
-          session.generation != generation) {
-        return;
-      }
-      session.routeKind = route.routeKind;
-      session.dnsOwner = route.dnsOwner;
-      session.targetDnsMode = route.targetDnsMode;
-      session.networkEpoch = route.networkEpoch;
-      changed.value++;
-    } catch (error, stack) {
-      AppErrorLogger.capture(
-        error,
-        module: 'webview.navigation.route',
-        context: 'host=${session.id} generation=$generation',
-        stack: stack,
-      );
-    }
   }
 
   @override

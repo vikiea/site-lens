@@ -26,13 +26,6 @@ String mediaTransferFailureText(Object error) {
     'file_io' => '文件写入',
     _ => '未知',
   };
-  final route = switch (details['route']) {
-    'http_proxy' => 'HTTP 代理',
-    'vpn_tun_fake_ip' => 'VPN/TUN',
-    'router_fake_ip' => '网关 Fake-IP',
-    'public_direct' || 'direct' => '公共直连',
-    _ => '未知',
-  };
   final reason = switch (details['reason']) {
     'tls_handshake' => 'TLS 握手失败',
     'certificate' || 'hostname' => '证书验证失败',
@@ -43,6 +36,6 @@ String mediaTransferFailureText(Object error) {
     _ => '网络连接失败',
   };
   int count(Object? value) => value is int && value >= 0 ? value : 0;
-  return '$message\n资源：$resource · 阶段：$phase\n最后路由：$route · 原因：$reason'
+  return '$message\n资源：$resource · 阶段：$phase · 原因：$reason'
       '\n尝试：${count(details['attemptsUsed'])} 次 · 已写入：${count(details['bytesWritten'])} 字节';
 }

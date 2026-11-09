@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
-import 'package:site_lens/network/transport.dart';
 import 'package:site_lens/settings/app_settings.dart';
 import 'package:site_lens/update/update_service.dart';
 
@@ -109,31 +108,6 @@ void main() {
     expect(httpClient.pageRequested, isFalse);
     expect(tokenReads, 1);
   });
-
-  test(
-    'prepares the system route for GitHub page and checksum requests',
-    () async {
-      final routed = <Uri>[];
-      final client = GitHubReleaseClient(
-        client: _ChecksumOnlyClient(),
-        routeResolver: (uri) async {
-          routed.add(uri);
-          return const MediaNetworkRoute(
-            proxy: 'PROXY 127.0.0.1:7890',
-            routeKind: 'http_proxy',
-            targetDnsMode: 'proxy_remote',
-            proxyConfigured: true,
-          );
-        },
-      );
-
-      await client.fetchLatest();
-
-      expect(routed.map((uri) => uri.host), contains('api.github.com'));
-      expect(routed.map((uri) => uri.host), contains('github.com'));
-      expect(routed.any((uri) => uri.path.endsWith('.sha256')), isTrue);
-    },
-  );
 
   test(
     'stable and beta channels fall back to release pages after API failure',

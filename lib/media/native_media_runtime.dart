@@ -84,7 +84,6 @@ class NativeMediaRuntime {
     required int generation,
     required Uri sourceUrl,
     String? sessionId,
-    String secureDnsProvider = 'off',
   }) async {
     const MediaCandidateValidator().validate(
       candidate,
@@ -100,7 +99,6 @@ class NativeMediaRuntime {
       'mime': candidate.effectiveMime,
       'sourceUrl': sourceUrl.toString(),
       'title': candidate.title,
-      'secureDnsProvider': secureDnsProvider,
     });
     _ensureOpenCurrent(requestGeneration);
     return _decode(raw ?? const <String, Object?>{});

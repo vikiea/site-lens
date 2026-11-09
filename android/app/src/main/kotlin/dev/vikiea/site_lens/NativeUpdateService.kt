@@ -34,15 +34,12 @@ class NativeUpdateService : Service() {
         Thread(task, "site-lens-update").apply { isDaemon = true }
     }
     /**
-     * The APK download uses the same route as the browser and the media queue.
-     * It is rebuilt per call because the tunnel can come up or go away between
-     * transfers, and a bound client pins the network it was created for.
+     * The APK download uses the same system ProxySelector, PAC and DNS policy
+     * as the browser and media transports. A client is rebuilt for each hop so
+     * redirects observe current system policy without app-side route planning.
      */
-    private fun httpClient(target: String, attempt: Int = 0): OkHttpClient {
-        val uri = java.net.URI(target)
-        val plan = SystemMediaNetwork.routePlan(applicationContext, uri, attempt = attempt)
-        return SystemMediaNetwork.buildOkHttpClient(applicationContext, uri, plan)
-    }
+    private fun httpClient(target: String): OkHttpClient =
+        SystemMediaNetwork.buildOkHttpClient(java.net.URI(target))
     private val pauseRequested = AtomicBoolean(false)
     private val userPause = AtomicBoolean(true)
     private val deleteRequested = AtomicBoolean(false)
@@ -51,9 +48,14 @@ class NativeUpdateService : Service() {
     @Volatile private var current: UpdateRequest? = null
     @Volatile private var destroyed = false
     @Volatile private var foregroundReady = false
+    private var detachNetworkListener: (() -> Unit)? = null
 
     override fun onCreate() {
         super.onCreate()
+        SystemMediaNetwork.initialize(applicationContext)
+        detachNetworkListener = SystemMediaNetwork.addNetworkChangeListener {
+            activeCall.getAndSet(null)?.cancel()
+        }
         synchronized(lock) { instance = this }
         try {
             ensureForeground(null)
@@ -107,6 +109,8 @@ class NativeUpdateService : Service() {
         pauseRequested.set(true)
         jobGeneration.incrementAndGet()
         activeCall.getAndSet(null)?.cancel()
+        detachNetworkListener?.invoke()
+        detachNetworkListener = null
         worker.shutdownNow()
         synchronized(lock) { if (instance === this) instance = null }
         super.onDestroy()
@@ -177,9 +181,10 @@ class NativeUpdateService : Service() {
                     return
                 }
                 try {
-                    val response = open(request, received, etag ?: lastModified, attempt)
-                    response.use {
-                        when (it.code) {
+                    val response = open(request, received, etag ?: lastModified)
+                    try {
+                        response.use {
+                            when (it.code) {
                             416 -> {
                                 paths.part.delete()
                                 paths.meta.delete()
@@ -265,7 +270,10 @@ class NativeUpdateService : Service() {
                                 if (it.code in 408..429 || it.code >= 500) throw IOException("更新服务返回 HTTP ${it.code}")
                                 throw DownloadFailure("APK 下载返回 HTTP ${it.code}")
                             }
+                            }
                         }
+                    } finally {
+                        activeCall.set(null)
                     }
                     attempt = 0
                 } catch (error: DownloadFailure) {
@@ -354,7 +362,6 @@ class NativeUpdateService : Service() {
         request: UpdateRequest,
         offset: Long,
         ifRange: String?,
-        attempt: Int,
     ): Response {
         var url = NativeUpdatePolicy.initialUrl(request.apkUrl, request.tagName, request.apkName)
         for (hop in 0..NativeUpdatePolicy.MAX_REDIRECTS) {
@@ -366,14 +373,25 @@ class NativeUpdateService : Service() {
                 builder.header("Range", "bytes=$offset-")
                 if (!ifRange.isNullOrBlank()) builder.header("If-Range", ifRange)
             }
-            val call = httpClient(url.toString(), attempt).newCall(builder.get().build())
+            val call = httpClient(url.toString()).newCall(builder.get().build())
             activeCall.set(call)
-            val response = try { call.execute() } finally { activeCall.compareAndSet(call, null) }
-            if (response.code !in REDIRECTS) return response
+            val response = try {
+                call.execute()
+            } catch (error: IOException) {
+                activeCall.compareAndSet(call, null)
+                throw error
+            }
+            if (response.code !in REDIRECTS) {
+                // Keep the call registered while response.use() streams the APK
+                // so a network change can cancel a blocked body read immediately.
+                return response
+            }
             val location = response.header("Location") ?: run {
+                activeCall.compareAndSet(call, null)
                 response.close()
                 throw DownloadFailure("更新地址重定向无效")
             }
+            activeCall.compareAndSet(call, null)
             response.close()
             if (hop == NativeUpdatePolicy.MAX_REDIRECTS) throw DownloadFailure("更新地址重定向过多")
             url = NativeUpdatePolicy.redirectUrl(url.resolve(location)?.toString() ?: "")

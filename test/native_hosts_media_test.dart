@@ -138,12 +138,6 @@ void main() {
         ScriptService(db, ControlledHttp()),
         ControlledHttp(),
         api: api,
-        probeRoute: (_) async => const MediaNetworkRoute(
-          routeKind: 'http_proxy',
-          dnsOwner: 'proxy',
-          targetDnsMode: 'proxy_remote',
-          networkEpoch: 9,
-        ),
       );
       final session = _session(hosts);
       try {
@@ -160,8 +154,6 @@ void main() {
         expect(session.error, contains('连接超时'));
         await Future<void>.delayed(const Duration(milliseconds: 450));
         expect(api.reloaded, [session.id]);
-        expect(session.routeKind, 'http_proxy');
-        expect(session.targetDnsMode, 'proxy_remote');
 
         await hosts.onEvent(
           HostEvent(
@@ -204,6 +196,43 @@ void main() {
         );
         await Future<void>.delayed(const Duration(milliseconds: 450));
         expect(api.reloaded, [session.id, session.id]);
+      } finally {
+        await db.close();
+      }
+    },
+  );
+
+  test(
+    'duplicate browser error-page events share one navigation retry',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final api = FakeWebHostApi();
+      final hosts = NativeHosts(
+        db,
+        ScriptService(db, ControlledHttp()),
+        ControlledHttp(),
+        api: api,
+      );
+      final session = _session(hosts);
+      try {
+        for (final detail in [
+          'Bad state: WebView networkError: net::ERR_CONNECTION_CLOSED',
+          'Bad state: WebView networkError: WebView committed an error page',
+        ]) {
+          await hosts.onEvent(
+            HostEvent(
+              hostId: session.id,
+              generation: session.generation,
+              kind: 'networkError',
+              url: session.url,
+              detail: detail,
+            ),
+          );
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 450));
+        expect(api.reloaded, [session.id]);
+        expect(session.errorKind, 'networkError');
+        expect(session.error, '页面请求失败，请刷新后重试');
       } finally {
         await db.close();
       }

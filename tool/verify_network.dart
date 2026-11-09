@@ -1,28 +1,23 @@
-import 'package:site_lens/network/transport.dart';
-
 import 'dart:io';
 
-// Smoke-only resolver override, never used by the app. Useful with system Fake-IP DNS.
+import 'package:site_lens/network/transport.dart';
 
+/// Smoke test through the host's normal system network stack.
 Future<void> main(List<String> args) async {
-  final uri = Uri.parse('https://example.com/');
-  final http = args.isEmpty
-      ? ControlledHttp()
-      : ControlledHttp(
-          resolve: (_) async => args.map(InternetAddress.new).toList(),
-        );
-  final response = await http.fetch(
+  final uri = args.isEmpty
+      ? Uri.parse('https://example.com/')
+      : Uri.parse(args.first);
+  final response = await ControlledHttp().fetch(
     uri,
-    connect: {'example.com'},
+    connect: {uri.host},
     document: uri,
     cancel: Cancellation(),
     maxBytes: 65536,
   );
-  if (response.status != 200 ||
-      !String.fromCharCodes(response.bytes).contains('Example Domain')) {
-    throw StateError('HTTPS smoke failed');
+  if (response.status != 200) {
+    throw StateError('HTTP smoke failed: ${response.status}');
   }
   stdout.writeln(
-    'HTTPS via pinned IP + verified TLS PASS: ${response.status}, ${response.bytes.length} bytes',
+    'System HTTPS PASS: ${response.status}, ${response.bytes.length} bytes',
   );
 }

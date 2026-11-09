@@ -103,6 +103,13 @@ final class NativeWebHostRegistry: NSObject, WebHostApi, AppRuntimeApi {
     completion(.failure(PigeonError(code: "unsupported", message: "Secure DNS is Android-only", details: nil)))
   }
 
+  func setSecureDnsProvider(provider: String, completion: @escaping (Result<Void, Error>) -> Void) {
+    // Secure DNS is implemented by the Android app-owned HTTP boundary. iOS
+    // keeps URLSession/WebKit policy and accepts the persisted setting as a
+    // safe no-op so the shared Pigeon contract remains buildable.
+    completion(.success(()))
+  }
+
   func clearSecureDnsCache(completion: @escaping (Result<Void, Error>) -> Void) {
     completion(.success(()))
   }

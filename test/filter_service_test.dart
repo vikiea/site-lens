@@ -258,6 +258,45 @@ void main() {
     },
   );
 
+  test('built-in refresh stays on one injected network executor after all mirrors fail', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'site-lens-filter-one-owner-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final primary = Uri.parse(
+      'https://easylist-downloads.adblockplus.org/easylist.txt',
+    );
+    await db.saveFilterSource(
+      FilterSource(id: 1, label: 'EasyList（广告）', url: primary, kind: 'builtin'),
+    );
+    final http = _AlwaysFailingHttp();
+    final error = await HttpOverrides.runZoned(() async {
+      try {
+        await FilterSourceManager(
+          store: FilterSnapshotStore(directoryProvider: () async => root),
+          db: db,
+          http: http,
+        ).refresh(
+          FilterSource(
+            id: 1,
+            label: 'EasyList（广告）',
+            url: primary,
+            kind: 'builtin',
+          ),
+        );
+      } catch (error) {
+        return error;
+      }
+      return null;
+    }, createHttpClient: (_) => throw StateError('unexpected second client'));
+
+    expect(error, isNotNull);
+    expect(error.toString(), contains('system transport unavailable'));
+    expect(http.calls, hasLength(3));
+  });
+
   test(
     'rebuilds one active bundle from the newest snapshot of each source',
     () async {
@@ -352,6 +391,28 @@ class _FilterHttp extends ControlledHttp {
       bytes: utf8.encode('[Adblock Plus 2.0]\n||ads.example^\n'),
       headers: const {},
     );
+  }
+}
+
+class _AlwaysFailingHttp extends ControlledHttp {
+  final calls = <Uri>[];
+
+  @override
+  Future<FetchResponse> fetch(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    String method = 'GET',
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    String? body,
+    Duration timeout = const Duration(seconds: 15),
+    int maxBytes = 1024 * 1024,
+    int routeAttempt = 0,
+  }) async {
+    calls.add(url);
+    throw StateError('system transport unavailable');
   }
 }
 

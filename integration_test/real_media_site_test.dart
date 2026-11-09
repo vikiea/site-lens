@@ -8,7 +8,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/domain/models.dart';
-import 'package:site_lens/media/media_network.dart';
 import 'package:site_lens/media/media_service.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/navigation_observer.dart';
@@ -184,11 +183,7 @@ void main() {
             mediaCandidateAuthorizationKey(candidate.mediaUrl),
             mediaCandidateAuthorizationKey(exposedEpisodes[selectedEpisode]!),
           );
-          final route = await MediaNetwork().route(candidate.mediaUrl);
-          debugPrint(
-            'REAL_MEDIA_ROUTE proxy=${route.proxy} '
-            'allowFakeIp=${route.allowProxyFakeIp}',
-          );
+          debugPrint('REAL_MEDIA_SYSTEM_NETWORK');
           if (!download) return;
           await db.saveMediaCandidate(candidate);
           final task = await app.mediaTasks.create(candidate);

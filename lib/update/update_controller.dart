@@ -7,8 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../settings/app_settings.dart';
-import '../ui/app_controller.dart';
 import '../ui/navigation_observer.dart';
+import '../network/native_system_http.dart';
 import '../ui/software_update_screen.dart';
 import 'github_token_store.dart';
 import 'update_service.dart';
@@ -20,19 +20,12 @@ import 'update_service.dart';
 /// and owns the in-app completion notice state.
 final updateControllerProvider = Provider<UpdateController>((ref) {
   final tokenStore = GitHubTokenStore();
-  final app = ref.watch(appControllerProvider);
   final controller = UpdateController(
     service: UpdateService(
       tokenLoader: tokenStore.read,
-      // Secure DNS answers with real addresses, so a tunnel that synthesizes
-      // them no longer decides whether metadata can be fetched. The native
-      // client this replaces capped every attempt at 4s, which a tunnelled
-      // GitHub request routinely exceeded.
-      resolve: app.secureDnsResolver.resolve,
-      // Deliberately null: _prepareRoute blocks a host on
-      // `PROXY 127.0.0.1:9` when a resolver throws, which would turn a slow
-      // metadata request into a guaranteed failure.
-      routeResolver: null,
+      client: Platform.isAndroid
+          ? GitHubReleaseClient(client: NativeSystemHttpClient())
+          : null,
       nativeBackend: Platform.isAndroid ? MethodChannelUpdateBackend() : null,
     ),
   );

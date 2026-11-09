@@ -45,12 +45,10 @@ class HealthProbeResult {
   const HealthProbeResult({
     required this.reachable,
     this.failureCategory,
-    this.routeKind,
     this.networkEpoch,
   });
   final bool reachable;
   final String? failureCategory;
-  final String? routeKind;
   final int? networkEpoch;
 }
 
@@ -186,7 +184,6 @@ class ProfileHealthChecker {
               lastCheckedAt: at,
               lastOkAt: previous.lastOkAt,
               lastFailureCategory: observation.failureCategory ?? 'unknown',
-              lastFailureRoute: observation.routeKind,
             ),
           );
           if (failures >= failuresBeforeAlert) failing++;

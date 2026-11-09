@@ -81,10 +81,29 @@ class SecureDnsResolver extends ChangeNotifier {
     _provider = provider;
     _providerEpoch++;
     _publish(SecureDnsResolution.idle(_provider, _providerEpoch));
-    final clear = _clearCache;
-    if (clear != null) {
-      unawaited(clear().catchError((_) {}));
+    final api = _api;
+    if (_androidEnabled && api != null) {
+      unawaited(
+        api.setSecureDnsProvider(provider.wireId).catchError((Object _) {}),
+      );
+    } else {
+      final clear = _clearCache;
+      if (clear != null) {
+        unawaited(clear().catchError((_) {}));
+      }
     }
+  }
+
+  /// Pushes the already persisted provider into native background transports.
+  /// Tests and non-Android targets do not touch the platform channel.
+  void syncNativeProvider() {
+    final api = _api;
+    if (!_androidEnabled || api == null) return;
+    unawaited(
+      api
+          .setSecureDnsProvider(_provider.wireId)
+          .catchError((Object _) {}),
+    );
   }
 
   /// Invalidates resolver state after a transport change. The next DIRECT

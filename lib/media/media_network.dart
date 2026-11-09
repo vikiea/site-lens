@@ -5,8 +5,11 @@ import 'package:flutter/services.dart';
 
 import '../network/transport.dart';
 
-/// Read current OS routing per URL, including redirects and network changes.
-/// No proxy endpoints or browser credentials are persisted in task records.
+/// Resumable native media transfer and LAN relay adapter.
+///
+/// Routing, PAC, DNS and proxy ownership stay in Android's system client. Task
+/// records store only media identity and bytes; proxy endpoints are never
+/// persisted.
 class MediaNetwork {
   MediaNetwork({MethodChannel? channel})
     : _channel = channel ?? const MethodChannel('site_lens/media_network'),
@@ -17,7 +20,11 @@ class MediaNetwork {
 
   static final _progressByChannel =
       <(BinaryMessenger, String), Map<String, void Function(int)>>{};
+  static final _networkByChannel =
+      <(BinaryMessenger, String), Map<int, void Function()>>{};
+  static final _registeredHandlers = <(BinaryMessenger, String)>{};
   static int _nextJob = 0;
+  static int _nextNetworkListener = 0;
   static int _networkEpoch = 0;
 
   /// Invalidates transport context after Wi-Fi, cellular, VPN, or proxy
@@ -30,20 +37,63 @@ class MediaNetwork {
   Map<String, void Function(int)> _progressHandlers() =>
       _progressByChannel.putIfAbsent(_channelKey, () {
         final callbacks = <String, void Function(int)>{};
-        _channel.setMethodCallHandler((call) async {
-          if (call.method != 'transferProgress' || call.arguments is! Map) {
-            return null;
-          }
-          final args = call.arguments as Map;
-          final jobId = args['jobId'];
-          final bytes = args['bytesDownloaded'];
-          if (jobId is String && bytes is int && bytes >= 0) {
-            callbacks[jobId]?.call(bytes);
-          }
-          return null;
-        });
+        _ensureChannelHandler();
         return callbacks;
       });
+
+  /// One Android network epoch owns both cancellation and media recovery.
+  /// Consumers must not start a second recovery from connectivity_plus.
+  VoidCallback onNetworkChanged(void Function() callback) {
+    final key = _channelKey;
+    final id = _nextNetworkListener++;
+    final listeners = _networkByChannel.putIfAbsent(key, () {
+      final value = <int, void Function()>{};
+      _ensureChannelHandler();
+      return value;
+    });
+    listeners[id] = callback;
+    return () {
+      listeners.remove(id);
+      _retireChannelHandler();
+    };
+  }
+
+  void _ensureChannelHandler() {
+    final key = _channelKey;
+    if (!_registeredHandlers.add(key)) return;
+    _channel.setMethodCallHandler((call) async {
+      final args = call.arguments is Map ? call.arguments as Map : const {};
+      if (call.method == 'transferProgress') {
+        final jobId = args['jobId'];
+        final bytes = args['bytesDownloaded'];
+        if (jobId is String && bytes is int && bytes >= 0) {
+          _progressByChannel[key]?[jobId]?.call(bytes);
+        }
+        return null;
+      }
+      if (call.method == 'networkChanged') {
+        MediaNetwork.networkChanged();
+        for (final listener in List.of(
+          _networkByChannel[key]?.values ?? const <void Function()>[],
+        )) {
+          listener();
+        }
+      }
+      return null;
+    });
+  }
+
+  void _retireChannelHandler() {
+    final key = _channelKey;
+    if ((_progressByChannel[key]?.isEmpty ?? true) &&
+        (_networkByChannel[key]?.isEmpty ?? true)) {
+      _progressByChannel.remove(key);
+      _networkByChannel.remove(key);
+      if (_registeredHandlers.remove(key)) {
+        _channel.setMethodCallHandler(null);
+      }
+    }
+  }
 
   Future<void> transferFile(
     Uri url,
@@ -103,19 +153,6 @@ class MediaNetwork {
       }
     });
     try {
-      var contextId = requestContextId;
-      try {
-        contextId ??= (await _route(
-          url,
-          attempt: startAttempt,
-          media: true,
-          document: document,
-        )).requestContextId;
-      } catch (_) {
-        // The transfer channel performs its own route selection. Context
-        // discovery is best effort so a page without observed auth headers
-        // keeps the existing transport behavior.
-      }
       cancel.check();
       final result = await _channel.invokeMapMethod<String, Object?>(
         'transferFile',
@@ -124,7 +161,9 @@ class MediaNetwork {
           'url': url.toString(),
           'document': document.toString(),
           'networkEpoch': _networkEpoch,
-          ...?contextId == null ? null : {'requestContextId': contextId},
+          ...?requestContextId == null
+              ? null
+              : {'requestContextId': requestContextId},
           'path': destination.path,
           'maxBytes': maxBytes,
           'maxAttempts': maxAttempts,
@@ -142,60 +181,26 @@ class MediaNetwork {
             : maxAttempts,
         finalUrl: finalUrl is String ? Uri.tryParse(finalUrl) : null,
       );
+    } on PlatformException catch (error) {
+      // The native cancellation response is asynchronous. Once this Dart call
+      // owns a cancelled token, or Android reports that the native network
+      // listener cancelled it first, preserve the partial as a paused transfer.
+      final details = error.details is Map ? error.details as Map : const {};
+      if (cancel.cancelled ||
+          error.code == 'media_cancelled' ||
+          details['failureCategory'] == 'cancelled') {
+        throw const Cancelled();
+      }
+      rethrow;
     } finally {
       active = false;
       callbacks.remove(jobId);
-      if (callbacks.isEmpty) {
-        _progressByChannel.remove(_channelKey);
-        _channel.setMethodCallHandler(null);
-      }
+      _retireChannelHandler();
     }
   }
 
-  Future<MediaNetworkRoute> route(
-    Uri uri, {
-    int attempt = 0,
-    Uri? document,
-  }) async {
-    return _route(uri, attempt: attempt, media: true, document: document);
-  }
-
-  /// Site probes share OS proxy/VPN policy without reading browser cookies.
-  Future<MediaNetworkRoute> probeRoute(Uri uri, {int attempt = 0}) async {
-    return _route(uri, attempt: attempt, media: false);
-  }
-
-  /// Proxy/VPN snapshot for diagnostics that must never resolve the target.
-  ///
-  /// Unlike [probeRoute] this performs no DNS lookup, so a broken resolver or a
-  /// dead proxy cannot make the diagnosis fail for the same reason the page
-  /// failed. A missing native handler (older install or non-Android host)
-  /// reports an unknown route instead of throwing.
-  Future<MediaNetworkRoute?> activeRoute(Uri uri) async {
-    if (!_nativeAvailable) return null;
-    try {
-      final value = await _channel.invokeMapMethod<String, Object?>(
-        'activeRoute',
-        {'url': uri.toString(), 'networkEpoch': _networkEpoch},
-      );
-      if (value == null) return null;
-      return MediaNetworkRoute(
-        routeKind: value['routeKind'] as String? ?? 'unknown',
-        dnsOwner: value['dnsOwner'] as String? ?? 'unknown',
-        targetDnsMode: value['targetDnsMode'] as String? ?? 'unknown',
-        proxyConfigured: value['proxyConfigured'] == true,
-        directAllowed: value['directAllowed'] != false,
-        networkEpoch: _networkEpoch,
-      );
-    } on PlatformException {
-      return null;
-    } on MissingPluginException {
-      return null;
-    }
-  }
-
-  /// Android returns Java Socket.localAddress; Dart Socket.address retains the
-  /// address passed to connect and therefore cannot identify the local route.
+  /// Android reads Java Socket.localAddress; Dart Socket.address retains the
+  /// address passed to connect and cannot identify the LAN interface used.
   Future<String> relayAddress(Uri receiver) async {
     final String? value;
     try {
@@ -209,55 +214,6 @@ class MediaNetwork {
       throw StateError('无法读取本机投屏地址');
     }
     return value;
-  }
-
-  Future<MediaNetworkRoute> _route(
-    Uri uri, {
-    required int attempt,
-    required bool media,
-    Uri? document,
-  }) async {
-    if (!_nativeAvailable) return const MediaNetworkRoute();
-    // Android's production route validator deliberately rejects loopback and
-    // private targets. Integration fixtures opt into local pages through the
-    // debug-only ALLOW_LOCAL_TEST_PAGES define, so they must not be sent to
-    // the native production route resolver first.
-    if (isLocalTestPage(uri)) {
-      return MediaNetworkRoute(
-        routeKind: 'public_direct',
-        dnsOwner: 'system_dns',
-        targetDnsMode: 'test_local',
-        directAllowed: true,
-        networkEpoch: _networkEpoch,
-      );
-    }
-    final value = await _channel.invokeMapMethod<String, Object?>(
-      media ? 'route' : 'probeRoute',
-      {
-        'url': uri.toString(),
-        'attempt': attempt,
-        'networkEpoch': _networkEpoch,
-        if (document != null) 'document': document.toString(),
-      },
-    );
-    if (value == null) throw StateError('无法读取系统代理设置，请重试');
-    return MediaNetworkRoute(
-      proxy: value['proxy'] as String? ?? 'DIRECT',
-      allowProxyFakeIp:
-          value['fakeIpAllowed'] == true || value['routeAllowsFakeIp'] == true,
-      routeKind: value['routeKind'] as String? ?? 'unknown',
-      dnsOwner: value['dnsOwner'] as String? ?? 'unknown',
-      targetDnsMode: value['targetDnsMode'] as String? ?? 'unknown',
-      fakeIpAllowed:
-          value['fakeIpAllowed'] == true || value['routeAllowsFakeIp'] == true,
-      proxyConfigured: value['proxyConfigured'] == true,
-      preferVpnTun: value['preferVpnTun'] == true,
-      directAllowed: value['directAllowed'] != false,
-      networkEpoch: (value['networkEpoch'] as num?)?.toInt() ?? _networkEpoch,
-      requestContextId: value['requestContextId'] as String?,
-      userAgent:
-          value['userAgent'] as String? ?? MediaNetworkRoute.defaultUserAgent,
-    );
   }
 }
 

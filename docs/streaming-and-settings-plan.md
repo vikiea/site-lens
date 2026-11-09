@@ -84,7 +84,7 @@ frame/document/epoch、当前媒体身份、剧目/集数线索和播放状态�
 - Android 原生媒体服务负责资源索引、下载状态、队列、分片文件、所有者引用与租约；任务执行不依赖 Flutter 页面、Dart Timer 或 Activity 路由回调。
 - Flutter 继续负责 AppSettings、界面、用户操作意图和其余应用数据。新媒体索引只有原生一个写入入口；既有 `media_tasks` 等若为兼容保留，只能是带原生 revision 的投影或迁移输入，不能与原生索引互相回写、竞争权威。
 - 沿用 Pigeon 类型边界。新增状态快照、分页查询、命令和事件；不传整块视频、Cookie、Authorization、Web Storage 或任意可写文件路径。
-- 下载、原生播放、导出和投屏复用同一套所有权/错误映射/进度规则。保留既有代理、VPN、TLS、受限地址、重定向及 fail-closed 策略。
+- 下载、原生播放、导出和投屏复用同一套所有权/错误映射/进度规则。Android 网络统一交给系统 `ProxySelector`/PAC、系统 DNS 或用户选择的 DoH；回环、LAN 和私网地址不预拒绝，TLS、主机名、脚本 `@connect`、更新 allowlist 与媒体授权继续 fail-closed。
 - 共用视频缓存文件和索引，不要求 mmap/共享内存；不再把共享资源复制进另一份 SimpleCache。`.part` 与提交文件属于同一资源写入过程。
 
 #### 逻辑模型

@@ -17,6 +17,7 @@ import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/media/media_service.dart';
 import 'package:site_lens/media/media_network.dart';
 import 'package:site_lens/media/native_download_runtime.dart';
+import 'package:site_lens/network/native_system_http.dart';
 import 'package:site_lens/network/transport.dart';
 import 'package:site_lens/settings/app_settings.dart';
 import 'package:site_lens/ui/app_controller.dart';
@@ -65,26 +66,14 @@ void main() {
         return;
       }
       final network = MediaNetwork();
+      final nativeTransport = NativeSystemHttpTransport();
       final url = Uri.parse('http://site-lens-proxy.invalid/contract.m3u8');
-      final route = await network.probeRoute(url);
-      final routes = route.proxy
-          .split(';')
-          .map((entry) => entry.trim())
-          .where((entry) => entry.isNotEmpty)
-          .toList();
-      expect(routes, isNotEmpty);
-      expect(
-        routes.every((entry) => entry.startsWith('PROXY ')),
-        isTrue,
-        reason: 'The explicitly enabled proxy fixture must be active without a direct bypass',
-      );
       final cancel = Cancellation();
       final redirect = url.resolve('/redirect');
       final probe =
           await HttpProbe(
             allowLocal: false,
-            routeForAttempt: (uri, attempt) =>
-                network.probeRoute(uri, attempt: attempt),
+            nativeTransport: nativeTransport,
           ).run(
             Candidate(id: 1, url: redirect, label: 'Synthetic proxy'),
             1,
@@ -96,8 +85,7 @@ void main() {
       expect(cancel.cancelled, isFalse);
       final http = ControlledHttp(
         allowLocal: false,
-        mediaRouteForAttempt: (uri, attempt) =>
-            network.route(uri, attempt: attempt),
+        nativeTransport: nativeTransport,
       );
       // Both the redirect and the downloaded bytes must traverse the configured
       // proxy. This reserved host cannot resolve via ordinary public DNS.
@@ -246,14 +234,6 @@ void main() {
           'https://raw.githubusercontent.com/vikiea/site-lens/'
           '77e0e0233143a918bd458af724ec19fb919d7320/test/fixtures/video.mp4',
         );
-        for (final httpsRoute in [
-          await network.probeRoute(httpsUrl),
-          await network.route(httpsUrl),
-        ]) {
-          final entries = httpsRoute.proxy.split(';').map((s) => s.trim());
-          expect(entries, isNotEmpty);
-          expect(entries.every((s) => s.startsWith('PROXY ')), isTrue);
-        }
         Future<Map<String, dynamic>> checkpoint(
           String phase,
           String edge,
@@ -292,8 +272,7 @@ void main() {
           final httpsProbe =
               await HttpProbe(
                 allowLocal: false,
-                routeForAttempt: (uri, attempt) =>
-                    network.probeRoute(uri, attempt: attempt),
+                nativeTransport: nativeTransport,
               ).run(
                 Candidate(id: 2, url: httpsUrl, label: 'Synthetic HTTPS'),
                 1,

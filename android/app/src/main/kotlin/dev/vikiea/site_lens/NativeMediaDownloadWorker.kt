@@ -27,6 +27,7 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
     @Volatile private var ownedTransfer: ResumableMediaTransfer? = null
 
     override fun doWork(): Result {
+        SystemMediaNetwork.initialize(applicationContext)
         val taskId = inputData.getString("taskId") ?: return failure("invalid_task", "缺少任务 ID")
         val deadline = SystemClock.elapsedRealtime() + 6 * 60_000L
         fun isObsolete(): Boolean {
@@ -80,10 +81,12 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
                         )
                     },
                     onAttemptStarted = { used -> repository.setAttemptsUsed(taskId, attemptsUsed + used) },
-                    context = applicationContext,
                 )
                 ownedTransfer = transfer
                 transfers[taskId] = transfer
+                val detachNetworkListener = SystemMediaNetwork.addNetworkChangeListener {
+                    transfer.abort()
+                }
                 try {
                     partial.parentFile?.mkdirs()
                     var lastProgress = 0L
@@ -165,6 +168,7 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
                 } catch (error: Exception) {
                     failure("download_failed", error.message ?: "媒体下载失败")
                 } finally {
+                    detachNetworkListener()
                     transfers.remove(taskId, transfer)
                     ownedTransfer = null
                 }

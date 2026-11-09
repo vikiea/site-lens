@@ -124,203 +124,60 @@ void main() {
     );
   });
 
-  test(
-    'route-spanning native TLS failure retries the other transport family',
-    () async {
-      // Everything the native transport may use failed TLS: the tunnel first,
-      // then the proxy, then the direct path. The answer proves the preferred
-      // route order, not the host, so the Dart transport must get its own
-      // budget instead of repeating the family that already failed.
-      final root = await Directory.systemTemp.createTemp('native-route-fallback-');
-      addTearDown(() => root.delete(recursive: true));
-      final candidate = _candidate(Uri.parse('https://cdn.example/index.m3u8'));
-      final tasks = MediaTaskStore(directoryProvider: () async => root);
-      final nativeCalls = <String>[];
-      final service = MediaDownloadService(
-        tasks: tasks,
-        http: _RouteFallbackHttp(),
-        policyTransfer:
-            (
-              url,
-              document,
-              destination,
-              maxBytes,
-              cancel, {
-              onProgress,
-              headers,
-              requestContextId,
-              required maxAttempts,
-              required startAttempt,
-              resourceKind = 'file',
-            }) async {
-              nativeCalls.add(resourceKind);
-              if (nativeCalls.length == 1) {
-                throw PlatformException(
-                  code: 'media_transfer',
-                  message: '媒体连接失败，已保留缓存，可重试',
-                  details: {
-                    'resource': resourceKind,
-                    'phase': 'connect',
-                    'reason': 'tls_handshake',
-                    'offset': 0,
-                    'bytesWritten': 0,
-                    'attemptsUsed': 5,
-                    'attempts': [
-                      {'route': 'vpn_tun_fake_ip', 'failureCategory': 'tls_handshake'},
-                      {'route': 'http_proxy', 'failureCategory': 'tls_handshake'},
-                      {'route': 'vpn_tun_fake_ip', 'failureCategory': 'tls_handshake'},
-                      {'route': 'http_proxy', 'failureCategory': 'tls_handshake'},
-                      {'route': 'public_direct', 'failureCategory': 'io'},
-                    ],
-                  },
-                );
-              }
-              await destination.writeAsString(
-                '#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nsegment.ts\n#EXT-X-ENDLIST\n',
-              );
-              return MediaTransferResult(attemptsUsed: 1, finalUrl: url);
-            },
-      );
-      final task = await tasks.create(candidate);
-      await service.start(task, candidate);
-      // The manifest's native attempt failed across both families, so the
-      // Dart transport retried it; the segment then used native normally.
-      expect(nativeCalls, ['manifest', 'segment']);
-      expect(tasks.task(task.id)!.state, MediaTaskState.playable);
-    },
-  );
-
-  test(
-    'a single-family native failure keeps its task failure',
-    () async {
-      // Only the tunnel was tried. Falling back would silently reroute a host
-      // the user's proxy setting had deliberately sent through the tunnel.
-      final root = await Directory.systemTemp.createTemp('native-single-family-');
-      addTearDown(() => root.delete(recursive: true));
-      final candidate = _candidate(Uri.parse('https://cdn.example/index.m3u8'));
-      final tasks = MediaTaskStore(directoryProvider: () async => root);
-      var calls = 0;
-      final service = MediaDownloadService(
-        tasks: tasks,
-        policyTransfer:
-            (
-              url,
-              document,
-              destination,
-              maxBytes,
-              cancel, {
-              onProgress,
-              headers,
-              requestContextId,
-              required maxAttempts,
-              required startAttempt,
-              resourceKind = 'file',
-            }) async {
-              calls++;
-              throw PlatformException(
-                code: 'media_transfer',
-                message: '媒体连接失败，已保留缓存，可重试',
-                details: {
-                  'resource': resourceKind,
-                  'phase': 'connect',
-                  'reason': 'tls_handshake',
-                  'offset': 0,
-                  'bytesWritten': 0,
-                  'attemptsUsed': 5,
-                  'attempts': [
-                    for (var index = 0; index < 5; index++)
-                      {'route': 'vpn_tun_fake_ip', 'failureCategory': 'tls_handshake'},
-                  ],
-                },
-              );
-            },
-      );
-      final task = await tasks.create(candidate);
-      await expectLater(
-        service.start(task, candidate),
-        throwsA(isA<PlatformException>()),
-      );
-      expect(calls, 1);
-      expect(tasks.task(task.id)!.state, MediaTaskState.failed);
-    },
-  );
-
-  for (final resource in ['key', 'map', 'segment']) {
-    test(
-      'native HLS $resource failure retains safe transfer context',
-      () async {
-        final root = await Directory.systemTemp.createTemp(
-          'site-lens-context-',
-        );
-        addTearDown(() => root.delete(recursive: true));
-        final candidate = _candidate(
-          Uri.parse('https://cdn.example/index.m3u8'),
-        );
-        final tasks = MediaTaskStore(directoryProvider: () async => root);
-        final tag = switch (resource) {
-          'key' => '#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\n',
-          'map' => '#EXT-X-MAP:URI="init.mp4"\n',
-          _ => '',
-        };
-        final service = MediaDownloadService(
-          tasks: tasks,
-          http: _FailingTlsHttp(
-            const SocketException('Connection reset'),
-            playlistPrefix: tag,
-          ),
-          tlsTransfer:
-              (
-                url,
-                document,
-                destination,
-                maxBytes,
-                cancel, {
-                onProgress,
-              }) async {
-                await destination.writeAsBytes([1, 2, 3], flush: true);
-                throw PlatformException(
-                  code: 'media_transfer',
-                  message: '媒体连接失败，已保留缓存，可重试',
-                  details: const {
-                    'phase': 'body_read',
-                    'host': 'cdn.example',
-                    'attempt': 3,
-                    'offset': 0,
-                    'bytesWritten': 3,
-                    'route': 'http_proxy',
-                    'reason': 'connection_reset',
-                  },
-                );
+  test('a single-family native failure keeps its task failure', () async {
+    // Only the tunnel was tried. Falling back would silently reroute a host
+    // the user's proxy setting had deliberately sent through the tunnel.
+    final root = await Directory.systemTemp.createTemp('native-single-family-');
+    addTearDown(() => root.delete(recursive: true));
+    final candidate = _candidate(Uri.parse('https://cdn.example/index.m3u8'));
+    final tasks = MediaTaskStore(directoryProvider: () async => root);
+    var calls = 0;
+    final service = MediaDownloadService(
+      tasks: tasks,
+      policyTransfer:
+          (
+            url,
+            document,
+            destination,
+            maxBytes,
+            cancel, {
+            onProgress,
+            headers,
+            requestContextId,
+            required maxAttempts,
+            required startAttempt,
+            resourceKind = 'file',
+          }) async {
+            calls++;
+            throw PlatformException(
+              code: 'media_transfer',
+              message: '媒体连接失败，已保留缓存，可重试',
+              details: {
+                'resource': resourceKind,
+                'phase': 'connect',
+                'reason': 'tls_handshake',
+                'offset': 0,
+                'bytesWritten': 0,
+                'attemptsUsed': 5,
+                'attempts': [
+                  for (var index = 0; index < 5; index++)
+                    {
+                      'route': 'vpn_tun_fake_ip',
+                      'failureCategory': 'tls_handshake',
+                    },
+                ],
               },
-        );
-        final task = await tasks.create(candidate);
-        await expectLater(
-          service.start(task, candidate),
-          throwsA(
-            isA<PlatformException>()
-                .having(
-                  (error) => error.details,
-                  'resource context',
-                  containsPair('resource', resource),
-                )
-                .having(
-                  (error) => error.details,
-                  'original transfer context',
-                  containsPair('bytesWritten', 3),
-                ),
-          ),
-        );
-        expect(tasks.task(task.id)!.state, MediaTaskState.failed);
-        final partials = await root
-            .list(recursive: true)
-            .where((file) => file is File && file.path.endsWith('.part'))
-            .cast<File>()
-            .toList();
-        expect(partials, hasLength(1));
-        expect(await partials.single.readAsBytes(), [1, 2, 3]);
-      },
+            );
+          },
     );
-  }
+    final task = await tasks.create(candidate);
+    await expectLater(
+      service.start(task, candidate),
+      throwsA(isA<PlatformException>()),
+    );
+    expect(calls, 1);
+    expect(tasks.task(task.id)!.state, MediaTaskState.failed);
+  });
 
   test(
     'failed shared HLS bytes keep their owner until explicit task deletion',
@@ -588,193 +445,6 @@ void main() {
       expect(http.manifestCalls, 2);
     });
   }
-
-  for (final failure in [
-    const HandshakeException('Connection terminated during handshake'),
-    const SocketException('Connection reset by peer'),
-  ]) {
-    test(
-      'HLS ${failure.runtimeType} uses native transport after bounded Dart attempts',
-      () async {
-        final root = await Directory.systemTemp.createTemp(
-          'site-lens-tls-fallback-',
-        );
-        addTearDown(() => root.delete(recursive: true));
-        final candidate = _candidate(
-          Uri.parse('https://cdn.example/index.m3u8'),
-        );
-        final tasks = MediaTaskStore(directoryProvider: () async => root);
-        final http = _FailingTlsHttp(failure);
-        var nativeCalls = 0;
-        final result = await MediaDownloadService(
-          tasks: tasks,
-          http: http,
-          tlsTransfer:
-              (
-                url,
-                document,
-                destination,
-                maxBytes,
-                cancel, {
-                void Function(int bytesWritten)? onProgress,
-              }) async {
-                nativeCalls++;
-                expect(url.path, '/segment.ts');
-                expect(document, candidate.sourceUrl);
-                await destination.writeAsBytes([4, 5, 6], flush: true);
-                onProgress?.call(3);
-              },
-        ).start(await tasks.create(candidate), candidate);
-        expect(result.state, MediaTaskState.playable);
-        expect(http.attempts, [0, 1, 2, 3]);
-        expect(nativeCalls, 1);
-      },
-    );
-  }
-
-  test(
-    'HLS manifest reset uses native transport before segment download',
-    () async {
-      final root = await Directory.systemTemp.createTemp(
-        'site-lens-manifest-native-fallback-',
-      );
-      addTearDown(() => root.delete(recursive: true));
-      final playlist = Uri.parse('https://cdn.example/index.m3u8');
-      final segment = playlist.resolve('seg.ts');
-      final candidate = _candidate(playlist);
-      final tasks = MediaTaskStore(directoryProvider: () async => root);
-      final http = _FailingManifestHttp(playlist, segment);
-      var nativeCalls = 0;
-      final result = await MediaDownloadService(
-        tasks: tasks,
-        http: http,
-        tlsTransfer:
-            (
-              url,
-              document,
-              destination,
-              maxBytes,
-              cancel, {
-              void Function(int bytesWritten)? onProgress,
-            }) async {
-              nativeCalls++;
-              expect(url, playlist);
-              expect(document, candidate.sourceUrl);
-              await destination.writeAsString(
-                '#EXTM3U\n#EXTINF:1,\nseg.ts\n',
-                flush: true,
-              );
-              onProgress?.call(28);
-            },
-      ).start(await tasks.create(candidate), candidate);
-
-      expect(result.state, MediaTaskState.playable);
-      expect(http.manifestAttempts, [0, 1, 2]);
-      expect(nativeCalls, 1);
-      expect(http.segmentCalls, 1);
-    },
-  );
-
-  test(
-    'header-aware native transport receives the WebView CDN request context',
-    () async {
-      final root = await Directory.systemTemp.createTemp(
-        'site-lens-cdn-header-native-',
-      );
-      addTearDown(() => root.delete(recursive: true));
-      final playlist = Uri.parse('https://cdn.example/index.m3u8');
-      final candidate = MediaCandidate(
-        id: 'cdn-header-candidate',
-        hostId: 7,
-        generation: 3,
-        sourceUrl: Uri.parse('https://example.com/watch'),
-        mediaUrl: playlist,
-        title: 'CDN header regression',
-        mime: 'application/vnd.apple.mpegurl',
-        source: MediaCandidateSource.dom,
-        manifestHeaders: const {
-          'x-cdn-auth': 'signed-value',
-          'x-cdn-app': '150',
-        },
-        resourceHeaders: const {
-          'x-cdn-auth': 'signed-value',
-          'x-cdn-app': '150',
-        },
-      );
-      final tasks = MediaTaskStore(directoryProvider: () async => root);
-      final http = _FailingManifestHttp(playlist, playlist.resolve('seg.ts'));
-      Map<String, String>? observed;
-      final result = await MediaDownloadService(
-        tasks: tasks,
-        http: http,
-        tlsTransferWithHeaders:
-            (
-              url,
-              document,
-              destination,
-              maxBytes,
-              cancel, {
-              void Function(int bytesWritten)? onProgress,
-              Map<String, String>? headers,
-              String? requestContextId,
-            }) async {
-              observed = headers;
-              await destination.writeAsString(
-                '#EXTM3U\n#EXTINF:1,\nseg.ts\n',
-                flush: true,
-              );
-              onProgress?.call(28);
-            },
-      ).start(await tasks.create(candidate), candidate);
-
-      expect(result.state, MediaTaskState.playable);
-      expect(observed, {'x-cdn-auth': 'signed-value', 'x-cdn-app': '150'});
-    },
-  );
-
-  test(
-    'native response-header reset retries through Dart transport once',
-    () async {
-      final root = await Directory.systemTemp.createTemp(
-        'site-lens-native-header-retry-',
-      );
-      addTearDown(() => root.delete(recursive: true));
-      final playlist = Uri.parse('https://cdn.example/index.m3u8');
-      final candidate = _candidate(playlist);
-      final tasks = MediaTaskStore(directoryProvider: () async => root);
-      final http = _NativeHeaderRetryHttp(playlist);
-      var nativeCalls = 0;
-      final result = await MediaDownloadService(
-        tasks: tasks,
-        http: http,
-        tlsTransfer:
-            (
-              url,
-              document,
-              destination,
-              maxBytes,
-              cancel, {
-              void Function(int bytesWritten)? onProgress,
-            }) async {
-              nativeCalls++;
-              throw PlatformException(
-                code: 'media_transfer',
-                message: '媒体连接失败，已保留缓存，可重试',
-                details: const {
-                  'phase': 'response_headers',
-                  'offset': 0,
-                  'bytesWritten': 0,
-                  'reason': 'connection_reset',
-                },
-              );
-            },
-      ).start(await tasks.create(candidate), candidate);
-
-      expect(result.state, MediaTaskState.playable);
-      expect(nativeCalls, 1);
-      expect(http.segmentAttempts, [0, 1, 2, 3, 0]);
-    },
-  );
 
   test(
     'streamed transport safely handles 206, ignored Range 200 and 416',
@@ -1142,116 +812,10 @@ void main() {
 }
 
 class _FailingTlsHttp extends ControlledHttp {
-  _FailingTlsHttp(this.failure, {this.playlistPrefix = ''});
+  _FailingTlsHttp(this.failure);
 
   final Object failure;
-  final String playlistPrefix;
   final attempts = <int>[];
-
-  @override
-  Future<FetchResponse> fetch(
-    Uri url, {
-    required Set<String> connect,
-    required Uri document,
-    required Cancellation cancel,
-    String method = 'GET',
-    Map<String, String> headers = const {},
-    bool mediaRequest = false,
-    String? body,
-    Duration timeout = const Duration(seconds: 15),
-    int maxBytes = 1024 * 1024,
-    int routeAttempt = 0,
-  }) async => FetchResponse(
-    url: url,
-    status: 200,
-    bytes: utf8.encode('#EXTM3U\n$playlistPrefix#EXTINF:1,\nsegment.ts\n'),
-    headers: const {},
-  );
-
-  @override
-  Future<FetchFileResponse> fetchToFile(
-    Uri url, {
-    required Set<String> connect,
-    required Uri document,
-    required Cancellation cancel,
-    required File destination,
-    Map<String, String> headers = const {},
-    bool mediaRequest = false,
-    int resumeOffset = 0,
-    int maxBytes = 2 * 1024 * 1024 * 1024,
-    Future<void> Function(int, Map<String, String>)? onHeaders,
-    void Function(int bytesWritten)? onProgress,
-    Duration timeout = const Duration(seconds: 15),
-    int routeAttempt = 0,
-  }) async {
-    attempts.add(routeAttempt);
-    throw failure;
-  }
-}
-
-class _FailingManifestHttp extends ControlledHttp {
-  _FailingManifestHttp(this.playlist, this.segment);
-
-  final Uri playlist;
-  final Uri segment;
-  final manifestAttempts = <int>[];
-  var segmentCalls = 0;
-
-  @override
-  Future<FetchResponse> fetch(
-    Uri url, {
-    required Set<String> connect,
-    required Uri document,
-    required Cancellation cancel,
-    String method = 'GET',
-    Map<String, String> headers = const {},
-    bool mediaRequest = false,
-    String? body,
-    Duration timeout = const Duration(seconds: 15),
-    int maxBytes = 1024 * 1024,
-    int routeAttempt = 0,
-  }) async {
-    expect(url, playlist);
-    manifestAttempts.add(routeAttempt);
-    throw const SocketException('Connection reset by peer');
-  }
-
-  @override
-  Future<FetchFileResponse> fetchToFile(
-    Uri url, {
-    required Set<String> connect,
-    required Uri document,
-    required Cancellation cancel,
-    required File destination,
-    Map<String, String> headers = const {},
-    bool mediaRequest = false,
-    int resumeOffset = 0,
-    int maxBytes = 2 * 1024 * 1024 * 1024,
-    Future<void> Function(int, Map<String, String>)? onHeaders,
-    void Function(int bytesWritten)? onProgress,
-    Duration timeout = const Duration(seconds: 15),
-    int routeAttempt = 0,
-  }) async {
-    expect(url, segment);
-    segmentCalls++;
-    await destination.writeAsBytes([1, 2, 3], flush: true);
-    onProgress?.call(3);
-    return FetchFileResponse(
-      url: Uri.parse('https://cdn.example/seg.ts'),
-      status: 200,
-      headers: {'content-length': '3'},
-      bytesWritten: 3,
-      totalBytes: 3,
-      appended: false,
-    );
-  }
-}
-
-class _NativeHeaderRetryHttp extends ControlledHttp {
-  _NativeHeaderRetryHttp(this.playlist);
-
-  final Uri playlist;
-  final segmentAttempts = <int>[];
 
   @override
   Future<FetchResponse> fetch(
@@ -1289,31 +853,8 @@ class _NativeHeaderRetryHttp extends ControlledHttp {
     Duration timeout = const Duration(seconds: 15),
     int routeAttempt = 0,
   }) async {
-    if (url == playlist) {
-      return FetchFileResponse(
-        url: url,
-        status: 200,
-        headers: const {},
-        bytesWritten: 0,
-        totalBytes: 0,
-        appended: false,
-      );
-    }
-    segmentAttempts.add(routeAttempt);
-    if (segmentAttempts.length <= 4) {
-      throw const SocketException('Connection reset by peer');
-    }
-    await onHeaders?.call(200, const {'etag': '"v1"'});
-    await destination.writeAsBytes([4, 5, 6], flush: true);
-    onProgress?.call(3);
-    return FetchFileResponse(
-      url: url,
-      status: 200,
-      headers: {'etag': '"v1"'},
-      bytesWritten: 3,
-      totalBytes: 3,
-      appended: false,
-    );
+    attempts.add(routeAttempt);
+    throw failure;
   }
 }
 
@@ -1716,44 +1257,6 @@ class _Invalid416HlsHttp extends ControlledHttp {
       headers: const {HttpHeaders.contentRangeHeader: 'bytes */3'},
       bytesWritten: 0,
       totalBytes: 0,
-      appended: false,
-    );
-  }
-}
-
-/// Serves the manifest and its one segment without a socket, so the Dart
-/// transport leg of the alternate-route retry is exercised offline.
-class _RouteFallbackHttp extends ControlledHttp {
-  _RouteFallbackHttp() : super(allowLocal: true);
-
-  @override
-  Future<FetchFileResponse> fetchToFile(
-    Uri url, {
-    required Set<String> connect,
-    required Uri document,
-    required Cancellation cancel,
-    required File destination,
-    Map<String, String> headers = const {},
-    bool mediaRequest = false,
-    int resumeOffset = 0,
-    int maxBytes = 2 * 1024 * 1024 * 1024,
-    Future<void> Function(int status, Map<String, String> headers)? onHeaders,
-    void Function(int bytesWritten)? onProgress,
-    Duration timeout = const Duration(seconds: 15),
-    int routeAttempt = 0,
-  }) async {
-    final body = url.path.endsWith('.m3u8')
-        ? utf8.encode('#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nsegment.ts\n#EXT-X-ENDLIST\n')
-        : <int>[1, 2, 3, 4];
-    await onHeaders?.call(200, const {'etag': '"v1"'});
-    await destination.writeAsBytes(body, flush: true);
-    onProgress?.call(body.length);
-    return FetchFileResponse(
-      url: url,
-      status: 200,
-      headers: const {'etag': '"v1"'},
-      bytesWritten: body.length,
-      totalBytes: body.length,
       appended: false,
     );
   }

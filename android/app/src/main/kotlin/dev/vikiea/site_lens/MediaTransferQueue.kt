@@ -23,6 +23,10 @@ class MediaTransferQueue(private val executor: Executor) {
 
     fun cancel(id: String) { jobs[id]?.cancel() }
 
+    fun cancelAll() {
+        jobs.values.toList().forEach { it.cancel() }
+    }
+
     private inner class Job(
         val id: String,
         val abort: () -> Unit,
