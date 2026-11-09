@@ -86,13 +86,7 @@ const _v5Tables = <String>[
       'enabled INTEGER NOT NULL DEFAULT 0, page_filtering INTEGER NOT NULL DEFAULT 1, '
       'domain_exceptions TEXT NOT NULL DEFAULT \'[]\', blocked_domains TEXT NOT NULL DEFAULT \'[]\', '
       'updated_at TEXT NOT NULL)',
-  'CREATE TABLE IF NOT EXISTS media_candidates ('
-      'id TEXT PRIMARY KEY, host_id INTEGER NOT NULL, generation INTEGER NOT NULL, '
-      'source_url TEXT NOT NULL, media_url TEXT NOT NULL, title TEXT NOT NULL, '
-      'mime TEXT NOT NULL, source TEXT NOT NULL, series_key TEXT, episode_number INTEGER, '
-      'representation_rank INTEGER NOT NULL DEFAULT 0, quality_label TEXT, audio_label TEXT, '
-      'thumbnail_url TEXT, duration_ms INTEGER, created_at TEXT NOT NULL, '
-      'series_title TEXT)',
+  _mediaCandidatesTable,
   'CREATE TABLE IF NOT EXISTS media_tasks ('
       'id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL REFERENCES media_candidates(id) ON DELETE CASCADE, '
       'host_id INTEGER NOT NULL, generation INTEGER NOT NULL, source_url TEXT NOT NULL, '
@@ -185,6 +179,22 @@ const _v23NativePlaybackTables = <String>[
   'CREATE TABLE IF NOT EXISTS native_playback_preferences('
       'playlist_key TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at TEXT NOT NULL)',
 ];
+
+/// The candidate row, always created with every column the current code reads.
+///
+/// A v1-v15 fixture has no media_candidates table at all, so the v24 step
+/// cannot assume an existing table to alter. Creating it here keeps one
+/// definition for a fresh install and for a migrated one; the targeted ALTERs
+/// in [_v18MediaCandidateColumns] and the v24 step then only run on a table
+/// that already existed with fewer columns.
+const _mediaCandidatesTable =
+    'CREATE TABLE IF NOT EXISTS media_candidates ('
+    'id TEXT PRIMARY KEY, host_id INTEGER NOT NULL, generation INTEGER NOT NULL, '
+    'source_url TEXT NOT NULL, media_url TEXT NOT NULL, title TEXT NOT NULL, '
+    'mime TEXT NOT NULL, source TEXT NOT NULL, series_key TEXT, episode_number INTEGER, '
+    'representation_rank INTEGER NOT NULL DEFAULT 0, quality_label TEXT, audio_label TEXT, '
+    'thumbnail_url TEXT, duration_ms INTEGER, created_at TEXT NOT NULL, '
+    'series_title TEXT)';
 
 const _v18MediaCandidateColumns = <(String, String)>[
   ('ALTER TABLE media_candidates ADD COLUMN series_key TEXT', 'series_key'),
@@ -373,6 +383,10 @@ class AppDatabase extends GeneratedDatabase {
         );
       }
       if (from < 18) {
+        // A fixture older than the media tables reaches this step without
+        // media_candidates; create it at the v18 shape so the ALTERs below
+        // stay meaningful and later steps can add their own columns.
+        await customStatement(_mediaCandidatesTable);
         for (final (sql, column) in _v18MediaCandidateColumns) {
           if (!await _columnExists('media_candidates', column)) {
             await customStatement(sql);
@@ -405,6 +419,10 @@ class AppDatabase extends GeneratedDatabase {
         }
       }
       if (from < 24) {
+        // A v1-v15 fixture has no media_candidates table at all. Create it
+        // with the current columns first, then add the one column this step
+        // introduces to a table that was already present.
+        await customStatement(_mediaCandidatesTable);
         if (!await _columnExists('media_candidates', 'series_title')) {
           await customStatement(
             'ALTER TABLE media_candidates ADD COLUMN series_title TEXT',
