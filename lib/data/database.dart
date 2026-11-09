@@ -91,7 +91,8 @@ const _v5Tables = <String>[
       'source_url TEXT NOT NULL, media_url TEXT NOT NULL, title TEXT NOT NULL, '
       'mime TEXT NOT NULL, source TEXT NOT NULL, series_key TEXT, episode_number INTEGER, '
       'representation_rank INTEGER NOT NULL DEFAULT 0, quality_label TEXT, audio_label TEXT, '
-      'thumbnail_url TEXT, duration_ms INTEGER, created_at TEXT NOT NULL)',
+      'thumbnail_url TEXT, duration_ms INTEGER, created_at TEXT NOT NULL, '
+      'series_title TEXT)',
   'CREATE TABLE IF NOT EXISTS media_tasks ('
       'id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL REFERENCES media_candidates(id) ON DELETE CASCADE, '
       'host_id INTEGER NOT NULL, generation INTEGER NOT NULL, source_url TEXT NOT NULL, '
@@ -252,7 +253,7 @@ class AppDatabase extends GeneratedDatabase {
   @visibleForTesting
   static void Function(String step)? migrationDebugHook;
 
-  static const currentSchemaVersion = 23;
+  static const currentSchemaVersion = 24;
 
   @override
   int get schemaVersion => currentSchemaVersion;
@@ -401,6 +402,13 @@ class AppDatabase extends GeneratedDatabase {
       if (from < 23) {
         for (final sql in _v23NativePlaybackTables) {
           await customStatement(sql);
+        }
+      }
+      if (from < 24) {
+        if (!await _columnExists('media_candidates', 'series_title')) {
+          await customStatement(
+            'ALTER TABLE media_candidates ADD COLUMN series_title TEXT',
+          );
         }
       }
     },
@@ -1552,8 +1560,8 @@ class AppDatabase extends GeneratedDatabase {
         return;
       }
       await customStatement(
-        'INSERT INTO media_candidates(id,host_id,generation,source_url,media_url,title,mime,source,series_key,episode_number,representation_rank,quality_label,audio_label,thumbnail_url,duration_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
-        'ON CONFLICT(id) DO UPDATE SET media_url=excluded.media_url,title=excluded.title,mime=excluded.mime,series_key=excluded.series_key,episode_number=excluded.episode_number,representation_rank=excluded.representation_rank,quality_label=excluded.quality_label,audio_label=excluded.audio_label,thumbnail_url=excluded.thumbnail_url,duration_ms=excluded.duration_ms,created_at=excluded.created_at',
+        'INSERT INTO media_candidates(id,host_id,generation,source_url,media_url,title,mime,source,series_key,episode_number,representation_rank,quality_label,audio_label,thumbnail_url,duration_ms,created_at,series_title) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
+        'ON CONFLICT(id) DO UPDATE SET media_url=excluded.media_url,title=excluded.title,mime=excluded.mime,series_key=excluded.series_key,episode_number=excluded.episode_number,representation_rank=excluded.representation_rank,quality_label=excluded.quality_label,audio_label=excluded.audio_label,thumbnail_url=excluded.thumbnail_url,duration_ms=excluded.duration_ms,created_at=excluded.created_at,series_title=COALESCE(excluded.series_title,media_candidates.series_title)',
         [
           candidate.id,
           candidate.hostId,
@@ -1571,6 +1579,7 @@ class AppDatabase extends GeneratedDatabase {
           candidate.thumbnailUrl?.toString(),
           candidate.durationMs,
           (candidate.createdAt ?? DateTime.now()).toUtc().toIso8601String(),
+          candidate.seriesTitle,
         ],
       );
     },
@@ -1599,6 +1608,7 @@ class AppDatabase extends GeneratedDatabase {
       thumbnailUrl: optionalMediaUri(row.readNullable<String>('thumbnail_url')),
       durationMs: row.readNullable<int>('duration_ms'),
       createdAt: DateTime.parse(row.read<String>('created_at')),
+      seriesTitle: row.readNullable<String>('series_title'),
     );
   }
 

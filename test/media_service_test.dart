@@ -127,6 +127,7 @@ MediaCandidate candidate({
   int representationRank = 0,
   String? qualityLabel,
   String? audioLabel,
+  String? seriesTitle,
 }) => MediaCandidate(
   id: id,
   hostId: hostId,
@@ -141,6 +142,7 @@ MediaCandidate candidate({
   representationRank: representationRank,
   qualityLabel: qualityLabel,
   audioLabel: audioLabel,
+  seriesTitle: seriesTitle,
 );
 
 void main() {
@@ -1187,6 +1189,36 @@ void main() {
     );
     expect(again.id, existing.id);
     expect(again.batchDirectory, '第一批');
+  });
+
+  test('the page-owned series names the batch folder', () {
+    // document.title carries the playing episode and the site suffix, so it
+    // cannot name a folder. seriesTitle comes from the page data block.
+    final candidates = [
+      candidate(
+        id: 'document-title',
+        title: '示例剧 第05集 - 示例站',
+        url: 'https://cdn.example/ep-5.m3u8',
+        seriesTitle: '示例剧',
+      ),
+      candidate(
+        id: 'document-title-2',
+        title: '示例剧 第06集 - 示例站',
+        url: 'https://cdn.example/ep-6.m3u8',
+        seriesTitle: '示例剧',
+      ),
+    ];
+    expect(mediaBatchDirectoryName(candidates), '示例剧');
+    expect(
+      mediaBatchDirectoryName([
+        candidate(
+          id: 'no-page-series',
+          title: '示例剧 - 第1集',
+          url: 'https://cdn.example/a.m3u8',
+        ),
+      ]),
+      '示例剧',
+    );
   });
 
   test('a nameless unconfirmed episode does not name the batch', () {

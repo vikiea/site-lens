@@ -536,6 +536,7 @@ class NativeHosts extends WebHostEvents {
           createdAt: DateTime.now().toUtc(),
           manifestHeaders: manifestHeaders,
           resourceHeaders: resourceHeaders,
+          seriesTitle: pageSeriesTitle(raw['seriesTitle']),
         );
         const MediaCandidateValidator().validate(
           candidate,
@@ -982,6 +983,7 @@ class NativeHosts extends WebHostEvents {
           createdAt: DateTime.now().toUtc(),
           manifestHeaders: manifestHeaders,
           resourceHeaders: resourceHeaders,
+          seriesTitle: pageSeriesTitle(args['seriesTitle']),
         );
         const validator = MediaCandidateValidator();
         validator.validate(
@@ -1139,4 +1141,15 @@ class NativeHosts extends WebHostEvents {
           : 'ambiguous_candidate',
     );
   }
+}
+
+/// The series name a page states about itself, bounded and control-free.
+///
+/// Only the folder name uses it; it never reaches authorization or identity.
+String? pageSeriesTitle(Object? raw) {
+  if (raw is! String) return null;
+  final value = raw.trim();
+  if (value.isEmpty) return null;
+  if (RegExp(r'[\u0000-\u001f]').hasMatch(value)) return null;
+  return value.length > 256 ? value.substring(0, 256) : value;
 }

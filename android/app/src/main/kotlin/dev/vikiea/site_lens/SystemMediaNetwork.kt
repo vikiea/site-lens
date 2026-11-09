@@ -655,15 +655,8 @@ object SystemMediaNetwork {
             error is SSLPeerUnverifiedException -> {
                 if (error.message.orEmpty().lowercase().contains("hostname")) "hostname" else "certificate"
             }
-            error is SSLHandshakeException -> {
-                val chain = generateSequence(error as Throwable?) { it.cause }.toList()
-                when {
-                    chain.any { it is java.security.cert.CertificateException } -> "certificate"
-                    error.message.orEmpty().lowercase().contains("hostname") -> "hostname"
-                    else -> "tls_handshake"
-                }
-            }
-            error is SSLProtocolException -> "tls_handshake"
+            error is SSLHandshakeException -> tlsFailure(error)
+            error is SSLProtocolException -> tlsFailure(error)
             proxyRoute && error.message.orEmpty().lowercase().let {
                 it.contains("authenticate with proxy") ||
                     it.contains("unexpected response code for connect") ||
@@ -674,6 +667,44 @@ object SystemMediaNetwork {
             else -> "io"
         }
         return MediaRouteIOException(category, error)
+    }
+
+    /**
+     * Splits a TLS failure into the reason a user can act on.
+     *
+     * Every one of these used to be reported as `tls_handshake`, so a peer that
+     * resets the socket mid-handshake, a protocol/version refusal and a plain
+     * handshake rejection were indistinguishable in the task row and in the
+     * attempt log. Only failures whose cause chain already contains an SSL
+     * exception are classified here; a bare socket error stays `io`.
+     */
+    private fun tlsFailure(error: IOException): String {
+        val chain = generateSequence(error as Throwable?) { it.cause }.toList()
+        if (chain.any { it is java.security.cert.CertificateException }) return "certificate"
+        val text = chain.joinToString(" ") { it.message.orEmpty() }.lowercase()
+        if ("hostname" in text) return "hostname"
+        // A TLS alert or an explicit protocol refusal is a version or cipher
+        // mismatch, not a dropped connection.
+        if ("protocol" in text ||
+            "version" in text ||
+            "alert" in text ||
+            "handshake_failure" in text ||
+            "no cipher suites" in text ||
+            "no appropriate protocol" in text
+        ) {
+            return "tls_protocol"
+        }
+        // The peer closed or reset the socket before the handshake completed.
+        // Against a CDN edge this is what an egress that rewrites SNI produces.
+        if (chain.any { it is java.net.SocketException || it is java.io.EOFException } ||
+            "reset" in text ||
+            "closed" in text ||
+            "eof" in text ||
+            "broken pipe" in text
+        ) {
+            return "tls_reset"
+        }
+        return "tls_handshake"
     }
 
     private const val PREFERENCES = "site_lens_network"

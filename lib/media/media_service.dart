@@ -520,6 +520,13 @@ class MediaCandidateValidator {
     if (sourceUrl != null && candidate.sourceUrl.origin != sourceUrl.origin) {
       throw StateError(MediaErrorCode.staleGeneration);
     }
+    // The page-owned series name is display-only, but it must still be a
+    // bounded value: it becomes a directory name.
+    final seriesTitle = candidate.seriesTitle?.trim() ?? '';
+    if (seriesTitle.length > 256 ||
+        RegExp(r'[\u0000-\u001f]').hasMatch(seriesTitle)) {
+      throw const FormatException(MediaErrorCode.invalidUrl);
+    }
     return candidate;
   }
 }

@@ -343,6 +343,8 @@ String healthSummary(ProfileHealth health) {
     'dns' => 'DNS 解析失败',
     'proxy_connect' || 'proxy_connect_status' => '代理连接失败',
     'tls_handshake' => 'TLS 握手失败',
+    'tls_protocol' => 'TLS 协议或加密套件被拒',
+    'tls_reset' => 'TLS 握手期间连接被重置',
     'certificate' || 'hostname' => '证书验证失败',
     'timeout' => '探测超时',
     'http_401' || 'http_403' => '站点要求授权',

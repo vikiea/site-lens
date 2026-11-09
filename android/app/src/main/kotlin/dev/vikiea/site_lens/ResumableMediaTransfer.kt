@@ -336,7 +336,11 @@ class ResumableMediaTransfer(
             val base = when (reason) {
                 "dns", "proxy_connect", "proxy_connect_status", "timeout" -> 250L
                 "connection_reset", "connection_closed" -> if (bytesWritten > 0L) 100L else 300L
-                "tls", "tls_handshake" -> 500L
+                "tls", "tls_handshake", "tls_protocol" -> 500L
+                // A reset socket is often a per-connection decision by the
+                // edge, so the retry can succeed sooner than a protocol
+                // refusal would.
+                "tls_reset" -> if (bytesWritten > 0L) 150L else 250L
                 else -> if (bytesWritten > 0L) 150L else 400L
             }
             return (base shl attempt.coerceIn(0, 4)).coerceAtMost(5_000L)

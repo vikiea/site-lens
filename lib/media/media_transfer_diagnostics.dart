@@ -28,6 +28,8 @@ String mediaTransferFailureText(Object error) {
   };
   final reason = switch (details['reason']) {
     'tls_handshake' => 'TLS 握手失败',
+    'tls_protocol' => 'TLS 协议或加密套件被拒',
+    'tls_reset' => 'TLS 握手期间连接被重置',
     'certificate' || 'hostname' => '证书验证失败',
     'proxy_connect' || 'proxy_connect_status' => '代理连接失败',
     'timeout' => '连接超时',

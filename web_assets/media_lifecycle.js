@@ -948,6 +948,10 @@
         mime: resolvedMime.slice(0, 128),
         pageUrl: ownerPage || pageUrl(),
       };
+      // The folder name is page-owned; the visible title stays as the page or
+      // the player produced it.
+      const folderSeries = pageSeriesName();
+      if (folderSeries) candidate.seriesTitle = folderSeries;
       const manifestHeaders = pageCdnHeaders('manifest');
       const resourceHeaders = pageCdnHeaders('resource');
       if (Object.keys(manifestHeaders).length) candidate.manifestHeaders = manifestHeaders;
@@ -1065,6 +1069,44 @@
     const current = active ?? locator ?? null;
     if (current == null) return null;
     return {current, total: sorted[sorted.length - 1]};
+  }
+  // The series name a folder may use.
+  //
+  // A batch folder is named after the series, but document.title carries the
+  // playing episode plus the site's own suffix. The page-data block states the
+  // series by itself, so that is the only value a folder may use. This never
+  // touches candidate.title, which stays the visible label.
+  function folderSeriesName(value) {
+    const raw = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!raw) return '';
+    const stripped = raw
+      .replace(/第\s*\d+\s*[集话期]/g, ' ')
+      .replace(/\b(?:episode|ep|e)\s*[:=_-]?\s*\d+\b/gi, ' ');
+    let text = stripped.replace(/\s+/g, ' ').trim();
+    // Site chrome follows a separator once an episode marker was removed.
+    if (stripped !== raw) {
+      const cut = text.search(/\s[-–—|·]\s/);
+      if (cut > 0) text = text.slice(0, cut).trim();
+    }
+    text = text.replace(/\s*[-–—|·]\s*$/g, '').trim();
+    if (!text || /^(?:媒体|video|media)$/i.test(text)) return '';
+    return text.slice(0, 256);
+  }
+  function pageSeriesName() {
+    const element = initialDataElement();
+    if (!element) return '';
+    try {
+      const raw = String(element.textContent || '');
+      if (raw.length > 256 * 1024) return '';
+      const data = JSON.parse(raw);
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return '';
+      for (const value of [data.title, data.videoTitle, data.seriesTitle, data.name]) {
+        if (typeof value !== 'string') continue;
+        const name = folderSeriesName(value);
+        if (name) return name;
+      }
+    } catch (_) { /* A malformed block only costs the folder name. */ }
+    return '';
   }
   function episodeCandidateTitle() {
     const seenEpisodes = episodeFromMarkup();

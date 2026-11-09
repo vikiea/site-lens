@@ -1169,6 +1169,7 @@ class MediaCandidate {
     this.createdAt,
     this.manifestHeaders = const {},
     this.resourceHeaders = const {},
+    this.seriesTitle,
   });
 
   final String id;
@@ -1179,6 +1180,14 @@ class MediaCandidate {
   final String title;
   final String mime;
   final MediaCandidateSource source;
+
+  /// The series name the page states about itself, when it states one.
+  ///
+  /// [title] is the visible label and may come from `document.title`, which
+  /// carries the playing episode and the site's own suffix. A batch folder has
+  /// to be named after the series, so the page-owned name travels separately.
+  /// It never takes part in authorization, identity or deduplication.
+  final String? seriesTitle;
   final String? seriesKey;
   final int? episodeNumber;
   final int representationRank;
@@ -1245,6 +1254,7 @@ class MediaCandidate {
     'thumbnailUrl': thumbnailUrl?.toString(),
     'durationMs': durationMs,
     'createdAt': createdAt?.toIso8601String(),
+    if (seriesTitle != null && seriesTitle!.isNotEmpty) 'seriesTitle': seriesTitle,
   };
 
   factory MediaCandidate.fromJson(Map<String, dynamic> json) {
@@ -1277,6 +1287,11 @@ class MediaCandidate {
       createdAt: json['createdAt'] == null
           ? null
           : DateTime.parse(json['createdAt'] as String),
+      seriesTitle: switch ((json['seriesTitle'] as String?)?.trim()) {
+        null => null,
+        '' => null,
+        final value => value.substring(0, value.length.clamp(0, 256)),
+      },
     );
   }
 }
@@ -1304,16 +1319,21 @@ String? mediaBatchDirectoryName(Iterable<MediaCandidate> candidates) {
   final firstSeen = <String, int>{};
   var order = 0;
   for (final candidate in candidates) {
-    final title = candidate.title
-        .trim()
-        .replaceAll(
-          RegExp(
-            r'\s*(?:[·・|][^·・|]{0,24})?集数未确认\s*$',
-            caseSensitive: false,
-          ),
-          '',
-        )
-        .trim();
+    // The page-owned series name wins; a candidate without one keeps the
+    // existing title-derived path so older rows name their folder as before.
+    final pageSeries = candidate.seriesTitle?.trim() ?? '';
+    final title = pageSeries.isNotEmpty
+        ? pageSeries
+        : candidate.title
+              .trim()
+              .replaceAll(
+                RegExp(
+                  r'\s*(?:[·・|][^·・|]{0,24})?集数未确认\s*$',
+                  caseSensitive: false,
+                ),
+                '',
+              )
+              .trim();
     final lower = title.toLowerCase();
     if (title.isEmpty || {'媒体', 'video', 'media'}.contains(lower)) {
       order++;

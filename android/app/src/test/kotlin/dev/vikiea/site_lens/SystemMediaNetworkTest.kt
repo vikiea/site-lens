@@ -115,6 +115,42 @@ class SystemMediaNetworkTest {
     }
 
     @Test
+    fun tlsFailuresNameTheReasonAUserCanActOn() {
+        fun category(error: IOException): String =
+            (SystemMediaNetwork.classifyTransportFailure(error, proxyRoute = false)
+                as MediaRouteIOException).category
+
+        assertEquals(
+            "tls_protocol",
+            category(javax.net.ssl.SSLProtocolException("Received fatal alert: protocol_version")),
+        )
+        assertEquals(
+            "tls_reset",
+            category(
+                javax.net.ssl.SSLHandshakeException(
+                    "Connection reset by peer",
+                    java.net.SocketException("Connection reset"),
+                ),
+            ),
+        )
+        assertEquals(
+            "tls_handshake",
+            category(javax.net.ssl.SSLHandshakeException("no appropriate handshake")),
+        )
+        assertEquals(
+            "certificate",
+            category(
+                javax.net.ssl.SSLHandshakeException(
+                    "handshake failed",
+                    java.security.cert.CertificateException("expired"),
+                ),
+            ),
+        )
+        // A bare socket error never becomes a TLS category.
+        assertEquals("io", category(java.io.IOException("broken")))
+    }
+
+    @Test
     fun media3ClientDelegatesPacCandidateRecoveryToOneOkHttpCall() {
         val http = Proxy(
             Proxy.Type.HTTP,
