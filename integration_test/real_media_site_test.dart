@@ -191,7 +191,7 @@ void main() {
           );
           if (!download) return;
           await db.saveMediaCandidate(candidate);
-          final task = app.mediaTasks.create(candidate);
+          final task = await app.mediaTasks.create(candidate);
           try {
             expect(task.candidateId, candidate.id);
             expect(task.generation, candidate.generation);

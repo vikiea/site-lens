@@ -137,7 +137,7 @@ void main() {
           source: MediaCandidateSource.dom,
         );
         await db.saveMediaCandidate(candidate);
-        final task = tasks.create(candidate);
+        final task = await tasks.create(candidate);
         final service = MediaDownloadService(tasks: tasks, http: http);
         await service.startNative(task, candidate);
         final completed = tasks.task(task.id)!;
@@ -196,7 +196,7 @@ void main() {
             source: MediaCandidateSource.dom,
           );
           await db.saveMediaCandidate(nativeCandidate);
-          final nativeTask = tasks.create(nativeCandidate);
+          final nativeTask = await tasks.create(nativeCandidate);
           final nativeService = MediaDownloadService(
             tasks: tasks,
             native: NativeDownloadRuntime(),
@@ -377,7 +377,7 @@ void main() {
             source: MediaCandidateSource.dom,
           );
           await db.saveMediaCandidate(hlsCandidate);
-          final hlsTask = tasks.create(hlsCandidate);
+          final hlsTask = await tasks.create(hlsCandidate);
           final hlsService = MediaDownloadService(
             tasks: tasks,
             http: http,

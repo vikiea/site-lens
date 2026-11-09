@@ -115,7 +115,7 @@ void main() {
         mime: 'video/mp4',
         source: MediaCandidateSource.dom,
       );
-      final task = tasks.create(candidate);
+      final task = await tasks.create(candidate);
       final blocked = throwsA(
         isA<PlatformException>().having(
           (error) => error.message,
@@ -280,7 +280,7 @@ void main() {
         source: MediaCandidateSource.dom,
       );
       await db.saveMediaCandidate(candidate);
-      final task = app.mediaTasks.create(candidate);
+      final task = await app.mediaTasks.create(candidate);
       await app.mediaLibrary.register(task, video.path);
 
       for (final library in [true, false]) {
@@ -404,7 +404,7 @@ void main() {
       mime: 'video/mp4',
       source: MediaCandidateSource.dom,
     );
-    final task = tasks.create(candidate);
+    final task = await tasks.create(candidate);
     try {
       final file = await File('${root.path}/rebind.mp4')
           .writeAsBytes(base64Decode(videoFixtureBase64));
@@ -460,8 +460,8 @@ void main() {
         mime: 'video/mp4',
         source: MediaCandidateSource.dom,
       );
-      final firstTask = tasks.create(firstCandidate);
-      final secondTask = tasks.create(secondCandidate);
+      final firstTask = await tasks.create(firstCandidate);
+      final secondTask = await tasks.create(secondCandidate);
       final player = NativeMediaRuntime();
       try {
         final firstFile = await File('${root.path}/episode-1.mp4')
@@ -541,7 +541,7 @@ void main() {
       source: MediaCandidateSource.dom,
     );
     final tasks = MediaTaskStore(directoryProvider: () async => root);
-    final task = tasks.create(candidate);
+    final task = await tasks.create(candidate);
     final service = MediaDownloadService(
       tasks: tasks,
       http: ControlledHttp(allowLocal: true),
@@ -643,7 +643,7 @@ void main() {
       source: MediaCandidateSource.dom,
     );
     final tasks = MediaTaskStore(directoryProvider: () async => root);
-    final task = tasks.create(candidate);
+    final task = await tasks.create(candidate);
     final service = MediaDownloadService(
       tasks: tasks,
       http: ControlledHttp(allowLocal: true),
@@ -682,7 +682,7 @@ void main() {
       );
       try {
         await db.saveMediaCandidate(candidate);
-        final task = app.mediaTasks.create(candidate);
+        final task = await app.mediaTasks.create(candidate);
         final parent = await app.mediaTasks.cacheDirectory(
           storageDirectory: task.storageDirectoryName,
         );
@@ -735,7 +735,7 @@ void main() {
             source: MediaCandidateSource.dom,
           );
           await db.saveMediaCandidate(candidate);
-          final task = tasks.create(candidate);
+          final task = await tasks.create(candidate);
           tasks.transition(task.id, MediaTaskState.downloading);
           final directory = await tasks.cacheDirectory(
             storageDirectory: task.storageDirectoryName,
@@ -844,7 +844,7 @@ void main() {
           source: MediaCandidateSource.dom,
         );
         await db.saveMediaCandidate(candidate);
-        final task = tasks.create(candidate);
+        final task = await tasks.create(candidate);
         tasks.transition(task.id, MediaTaskState.downloading);
         final parent = await tasks.cacheDirectory(
           storageDirectory: task.storageDirectoryName,
@@ -987,7 +987,7 @@ void main() {
       );
       final tasks = MediaTaskStore(directoryProvider: () async => root, db: db);
       await db.saveMediaCandidate(candidate);
-      final task = tasks.create(candidate);
+      final task = await tasks.create(candidate);
       expect(
         tasks.transition(task.id, MediaTaskState.downloading).state,
         MediaTaskState.downloading,

@@ -126,7 +126,7 @@ void main() {
             source: MediaCandidateSource.dom,
           );
           final tasks = MediaTaskStore(directoryProvider: () async => root);
-          final task = tasks.create(candidate);
+          final task = await tasks.create(candidate);
           final session = await player.openLocal(task, output);
           final deadline = DateTime.now().add(const Duration(seconds: 15));
           while (DateTime.now().isBefore(deadline)) {
