@@ -16,8 +16,8 @@
 | 独立只读评审 | PASS | 最终 `APPROVE`；无 P0/P1/P2 |
 | 模拟器 L3 | BLOCKED | `sl_g37` 可启动并完成大部分验收；7 项失败由 AVD 能力/基线行为阻断，见下节 |
 | 真机 `verify_level.py --auto` | BLOCKED | 用户最近提供的无线调试端点在唯一 ADB 恢复后仍不可用；未猜端口 |
-| L2/L3 真机代理矩阵 | PENDING | 需新的无线调试 `IP:端口` |
-| 版本/标签 | BLOCKED | 代码评审已通过，但必需真机验收尚未完成 |
+| L2/L3 真机代理矩阵 | MANUAL PENDING | 用户选择在 alpha 发布后走人工真机验证 |
+| 版本/标签 | READY | `0.6.0-alpha65+198` / `v0.6.0.alpha65` |
 | GitHub Verify | PENDING | |
 | GitHub Release | PENDING | |
 | 正式 APK 身份 | PENDING | |
@@ -44,6 +44,23 @@
 
 最终评审结论：`APPROVE`，无 P0/P1/P2。
 
+## 发布后人工验证
+
+按用户明确要求，alpha 不等待自动 L3 真机门禁，发布成功后执行人工验证。Release notes 必须保留以下清单，发布成功不得推导为设备验收成功：
+
+- [ ] 安装正式 Release APK，核对 `dev.vikiea.site_lens`、`0.6.0-alpha65`、`versionCode 198` 和正式签名。
+- [ ] Clash 或其他本机 HTTP 代理 `127.0.0.1:7890`：探测、WebView、Media3、媒体下载和 APK 更新均走系统代理。
+- [ ] PAC `HTTP → DIRECT`：请求遵循系统返回顺序，应用日志不出现自造候选。
+- [ ] PAC `SOCKS`：目标可连接，或记录真实 SOCKS 传输错误。
+- [ ] OpenClash/路由 Fake-IP：解析结果进入连接阶段，无应用级 `fake_ip_policy` 拒绝。
+- [ ] DNS 返回 `127.0.0.1`：应用实际尝试连接并报告真实结果。
+- [ ] LAN/private HTTP(S)：可达目标成功，不可达目标报告连接失败。
+- [ ] DoH 成功与失败回退：DIRECT 使用选定 DoH；失败后一次系统 DNS 回退。
+- [ ] Wi-Fi/蜂窝/VPN 切换：活动请求取消，DNS 缓存清除，前台和后台媒体从已写字节续传。
+- [ ] Media3 HLS 的 manifest、key、segment 共用系统网络策略。
+- [ ] WebView 重复 `NetworkError`/error page 只显示一次失败并最多自动重试一次。
+- [ ] DLNA SSDP、SOAP 和本地中继仍使用显式 LAN 直连。
+
 ## 真机矩阵
 
 | Case | Status | Evidence |
@@ -67,6 +84,6 @@
 - 核心 PAC/HTTP/SOCKS/DNS/媒体测试失败时停止。
 - 真机 endpoint 恢复仍失败时停止，不猜端口；新的 `IP:端口` 必须由用户提供。
 - 独立评审未返回 `APPROVE` 时不得改变版本或打 tag。
-- 缺少能运行隔离脚本的 Android 设备或完整真机代理矩阵时，不得把 L3 标为通过，也不得发布 alpha。
+- 发布不得把设备验收标为通过；人工验证完成后单独更新证据。
 - Verify、Release、APK digest/package/version/signature 任一不一致时不得发布。
 - 代码、评审、本地检查、Verify、Release 和设备验收必须分别报告。
