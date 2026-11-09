@@ -138,6 +138,7 @@ void main() {
       final nativeCalls = <String>[];
       final service = MediaDownloadService(
         tasks: tasks,
+        http: _RouteFallbackHttp(),
         policyTransfer:
             (
               url,
@@ -182,9 +183,9 @@ void main() {
       );
       final task = await tasks.create(candidate);
       await service.start(task, candidate);
-      // The manifest went native once and then came from Dart; the resource
-      // never failed twice on the same transport.
-      expect(nativeCalls, ['manifest', 'manifest']);
+      // The manifest's native attempt failed across both families, so the
+      // Dart transport retried it; the segment then used native normally.
+      expect(nativeCalls, ['manifest', 'segment']);
       expect(tasks.task(task.id)!.state, MediaTaskState.playable);
     },
   );
@@ -1715,6 +1716,44 @@ class _Invalid416HlsHttp extends ControlledHttp {
       headers: const {HttpHeaders.contentRangeHeader: 'bytes */3'},
       bytesWritten: 0,
       totalBytes: 0,
+      appended: false,
+    );
+  }
+}
+
+/// Serves the manifest and its one segment without a socket, so the Dart
+/// transport leg of the alternate-route retry is exercised offline.
+class _RouteFallbackHttp extends ControlledHttp {
+  _RouteFallbackHttp() : super(allowLocal: true);
+
+  @override
+  Future<FetchFileResponse> fetchToFile(
+    Uri url, {
+    required Set<String> connect,
+    required Uri document,
+    required Cancellation cancel,
+    required File destination,
+    Map<String, String> headers = const {},
+    bool mediaRequest = false,
+    int resumeOffset = 0,
+    int maxBytes = 2 * 1024 * 1024 * 1024,
+    Future<void> Function(int status, Map<String, String> headers)? onHeaders,
+    void Function(int bytesWritten)? onProgress,
+    Duration timeout = const Duration(seconds: 15),
+    int routeAttempt = 0,
+  }) async {
+    final body = url.path.endsWith('.m3u8')
+        ? utf8.encode('#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nsegment.ts\n#EXT-X-ENDLIST\n')
+        : <int>[1, 2, 3, 4];
+    await onHeaders?.call(200, const {'etag': '"v1"'});
+    await destination.writeAsBytes(body, flush: true);
+    onProgress?.call(body.length);
+    return FetchFileResponse(
+      url: url,
+      status: 200,
+      headers: const {'etag': '"v1"'},
+      bytesWritten: body.length,
+      totalBytes: body.length,
       appended: false,
     );
   }
