@@ -445,16 +445,36 @@ object SystemMediaNetwork {
         uri: URI,
         @Suppress("UNUSED_PARAMETER") attempt: Int,
         timeoutMs: Long = 20_000L,
+    ): HttpURLConnection = openMediaConnection(
+        uri,
+        proxyCandidates(uri),
+        timeoutMs,
+        initializeFirst = { initialize(context) },
+    )
+
+    /**
+     * Test seam: the same connection without Android services or a live socket.
+     *
+     * [opener] receives the proxy the hop is about to attempt, so a test can
+     * fail a proxied candidate and observe how the hop reports itself.
+     */
+    internal fun openMediaConnection(
+        uri: URI,
+        candidates: List<Proxy>,
+        timeoutMs: Long = 20_000L,
+        initializeFirst: () -> Unit = {},
+        opener: ((Proxy) -> HttpURLConnection)? = null,
     ): HttpURLConnection {
-        initialize(context)
+        initializeFirst()
         validateTarget(uri)
-        return SystemHttpConnection(uri, proxyCandidates(uri), timeoutMs)
+        return SystemHttpConnection(uri, candidates, timeoutMs, opener)
     }
 
-    private class SystemHttpConnection(
+    internal class SystemHttpConnection(
         uri: URI,
         private val candidates: List<Proxy>,
         timeoutMs: Long,
+        private val opener: ((Proxy) -> HttpURLConnection)? = null,
     ) : HttpURLConnection(uri.toURL()) {
         private val targetUri = uri
         private val requestTimeoutMs = timeoutMs
@@ -465,6 +485,16 @@ object SystemMediaNetwork {
         @Volatile private var activeClient: OkHttpClient? = null
         @Volatile private var response: Response? = null
         @Volatile private var selectedProxy: Proxy? = null
+        /**
+         * The candidate this hop is working on.
+         *
+         * [selectedProxy] is only assigned after a successful execute(), so a
+         * failure during connect() left usingProxy() false and a proxied
+         * attempt was reported as DIRECT. Diagnostics then blamed the direct
+         * path for a proxy failure.
+         */
+        @Volatile private var attemptedProxy: Proxy? = null
+        @Volatile private var connection: HttpURLConnection? = null
 
         init {
             connectTimeout = timeoutMs.toInt()
@@ -484,6 +514,19 @@ object SystemMediaNetwork {
             var last: IOException? = null
             for (proxy in candidates) {
                 if (cancelled) throw IOException("媒体连接已取消")
+                attemptedProxy = proxy
+                val injected = opener
+                if (injected != null) {
+                    val opened = injected(proxy)
+                    synchronized(lock) {
+                        if (cancelled) {
+                            opened.disconnect()
+                            throw IOException("媒体连接已取消")
+                        }
+                        connection = opened
+                    }
+                    return
+                }
                 val client = buildClientForProxy(
                     targetUri,
                     proxy,
@@ -535,43 +578,61 @@ object SystemMediaNetwork {
                 activeCall = null
                 activeClient = null
                 response = null
+                selectedProxy = null
+                attemptedProxy = null
             }
             call?.cancel()
             received?.close()
             client?.connectionPool?.evictAll()
             client?.dispatcher?.executorService?.shutdown()
+            connection?.disconnect()
+            connection = null
         }
 
-        override fun usingProxy(): Boolean =
-            selectedProxy?.type()?.let { it != Proxy.Type.DIRECT } ?: false
+        override fun usingProxy(): Boolean {
+            val proxy = selectedProxy ?: attemptedProxy
+            return proxy != null && proxy.type() != Proxy.Type.DIRECT
+        }
 
         override fun getResponseCode(): Int {
             connect()
+            val delegated = connection
+            if (delegated != null) return delegated.responseCode
             return response!!.code
         }
 
         override fun getInputStream(): InputStream {
             connect()
+            val delegated = connection
+            if (delegated != null) return delegated.inputStream
             return response?.body?.byteStream() ?: ByteArrayInputStream(ByteArray(0))
         }
 
         override fun getErrorStream(): InputStream? = runCatching {
             connect()
+            val delegated = connection
+            if (delegated != null) return delegated.errorStream
             response?.body?.byteStream()
         }.getOrNull()
 
         override fun getHeaderField(name: String): String? {
             connect()
+            val delegated = connection
+            if (delegated != null) return delegated.getHeaderField(name)
             return response?.header(name)
         }
 
         override fun getHeaderFieldKey(position: Int): String? {
             connect()
+            val delegated = connection
+            if (delegated != null) return delegated.getHeaderFieldKey(position)
             return response?.headers?.names()?.toList()?.getOrNull(position)
         }
 
         override fun getContentLengthLong(): Long {
             connect()
+            val delegated = connection
+            if (delegated != null) return delegated.contentLengthLong
             return response?.body?.contentLength() ?: -1L
         }
 

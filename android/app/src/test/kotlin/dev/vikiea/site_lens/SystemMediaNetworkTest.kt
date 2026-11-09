@@ -201,6 +201,42 @@ class SystemMediaNetworkTest {
     }
 
     @Test
+    fun aFailedProxiedHopReportsTheProxyItAttempted() {
+        // selectedProxy is only assigned after execute() succeeds, so a
+        // connect failure used to report DIRECT for a proxied attempt.
+        val proxy = Proxy(
+            Proxy.Type.HTTP,
+            InetSocketAddress.createUnresolved("127.0.0.1", 7890),
+        )
+        val connection = SystemMediaNetwork.openMediaConnection(
+            URI("https://tp6.drleao.cn/key.bin"),
+            listOf(proxy),
+            opener = { throw java.io.IOException("connect refused") },
+        )
+        assertThrows(java.io.IOException::class.java) { connection.connect() }
+        assertTrue(connection.usingProxy())
+        connection.disconnect()
+    }
+
+    @Test
+    fun anInjectedDirectHopReportsDirect() {
+        val stub = object : java.net.HttpURLConnection(java.net.URL("https://tp6.drleao.cn/key.bin")) {
+            override fun connect() = Unit
+            override fun disconnect() = Unit
+            override fun usingProxy() = false
+            override fun getResponseCode() = 200
+        }
+        val connection = SystemMediaNetwork.openMediaConnection(
+            URI("https://tp6.drleao.cn/key.bin"),
+            listOf(Proxy.NO_PROXY),
+            opener = { stub },
+        )
+        assertEquals(200, connection.responseCode)
+        assertFalse(connection.usingProxy())
+        connection.disconnect()
+    }
+
+    @Test
     fun nativeCancellationSurvivesTheTransferFailureWrapper() {
         assertTrue(mediaTransferCancelled(InterruptedIOException("paused")))
         assertTrue(
