@@ -30,6 +30,17 @@ class _HeldCandidateDatabase extends AppDatabase {
   }
 }
 
+class _HeldInspectionWebHostApi extends FakeWebHostApi {
+  final entered = Completer<void>();
+  final snapshot = Completer<PageSnapshot>();
+
+  @override
+  Future<PageSnapshot> inspect(int hostId, String selector) {
+    entered.complete();
+    return snapshot.future;
+  }
+}
+
 class _FailingCandidateDatabase extends AppDatabase {
   _FailingCandidateDatabase() : super(NativeDatabase.memory());
 
@@ -128,37 +139,22 @@ void main() {
     },
   );
 
-  test(
-    'main-frame navigation errors are visible and auto-reloaded once',
-    () async {
-      final db = AppDatabase(NativeDatabase.memory());
-      final api = FakeWebHostApi();
-      final hosts = NativeHosts(
-        db,
-        ScriptService(db, ControlledHttp()),
-        ControlledHttp(),
-        api: api,
-      );
-      final session = _session(hosts);
-      try {
+  test('main-frame network errors use a bounded retry budget', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final api = FakeWebHostApi();
+    final hosts = NativeHosts(
+      db,
+      ScriptService(db, ControlledHttp()),
+      ControlledHttp(),
+      api: api,
+    );
+    final session = _session(hosts);
+    try {
+      for (var attempt = 0; attempt < 3; attempt++) {
         await hosts.onEvent(
           HostEvent(
             hostId: session.id,
             generation: session.generation,
-            kind: 'networkError',
-            url: session.url,
-            detail: '连接超时',
-          ),
-        );
-        expect(session.errorKind, 'networkError');
-        expect(session.error, contains('连接超时'));
-        await Future<void>.delayed(const Duration(milliseconds: 450));
-        expect(api.reloaded, [session.id]);
-
-        await hosts.onEvent(
-          HostEvent(
-            hostId: session.id,
-            generation: session.generation + 1,
             kind: 'started',
             url: session.url,
             detail: '',
@@ -170,37 +166,42 @@ void main() {
             generation: session.generation,
             kind: 'networkError',
             url: session.url,
-            detail: '再次超时',
+            detail: '连接超时 $attempt',
           ),
         );
-        await Future<void>.delayed(const Duration(milliseconds: 450));
-        expect(api.reloaded, [session.id]);
-
-        await hosts.onEvent(
-          HostEvent(
-            hostId: session.id,
-            generation: session.generation,
-            kind: 'loaded',
-            url: session.url,
-            detail: '',
-          ),
-        );
-        await hosts.onEvent(
-          HostEvent(
-            hostId: session.id,
-            generation: session.generation,
-            kind: 'networkError',
-            url: session.url,
-            detail: '第三次超时',
-          ),
-        );
-        await Future<void>.delayed(const Duration(milliseconds: 450));
-        expect(api.reloaded, [session.id, session.id]);
-      } finally {
-        await db.close();
+        await Future<void>.delayed(switch (attempt) {
+          0 => const Duration(milliseconds: 600),
+          1 => const Duration(milliseconds: 1100),
+          _ => const Duration(milliseconds: 2100),
+        });
+        expect(api.reloaded, List.filled(attempt + 1, session.id));
+        session.generation++;
       }
-    },
-  );
+
+      await hosts.onEvent(
+        HostEvent(
+          hostId: session.id,
+          generation: session.generation,
+          kind: 'started',
+          url: session.url,
+          detail: '',
+        ),
+      );
+      await hosts.onEvent(
+        HostEvent(
+          hostId: session.id,
+          generation: session.generation,
+          kind: 'networkError',
+          url: session.url,
+          detail: '第四次超时',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(api.reloaded, List.filled(3, session.id));
+    } finally {
+      await db.close();
+    }
+  });
 
   test(
     'duplicate browser error-page events share one navigation retry',
@@ -229,15 +230,110 @@ void main() {
             ),
           );
         }
-        await Future<void>.delayed(const Duration(milliseconds: 450));
+        await Future<void>.delayed(const Duration(milliseconds: 600));
         expect(api.reloaded, [session.id]);
         expect(session.errorKind, 'networkError');
-        expect(session.error, '页面请求失败，请刷新后重试');
+        expect(session.error, '网络连接中断，请重试');
       } finally {
         await db.close();
       }
     },
   );
+
+  test(
+    'certificate and HTTP failures never trigger automatic reloads',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final api = FakeWebHostApi();
+      final hosts = NativeHosts(
+        db,
+        ScriptService(db, ControlledHttp()),
+        ControlledHttp(),
+        api: api,
+      );
+      final session = _session(hosts);
+      try {
+        for (final kind in ['certificateError', 'httpError']) {
+          session.generation++;
+          await hosts.onEvent(
+            HostEvent(
+              hostId: session.id,
+              generation: session.generation,
+              kind: 'started',
+              url: session.url,
+              detail: '',
+            ),
+          );
+          await hosts.onEvent(
+            HostEvent(
+              hostId: session.id,
+              generation: session.generation,
+              kind: kind,
+              url: session.url,
+              detail: '$kind detail',
+            ),
+          );
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+        expect(api.reloaded, isEmpty);
+        expect(session.errorKind, 'httpError');
+      } finally {
+        await db.close();
+      }
+    },
+  );
+
+  test('visible player title can supply a single-task group', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final api = FakeWebHostApi(playbackTitle: '母上攻略');
+    final hosts = NativeHosts(
+      db,
+      ScriptService(db, ControlledHttp()),
+      ControlledHttp(),
+      api: api,
+    );
+    final session = _session(hosts)..url = 'https://example.test/video/1/';
+    try {
+      expect(await hosts.visiblePlaybackTitle(session.id), '母上攻略');
+      session.generation++;
+      expect(await hosts.visiblePlaybackTitle(session.id), isNull);
+    } finally {
+      await db.close();
+    }
+  });
+
+  test('same-document navigation rejects an older visible title', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final api = _HeldInspectionWebHostApi();
+    final hosts = NativeHosts(
+      db,
+      ScriptService(db, ControlledHttp()),
+      ControlledHttp(),
+      api: api,
+    );
+    final session = _session(hosts)..url = 'https://parent.example/video/1/';
+    try {
+      final pending = hosts.visiblePlaybackTitle(session.id);
+      await api.entered.future;
+      session.url = 'https://parent.example/video/2/';
+      api.snapshot.complete(
+        PageSnapshot(
+          url: 'https://parent.example/video/1/',
+          title: '',
+          generation: session.generation,
+          ready: true,
+          challenge: false,
+          interactionRequired: false,
+          links: const [],
+          text: '旧页面标题',
+          error: '',
+        ),
+      );
+      expect(await pending, isNull);
+    } finally {
+      await db.close();
+    }
+  });
 
   test('same media URL keeps explicit episode identities separate', () async {
     final db = AppDatabase(NativeDatabase.memory());

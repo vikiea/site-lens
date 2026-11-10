@@ -4,7 +4,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/domain/models.dart';
-import 'package:site_lens/network/native_system_http.dart';
 import 'package:site_lens/network/transport.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/navigation_observer.dart';
@@ -50,10 +49,11 @@ void main() {
         debugPrint(
           'CONFIGURED_ENTRY_PASS host=${uri.host} links=${snapshot.links.length}',
         );
-        final probe = await HttpProbe(
-          allowLocal: false,
-          nativeTransport: NativeSystemHttpTransport(),
-        ).run(Candidate(id: 1, url: uri, label: uri.host), 1, Cancellation());
+        final probe = await app.probes.httpProbe.run(
+          Candidate(id: 1, url: uri, label: uri.host),
+          1,
+          Cancellation(),
+        );
         debugPrint(
           'CONFIGURED_HTTP_PROBE_PASS host=${uri.host} '
           'status=${probe.status.name} '

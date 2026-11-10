@@ -59,14 +59,16 @@ String mediaTitleForEpisode(String title, int episodeNumber) {
   value = value
       .replaceAll(
         RegExp(
-          r'\s*[-–—|]?\s*(?:第\s*\d+\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*\d+\b)\s*$',
+          r'\s*[-–—|·.,:：]?\s*(?:第\s*\d+\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*\d+\b)\s*$',
           caseSensitive: false,
         ),
         '',
       )
       .trim();
-  if (value.isEmpty) value = '媒体';
-  return '$value - 第$episodeNumber集';
+  final episode = '第$episodeNumber集';
+  final numeric = int.tryParse(value);
+  if (value.isEmpty || numeric == episodeNumber) return episode;
+  return '$value - $episode';
 }
 
 String mediaExportFileName(MediaTask task) {

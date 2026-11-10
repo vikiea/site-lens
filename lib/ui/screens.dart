@@ -3975,6 +3975,15 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     );
   }
 
+  Future<String?> _mediaTaskGroupName(
+    HostSession current,
+    List<MediaCandidate> candidates,
+  ) async {
+    final candidateGroup = mediaTaskGroupDirectoryName(candidates);
+    if (candidateGroup != null) return candidateGroup;
+    return widget.app.hosts.visiblePlaybackTitle(current.id);
+  }
+
   Future<void> _playMediaCandidate(
     HostSession current,
     MediaCandidate candidate,
@@ -3984,8 +3993,15 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
         current.id,
         candidate.id,
       );
+      final taskGroup = await _mediaTaskGroupName(current, [authorized]);
+      if (taskGroup == null) {
+        throw StateError('未获取到播放标题，无法创建任务组');
+      }
       await widget.app.mediaTasks.ready;
-      final task = await widget.app.mediaTasks.create(authorized);
+      final task = await widget.app.mediaTasks.create(
+        authorized,
+        batchDirectory: taskGroup,
+      );
       final run = widget.app.mediaDownloads.start(task, authorized);
       final ready = await _waitForTaskPlayback(task.id, run);
       if (!mounted) return;
@@ -4042,9 +4058,11 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     var added = 0;
     var skipped = 0;
     var failed = 0;
-    final batchDirectory = candidates.length > 1
-        ? mediaBatchDirectoryName(candidates) ?? '批量媒体'
-        : null;
+    final batchDirectory = await _mediaTaskGroupName(current, candidates);
+    if (batchDirectory == null) {
+      if (mounted) showShortToast(context, '未获取到播放标题，无法创建任务组');
+      return;
+    }
     final pending = <MediaBatchDownloadRequest>[];
     for (final candidate in candidates) {
       try {
@@ -4057,6 +4075,13 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
             existing.state != MediaTaskState.failed &&
             existing.state != MediaTaskState.cancelled &&
             existing.state != MediaTaskState.reauthorize) {
+          if ((existing.batchDirectory?.trim() ?? '').isEmpty) {
+            await widget.app.mediaTasks.ready;
+            await widget.app.mediaTasks.create(
+              authorized,
+              batchDirectory: batchDirectory,
+            );
+          }
           skipped++;
           continue;
         }

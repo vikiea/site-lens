@@ -344,8 +344,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       candidates: _enabledCandidates,
       httpProbe:
           httpProbe ??
+          // Dart's HttpClient leaves socket ownership, DNS and proxy to the
+          // system route already used by Chromium. The native probe transport
+          // duplicated those decisions and reintroduced Clash Meta timeouts.
           HttpProbe(
-            nativeTransport: nativeSystemTransport,
             onFailure: (error, stack, context) => AppErrorLogger.capture(
               error,
               module: 'discovery.probe',

@@ -42,7 +42,7 @@ class HostSession {
   String title = '';
   String? errorKind;
   String? error;
-  bool autoRetryUsed = false;
+  int autoNavigationRetries = 0;
   String? lastNavigationFailureKey;
   Cancellation cancellation = Cancellation();
   final menus = <String, ScriptMenu>{};
@@ -269,6 +269,56 @@ class NativeHosts extends WebHostEvents {
     );
   }
 
+  /// Reads the currently visible playback title for a task group.
+  ///
+  /// Some sites render the player in a nested frame while publishing media
+  /// URLs from that frame. The page-level title remains the source of truth,
+  /// so native work reads the active visible player rather than page JSON.
+  Future<String?> visiblePlaybackTitle(int hostId) async {
+    final session = sessions[hostId];
+    if (session == null || session.disposed) return null;
+    final selector = [
+      '[data-play-id].is-active [data-play-title]',
+      '[data-play-id].is-active [data-video-title]',
+      '[data-play-id].is-active [class*="title-text"]',
+      '[data-play-id].is-active [class*="slide-title"]',
+      '[data-play-id].is-active h1',
+      '[data-play-id][aria-current="true"] [class*="title-text"]',
+      '[data-play-id][aria-current="true"] [class*="slide-title"]',
+      '[data-play-id][aria-current="true"] h1',
+      '.hg-play__slide.is-active .hg-play__title-text',
+      '.hg-play__slide.is-active [class*="title-text"]',
+      '.hg-play__slide.is-active .hg-play__slide-title',
+      '.hg-play__slide.is-active h1',
+    ].join(',');
+    final generation = session.generation;
+    final url = session.url;
+    if (url.isEmpty) return null;
+    try {
+      final snapshot = await api.inspect(hostId, selector);
+      final current = sessions[hostId];
+      if (current == null ||
+          !identical(current, session) ||
+          current.generation != generation ||
+          current.url != url ||
+          snapshot.generation != generation ||
+          snapshot.url != url ||
+          snapshot.error.isNotEmpty) {
+        return null;
+      }
+      final text = snapshot.text.replaceAll(RegExp(r'\s+'), ' ').trim();
+      final rawTitle = pageSeriesTitle(text);
+      if (rawTitle == null ||
+          {'媒体', 'video', 'media'}.contains(rawTitle.toLowerCase())) {
+        return null;
+      }
+      final title = mediaSeriesDirectoryName(rawTitle);
+      return title == '未命名媒体' ? null : title;
+    } catch (_) {
+      return null;
+    }
+  }
+
   MediaCandidate authorizeMediaCandidate(int hostId, String candidateId) {
     final session = sessions[hostId];
     if (session == null || session.disposed) {
@@ -327,13 +377,13 @@ class NativeHosts extends WebHostEvents {
     );
   }
 
-  /// Resets the one-shot automatic navigation recovery budget for an explicit
+  /// Resets the bounded automatic navigation recovery budget for an explicit
   /// user or settings initiated reload. A new WebView generation alone does
   /// not reset this flag: the native host advances generations while reporting
   /// the same failed reload, and doing so would create an infinite retry loop.
   void resetNavigationRetry(HostSession session) {
     if (session.disposed) return;
-    session.autoRetryUsed = false;
+    session.autoNavigationRetries = 0;
   }
 
   @override
@@ -633,7 +683,7 @@ class NativeHosts extends WebHostEvents {
       session.loaded = true;
       session.error = null;
       session.errorKind = null;
-      session.autoRetryUsed = false;
+      session.autoNavigationRetries = 0;
       session.lastNavigationFailureKey = null;
     }
     if (event.kind == 'started') {
@@ -647,8 +697,8 @@ class NativeHosts extends WebHostEvents {
       final failureKey =
           '${session.generation}\u0000${event.kind}\u0000${event.url}';
       // Chromium can publish both the NetworkError and the committed error page
-      // for one failed navigation. Present and retry it once until a new load
-      // start provides evidence that this is a distinct attempt.
+      // for one failed navigation. Present and retry it with a bounded budget
+      // until a new load start provides evidence that this is a distinct attempt.
       if (session.lastNavigationFailureKey == failureKey) return;
       session.lastNavigationFailureKey = failureKey;
       session.errorKind = event.kind;
@@ -659,7 +709,8 @@ class NativeHosts extends WebHostEvents {
         context: 'host=${session.id} generation=${session.generation}',
         stack: StackTrace.current,
       );
-      if (navigationError && session.purpose == HostPurpose.browsing) {
+      if (event.kind == 'networkError' &&
+          session.purpose == HostPurpose.browsing) {
         _scheduleNavigationRetry(session);
       }
     }
@@ -667,13 +718,19 @@ class NativeHosts extends WebHostEvents {
   }
 
   void _scheduleNavigationRetry(HostSession session) {
-    if (session.disposed || session.autoRetryUsed) {
+    const retryDelays = [
+      Duration(milliseconds: 500),
+      Duration(seconds: 1),
+      Duration(seconds: 2),
+    ];
+    if (session.disposed ||
+        session.autoNavigationRetries >= retryDelays.length) {
       return;
     }
     final generation = session.generation;
-    session.autoRetryUsed = true;
+    final delay = retryDelays[session.autoNavigationRetries++];
     unawaited(
-      Future<void>.delayed(const Duration(milliseconds: 350), () async {
+      Future<void>.delayed(delay, () async {
         if (session.disposed ||
             session.generation != generation ||
             sessions[session.id] != session) {

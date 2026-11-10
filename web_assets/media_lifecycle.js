@@ -1079,7 +1079,11 @@
   // series by itself, so that is the only value a folder may use. This never
   // touches candidate.title, which stays the visible label.
   function folderSeriesName(value) {
-    const raw = String(value || '').replace(/\s+/g, ' ').trim();
+    const source = String(value || '');
+    // A title is organization metadata only. Reject ambiguous/control-bearing
+    // text instead of normalizing it into a directory name.
+    if (/[\u0000-\u001f\u007f]/.test(source)) return '';
+    const raw = source.replace(/\s+/g, ' ').trim();
     if (!raw) return '';
     const stripped = raw
       .replace(/第\s*\d+\s*[集话期]/g, ' ')
@@ -1092,29 +1096,99 @@
     }
     text = text.replace(/\s*[-–—|·]\s*$/g, '').trim();
     if (!text || /^(?:媒体|video|media)$/i.test(text)) return '';
-    return text.slice(0, 256);
+    return Array.from(text).slice(0, 256).join('');
   }
-  // One page-data parse per report, not per candidate.
+  function connectedPlaybackOwner(node) {
+    if (!node || node.isConnected === false || typeof node.closest !== 'function') return null;
+    const owner = node.closest('[data-play-id]');
+    if (!owner || owner.isConnected === false) return null;
+    const id = owner.getAttribute?.('data-play-id');
+    return typeof id === 'string' && id.trim() ? owner : null;
+  }
+  function playbackOwnerId(owner) {
+    return String(owner?.getAttribute?.('data-play-id') || '').trim();
+  }
+  function uniquePlaybackOwners(values) {
+    const result = [];
+    const seen = new Set();
+    for (const owner of values) {
+      if (!owner || owner.isConnected === false) continue;
+      const id = playbackOwnerId(owner);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      result.push(owner);
+    }
+    return result;
+  }
+  function activePlaybackOwner(values) {
+    return values.find(owner => {
+      if (owner.classList?.contains?.('is-active')) return true;
+      return owner.getAttribute?.('aria-current') === 'true' ||
+        owner.getAttribute?.('aria-selected') === 'true';
+    }) || null;
+  }
+  // The player element is moved into the active slide before its source is
+  // changed. Its owner is therefore the strongest evidence for the media that
+  // is actually playing; the page's active owner is the bounded fallback for
+  // an MSE player whose network request has no media element yet.
+  function currentPlaybackOwner() {
+    const playingOwners = uniquePlaybackOwners(Array.from(nodes)
+      .filter(node => node.isConnected !== false && !node.paused && !node.ended)
+      .map(connectedPlaybackOwner));
+    if (playingOwners.length === 1) return playingOwners[0];
+
+    let owners = [];
+    try {
+      owners = uniquePlaybackOwners(Array.from(
+        document.querySelectorAll('[data-play-id]') || [],
+      ));
+    } catch (_) { /* A page without a slide DOM has no playback title. */ }
+    const active = activePlaybackOwner(owners);
+    if (active) return active;
+    return owners.length === 1 ? owners[0] : null;
+  }
+  function playbackOwnerTitle(owner) {
+    if (!owner || typeof owner.querySelectorAll !== 'function') return '';
+    const values = [];
+    for (const name of ['data-play-title', 'data-video-title']) {
+      values.push(owner.getAttribute?.(name));
+    }
+    const selectors = [
+      '.hg-play__slide-title',
+      '[data-play-title]',
+      '[data-video-title]',
+      '[class*="slide-title"]',
+      '[class*="title-text"]',
+      'h1',
+      'h2',
+      'h3',
+      '.hg-play__poster[alt]',
+      'img[alt]',
+    ];
+    for (const selector of selectors) {
+      let titleNodes = [];
+      try { titleNodes = Array.from(owner.querySelectorAll(selector) || []); }
+      catch (_) { titleNodes = []; }
+      for (const titleNode of titleNodes) {
+        values.push(titleNode.getAttribute?.('data-play-title'));
+        values.push(titleNode.getAttribute?.('data-video-title'));
+        values.push(titleNode.getAttribute?.('alt'));
+        values.push(titleNode.textContent);
+      }
+    }
+    for (const value of values) {
+      const title = folderSeriesName(value);
+      if (title) return title;
+    }
+    return '';
+  }
+  // One bounded DOM read per report, not one per candidate. This deliberately
+  // never reads #videoInitialData/epPlaySrcs: page JSON provides media sources,
+  // not the visible title of the active playback surface.
   let reportSeriesCache = null;
   function reportSeriesName() {
-    if (reportSeriesCache === null) reportSeriesCache = pageSeriesName();
+    if (reportSeriesCache === null) reportSeriesCache = playbackOwnerTitle(currentPlaybackOwner());
     return reportSeriesCache;
-  }
-  function pageSeriesName() {
-    const element = initialDataElement();
-    if (!element) return '';
-    try {
-      const raw = String(element.textContent || '');
-      if (raw.length > 256 * 1024) return '';
-      const data = JSON.parse(raw);
-      if (!data || typeof data !== 'object' || Array.isArray(data)) return '';
-      for (const value of [data.title, data.videoTitle, data.seriesTitle, data.name]) {
-        if (typeof value !== 'string') continue;
-        const name = folderSeriesName(value);
-        if (name) return name;
-      }
-    } catch (_) { /* A malformed block only costs the folder name. */ }
-    return '';
   }
   function episodeCandidateTitle() {
     const seenEpisodes = episodeFromMarkup();

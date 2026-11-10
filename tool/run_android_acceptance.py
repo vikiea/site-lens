@@ -113,6 +113,9 @@ def test_defines() -> list[str]:
         expected_episodes = ENV.get('SITE_LENS_MEDIA_EXPECT_EPISODES', '').strip()
         if expected_episodes:
             values.append(f'--dart-define=SITE_LENS_MEDIA_EXPECT_EPISODES={expected_episodes}')
+        expected_title = ENV.get('SITE_LENS_MEDIA_EXPECT_TITLE', '').strip()
+        if expected_title:
+            values.append(f'--dart-define=SITE_LENS_MEDIA_EXPECT_TITLE={expected_title}')
         if ENV.get('SITE_LENS_REAL_MEDIA_DOWNLOAD', '').strip().lower() in {
             '1', 'true', 'yes', 'on'
         }:

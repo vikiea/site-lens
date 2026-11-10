@@ -1129,7 +1129,12 @@ String mediaSeriesDirectoryName(String title) {
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim()
       .replaceAll(RegExp(r'[. ]+$'), '');
-  if (value.isEmpty) return '未命名媒体';
+  // A bare number is commonly a padded episode ordinal, not a trustworthy
+  // series folder. Callers with playback-page organization metadata can use
+  // that explicit task group instead.
+  if (value.isEmpty || RegExp(r'^\d{1,6}$').hasMatch(value)) {
+    return '未命名媒体';
+  }
   final runes = value.runes.toList();
   return String.fromCharCodes(runes.take(80));
 }
@@ -1254,7 +1259,8 @@ class MediaCandidate {
     'thumbnailUrl': thumbnailUrl?.toString(),
     'durationMs': durationMs,
     'createdAt': createdAt?.toIso8601String(),
-    if (seriesTitle != null && seriesTitle!.isNotEmpty) 'seriesTitle': seriesTitle,
+    if (seriesTitle != null && seriesTitle!.isNotEmpty)
+      'seriesTitle': seriesTitle,
   };
 
   factory MediaCandidate.fromJson(Map<String, dynamic> json) {
@@ -1363,6 +1369,29 @@ String? mediaBatchDirectoryName(Iterable<MediaCandidate> candidates) {
   return entries.first.key;
 }
 
+/// Directory used by native single-media playback or download.
+///
+/// A named playback surface always supplies the group. The neutral batch
+/// fallback is available only when the caller submits several candidates and
+/// no truthful shared title can be selected. A single item never receives that
+/// fallback: callers must fail closed when the playback title is unavailable.
+String? mediaTaskGroupDirectoryName(
+  Iterable<MediaCandidate> candidates, {
+  bool allowBatchFallback = true,
+}) {
+  final values = candidates.toList(growable: false);
+  if (values.isEmpty) return null;
+  if (values.length == 1) {
+    // Single-item grouping accepts only the playback-surface title. Falling
+    // back to candidate.title could adopt an episode URL label or other page
+    // metadata that the user explicitly excluded from task-group naming.
+    if ((values.single.seriesTitle?.trim() ?? '').isEmpty) return null;
+    return mediaBatchDirectoryName(values);
+  }
+  return mediaBatchDirectoryName(values) ??
+      (allowBatchFallback && values.length > 1 ? '批量媒体' : null);
+}
+
 Uri? optionalMediaUri(String? raw) {
   if (raw == null || raw.trim().isEmpty) return null;
   final uri = Uri.tryParse(raw.trim());
@@ -1459,13 +1488,13 @@ class MediaTask {
     title = title
         .replaceAll(
           RegExp(
-            r'\s*[-–—|]?\s*(?:第\s*\d+\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*\d+\b)',
+            r'\s*[-–—|·.,:：]?\s*(?:第\s*\d+\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*\d+\b)',
             caseSensitive: false,
           ),
           '',
         )
         .trim();
-    if (title.isEmpty) return episode;
+    if (title.isEmpty || _isNumericOnlyTitle(title)) return episode;
     return '$title - $episode';
   }
 
@@ -1480,7 +1509,36 @@ class MediaTask {
     return '未识别集数-$id';
   }
 
-  String get seriesDirectoryName => mediaSeriesDirectoryName(displayTitle);
+  String get seriesDirectoryName {
+    final title = displayTitle.trim();
+    final withoutEpisode = title
+        .replaceAll(
+          RegExp(
+            r'\s*[-–—|·.,:：]?\s*(?:第\s*\d+\s*[集话期]|\b(?:episode|ep|e)\s*[:=_-]?\s*\d+\b)',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .trim();
+    if (withoutEpisode.isNotEmpty && !_isNumericOnlyTitle(withoutEpisode)) {
+      return mediaSeriesDirectoryName(withoutEpisode);
+    }
+    // A numeric-only title is commonly the padded episode ordinal ("01").
+    // Keep it out of the filesystem; the playback-derived task group is the
+    // human title when this task has one.
+    final batch = mediaFolderDisplayName(batchDirectory?.trim() ?? '').trim();
+    if (batch.isNotEmpty && !_isNumericOnlyTitle(batch)) {
+      return mediaSeriesDirectoryName(batch);
+    }
+    return '未命名媒体';
+  }
+
+  bool _isNumericOnlyTitle(String value) {
+    final normalized = value
+        .replaceAll(RegExp(r'^[#\s]+|[-\s_–—|·.,:：]+$'), '')
+        .trim();
+    return RegExp(r'^\d{1,6}$').hasMatch(normalized);
+  }
 
   String get storageDirectoryName =>
       batchDirectory == null || batchDirectory!.trim().isEmpty

@@ -6,8 +6,50 @@ const handlers = new Map();
 const outbound = [];
 const nodes = [];
 const dataElements = [];
+const playbackOwners = [];
 const performanceEntries = [];
 let initialData = null;
+
+class PlaybackElement {
+  constructor(text = '', attributes = {}) {
+    this.text = text;
+    this.attributes = attributes;
+  }
+  getAttribute(name) { return this.attributes[name] ?? null; }
+  get textContent() { return this.text; }
+}
+
+class PlaybackOwner {
+  constructor(id, {
+    active = false,
+    title = '',
+    slideTitle = '',
+    posterAlt = '',
+    titleText = '',
+    disconnected = false,
+  } = {}) {
+    this.attributes = { 'data-play-id': id };
+    if (active) this.attributes['aria-current'] = 'true';
+    if (title) this.attributes['data-play-title'] = title;
+    this.active = active;
+    this.isConnected = !disconnected;
+    this.children = new Map();
+    if (slideTitle) {
+      this.children.set('.hg-play__slide-title', [new PlaybackElement(slideTitle)]);
+    }
+    if (posterAlt) {
+      this.children.set('.hg-play__poster[alt]', [
+        new PlaybackElement('', { alt: posterAlt }),
+      ]);
+    }
+    if (titleText) {
+      this.children.set('[class*="title-text"]', [new PlaybackElement(titleText)]);
+    }
+    this.classList = { contains: name => name === 'is-active' && active };
+  }
+  getAttribute(name) { return this.attributes[name] ?? null; }
+  querySelectorAll(selector) { return this.children.get(selector) || []; }
+}
 
 class Media {
   paused = true;
@@ -72,7 +114,9 @@ const document = {
   baseURI: 'https://example.test/video/3520/',
   getElementById(id) { return id === 'videoInitialData' ? initialData : null; },
   querySelectorAll(selector) {
-    return selector === 'video,audio' ? nodes : dataElements;
+    if (selector === 'video,audio') return nodes;
+    if (selector === '[data-play-id]') return playbackOwners;
+    return dataElements;
   },
   addEventListener(name, callback) { handlers.set(name, callback); },
 };
@@ -288,30 +332,134 @@ assert.equal(conflictingJson[0].episodeNumber, undefined);
 assert.match(conflictingJson[0].title, /集数未确认/);
 console.log('Malformed/oversized JSON and same-address episode conflicts are fail closed PASS.');
 
-// A page-data block that names the series must be preferred over the document
-// title, which on this site names the episode. The check runs on the explicit
-// map scenario, whose URL and page data already agree.
+// The active playback surface, not the page's JSON source block, supplies the
+// organization title. This mirrors sites whose JSON has no epPlaySrcs but whose
+// visible slide still carries the real title.
 {
   const before = outbound.length;
   const saveInitialData = initialData;
+  const saveRoute = window.location.href;
+  const ownerA = new PlaybackOwner('42', {
+    active: true,
+    slideTitle: '母上攻略',
+  });
+  const ownerB = new PlaybackOwner('77', {
+    active: true,
+    slideTitle: '新播放标题',
+  });
+  const titledNode = new Media();
+  nodes.push(titledNode);
   try {
-    const data = JSON.parse(initialData.value);
-    data.title = '示例剧';
-    initialData.value = JSON.stringify(data);
+    window.history.replaceState({}, '', '/video/42/');
+    dataElements.splice(
+      0,
+      dataElements.length,
+      new DataElement({'data-play-src': '/assets/title-current.m3u8'}),
+    );
+    playbackOwners.splice(0, playbackOwners.length, ownerA);
+    titledNode.owner = ownerA;
+    titledNode.paused = false;
+    initialData = new JsonElement(JSON.stringify({
+      id: 42,
+      title: 'JSON 标题不得用于任务组',
+      videoTitle: 'JSON 标题不得用于任务组',
+      seriesTitle: 'JSON 标题不得用于任务组',
+      name: 'JSON 标题不得用于任务组',
+      epPlaySrcs: {},
+    }));
     mutation();
     await waitForReport();
-    const snapshot = outbound.slice(before).filter(value => value.kind === 'candidates').at(-1);
-    const labels = snapshot ? snapshot.candidates.map(item => item.title) : [];
-    assert.ok(labels.length > 0, 'the mapped episode stays visible');
-    // Nothing may be labelled from the document title when the page names its
-    // series; the stale title is "测试媒体".
+    const first = outbound.slice(before).filter(value => value.kind === 'candidates').at(-1);
+    assert.ok(first, 'the active stream stays visible');
     assert.ok(
-      labels.every(label => !label.startsWith('测试媒体')),
-      JSON.stringify(labels),
+      first.candidates.every(item => item.seriesTitle === '母上攻略'),
+      JSON.stringify(first.candidates),
     );
-    console.log('Page-stated series name reaches candidate labels PASS.');
+
+    const jsonChanged = JSON.parse(initialData.value);
+    jsonChanged.title = '另一个 JSON 标题';
+    jsonChanged.videoTitle = '另一个 JSON 标题';
+    jsonChanged.seriesTitle = '另一个 JSON 标题';
+    jsonChanged.name = '另一个 JSON 标题';
+    initialData.value = JSON.stringify(jsonChanged);
+    mutation();
+    await waitForReport();
+    const jsonOnly = outbound.filter(value => value.kind === 'candidates').at(-1);
+    assert.ok(jsonOnly.candidates.every(item => item.seriesTitle === '母上攻略'));
+
+    playbackOwners.splice(0, playbackOwners.length, ownerB);
+    titledNode.owner = ownerB;
+    titledNode.currentSrc = 'https://example.test/switched-title.mp4';
+    titledNode.src = titledNode.currentSrc;
+    dataElements[0].attributes['data-play-src'] = '/assets/switched-title.m3u8';
+    mutation();
+    await waitForReport();
+    const switched = outbound.filter(value => value.kind === 'candidates').at(-1);
+    assert.ok(switched.candidates.every(item => item.seriesTitle === '新播放标题'));
+
+    ownerA.isConnected = false;
+    playbackOwners.splice(0, playbackOwners.length, ownerB);
+    titledNode.owner = ownerA;
+    mutation();
+    await waitForReport();
+    const staleOwner = outbound.filter(value => value.kind === 'candidates').at(-1);
+    assert.ok(staleOwner.candidates.every(item => item.seriesTitle === '新播放标题'));
+
+    playbackOwners.splice(0, playbackOwners.length, new PlaybackOwner('42', {
+      active: true,
+      slideTitle: '含\u0001控制字符',
+    }));
+    titledNode.owner = null;
+    mutation();
+    await waitForReport();
+    const rejected = outbound.filter(value => value.kind === 'candidates').at(-1);
+    assert.ok(rejected.candidates.every(item => item.seriesTitle === undefined));
+
+    const primaryOwner = new PlaybackOwner('42', {
+      active: true,
+      titleText: '妈妈的答案',
+    });
+    playbackOwners.splice(0, playbackOwners.length, primaryOwner);
+    titledNode.owner = primaryOwner;
+    mutation();
+    await waitForReport();
+    const primaryTitle = outbound.filter(value => value.kind === 'candidates').at(-1);
+    assert.ok(primaryTitle.candidates.every(
+      item => item.seriesTitle === '妈妈的答案',
+    ));
+
+    const posterOwner = new PlaybackOwner('42', {
+      active: true,
+      posterAlt: '海报上的播放标题',
+    });
+    playbackOwners.splice(0, playbackOwners.length, posterOwner);
+    titledNode.owner = posterOwner;
+    mutation();
+    await waitForReport();
+    const posterFallback = outbound.filter(value => value.kind === 'candidates').at(-1);
+    assert.ok(posterFallback.candidates.every(
+      item => item.seriesTitle === '海报上的播放标题',
+    ));
+
+    const longOwner = new PlaybackOwner('42', {
+      active: true,
+      slideTitle: '长'.repeat(300),
+    });
+    playbackOwners.splice(0, playbackOwners.length, longOwner);
+    titledNode.owner = longOwner;
+    mutation();
+    await waitForReport();
+    const bounded = outbound.filter(value => value.kind === 'candidates').at(-1);
+    assert.ok(bounded.candidates.every(
+      item => Array.from(item.seriesTitle || '').length === 256,
+    ));
+    console.log('Active playback DOM titles name candidates while page JSON titles are ignored PASS.');
   } finally {
     initialData = saveInitialData;
+    playbackOwners.splice(0, playbackOwners.length);
+    titledNode.isConnected = false;
+    nodes.pop();
+    window.history.replaceState({}, '', saveRoute);
   }
 }
 dataElements.length = 0;

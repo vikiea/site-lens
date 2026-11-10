@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/domain/models.dart';
+import 'package:site_lens/network/native_system_http.dart';
 import 'package:site_lens/network/transport.dart';
 
 void main() {
@@ -16,7 +17,20 @@ void main() {
       readableError(SocketException('connection reset by peer')),
       '网络连接失败，请检查网络后重试',
     );
-    expect(readableError('net::ERR_INTERNET_DISCONNECTED'), '页面请求失败，请刷新后重试');
+    expect(readableError('net::ERR_INTERNET_DISCONNECTED'), '网络连接已断开，请恢复网络后重试');
+    expect(readableError('net::ERR_CONNECTION_REFUSED'), '网络连接被拒绝，请检查网络或代理后重试');
+    expect(readableError('net::ERR_CONNECTION_CLOSED'), '网络连接中断，请重试');
+    expect(readableError('net::ERR_NAME_NOT_RESOLVED'), 'DNS 解析失败，请检查网络后重试');
+    expect(
+      readableError(
+        const NativeSystemHttpException('proxy_connect', '系统网络请求失败'),
+      ),
+      '系统代理连接失败，请检查代理设置或改为直连后重试',
+    );
+    expect(
+      readableError(const NativeSystemHttpException('io', '系统网络请求失败')),
+      '网络连接失败，请检查网络后重试',
+    );
     expect(
       readableError(Exception('request failed')),
       isNot(contains('Exception')),

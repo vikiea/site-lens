@@ -173,6 +173,34 @@ void main() {
     },
   );
 
+  test('a padded numeric title never becomes an MP4 directory', () async {
+    final task = await MediaTaskStore().create(
+      candidate(
+        title: '01.第1集',
+        url: 'https://cdn.example/padded-episode.m3u8',
+      ),
+      batchDirectory: '母上攻略 - 批次1792686431921372',
+    );
+
+    expect(task.displayName, '第1集');
+    expect(task.episodeFileName, '第1集');
+    expect(mediaExportFileName(task), '第1集.mp4');
+    expect(task.storageDirectoryName, '母上攻略 - 批次1792686431921372');
+    expect(task.seriesDirectoryName, '母上攻略');
+
+    final pureNumericTitle = await MediaTaskStore().create(
+      candidate(title: '01', url: 'https://cdn.example/pure-numeric.m3u8'),
+      batchDirectory: '母上攻略 - 批次1792686431921372',
+    );
+    expect(pureNumericTitle.seriesDirectoryName, '母上攻略');
+    expect(pureNumericTitle.storageDirectoryName, '母上攻略 - 批次1792686431921372');
+
+    final legacyNumberedBatch = task.copyWith(
+      batchDirectory: '01 - 批次1792686431921372',
+    );
+    expect(legacyNumberedBatch.seriesDirectoryName, '未命名媒体');
+  });
+
   test('unknown episodes keep generated file names unique', () async {
     final store = MediaTaskStore();
     final first = await store.create(
@@ -401,6 +429,11 @@ void main() {
 
   test('explicit episode titles replace stale page episode markers', () {
     expect(mediaTitleForEpisode('母衣半暖默许春朝 - 第4集', 7), '母衣半暖默许春朝 - 第7集');
+    expect(mediaTitleForEpisode('01', 1), '第1集');
+    expect(mediaTitleForEpisode('01-第1集', 1), '第1集');
+    expect(mediaTitleForEpisode('01.第1集', 1), '第1集');
+    expect(mediaTitleForEpisode('01·第1集', 1), '第1集');
+    expect(mediaTitleForEpisode('第1集', 1), '第1集');
   });
 
   test(
@@ -711,6 +744,8 @@ void main() {
     expect(mediaSeriesDirectoryName('母衣半暖默许春朝 - 第3集'), '母衣半暖默许春朝');
     expect(mediaSeriesDirectoryName('A/B: episode=12'), 'A_B');
     expect(mediaSeriesDirectoryName(''), '未命名媒体');
+    expect(mediaSeriesDirectoryName('01'), '未命名媒体');
+    expect(mediaSeriesDirectoryName('第1集'), '未命名媒体');
     expect(mediaFolderDisplayName('A/B'), 'A/B');
     expect(
       mediaFolderDisplayName('系统带我攻略弟弟（漫剧版） - 批次1792686431921372'),
@@ -1193,7 +1228,7 @@ void main() {
 
   test('the page-owned series names the batch folder', () {
     // document.title carries the playing episode and the site suffix, so it
-    // cannot name a folder. seriesTitle comes from the page data block.
+    // cannot name a folder. seriesTitle comes from the visible playback owner.
     final candidates = [
       candidate(
         id: 'document-title',
@@ -1218,6 +1253,54 @@ void main() {
         ),
       ]),
       '示例剧',
+    );
+  });
+
+  test('a single media task always receives a playback-title group', () {
+    final named = candidate(
+      id: 'playing',
+      title: '妈妈的答案 第01集 - 黄果短剧',
+      url: 'https://cdn.example/playing.m3u8',
+      seriesTitle: '母上攻略',
+    );
+    expect(mediaTaskGroupDirectoryName([named]), '母上攻略');
+
+    final unnamed = candidate(
+      id: 'unnamed',
+      title: '媒体 · 集数未确认',
+      url: 'https://cdn.example/unnamed.m3u8',
+    );
+    expect(mediaTaskGroupDirectoryName([unnamed]), isNull);
+
+    final documentTitleOnly = candidate(
+      id: 'document-title-only',
+      title: 'JSON 或集数来源不得成为单集任务组',
+      url: 'https://cdn.example/document-title-only.m3u8',
+    );
+    expect(mediaTaskGroupDirectoryName([documentTitleOnly]), isNull);
+    expect(
+      mediaTaskGroupDirectoryName([unnamed], allowBatchFallback: false),
+      isNull,
+    );
+  });
+
+  test('the neutral batch fallback is limited to several candidates', () {
+    final generic = [
+      candidate(
+        id: 'generic-1',
+        title: '媒体 · 集数未确认',
+        url: 'https://cdn.example/generic-1.m3u8',
+      ),
+      candidate(
+        id: 'generic-2',
+        title: 'media · 集数未确认',
+        url: 'https://cdn.example/generic-2.m3u8',
+      ),
+    ];
+    expect(mediaTaskGroupDirectoryName(generic), '批量媒体');
+    expect(
+      mediaTaskGroupDirectoryName(generic, allowBatchFallback: false),
+      isNull,
     );
   });
 

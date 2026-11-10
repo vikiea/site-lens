@@ -185,6 +185,19 @@ class AndroidToolsTests(unittest.TestCase):
         self.assertFalse(any(value.startswith('--dart-define=SITE_LENS_MEDIA_TEST_URL=')
                              for value in defines))
 
+    def test_real_media_title_expectation_only_enters_explicit_test_defines(self):
+        with patch.dict(acceptance.ENV, {
+            'SITE_LENS_MEDIA_TEST_URL': 'https://test.example/video/1/',
+            'SITE_LENS_MEDIA_EXPECT_TITLE': '母上攻略',
+        }, clear=True):
+            self.assertIn(
+                '--dart-define=SITE_LENS_MEDIA_EXPECT_TITLE=母上攻略',
+                acceptance.test_defines(),
+            )
+        with patch.dict(acceptance.ENV, {}, clear=True):
+            self.assertFalse(any('SITE_LENS_MEDIA_EXPECT_TITLE' in value
+                                 for value in acceptance.test_defines()))
+
     def test_real_media_url_is_only_forwarded_when_explicitly_injected(self):
         with patch.dict(
             acceptance.ENV,

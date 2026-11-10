@@ -65,6 +65,22 @@ bool looksLikeUrl(String value) {
 String readableError(Object error, {String? rawDetail}) {
   if (error is Cancelled) return '操作已取消';
   if (error is TimeoutException) return '操作超时，请稍后重试';
+  if (error is NativeSystemHttpException) {
+    return switch (error.category) {
+      'cancelled' => '操作已取消',
+      'timeout' => '操作超时，请稍后重试',
+      'busy' => '系统网络繁忙，请稍后重试',
+      'dns' => 'DNS 解析失败，请检查网络后重试',
+      'proxy_connect' || 'proxy_connect_status' => '系统代理连接失败，请检查代理设置或改为直连后重试',
+      'certificate' || 'hostname' => 'TLS/证书验证失败',
+      'tls_protocol' => 'TLS 协议或加密套件被拒绝',
+      'tls_reset' => 'TLS 握手期间连接被重置',
+      'tls_handshake' => 'TLS 握手失败',
+      'request_policy' => '网络请求不符合安全策略',
+      'empty_response' || 'invalid_response' => '系统网络返回了无效响应',
+      _ => '网络连接失败，请检查网络后重试',
+    };
+  }
   if (error is PlatformException) {
     if (error.code == 'media_permission') {
       return '媒体目录访问权限已失效，请重新选择保存目录';
@@ -140,7 +156,8 @@ String readableError(Object error, {String? rawDetail}) {
       RegExp(
         r'err_(?:proxy|tunnel|connect(?:ion)?_refused|address_unreachable|'
         r'name_not_resolved|name_resolution_failed|internet_disconnected|'
-        r'network_changed|timed_out|connection_timed_out|empty_response)',
+        r'network_changed|timed_out|connection_timed_out|connection_closed|'
+        r'empty_response)',
       ).hasMatch(lower);
   if (webViewError) {
     // Only a proxy/tunnel refusal is re-attributed to the local route. Other
@@ -148,6 +165,19 @@ String readableError(Object error, {String? rawDetail}) {
     // that already depend on it stay valid.
     if (RegExp(r'err_(?:proxy|tunnel)').hasMatch(lower)) {
       return '系统代理拒绝了连接，请检查代理设置或改为直连后重试';
+    }
+    if (lower.contains('err_connection_refused')) {
+      return '网络连接被拒绝，请检查网络或代理后重试';
+    }
+    if (RegExp(r'err_(?:name_not_resolved|name_resolution_failed)')
+        .hasMatch(lower)) {
+      return 'DNS 解析失败，请检查网络后重试';
+    }
+    if (lower.contains('err_connection_closed')) {
+      return '网络连接中断，请重试';
+    }
+    if (lower.contains('err_internet_disconnected')) {
+      return '网络连接已断开，请恢复网络后重试';
     }
     return '页面请求失败，请刷新后重试';
   }

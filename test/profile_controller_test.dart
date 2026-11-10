@@ -54,6 +54,10 @@ void main() {
     await db.close();
   });
 
+  test('default discovery probe uses the system HttpClient route', () {
+    expect(app.probes.httpProbe.nativeTransport, isNull);
+  });
+
   test(
     'deleteProfile removes owned config, candidates and source rows',
     () async {

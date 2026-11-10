@@ -27,6 +27,7 @@ void main() {
   const expectedEpisodeNumbers = String.fromEnvironment(
     'SITE_LENS_MEDIA_EXPECT_EPISODES',
   );
+  const expectedTitle = String.fromEnvironment('SITE_LENS_MEDIA_EXPECT_TITLE');
 
   final pages =
       (encodedUrls.isEmpty
@@ -100,6 +101,14 @@ void main() {
             isTrue,
             reason: '${mediaControl.reason}; ${mediaControl.detailsJson}',
           );
+          final activeTitle = await app.hosts.api.inspect(
+            tab.host.id,
+            '.hg-play__slide.is-active .hg-play__title-text',
+          );
+          debugPrint(
+            'REAL_MEDIA_ACTIVE_TITLE text=${activeTitle.text} '
+            'error=${activeTitle.error}',
+          );
 
           List<MediaCandidate> candidates() =>
               app.hosts.mediaCandidates(tab.host);
@@ -110,6 +119,42 @@ void main() {
           }
           final media = candidates();
           expect(media, isNotEmpty);
+          debugPrint(
+            'REAL_MEDIA_CANDIDATES '
+            '${media.map((value) => 'title=${value.title} '
+                'series=${value.seriesTitle} '
+                'mediaHost=${value.mediaUrl.host} '
+                'sourceHost=${value.sourceUrl.host} '
+                'mime=${value.mime}').join(' | ')}',
+          );
+          if (expectedTitle.isNotEmpty) {
+            final visibleTitle = await app.hosts.visiblePlaybackTitle(
+              tab.host.id,
+            );
+            expect(
+              visibleTitle,
+              expectedTitle,
+              reason: 'The visible playback owner must name the task group',
+            );
+            final authorized = app.hosts.authorizeMediaCandidate(
+              tab.host.id,
+              media.first.id,
+            );
+            final group =
+                mediaTaskGroupDirectoryName([authorized]) ?? visibleTitle;
+            expect(group, expectedTitle);
+            final task = await app.mediaTasks.create(
+              authorized,
+              batchDirectory: group,
+            );
+            expect(task.batchDirectory, expectedTitle);
+            expect(task.displayName, isNot(contains('01-')));
+            debugPrint(
+              'REAL_MEDIA_TITLE_GROUP_PASS title=$expectedTitle '
+              'taskName=${task.displayName} candidates=${media.length}',
+            );
+            return;
+          }
           final exposedEpisodes = explicitEpisodeUrls(
             data.text,
             tab.currentUrl,
