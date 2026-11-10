@@ -949,8 +949,10 @@
         pageUrl: ownerPage || pageUrl(),
       };
       // The folder name is page-owned; the visible title stays as the page or
-      // the player produced it.
-      const folderSeries = pageSeriesName();
+      // the player produced it. The lookup is memoized per report because a
+      // page can list hundreds of episodes and each one would otherwise parse
+      // the same data block again.
+      const folderSeries = reportSeriesName();
       if (folderSeries) candidate.seriesTitle = folderSeries;
       const manifestHeaders = pageCdnHeaders('manifest');
       const resourceHeaders = pageCdnHeaders('resource');
@@ -1092,6 +1094,12 @@
     if (!text || /^(?:媒体|video|media)$/i.test(text)) return '';
     return text.slice(0, 256);
   }
+  // One page-data parse per report, not per candidate.
+  let reportSeriesCache = null;
+  function reportSeriesName() {
+    if (reportSeriesCache === null) reportSeriesCache = pageSeriesName();
+    return reportSeriesCache;
+  }
   function pageSeriesName() {
     const element = initialDataElement();
     if (!element) return '';
@@ -1124,6 +1132,7 @@
     return `${series || '媒体'} · 集数未确认`;
   }
   function report() {
+    reportSeriesCache = null;
     if (!alive) return;
     beginSnapshotIfNeeded();
     collect();
