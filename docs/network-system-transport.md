@@ -10,6 +10,9 @@ Android app-owned HTTP has one network owner: `SystemMediaNetwork`.
 - It preserves the order returned by the OS and accepts HTTP, SOCKS, and an explicitly returned DIRECT candidate.
 - It never inserts, rotates, reorders, or interprets proxy routes on its own.
 - HTTP and SOCKS proxies own origin-name lookup. DIRECT uses system DNS by default.
+- Buffered requests and resumable app-owned transfers selected through an
+  HTTP/SOCKS proxy use HTTP/1.1 for compatibility with local proxy tunnels;
+  DIRECT connections retain OkHttp's normal protocol negotiation.
 - A user-selected built-in DoH provider applies to DIRECT lookups. One DoH failure falls back to system DNS inside the same request budget; network changes clear the cache.
 - TLS, SNI, hostname verification, non-HTTP(S), and URL userinfo checks remain enforced.
 - Loopback, RFC1918, link-local, LAN names, Fake-IP values, and VPN/TUN interfaces are passed to the system connection stack. A real connection failure is the only reason the app reports those targets unreachable.

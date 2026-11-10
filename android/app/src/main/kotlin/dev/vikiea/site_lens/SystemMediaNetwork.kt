@@ -32,6 +32,7 @@ import okhttp3.Dns
 import okhttp3.EventListener
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
@@ -173,6 +174,13 @@ object SystemMediaNetwork {
         require(uri.rawUserInfo.isNullOrEmpty()) { "网络地址不能包含账号密码" }
     }
 
+    internal fun validateBufferedRequestLimits(maxBytes: Int, timeoutMs: Long) {
+        require(maxBytes in 1..MAX_BUFFERED_RESPONSE_BYTES) {
+            "网络响应大小上限无效: $maxBytes"
+        }
+        require(timeoutMs in 1..60_000L) { "网络请求超时无效" }
+    }
+
     /**
      * Preserve the OS policy verbatim. A later DIRECT entry is retained only
      * when ProxySelector itself returned it; the app never manufactures one.
@@ -301,7 +309,7 @@ object SystemMediaNetwork {
             .build()
     }
 
-    private fun buildClientForProxy(
+    internal fun buildClientForProxy(
         uri: URI,
         proxy: Proxy,
         timeoutMs: Long,
@@ -316,6 +324,11 @@ object SystemMediaNetwork {
             systemOnlyHosts = setOfNotNull(proxyHost),
         )
             .proxy(proxy)
+            .apply {
+                if (proxy.type() != Proxy.Type.DIRECT) {
+                    protocols(listOf(Protocol.HTTP_1_1))
+                }
+            }
             .build()
     }
 
@@ -341,8 +354,7 @@ object SystemMediaNetwork {
         unregisterCall: ((Call) -> Unit)? = null,
     ): BufferedResponse {
         initialize(context)
-        require(maxBytes in 1..(8 * 1024 * 1024)) { "网络响应大小上限无效" }
-        require(timeoutMs in 1..60_000L) { "网络请求超时无效" }
+        validateBufferedRequestLimits(maxBytes, timeoutMs)
         require(method in setOf("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")) {
             "不支持 HTTP 方法"
         }
@@ -362,6 +374,10 @@ object SystemMediaNetwork {
             .apply { headers.forEach { (name, value) -> header(name, value) } }
             .build()
         val candidates = proxyCandidates(uri)
+        Log.d(
+            "SiteLensNetwork",
+            "request routes=${candidates.joinToString(",") { proxyLabel(it) }}",
+        )
         val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
         var lastError: IOException? = null
         for ((index, proxy) in candidates.withIndex()) {
@@ -445,12 +461,19 @@ object SystemMediaNetwork {
         uri: URI,
         @Suppress("UNUSED_PARAMETER") attempt: Int,
         timeoutMs: Long = 20_000L,
-    ): HttpURLConnection = openMediaConnection(
-        uri,
-        proxyCandidates(uri),
-        timeoutMs,
-        initializeFirst = { initialize(context) },
-    )
+    ): HttpURLConnection {
+        val candidates = proxyCandidates(uri)
+        Log.d(
+            "SiteLensNetwork",
+            "media routes=${candidates.joinToString(",") { proxyLabel(it) }}",
+        )
+        return openMediaConnection(
+            uri,
+            candidates,
+            timeoutMs,
+            initializeFirst = { initialize(context) },
+        )
+    }
 
     /**
      * Test seam: the same connection without Android services or a live socket.
@@ -709,6 +732,7 @@ object SystemMediaNetwork {
 
     private const val PREFERENCES = "site_lens_network"
     private const val DNS_PROVIDER_KEY = "secure_dns_provider"
+    internal const val MAX_BUFFERED_RESPONSE_BYTES = 16 * 1024 * 1024
 }
 
 /**

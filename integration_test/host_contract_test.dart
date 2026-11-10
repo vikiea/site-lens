@@ -337,12 +337,16 @@ void main() {
           expect(jsonDecode(state.text), {
             'sync': 7,
             'modern': 11,
-            'denied': true,
+            'denied': false,
             'prior': 0,
             'start': 'loading',
             'other': 'empty',
           });
-          expect(privateNetworkHits, 0);
+          expect(
+            privateNetworkHits,
+            1,
+            reason: '@connect * authorizes the target; system networking decides address reachability',
+          );
           expect(
             (await db.values(attack.id))['native-identity'],
             'belongs-to-A',

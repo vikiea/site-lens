@@ -11,6 +11,7 @@ import java.net.URI
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLPeerUnverifiedException
+import okhttp3.Protocol
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -61,6 +62,30 @@ class SystemMediaNetworkTest {
     }
 
     @Test
+    fun proxiedConnectionsUseHttp11WhileDirectKeepsHttp2() {
+        val target = URI("https://example.com/")
+        val proxy = Proxy(
+            Proxy.Type.HTTP,
+            InetSocketAddress.createUnresolved("127.0.0.1", 7890),
+        )
+        val proxied = SystemMediaNetwork.buildClientForProxy(
+            target,
+            proxy,
+            timeoutMs = 15_000,
+            overallTimeout = true,
+        )
+        assertEquals(listOf(Protocol.HTTP_1_1), proxied.protocols)
+
+        val direct = SystemMediaNetwork.buildClientForProxy(
+            target,
+            Proxy.NO_PROXY,
+            timeoutMs = 15_000,
+            overallTimeout = true,
+        )
+        assertTrue(direct.protocols.contains(Protocol.HTTP_2))
+    }
+
+    @Test
     fun loopbackPrivateLanAndLocalNamesReachTheConnectionStage() {
         listOf(
             "http://127.0.0.1:7890/",
@@ -86,6 +111,20 @@ class SystemMediaNetworkTest {
             assertThrows(IllegalArgumentException::class.java) {
                 SystemMediaNetwork.validateTarget(URI(raw))
             }
+        }
+    }
+
+    @Test
+    fun bufferedMediaManifestBudgetAllowsEightToSixteenMiB() {
+        SystemMediaNetwork.validateBufferedRequestLimits(
+            maxBytes = 16 * 1024 * 1024,
+            timeoutMs = 15_000,
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            SystemMediaNetwork.validateBufferedRequestLimits(
+                maxBytes = 16 * 1024 * 1024 + 1,
+                timeoutMs = 15_000,
+            )
         }
     }
 
@@ -127,10 +166,8 @@ class SystemMediaNetworkTest {
         assertEquals(
             "tls_reset",
             category(
-                javax.net.ssl.SSLHandshakeException(
-                    "Connection reset by peer",
-                    java.net.SocketException("Connection reset"),
-                ),
+                javax.net.ssl.SSLHandshakeException("Connection reset by peer")
+                    .apply { initCause(java.net.SocketException("Connection reset")) },
             ),
         )
         assertEquals(
@@ -140,10 +177,8 @@ class SystemMediaNetworkTest {
         assertEquals(
             "certificate",
             category(
-                javax.net.ssl.SSLHandshakeException(
-                    "handshake failed",
-                    java.security.cert.CertificateException("expired"),
-                ),
+                javax.net.ssl.SSLHandshakeException("handshake failed")
+                    .apply { initCause(java.security.cert.CertificateException("expired")) },
             ),
         )
         // A bare socket error never becomes a TLS category.

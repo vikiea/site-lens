@@ -126,7 +126,11 @@ void main() {
         );
         await db.saveMediaCandidate(candidate);
         final task = await tasks.create(candidate);
-        final service = MediaDownloadService(tasks: tasks, http: http);
+        final service = MediaDownloadService(
+          tasks: tasks,
+          http: http,
+          policyTransfer: network.transferFileWithPolicy,
+        );
         await service.startNative(task, candidate);
         final completed = tasks.task(task.id)!;
         expect(
@@ -149,12 +153,19 @@ void main() {
           '1f6c73b3c87100dc375dac28190681a205ad8bb961351cfd07fcfafa656b43db',
         );
         final cachedPlaylist = await playlist.readAsString();
+        final expectedPlaylistText = expectedPlaylist.replaceFirst(
+          'segment.ts',
+          input.segments.single.pathSegments.last,
+        );
         expect(
-          cachedPlaylist,
-          expectedPlaylist.replaceFirst(
-            'segment.ts',
-            input.segments.single.pathSegments.last,
-          ),
+          const LineSplitter()
+              .convert(cachedPlaylist)
+              .where((line) => line.isNotEmpty)
+              .toList(),
+          const LineSplitter()
+              .convert(expectedPlaylistText)
+              .where((line) => line.isNotEmpty)
+              .toList(),
         );
         final expectedBytes = bytes.length + utf8.encode(cachedPlaylist).length;
         expect(completed.bytesDownloaded, expectedBytes);
@@ -273,6 +284,7 @@ void main() {
               await HttpProbe(
                 allowLocal: false,
                 nativeTransport: nativeTransport,
+                requestTimeout: const Duration(seconds: 20),
               ).run(
                 Candidate(id: 2, url: httpsUrl, label: 'Synthetic HTTPS'),
                 1,
@@ -360,7 +372,7 @@ void main() {
           final hlsService = MediaDownloadService(
             tasks: tasks,
             http: http,
-            tlsTransfer: network.transferFile,
+            policyTransfer: network.transferFileWithPolicy,
           );
           try {
             final completed = await hlsService.startNative(

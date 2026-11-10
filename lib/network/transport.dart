@@ -874,6 +874,7 @@ class HttpProbe {
     this.nativeTransport,
     this.onFailure,
     this.nativeLane = 'probe',
+    this.requestTimeout = candidateDeadline,
   });
 
   final bool allowLocal;
@@ -881,6 +882,7 @@ class HttpProbe {
   final void Function(Object error, StackTrace stack, String context)?
   onFailure;
   final String nativeLane;
+  final Duration requestTimeout;
 
   Future<ProbeResult> run(
     Candidate candidate,
@@ -924,10 +926,10 @@ class HttpProbe {
                 cancel: requestCancel,
                 method: 'GET',
                 headers: const {'Range': 'bytes=0-1023'},
-                timeout: candidateDeadline,
+                timeout: requestTimeout,
                 maxBytes: 1024 * 1024,
               )
-              .timeout(candidateDeadline);
+              .timeout(requestTimeout);
       current = response.url;
       if (response.status >= 200 && response.status < 300) {
         return result(ProbeStatus.reachable, 'HTTP 初筛通过，首页尚未验证');

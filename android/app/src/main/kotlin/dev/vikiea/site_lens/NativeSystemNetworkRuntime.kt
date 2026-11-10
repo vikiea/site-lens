@@ -3,6 +3,7 @@ package dev.vikiea.site_lens
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.InterruptedIOException
@@ -110,10 +111,16 @@ class NativeSystemNetworkRuntime(appContext: Context) : MethodChannel.MethodCall
                     outcome.fold(
                         onSuccess = { result.success(it) },
                         onFailure = { error ->
+                            val failureCategory = category(error)
+                            Log.w(
+                                "SiteLensNetwork",
+                                "native request failed category=$failureCategory " +
+                                    "type=${error.javaClass.simpleName}",
+                            )
                             result.error(
                                 "native_network",
                                 "系统网络请求失败",
-                                mapOf("category" to category(error)),
+                                mapOf("category" to failureCategory),
                             )
                         },
                     )
