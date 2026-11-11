@@ -592,7 +592,26 @@ class NativeMediaSessionService : MediaSessionService() {
 
     private fun clearRestorable() {
         restorable = null
-        check(statePrefs.edit().clear().commit()) { "无法清理原生媒体恢复状态" }
+        // Keep the current lifecycle policy across an explicit stop and the
+        // next service instance. Clearing the whole preference record here
+        // would also erase the trusted Bridge owner and sequence, so the next
+        // lifecycle callback could be rejected as stale.
+        val edit = statePrefs.edit()
+            .remove("sessionId")
+            .remove("taskId")
+            .remove("candidateId")
+            .remove("uri")
+            .remove("mime")
+            .remove("hls")
+            .remove("title")
+            .remove("positionMs")
+            .remove("durationMs")
+            .remove("speed")
+            .remove("userPaused")
+            .remove("backgroundPolicyPaused")
+            .remove("state")
+            .remove("known")
+        check(edit.commit()) { "无法清理原生媒体恢复状态" }
     }
 
     private fun open(request: OpenRequest): Map<String, Any?> {

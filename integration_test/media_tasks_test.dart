@@ -889,6 +889,14 @@ void main() {
           'NATIVE_REMUX_PASS size=${artifact.size} duration=${artifact.durationMs} cache=$expected',
         );
 
+        // Explicit stop clears the media snapshot, but the same native Bridge
+        // must still own lifecycle policy when a new service is created.
+        final firstSession = await player.openLocal(
+          task,
+          File(artifact.location),
+        );
+        await player.close(sessionId: firstSession.id);
+        await tester.pump(const Duration(seconds: 1));
         final session = await player.openLocal(task, File(artifact.location));
         final end = DateTime.now().add(const Duration(seconds: 12));
         var state = session;
@@ -908,6 +916,7 @@ void main() {
         expect(policyPaused.state, NativePlaybackState.paused);
         expect(policyPaused.backgroundPolicyPaused, isTrue);
         debugPrint('NATIVE_BACKGROUND_DISABLED_PAUSE_PASS');
+        debugPrint('NATIVE_BACKGROUND_AFTER_STOP_REOPEN_PASS');
 
         await player.setApplicationLifecycle(
           foreground: true,
