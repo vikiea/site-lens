@@ -419,6 +419,18 @@ void main() {
       expect(restored.id, opened.id);
       expect(restored.state, NativePlaybackState.paused);
       expect(restored.positionMs, greaterThanOrEqualTo(pausedPosition));
+      await rebound.setApplicationLifecycle(
+        foreground: true,
+        allowNativeBackgroundPlayback: false,
+      );
+      await rebound.play(sessionId: restored.id);
+      final reboundPolicy = await rebound.setApplicationLifecycle(
+        foreground: false,
+        allowNativeBackgroundPlayback: false,
+      );
+      expect(reboundPolicy.state, NativePlaybackState.paused);
+      expect(reboundPolicy.backgroundPolicyPaused, isTrue);
+      debugPrint('NATIVE_MEDIA_REBIND_POLICY_PASS');
       await rebound.close(sessionId: restored.id);
       await rebound.dispose();
       expect(await file.exists(), isTrue);

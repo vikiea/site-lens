@@ -1480,7 +1480,7 @@ window.addEventListener('resize', () => state(null));
     timeout: const Timeout(Duration(minutes: 2)),
   );
 
-  testWidgets('real WebView media route pause, background playback and system controls', (
+  testWidgets('WebView media ignores native background setting', (
     tester,
   ) async {
     final server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
@@ -1580,7 +1580,11 @@ window.addEventListener('resize', () => state(null));
         ),
       );
       await tester.pumpAndSettle();
-      await awaitState(false);
+      await awaitState(true);
+      debugPrint('WEB_TAB_POLICY_INDEPENDENT_PASS');
+      navigator.currentState!.pop();
+      await tester.pumpAndSettle();
+      await play();
       final expectedForeign = tab.currentUrl.resolve(
         '/video.webm?series=42&episode=4',
       );

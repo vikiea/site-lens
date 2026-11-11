@@ -22,7 +22,6 @@ class NativeMediaRuntime {
   NativePlaybackSession? _active;
   NativePlaybackSession? get active => _active;
   int _openGeneration = 0;
-  int _lifecycleEpoch = 0;
   bool _applicationForeground = true;
   bool _allowNativeBackgroundPlayback = false;
 
@@ -38,13 +37,11 @@ class NativeMediaRuntime {
     required bool foreground,
     required bool allowNativeBackgroundPlayback,
   }) async {
-    final epoch = ++_lifecycleEpoch;
     _applicationForeground = foreground;
     _allowNativeBackgroundPlayback = allowNativeBackgroundPlayback;
     final raw = await _invokeMap('applicationLifecycle', {
       'foreground': foreground,
       'allowNativeBackgroundPlayback': allowNativeBackgroundPlayback,
-      'policyEpoch': epoch,
     });
     return _decode(raw ?? const <String, Object?>{});
   }

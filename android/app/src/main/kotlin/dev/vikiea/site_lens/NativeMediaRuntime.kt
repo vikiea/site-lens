@@ -57,17 +57,20 @@ class NativeMediaRuntime(
     private var bridgeGeneration = 0L
     private var disposed = false
     private val bridgeId = UUID.randomUUID().toString()
+    private var lifecycleOwnerId = UUID.randomUUID().toString()
     private var serviceSurfaceBindingId: String? = null
     private var openRequestId = 0L
     private var applicationForeground = true
     private var allowNativeBackgroundPlayback = false
     private var backgroundPolicyPaused = false
-    private var lifecycleEpoch = 0L
+    private var lifecycleSequence = 0L
 
     fun attach(channel: MethodChannel) {
         serviceObserver?.let(NativeMediaSessionService::unregisterObserver)
         disposed = false
         val observerGeneration = ++bridgeGeneration
+        lifecycleOwnerId = UUID.randomUUID().toString()
+        NativeMediaSessionService.claimLifecycleOwner(context, lifecycleOwnerId)
         this.channel = channel
         channel.setMethodCallHandler(this)
         val observer: (Map<String, Any?>) -> Unit = observer@{ raw ->
@@ -108,12 +111,7 @@ class NativeMediaRuntime(
                 val foreground = call.argument<Boolean>("foreground") ?: true
                 val allowed =
                     call.argument<Boolean>("allowNativeBackgroundPlayback") ?: false
-                val epoch = call.argument<Number>("policyEpoch")?.toLong() ?: 0L
-                if (epoch < lifecycleEpoch) {
-                    result.success(snapshot())
-                    return
-                }
-                lifecycleEpoch = epoch
+                val sequence = ++lifecycleSequence
                 applicationForeground = foreground
                 allowNativeBackgroundPlayback = allowed
                 if (!foreground && !allowed && player?.isPlaying == true) {
@@ -128,7 +126,8 @@ class NativeMediaRuntime(
                     context,
                     foreground,
                     allowed,
-                    epoch,
+                    lifecycleOwnerId,
+                    sequence,
                 ) { outcome ->
                     if (!hadServiceSession) {
                         result.success(snapshot())

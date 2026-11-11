@@ -70,6 +70,41 @@ class NativeMediaSessionPolicyTest {
         )
     }
 
+    @Test fun lifecyclePolicyUsesNativeOwnerAndSequenceOrdering() {
+        assertTrue(
+            NativeMediaSessionPolicy.acceptsLifecyclePolicy(
+                ownerId = "bridge",
+                sequence = 2L,
+                currentOwnerId = "bridge",
+                currentSequence = 1L,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.acceptsLifecyclePolicy(
+                ownerId = "new-bridge",
+                sequence = 1L,
+                currentOwnerId = "old-bridge",
+                currentSequence = 99L,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.acceptsLifecyclePolicy(
+                ownerId = "bridge",
+                sequence = 1L,
+                currentOwnerId = "bridge",
+                currentSequence = 1L,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.acceptsLifecyclePolicy(
+                ownerId = "",
+                sequence = 2L,
+                currentOwnerId = "bridge",
+                currentSequence = 1L,
+            ),
+        )
+    }
+
     @Test fun controllerPolicyRejectsUntrustedPackages() {
         assertTrue(
             NativeMediaSessionPolicy.isAllowedController(

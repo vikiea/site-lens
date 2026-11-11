@@ -40,6 +40,15 @@ internal object NativeMediaSessionPolicy {
         allowNativeBackgroundPlayback: Boolean,
     ): Boolean = applicationForeground || allowNativeBackgroundPlayback
 
+    fun acceptsLifecyclePolicy(
+        ownerId: String,
+        sequence: Long,
+        currentOwnerId: String,
+        currentSequence: Long,
+    ): Boolean = ownerId.isNotBlank() &&
+        ownerId == currentOwnerId &&
+        sequence > currentSequence
+
     fun isAppController(controllerPackage: String?, appPackage: String): Boolean =
         controllerPackage == appPackage
 

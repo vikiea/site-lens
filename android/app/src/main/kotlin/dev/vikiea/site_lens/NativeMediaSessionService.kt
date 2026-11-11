@@ -59,7 +59,8 @@ class NativeMediaSessionService : MediaSessionService() {
     private var backgroundPolicyPaused = false
     private var applicationForeground = true
     private var allowNativeBackgroundPlayback = false
-    private var lifecyclePolicyEpoch = 0L
+    private var lifecyclePolicyOwner = ""
+    private var lifecyclePolicySequence = 0L
     private var stopping = false
     private var releaseWasExplicitStop = false
     private var engineReleased = false
@@ -157,7 +158,8 @@ class NativeMediaSessionService : MediaSessionService() {
             PREF_APPLICATION_FOREGROUND,
             true,
         )
-        lifecyclePolicyEpoch = statePrefs.getLong(PREF_POLICY_EPOCH, 0L)
+        lifecyclePolicyOwner = statePrefs.getString(PREF_POLICY_OWNER, "") ?: ""
+        lifecyclePolicySequence = statePrefs.getLong(PREF_POLICY_SEQUENCE, 0L)
         // Media3 publishes the controllable notification after the player and
         // session are built. Android's foreground-service deadline starts at
         // startForegroundService(), so publish a concrete placeholder first;
@@ -353,16 +355,25 @@ class NativeMediaSessionService : MediaSessionService() {
     private fun applicationLifecycle(
         foreground: Boolean,
         allowBackground: Boolean,
-        epoch: Long,
+        ownerId: String,
+        sequence: Long,
     ): Map<String, Any?> {
-        if (epoch < lifecyclePolicyEpoch) return snapshot()
-        lifecyclePolicyEpoch = epoch
+        if (!NativeMediaSessionPolicy.acceptsLifecyclePolicy(
+                ownerId = ownerId,
+                sequence = sequence,
+                currentOwnerId = lifecyclePolicyOwner,
+                currentSequence = lifecyclePolicySequence,
+            )
+        ) return snapshot()
+        lifecyclePolicyOwner = ownerId
+        lifecyclePolicySequence = sequence
         applicationForeground = foreground
         allowNativeBackgroundPlayback = allowBackground
         statePrefs.edit()
             .putBoolean(PREF_ALLOW_NATIVE_BACKGROUND_PLAYBACK, allowBackground)
             .putBoolean(PREF_APPLICATION_FOREGROUND, foreground)
-            .putLong(PREF_POLICY_EPOCH, epoch)
+            .putString(PREF_POLICY_OWNER, ownerId)
+            .putLong(PREF_POLICY_SEQUENCE, sequence)
             .commit()
         if (foreground) {
             backgroundPolicyPaused = false
@@ -382,6 +393,15 @@ class NativeMediaSessionService : MediaSessionService() {
             }
         }
         return snapshot()
+    }
+
+    private fun claimLifecycleOwner(ownerId: String) {
+        lifecyclePolicyOwner = ownerId
+        lifecyclePolicySequence = 0L
+        statePrefs.edit()
+            .putString(PREF_POLICY_OWNER, ownerId)
+            .putLong(PREF_POLICY_SEQUENCE, 0L)
+            .commit()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -541,7 +561,8 @@ class NativeMediaSessionService : MediaSessionService() {
                 allowNativeBackgroundPlayback,
             )
             .putBoolean(PREF_APPLICATION_FOREGROUND, applicationForeground)
-            .putLong(PREF_POLICY_EPOCH, lifecyclePolicyEpoch)
+            .putString(PREF_POLICY_OWNER, lifecyclePolicyOwner)
+            .putLong(PREF_POLICY_SEQUENCE, lifecyclePolicySequence)
             .putString("state", state)
             .putBoolean("known", true)
         check(edit.commit()) { "无法保存原生媒体恢复状态" }
@@ -929,7 +950,8 @@ class NativeMediaSessionService : MediaSessionService() {
         private const val PREF_ALLOW_NATIVE_BACKGROUND_PLAYBACK =
             "allowNativeBackgroundPlayback"
         private const val PREF_APPLICATION_FOREGROUND = "applicationForeground"
-        private const val PREF_POLICY_EPOCH = "policyEpoch"
+        private const val PREF_POLICY_OWNER = "policyOwner"
+        private const val PREF_POLICY_SEQUENCE = "policySequence"
         private var instance: NativeMediaSessionService? = null
         private val observers = CopyOnWriteArraySet<(Map<String, Any?>) -> Unit>()
         private data class PendingAction(
@@ -974,19 +996,28 @@ class NativeMediaSessionService : MediaSessionService() {
             context: Context,
             foreground: Boolean,
             allowBackground: Boolean,
-            epoch: Long,
+            ownerId: String,
+            sequence: Long,
             callback: (Result<Map<String, Any?>>) -> Unit,
         ) {
             val preferences = context.getSharedPreferences(
                 "native_media_session_state",
                 Context.MODE_PRIVATE,
             )
-            val storedEpoch = preferences.getLong(PREF_POLICY_EPOCH, 0L)
-            if (epoch >= storedEpoch) {
+            val storedOwner = preferences.getString(PREF_POLICY_OWNER, "") ?: ""
+            val storedSequence = preferences.getLong(PREF_POLICY_SEQUENCE, 0L)
+            if (NativeMediaSessionPolicy.acceptsLifecyclePolicy(
+                    ownerId = ownerId,
+                    sequence = sequence,
+                    currentOwnerId = storedOwner,
+                    currentSequence = storedSequence,
+                )
+            ) {
                 preferences.edit()
                     .putBoolean(PREF_ALLOW_NATIVE_BACKGROUND_PLAYBACK, allowBackground)
                     .putBoolean(PREF_APPLICATION_FOREGROUND, foreground)
-                    .putLong(PREF_POLICY_EPOCH, epoch)
+                    .putString(PREF_POLICY_OWNER, ownerId)
+                    .putLong(PREF_POLICY_SEQUENCE, sequence)
                     .commit()
             }
             val service = synchronized(pendingLock) {
@@ -1010,7 +1041,12 @@ class NativeMediaSessionService : MediaSessionService() {
                 action = {
                     callback(
                         runCatching {
-                            it.applicationLifecycle(foreground, allowBackground, epoch)
+                            it.applicationLifecycle(
+                                foreground,
+                                allowBackground,
+                                ownerId,
+                                sequence,
+                            )
                         },
                     )
                 },
@@ -1101,6 +1137,19 @@ class NativeMediaSessionService : MediaSessionService() {
             } else {
                 context.stopService(Intent(context.applicationContext, NativeMediaSessionService::class.java))
                 callback(true)
+            }
+        }
+
+        fun claimLifecycleOwner(context: Context, ownerId: String) {
+            require(ownerId.isNotBlank()) { "原生媒体 Bridge 身份无效" }
+            synchronized(pendingLock) {
+                instance?.claimLifecycleOwner(ownerId) ?: context.getSharedPreferences(
+                    "native_media_session_state",
+                    Context.MODE_PRIVATE,
+                ).edit()
+                    .putString(PREF_POLICY_OWNER, ownerId)
+                    .putLong(PREF_POLICY_SEQUENCE, 0L)
+                    .commit()
             }
         }
 
