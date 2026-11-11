@@ -81,7 +81,10 @@ internal object NativeMediaSessionPolicy {
         controllerPackage: String?,
         appPackage: String,
         trusted: Boolean,
-    ): Boolean = trusted || isAppController(controllerPackage, appPackage)
+        mediaNotificationController: Boolean = false,
+    ): Boolean = trusted ||
+        isAppController(controllerPackage, appPackage) ||
+        mediaNotificationController
 
     fun isExternalPlayerCommandAllowed(command: Int): Boolean = command !in setOf(
         Player.COMMAND_SET_MEDIA_ITEM,

@@ -265,6 +265,14 @@ class NativeMediaSessionPolicyTest {
                 trusted = false,
             ),
         )
+        assertTrue(
+            NativeMediaSessionPolicy.isAllowedController(
+                controllerPackage = "com.android.systemui",
+                appPackage = "dev.vikiea.site_lens",
+                trusted = false,
+                mediaNotificationController = true,
+            ),
+        )
     }
 
     @Test fun externalControllersCannotReplaceOrReleaseTheMediaItem() {
