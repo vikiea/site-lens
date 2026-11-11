@@ -9,12 +9,14 @@ class FakeWebHostApi extends WebHostApi {
     this.playbackTitle,
     this.playbackDocumentTitle,
     this.playbackSnapshotUrl = 'https://example.test/video/1/',
+    this.playbackReady = true,
   });
 
   final bool isolatedScripts;
   final String? playbackTitle;
   final String? playbackDocumentTitle;
   final String playbackSnapshotUrl;
+  final bool playbackReady;
   final created = <int>[];
   final destroyed = <int>[];
   final navigated = <int, List<String>>{};
@@ -66,14 +68,14 @@ class FakeWebHostApi extends WebHostApi {
     if (playbackTitle == null && playbackDocumentTitle == null) {
       return super.inspect(hostId, selector);
     }
-    if (!selector.contains('.hg-play__slide.is-active .hg-play__title-text')) {
+    if (selector != '@visible-playback-title') {
       throw StateError('unexpected playback title selector');
     }
     return PageSnapshot(
       url: playbackSnapshotUrl,
       title: playbackDocumentTitle ?? '',
       generation: 0,
-      ready: true,
+      ready: playbackReady,
       challenge: false,
       interactionRequired: false,
       links: const [],

@@ -22,25 +22,38 @@ class Element {
   get pathname() { return this.href ? new URL(this.href).pathname : ''; }
   get baseURI() { return this.parentElement?.baseURI ?? this.documentUrl; }
   getAttribute(name) { return this.attrs[name] ?? null; }
-  getBoundingClientRect() { return {width: 320, height: 40}; }
+  getBoundingClientRect() {
+    return this.attrs.hidden ? {width: 0, height: 0} : {width: 320, height: 40};
+  }
+  checkVisibility() { return !this.attrs.hidden && !this.attrs.cssHidden; }
   matches(selector) {
-    return selector.split(',').some(part => {
-      const rule = part.trim();
-      const tag = rule.match(/^[a-z][a-z0-9-]*/i)?.[0];
-      if (tag && this.tagName !== tag.toUpperCase()) return false;
-      const id = rule.match(/#([\w-]+)/)?.[1];
-      if (id && this.id !== id) return false;
-      const className = rule.match(/\.([\w-]+)/)?.[1];
-      if (className && !this.className.split(/\s+/).includes(className)) return false;
-      const attr = rule.match(/\[([\w-]+)(\*?=)?["']?([^\]"']*)["']?\]/);
-      if (attr) {
-        const value = this.getAttribute(attr[1]);
-        if (value == null) return false;
-        if (attr[2] === '=' && value !== attr[3]) return false;
-        if (attr[2] === '*=' && !value.includes(attr[3])) return false;
-      }
-      return true;
-    });
+    return selector.split(',').some(part => this.matchesComplex(part.trim()));
+  }
+  matchesComplex(rule) {
+    const parts = rule.split(/\s+/).filter(Boolean);
+    let current = this;
+    for (let index = parts.length - 1; index >= 0; index--) {
+      while (current && !current.matchesSimple(parts[index])) current = current.parentElement;
+      if (!current) return false;
+      if (index > 0) current = current.parentElement;
+    }
+    return true;
+  }
+  matchesSimple(rule) {
+    const tag = rule.match(/^[a-z][a-z0-9-]*/i)?.[0];
+    if (tag && this.tagName !== tag.toUpperCase()) return false;
+    const id = rule.match(/#([\w-]+)/)?.[1];
+    if (id && this.id !== id) return false;
+    for (const match of rule.matchAll(/\.([\w-]+)/g)) {
+      if (!this.className.split(/\s+/).includes(match[1])) return false;
+    }
+    for (const match of rule.matchAll(/\[([\w-]+)(\*?=)?["']?([^\]"']*)["']?\]/g)) {
+      const value = this.getAttribute(match[1]);
+      if (value == null) return false;
+      if (match[2] === '=' && value !== match[3]) return false;
+      if (match[2] === '*=' && !value.includes(match[3])) return false;
+    }
+    return true;
   }
   querySelectorAll(selector) {
     return this.children.flatMap(child => [
@@ -57,10 +70,10 @@ class Element {
 const element = (...args) => new Element(...args);
 const link = (href, text) => element('a', {href}, text);
 
-function inspect(body, selector = '@latest-addresses', href = 'https://publish.example/') {
+function inspect(body, selector = '@latest-addresses', href = 'https://publish.example/', title = '最新地址发布页') {
   body.documentUrl = href;
   const document = {
-    body, title: '最新地址发布页', baseURI: href, readyState: 'complete',
+    body, title, baseURI: href, readyState: 'complete',
     querySelector: selector => body.matches(selector) ? body : body.querySelector(selector),
     querySelectorAll: selector => [
       ...(body.matches(selector) ? [body] : []), ...body.querySelectorAll(selector),
@@ -81,6 +94,52 @@ const directEntry = element('body', {},
     link('http://127.0.0.2:7890/site', '可用入口'),
   ),
 );
+
+const mixedVisibleTitle = element('body', {},
+  element('div', {class: 'player-title', hidden: true}, '西游天命西征'),
+  element('div', {class: 'player-title'}, '合欢宗小弟子'),
+);
+assert.equal(
+  inspect(mixedVisibleTitle, '.player-title', 'https://video.example/watch/1').text,
+  '合欢宗小弟子',
+);
+
+const shortVisibleTitle = element('body', {},
+  element('div', {class: 'hg-play__slide is-active', 'data-play-id': '1'},
+    element('div', {class: 'hg-play__title-text'}, '合欢宗小弟子'),
+  ),
+);
+const shortTitleResult = inspect(
+  shortVisibleTitle,
+  '@visible-playback-title',
+  'https://video.example/watch/1',
+  '视频播放',
+);
+assert.equal(shortTitleResult.ready, true);
+assert.equal(shortTitleResult.text, '合欢宗小弟子');
+
+const priorityTitle = element('body', {},
+  element('div', {class: 'hg-play__slide is-active', 'data-play-id': '1'},
+    element('div', {class: 'title-text'}, '推荐标题'),
+    element('div', {'data-play-title': '1'}, '合欢宗小弟子'),
+  ),
+);
+assert.equal(
+  inspect(priorityTitle, '@visible-playback-title', 'https://video.example/watch/1').text,
+  '合欢宗小弟子',
+);
+
+const cssHiddenTitle = element('body', {},
+  element('div', {class: 'hg-play__slide is-active', 'data-play-id': '1'},
+    element('div', {class: 'hg-play__title-text', cssHidden: true}, '推荐标题'),
+    element('div', {class: 'hg-play__title-text'}, '合欢宗小弟子'),
+  ),
+);
+assert.equal(
+  inspect(cssHiddenTitle, '@visible-playback-title', 'https://video.example/watch/1').text,
+  '合欢宗小弟子',
+);
+
 for (const selector of ['@latest-addresses', '#latest-addresses']) {
   const result = inspect(directEntry, selector, 'http://127.0.0.1:7890/publish');
   assert.equal(result.ready, true);

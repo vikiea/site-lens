@@ -333,6 +333,27 @@ void main() {
     }
   });
 
+  test('an invisible selector match cannot override the page title', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final api = FakeWebHostApi(
+      playbackTitle: '西游天命西征',
+      playbackDocumentTitle: '合欢宗小弟子 - 短剧视频在线观看 | 黄果短剧',
+      playbackReady: false,
+    );
+    final hosts = NativeHosts(
+      db,
+      ScriptService(db, ControlledHttp()),
+      ControlledHttp(),
+      api: api,
+    );
+    final session = _session(hosts)..url = 'https://example.test/video/1/';
+    try {
+      expect(await hosts.visiblePlaybackTitle(session.id), '合欢宗小弟子');
+    } finally {
+      await db.close();
+    }
+  });
+
   test('generic DOM titles fall back to the descriptive page title', () async {
     for (final domTitle in ['批量媒体', '第1集']) {
       final db = AppDatabase(NativeDatabase.memory());

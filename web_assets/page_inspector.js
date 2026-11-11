@@ -4,6 +4,31 @@
     const regionSignal = /(?:最新(?:可用)?(?:站点|入口|地址)|(?:站点|入口|地址).{0,8}最新|官方地址|备用域名|可用域名|地址列表|线路地址|永久地址)/i;
     const publishSignal = /(?:发布页|地址发布|备用网址|回家看看|永久地址)/i;
     const directHostSignal = /(?:latest|address|domain|site|line|url|link|content|list)/i;
+    const playbackTitleSelectors = [
+      '[data-play-id].is-active [data-play-title]',
+      '[data-play-id].is-active [data-video-title]',
+      '[data-play-id].is-active [class*="title-text"]',
+      '[data-play-id].is-active [class*="slide-title"]',
+      '[data-play-id].is-active h1',
+      '[data-play-id][aria-current="true"] [class*="title-text"]',
+      '[data-play-id][aria-current="true"] [class*="slide-title"]',
+      '[data-play-id][aria-current="true"] h1',
+      '.hg-play__slide.is-active .hg-play__title-text',
+      '.hg-play__slide.is-active [class*="title-text"]',
+      '.hg-play__slide.is-active .hg-play__slide-title',
+      '.hg-play__slide.is-active h1',
+    ];
+    const visible = el => {
+      if (!el) return false;
+      const rect = el.getBoundingClientRect();
+      if (!(rect.width > 0 && rect.height > 0)) return false;
+      if (typeof el.checkVisibility === 'function' && !el.checkVisibility({
+        checkOpacity: true,
+        checkVisibilityCSS: true,
+      })) return false;
+      const style = el.ownerDocument?.defaultView?.getComputedStyle?.(el);
+      return !style || (style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0);
+    };
 
     let root;
     if (selector === '@latest-addresses') {
@@ -69,12 +94,19 @@
           .filter(item => item.count > 0 && item.count <= 120)
           .sort((a, b) => a.count - b.count)[0]?.candidate;
       }
+    } else if (selector === '@visible-playback-title') {
+      // Keep the declared priority. A comma-separated querySelectorAll result
+      // follows DOM order, which lets broad carousel nodes outrank the actual
+      // active player title.
+      for (const titleSelector of playbackTitleSelectors) {
+        root = [...document.querySelectorAll(titleSelector)].find(visible);
+        if (root) break;
+      }
     } else {
-      root = document.querySelector(selector);
+      const matches = [...document.querySelectorAll(selector)];
+      root = matches.find(visible) || matches[0] || null;
     }
 
-    const visible = el =>
-      !!el && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
     const text = (document.body && document.body.innerText || '').slice(0, 20000);
     const challenge = !!document.querySelector(
       '.g-recaptcha,.h-captcha,iframe[src*="captcha"],input[name*="captcha"]',
@@ -84,9 +116,10 @@
       ? [...(root.matches('a[href]') ? [root] : []), ...root.querySelectorAll('a[href]')]
       : [];
     const rootText = compact(root && root.textContent || '');
-    const ready = document.readyState !== 'loading' && visible(root) &&
-      ((root.textContent || '').trim().length >= 16 || !!root.querySelector('a[href],video,audio,img,article')) &&
-      (selector !== '@latest-addresses' || anchors.length > 0);
+    const ready = document.readyState !== 'loading' && visible(root) && rootText.length > 0 &&
+      (selector !== '@latest-addresses' ||
+        (rootText.length >= 16 || !!root.querySelector('a[href],video,audio,img,article')) &&
+          anchors.length > 0);
     const pageKey = raw => {
       try {
         const u = new URL(raw, document.baseURI);

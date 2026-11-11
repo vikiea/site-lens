@@ -3994,12 +3994,16 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
         fallback: true,
       );
     }
-    final candidateGroup = mediaTaskGroupDirectoryName(candidates);
+    // A batch selected from one playback surface shares that page's active
+    // title. Candidate metadata can contain hidden recommendations or mixed
+    // series labels, so it must not pre-empt the visible playback owner.
+    final visible = await widget.app.hosts.visiblePlaybackTitle(current.id);
+    if (visible != null) return (name: visible, fallback: false);
+    final candidateGroup = mediaBatchDirectoryName(candidates);
     if (candidateGroup != null) {
       return (name: candidateGroup, fallback: false);
     }
-    final visible = await widget.app.hosts.visiblePlaybackTitle(current.id);
-    return (name: visible, fallback: false);
+    return (name: mediaBatchFallbackDirectoryName(candidates), fallback: true);
   }
 
   Future<void> _playMediaCandidate(

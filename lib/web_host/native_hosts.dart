@@ -280,20 +280,7 @@ class NativeHosts extends WebHostEvents {
   }) async {
     final session = sessions[hostId];
     if (session == null || session.disposed) return null;
-    final selector = [
-      '[data-play-id].is-active [data-play-title]',
-      '[data-play-id].is-active [data-video-title]',
-      '[data-play-id].is-active [class*="title-text"]',
-      '[data-play-id].is-active [class*="slide-title"]',
-      '[data-play-id].is-active h1',
-      '[data-play-id][aria-current="true"] [class*="title-text"]',
-      '[data-play-id][aria-current="true"] [class*="slide-title"]',
-      '[data-play-id][aria-current="true"] h1',
-      '.hg-play__slide.is-active .hg-play__title-text',
-      '.hg-play__slide.is-active [class*="title-text"]',
-      '.hg-play__slide.is-active .hg-play__slide-title',
-      '.hg-play__slide.is-active h1',
-    ].join(',');
+    const selector = '@visible-playback-title';
     final generation = session.generation;
     final url = session.url;
     if (url.isEmpty) return null;
@@ -321,7 +308,9 @@ class NativeHosts extends WebHostEvents {
                       candidateBoundary))) {
         return null;
       }
-      final text = snapshot.text.replaceAll(RegExp(r'\s+'), ' ').trim();
+      final text = snapshot.ready
+          ? snapshot.text.replaceAll(RegExp(r'\s+'), ' ').trim()
+          : '';
       return _playbackDirectoryTitle(text) ??
           _playbackDirectoryTitle(_seriesTitleFromPageTitle(snapshot.title));
     } catch (_) {

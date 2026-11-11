@@ -457,6 +457,82 @@ void main() {
   });
 
   testWidgets(
+    'batch download prefers the visible playback title over mixed candidates',
+    (tester) async {
+      const siteUrl = 'https://toolbar.example/batch-title/';
+      final db = AppDatabase(NativeDatabase.memory());
+      final api = FakeWebHostApi(
+        playbackTitle: '合欢宗小弟子',
+        playbackDocumentTitle: '合欢宗小弟子 - 短剧视频在线观看 | 黄果短剧',
+        playbackSnapshotUrl: siteUrl,
+      );
+      final app = await boot(tester, db, api: api, siteUrl: siteUrl);
+      addTearDown(() async {
+        await app.shutdown();
+        await db.close();
+      });
+      final host = app.activeBrowser!.loadedHost!;
+      for (var episode = 1; episode <= 2; episode++) {
+        await tester.runAsync(
+          () => app.hosts.onEvent(
+            HostEvent(
+              hostId: host.id,
+              generation: host.generation,
+              kind: 'mediaCandidate',
+              url: siteUrl,
+              detail: jsonEncode({
+                'frame': 'media-main',
+                'document': 'media-document',
+                'main': true,
+                'reason': 'snapshot',
+                'pageUrl': siteUrl,
+                'url': 'https://media.example/episode-$episode.m3u8',
+                'title': '第$episode集',
+                'seriesTitle': episode == 1 ? '西游天命西征' : '神雕：重生之杨过',
+                'mime': 'application/vnd.apple.mpegurl',
+                'seriesKey': 'series-visible-title',
+                'episodeNumber': episode,
+              }),
+            ),
+          ),
+        );
+      }
+      await tester.pump();
+
+      await tester.tap(find.byIcon(Icons.keyboard_arrow_up));
+      await tester.pump();
+      await tester.tap(find.byTooltip('更多浏览器操作'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('媒体嗅探与候选'));
+      await tester.pumpAndSettle();
+      final downloadButton = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, '下载 2 集'),
+      );
+      final tasks = (await tester.runAsync(() async {
+        downloadButton.onPressed!();
+        final deadline = DateTime.now().add(const Duration(seconds: 2));
+        while (DateTime.now().isBefore(deadline) &&
+            app.mediaTasks.tasks.length < 2) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        for (final task in app.mediaTasks.tasks) {
+          await app.mediaTasks.flush(task.id);
+        }
+        return List<MediaTask>.of(app.mediaTasks.tasks);
+      }))!;
+
+      expect(tasks, hasLength(2));
+      expect(tasks.map((task) => task.batchDirectory).toSet(), {'合欢宗小弟子'});
+      expect(
+        tasks
+            .map((task) => task.batchDirectory)
+            .where((value) => isMediaFallbackDirectory(value)),
+        isEmpty,
+      );
+    },
+  );
+
+  testWidgets(
     'open media sheet follows new episode snapshots without refresh',
     (tester) async {
       final db = AppDatabase(NativeDatabase.memory());
