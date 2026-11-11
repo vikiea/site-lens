@@ -27,6 +27,8 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.CommandButton
+import com.google.common.collect.ImmutableList
 import java.io.Closeable
 import java.io.File
 import java.util.UUID
@@ -82,28 +84,13 @@ class NativeMediaSessionService : MediaSessionService() {
             controllerInfo: MediaSession.ControllerInfo,
         ): MediaSession.ConnectionResult {
             if (!isAllowedController(controllerInfo)) return MediaSession.ConnectionResult.reject()
-            val playerCommands = if (isAppController(controllerInfo)) {
-                MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS
-            } else {
-                MediaSession.ConnectionResult.DEFAULT_UNTRUSTED_PLAYER_COMMANDS
-                    .buildUpon()
-                    .removeAll(
-                        Player.COMMAND_SET_MEDIA_ITEM,
-                        Player.COMMAND_CHANGE_MEDIA_ITEMS,
-                        Player.COMMAND_SET_MEDIA_ITEMS_METADATA,
-                        Player.COMMAND_SET_PLAYLIST_METADATA,
-                        Player.COMMAND_SET_VIDEO_SURFACE,
-                        Player.COMMAND_RELEASE,
-                    )
-                    .build()
-            }
             return MediaSession.ConnectionResult.accept(
                 if (isAppController(controllerInfo)) {
                     MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
                 } else {
                     MediaSession.ConnectionResult.DEFAULT_UNTRUSTED_SESSION_COMMANDS
                 },
-                playerCommands,
+                availablePlayerCommands(controllerInfo),
             )
         }
 
@@ -116,7 +103,20 @@ class NativeMediaSessionService : MediaSessionService() {
                 controllerAllowed = isAllowedController(controllerInfo),
                 appController = isAppController(controllerInfo),
                 command = playerCommand,
+                playbackCommandAllowed = NativeMediaSessionPolicy.isPlayPauseCommandAllowed(
+                    command = playerCommand,
+                    applicationForeground = applicationForeground,
+                    allowNativeBackgroundPlayback = allowNativeBackgroundPlayback,
+                    playerIsPlaying = ::player.isInitialized &&
+                        (player.isPlaying || player.playWhenReady),
+                ),
             )
+            if (decision != NativeMediaSessionPolicy.PlayerCommandDecision.REJECT &&
+                NativeMediaSessionPolicy.isExplicitPlayPauseCommand(playerCommand)
+            ) {
+                backgroundPolicyPaused = false
+                userPaused = player.playWhenReady || player.isPlaying
+            }
             return when (decision) {
                 NativeMediaSessionPolicy.PlayerCommandDecision.REJECT -> Player.COMMAND_INVALID
                 NativeMediaSessionPolicy.PlayerCommandDecision.ALLOW,
@@ -148,6 +148,41 @@ class NativeMediaSessionService : MediaSessionService() {
         getSharedPreferences("native_media_session_state", Context.MODE_PRIVATE)
     }
 
+    private inner class PolicyMediaNotificationProvider :
+        DefaultMediaNotificationProvider(
+            applicationContext,
+            DefaultMediaNotificationProvider.NotificationIdProvider { ID },
+            CHANNEL,
+            R.string.site_lens_media_channel_name,
+        ) {
+        override fun getMediaButtons(
+            session: MediaSession,
+            playerCommands: Player.Commands,
+            mediaButtonPreferences: ImmutableList<CommandButton>,
+            showPauseButton: Boolean,
+        ): ImmutableList<CommandButton> {
+            val buttons = super.getMediaButtons(
+                session,
+                playerCommands,
+                mediaButtonPreferences,
+                showPauseButton,
+            )
+            val playing = ::player.isInitialized &&
+                (player.isPlaying || player.playWhenReady)
+            if (NativeMediaSessionPolicy.shouldExposePlayPauseCommand(
+                    applicationForeground = applicationForeground,
+                    allowNativeBackgroundPlayback = allowNativeBackgroundPlayback,
+                    playerIsPlaying = playing,
+                )
+            ) {
+                return buttons
+            }
+            return ImmutableList.builder<CommandButton>()
+                .addAll(buttons.filter { it.playerCommand != Player.COMMAND_PLAY_PAUSE })
+                .build()
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         allowNativeBackgroundPlayback = statePrefs.getBoolean(
@@ -165,11 +200,12 @@ class NativeMediaSessionService : MediaSessionService() {
         // startForegroundService(), so publish a concrete placeholder first;
         // Media3 then replaces it on the same notification/session ID.
         startForegroundImmediately()
-        val notificationProvider = DefaultMediaNotificationProvider.Builder(applicationContext)
-            .setNotificationId(ID)
-            .setChannelId(CHANNEL)
-            .setChannelName(R.string.site_lens_media_channel_name)
-            .build()
+        // PolicyMediaNotificationProvider keeps the standard
+        // DefaultMediaNotificationProvider.Builder(applicationContext)
+        // configuration: .setNotificationId(ID), .setChannelId(CHANNEL), and
+        // the Site Lens media channel. It only filters the play/pause button
+        // when the native background policy forbids starting playback.
+        val notificationProvider = PolicyMediaNotificationProvider()
             .apply { setSmallIcon(android.R.drawable.ic_media_play) }
         setMediaNotificationProvider(notificationProvider)
         stopping = false
@@ -280,9 +316,6 @@ class NativeMediaSessionService : MediaSessionService() {
             }
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
                 if (!acceptsCallback(generation)) return
-                if (NativeMediaSessionPolicy.isExplicitPlayWhenReadyChange(reason)) {
-                    userPaused = !playWhenReady
-                }
                 syncState()
             }
             override fun onPlayerError(error: PlaybackException) {
@@ -392,7 +425,59 @@ class NativeMediaSessionService : MediaSessionService() {
                 publish()
             }
         }
+        refreshControllerCommands()
         return snapshot()
+    }
+
+    private fun availablePlayerCommands(
+        controllerInfo: MediaSession.ControllerInfo,
+    ): Player.Commands {
+        val commands = if (isAppController(controllerInfo)) {
+            MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS
+        } else {
+            MediaSession.ConnectionResult.DEFAULT_UNTRUSTED_PLAYER_COMMANDS
+                .buildUpon()
+                .removeAll(
+                    Player.COMMAND_SET_MEDIA_ITEM,
+                    Player.COMMAND_CHANGE_MEDIA_ITEMS,
+                    Player.COMMAND_SET_MEDIA_ITEMS_METADATA,
+                    Player.COMMAND_SET_PLAYLIST_METADATA,
+                    Player.COMMAND_SET_VIDEO_SURFACE,
+                    Player.COMMAND_RELEASE,
+                )
+                .build()
+        }
+        return if (NativeMediaSessionPolicy.shouldExposePlayPauseCommand(
+                applicationForeground = applicationForeground,
+                allowNativeBackgroundPlayback = allowNativeBackgroundPlayback,
+                playerIsPlaying = ::player.isInitialized &&
+                    (player.isPlaying || player.playWhenReady),
+            )
+        ) {
+            commands
+        } else {
+            commands.buildUpon().remove(Player.COMMAND_PLAY_PAUSE).build()
+        }
+    }
+
+    private fun refreshControllerCommands() {
+        if (!::mediaSession.isInitialized || mediaSessionReleased) return
+        val sessionCommandsByController = mediaSession.connectedControllers
+        sessionCommandsByController.forEach { controllerInfo ->
+            if (!isAllowedController(controllerInfo)) return@forEach
+            runCatching {
+                mediaSession.setAvailableCommands(
+                    controllerInfo,
+                    if (isAppController(controllerInfo)) {
+                        MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
+                    } else {
+                        MediaSession.ConnectionResult.DEFAULT_UNTRUSTED_SESSION_COMMANDS
+                    },
+                    availablePlayerCommands(controllerInfo),
+                )
+            }
+        }
+        triggerNotificationUpdate()
     }
 
     private fun claimLifecycleOwner(ownerId: String) {
@@ -702,6 +787,7 @@ class NativeMediaSessionService : MediaSessionService() {
             player.prepare()
             lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.ACTIVE
             startPositionPersistence()
+            refreshControllerCommands()
             publish()
             return snapshot()
         } catch (error: Exception) {

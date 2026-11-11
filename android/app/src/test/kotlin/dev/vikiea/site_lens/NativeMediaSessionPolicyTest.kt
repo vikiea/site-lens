@@ -70,6 +70,106 @@ class NativeMediaSessionPolicyTest {
         )
     }
 
+    @Test fun notificationPlayCommandFollowsBackgroundPlaybackPolicy() {
+        assertFalse(
+            NativeMediaSessionPolicy.isPlayPauseCommandAllowed(
+                command = Player.COMMAND_PLAY_PAUSE,
+                applicationForeground = false,
+                allowNativeBackgroundPlayback = false,
+                playerIsPlaying = false,
+            ),
+        )
+        assertTrue(
+            NativeMediaSessionPolicy.isPlayPauseCommandAllowed(
+                command = Player.COMMAND_PLAY_PAUSE,
+                applicationForeground = false,
+                allowNativeBackgroundPlayback = true,
+                playerIsPlaying = false,
+            ),
+        )
+        assertTrue(
+            NativeMediaSessionPolicy.isPlayPauseCommandAllowed(
+                command = Player.COMMAND_PLAY_PAUSE,
+                applicationForeground = false,
+                allowNativeBackgroundPlayback = false,
+                playerIsPlaying = true,
+            ),
+        )
+        assertTrue(
+            NativeMediaSessionPolicy.isPlayPauseCommandAllowed(
+                command = Player.COMMAND_STOP,
+                applicationForeground = false,
+                allowNativeBackgroundPlayback = false,
+                playerIsPlaying = false,
+            ),
+        )
+    }
+
+    @Test fun notificationCommandsHidePlayWhenBackgroundPlaybackIsDisabled() {
+        assertFalse(
+            NativeMediaSessionPolicy.shouldExposePlayPauseCommand(
+                applicationForeground = false,
+                allowNativeBackgroundPlayback = false,
+                playerIsPlaying = false,
+            ),
+        )
+        assertTrue(
+            NativeMediaSessionPolicy.shouldExposePlayPauseCommand(
+                applicationForeground = false,
+                allowNativeBackgroundPlayback = true,
+                playerIsPlaying = false,
+            ),
+        )
+        assertTrue(
+            NativeMediaSessionPolicy.shouldExposePlayPauseCommand(
+                applicationForeground = true,
+                allowNativeBackgroundPlayback = false,
+                playerIsPlaying = false,
+            ),
+        )
+        assertTrue(
+            NativeMediaSessionPolicy.shouldExposePlayPauseCommand(
+                applicationForeground = false,
+                allowNativeBackgroundPlayback = false,
+                playerIsPlaying = true,
+            ),
+        )
+    }
+
+    @Test fun notificationPlayIsRejectedOnlyWhenItWouldStartBackgroundPlayback() {
+        assertEquals(
+            NativeMediaSessionPolicy.PlayerCommandDecision.REJECT,
+            NativeMediaSessionPolicy.playerCommandDecision(
+                controllerAllowed = true,
+                appController = false,
+                command = Player.COMMAND_PLAY_PAUSE,
+                playbackCommandAllowed = false,
+            ),
+        )
+        assertEquals(
+            NativeMediaSessionPolicy.PlayerCommandDecision.ALLOW,
+            NativeMediaSessionPolicy.playerCommandDecision(
+                controllerAllowed = true,
+                appController = false,
+                command = Player.COMMAND_PLAY_PAUSE,
+                playbackCommandAllowed = true,
+            ),
+        )
+    }
+
+    @Test fun notificationPlayPauseIsExplicitUserIntent() {
+        assertTrue(
+            NativeMediaSessionPolicy.isExplicitPlayPauseCommand(
+                Player.COMMAND_PLAY_PAUSE,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.isExplicitPlayPauseCommand(
+                Player.COMMAND_STOP,
+            ),
+        )
+    }
+
     @Test fun lifecyclePolicyUsesNativeOwnerAndSequenceOrdering() {
         assertTrue(
             NativeMediaSessionPolicy.acceptsLifecyclePolicy(
