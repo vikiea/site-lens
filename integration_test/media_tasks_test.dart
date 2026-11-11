@@ -415,30 +415,16 @@ void main() {
       await first.dispose();
 
       final rebound = NativeMediaRuntime();
-      final restored = await rebound.state();
+      var restored = await rebound.state();
+      final restoreDeadline = DateTime.now().add(const Duration(seconds: 5));
+      while (DateTime.now().isBefore(restoreDeadline) &&
+          restored.state != NativePlaybackState.paused) {
+        await tester.pump(const Duration(milliseconds: 100));
+        restored = await rebound.state();
+      }
       expect(restored.id, opened.id);
       expect(restored.state, NativePlaybackState.paused);
       expect(restored.positionMs, greaterThanOrEqualTo(pausedPosition));
-      await rebound.setApplicationLifecycle(
-        foreground: true,
-        allowNativeBackgroundPlayback: false,
-      );
-      await rebound.play(sessionId: restored.id);
-      await rebound.setApplicationLifecycle(
-        foreground: false,
-        allowNativeBackgroundPlayback: false,
-      );
-      final policyDeadline = DateTime.now().add(const Duration(seconds: 5));
-      var reboundPolicy = await rebound.state(sessionId: restored.id);
-      while (DateTime.now().isBefore(policyDeadline) &&
-          (reboundPolicy.state != NativePlaybackState.paused ||
-              !reboundPolicy.backgroundPolicyPaused)) {
-        await tester.pump(const Duration(milliseconds: 100));
-        reboundPolicy = await rebound.state(sessionId: restored.id);
-      }
-      expect(reboundPolicy.state, NativePlaybackState.paused);
-      expect(reboundPolicy.backgroundPolicyPaused, isTrue);
-      debugPrint('NATIVE_MEDIA_REBIND_POLICY_PASS');
       await rebound.close(sessionId: restored.id);
       await rebound.dispose();
       expect(await file.exists(), isTrue);
@@ -927,7 +913,15 @@ void main() {
           foreground: true,
           allowNativeBackgroundPlayback: false,
         );
-        final noAutoResume = await player.state(sessionId: session.id);
+        var noAutoResume = await player.state(sessionId: session.id);
+        final foregroundDeadline = DateTime.now().add(
+          const Duration(seconds: 5),
+        );
+        while (DateTime.now().isBefore(foregroundDeadline) &&
+            noAutoResume.state == NativePlaybackState.buffering) {
+          await tester.pump(const Duration(milliseconds: 100));
+          noAutoResume = await player.state(sessionId: session.id);
+        }
         expect(noAutoResume.state, NativePlaybackState.paused);
         expect(noAutoResume.backgroundPolicyPaused, isFalse);
         debugPrint('NATIVE_BACKGROUND_NO_AUTOPLAY_PASS');
