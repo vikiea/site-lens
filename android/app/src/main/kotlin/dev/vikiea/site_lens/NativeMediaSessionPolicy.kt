@@ -59,6 +59,12 @@ internal object NativeMediaSessionPolicy {
     fun isExplicitPlayPauseCommand(command: Int): Boolean =
         command == Player.COMMAND_PLAY_PAUSE
 
+    fun shouldReadPersistedStateWithoutService(serviceAvailable: Boolean): Boolean =
+        !serviceAvailable
+
+    fun canStartForegroundService(applicationForeground: Boolean): Boolean =
+        applicationForeground
+
     fun acceptsLifecyclePolicy(
         ownerId: String,
         sequence: Long,

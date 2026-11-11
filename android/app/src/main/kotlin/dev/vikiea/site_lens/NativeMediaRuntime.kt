@@ -150,7 +150,11 @@ class NativeMediaRuntime(
                     outcome.fold(
                         onSuccess = { raw ->
                             serviceSessionId = raw["sessionId"] as? String
-                            if (serviceSessionId != null) ensureTexture()
+                            if (serviceSessionId != null) {
+                                ensureTexture()
+                            } else {
+                                releaseSurface()
+                            }
                             result.success(raw.toMutableMap().apply { this["textureId"] = textureEntry?.id() })
                         },
                         onFailure = { error -> result.error("native_media", error.message, null) },

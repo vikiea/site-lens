@@ -558,20 +558,12 @@ class NativeMediaSessionService : MediaSessionService() {
                     instance == null && pending.isNotEmpty()
                 }
                 if (shouldStart) {
-                    runCatching {
-                        ContextCompat.startForegroundService(
+                    if (!startForegroundServiceIfAllowed(
                             applicationContext,
-                            Intent(applicationContext, NativeMediaSessionService::class.java),
+                            operation = "restart_pending",
                         )
-                    }.onFailure { error ->
+                    ) {
                         cancelPending()
-                        NativeCrashStore.append(
-                            applicationContext,
-                            module = "media.session",
-                            message = error.message ?: "无法重启原生媒体服务",
-                            details = error.stackTraceToString(),
-                            contextValue = "operation=restart_pending",
-                        )
                     }
                 }
             }
@@ -1075,6 +1067,7 @@ class NativeMediaSessionService : MediaSessionService() {
         private val pending = ArrayDeque<PendingAction>()
         private var pendingGeneration = 0L
         private var explicitStopInProgress = false
+        private var latestApplicationForeground = true
 
         fun registerObserver(observer: (Map<String, Any?>) -> Unit) {
             observers.add(observer)
@@ -1094,11 +1087,70 @@ class NativeMediaSessionService : MediaSessionService() {
             context.getSharedPreferences("native_media_session_state", Context.MODE_PRIVATE)
                 .getBoolean("known", false)
 
+        private fun persistedState(context: Context): Map<String, Any?> {
+            val preferences = context.getSharedPreferences(
+                "native_media_session_state",
+                Context.MODE_PRIVATE,
+            )
+            val known = preferences.getBoolean("known", false)
+            val uri = preferences.getString("uri", null)
+            if (!known || uri.isNullOrBlank()) {
+                return mapOf(
+                    "sessionId" to null,
+                    "state" to "stopped",
+                    "backgroundPolicyPaused" to false,
+                    "applicationForeground" to preferences.getBoolean(
+                        PREF_APPLICATION_FOREGROUND,
+                        true,
+                    ),
+                    "allowNativeBackgroundPlayback" to preferences.getBoolean(
+                        PREF_ALLOW_NATIVE_BACKGROUND_PLAYBACK,
+                        false,
+                    ),
+                    "restorable" to false,
+                )
+            }
+            return mapOf(
+                "sessionId" to null,
+                "candidateId" to preferences.getString("candidateId", null),
+                "taskId" to preferences.getString("taskId", null),
+                "state" to "restorable",
+                "positionMs" to preferences.getLong("positionMs", 0L).coerceAtLeast(0L),
+                "durationMs" to preferences.getLong("durationMs", 0L).coerceAtLeast(0L),
+                "speed" to preferences.getFloat("speed", 1f).coerceIn(0.25f, 8f),
+                "userPaused" to preferences.getBoolean("userPaused", true),
+                "backgroundPolicyPaused" to preferences.getBoolean(
+                    "backgroundPolicyPaused",
+                    false,
+                ),
+                "applicationForeground" to preferences.getBoolean(
+                    PREF_APPLICATION_FOREGROUND,
+                    true,
+                ),
+                "allowNativeBackgroundPlayback" to preferences.getBoolean(
+                    PREF_ALLOW_NATIVE_BACKGROUND_PLAYBACK,
+                    false,
+                ),
+                "errorCode" to null,
+                "backend" to "media_session",
+                "restorable" to true,
+            )
+        }
+
         fun state(context: Context, callback: (Result<Map<String, Any?>>) -> Unit) {
-            dispatch(
-                context,
-                action = { service -> callback(runCatching { service.snapshot() }) },
-                cancel = { callback(Result.failure(IllegalStateException("媒体服务已停止"))) },
+            val service = synchronized(pendingLock) {
+                instance?.takeIf { it.acceptsDispatch() }
+            }
+            if (NativeMediaSessionPolicy.shouldReadPersistedStateWithoutService(
+                    serviceAvailable = service != null,
+                )
+            ) {
+                callback(Result.success(persistedState(context)))
+                return
+            }
+            service!!.enqueue(
+                action = { callback(runCatching { it.snapshot() }) },
+                cancel = { callback(Result.success(persistedState(context))) },
             )
         }
 
@@ -1116,17 +1168,22 @@ class NativeMediaSessionService : MediaSessionService() {
             )
             val storedOwner = preferences.getString(PREF_POLICY_OWNER, "") ?: ""
             val storedSequence = preferences.getLong(PREF_POLICY_SEQUENCE, 0L)
+            val acceptsRequest = NativeMediaSessionPolicy.acceptsLifecyclePolicy(
+                ownerId = ownerId,
+                sequence = sequence,
+                currentOwnerId = storedOwner,
+                currentSequence = storedSequence,
+            )
+            if (acceptsRequest) {
+                synchronized(pendingLock) {
+                    latestApplicationForeground = foreground
+                }
+            }
             val service = synchronized(pendingLock) {
                 instance?.takeIf { it.acceptsDispatch() }
             }
             if (service == null) {
-                if (NativeMediaSessionPolicy.acceptsLifecyclePolicy(
-                        ownerId = ownerId,
-                        sequence = sequence,
-                        currentOwnerId = storedOwner,
-                        currentSequence = storedSequence,
-                    )
-                ) {
+                if (acceptsRequest) {
                     preferences.edit()
                         .putBoolean(PREF_ALLOW_NATIVE_BACKGROUND_PLAYBACK, allowBackground)
                         .putBoolean(PREF_APPLICATION_FOREGROUND, foreground)
@@ -1134,17 +1191,12 @@ class NativeMediaSessionService : MediaSessionService() {
                         .putLong(PREF_POLICY_SEQUENCE, sequence)
                         .commit()
                 }
-                callback(
-                    Result.success(
-                        mapOf(
-                            "sessionId" to null,
-                            "state" to "stopped",
-                            "backgroundPolicyPaused" to false,
-                            "allowNativeBackgroundPlayback" to allowBackground,
-                            "applicationForeground" to foreground,
-                        ),
-                    ),
-                )
+                val snapshot = persistedState(context).toMutableMap()
+                if (acceptsRequest) {
+                    snapshot["allowNativeBackgroundPlayback"] = allowBackground
+                    snapshot["applicationForeground"] = foreground
+                }
+                callback(Result.success(snapshot))
                 return
             }
             service.enqueue(
@@ -1161,12 +1213,23 @@ class NativeMediaSessionService : MediaSessionService() {
                     )
                 },
                 cancel = {
-                    callback(Result.failure(IllegalStateException("媒体服务已停止")))
+                    callback(Result.success(persistedState(context)))
                 },
             )
         }
 
         fun open(context: Context, request: OpenRequest) {
+            val serviceAvailable = synchronized(pendingLock) {
+                instance?.takeIf { it.acceptsDispatch() } != null
+            }
+            if (!serviceAvailable && !request.applicationForeground) {
+                request.callback(
+                    Result.failure(
+                        IllegalStateException("后台无法启动原生媒体服务，请返回前台后重试"),
+                    ),
+                )
+                return
+            }
             dispatch(
                 context,
                 action = { service ->
@@ -1328,15 +1391,47 @@ class NativeMediaSessionService : MediaSessionService() {
                 return
             }
             if (!shouldStart) return
-            try {
-                ContextCompat.startForegroundService(
-                    context.applicationContext,
-                    Intent(context.applicationContext, NativeMediaSessionService::class.java),
-                )
-            } catch (error: Exception) {
+            if (!startForegroundServiceIfAllowed(context, operation = "dispatch")) {
                 cancelPending()
-                throw error
             }
+        }
+
+        private fun startForegroundServiceIfAllowed(
+            context: Context,
+            operation: String,
+        ): Boolean {
+            val applicationContext = context.applicationContext
+            val preferences = applicationContext.getSharedPreferences(
+                "native_media_session_state",
+                Context.MODE_PRIVATE,
+            )
+            val foreground = synchronized(pendingLock) {
+                latestApplicationForeground
+            } && preferences.getBoolean(PREF_APPLICATION_FOREGROUND, true)
+            if (!NativeMediaSessionPolicy.canStartForegroundService(foreground)) {
+                NativeCrashStore.append(
+                    applicationContext,
+                    module = "media.session",
+                    message = "后台已抑制原生媒体服务启动",
+                    details = "applicationForeground=false",
+                    contextValue = "operation=$operation",
+                )
+                return false
+            }
+            return runCatching {
+                ContextCompat.startForegroundService(
+                    applicationContext,
+                    Intent(applicationContext, NativeMediaSessionService::class.java),
+                )
+            }.onFailure { error ->
+                NativeCrashStore.append(
+                    applicationContext,
+                    module = "media.session",
+                    message = error.message ?: "无法启动原生媒体服务",
+                    details = error.stackTraceToString(),
+                    contextValue = "operation=$operation",
+                )
+            }.isSuccess
         }
 
         private fun drainPending() {
@@ -1408,23 +1503,12 @@ class NativeMediaSessionService : MediaSessionService() {
                         releaseWasExplicitStop,
                     )
                     if (shouldStart) {
-                        runCatching {
-                            ContextCompat.startForegroundService(
+                        if (!startForegroundServiceIfAllowed(
                                 applicationContext,
-                                Intent(
-                                    applicationContext,
-                                    NativeMediaSessionService::class.java,
-                                ),
+                                operation = "restart_late_pending",
                             )
-                        }.onFailure { error ->
+                        ) {
                             cancelPending()
-                            NativeCrashStore.append(
-                                applicationContext,
-                                module = "media.session",
-                                message = error.message ?: "无法重启原生媒体服务",
-                                details = error.stackTraceToString(),
-                                contextValue = "operation=restart_late_pending",
-                            )
                         }
                     }
                 } else {

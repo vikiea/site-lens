@@ -170,6 +170,24 @@ class NativeMediaSessionPolicyTest {
         )
     }
 
+    @Test fun stateLookupUsesPersistedSnapshotWhenServiceIsUnavailable() {
+        assertTrue(
+            NativeMediaSessionPolicy.shouldReadPersistedStateWithoutService(
+                serviceAvailable = false,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.shouldReadPersistedStateWithoutService(
+                serviceAvailable = true,
+            ),
+        )
+    }
+
+    @Test fun foregroundServiceStartRequiresForegroundBridge() {
+        assertTrue(NativeMediaSessionPolicy.canStartForegroundService(true))
+        assertFalse(NativeMediaSessionPolicy.canStartForegroundService(false))
+    }
+
     @Test fun lifecyclePolicyUsesNativeOwnerAndSequenceOrdering() {
         assertTrue(
             NativeMediaSessionPolicy.acceptsLifecyclePolicy(
