@@ -11,7 +11,8 @@
 ## 当前版本身份
 
 - Alpha73 基线：`v0.6.0.alpha73` / versionCode 206；Alpha73 Verify/Release 均成功，但真机 L3 失败，见 [Alpha73 验收记录](2026-11-11-native-background-playback-alpha73.md)。
-- Alpha74 目标：`v0.6.0.alpha74` / versionCode 207；发布前必须通过 `python3 tool/verify_release_pubspec.py --tag v0.6.0.alpha74 --version-code 207`。
+- Alpha74 已由远端提交 `fb222c8` / versionCode 207 发布；其发布提交只更新版本文件，未包含本地 lifecycle owner 修复。其 Verify/Release 成功不代表本修复已进入 Alpha74。
+- 本修复的新目标为 Alpha75：`v0.6.0.alpha75` / versionCode 208；发布前必须通过 `python3 tool/verify_release_pubspec.py --tag v0.6.0.alpha75 --version-code 208`。
 - 发布源码 commit、独立评审、Verify、Release 和设备证据必须分别记录；不能复用 Alpha73 的失败设备证据作为 Alpha74 通过证据。
 
 ## 待完成门禁
@@ -20,5 +21,5 @@
 - `make check`、Android unit tests、定向媒体/设置测试。
 - 使用 `172.16.73.82:39955` 重新执行 L3；遵守一次 ADB 恢复边界。
 - 重点确认 `WEB_TAB_POLICY_INDEPENDENT_PASS`、`NATIVE_BACKGROUND_DISABLED_PAUSE_PASS`、`NATIVE_BACKGROUND_NO_AUTOPLAY_PASS`、MediaSession rebind、通知/锁屏、旧 Bridge 和数据库恢复证据。
-- Alpha74 Verify/Release 成功后，核对 prerelease、APK/SHA-256 资产、GitHub asset digest 和 tag commit。
+- Alpha75 Verify/Release 成功后，核对 prerelease、APK/SHA-256 资产、GitHub asset digest 和 tag commit。
 - 若设备仍发现原生 P0/P1 或数据损坏，停止发布结论并继续新的 patch Alpha；不修改已发布标签。
