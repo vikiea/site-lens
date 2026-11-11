@@ -4,7 +4,8 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import '../data/database.dart';
-import '../domain/models.dart' show mediaFolderDisplayName;
+import '../domain/models.dart'
+    show isMediaFallbackDirectory, mediaFolderDisplayName;
 
 class MediaOrganizationSeed {
   const MediaOrganizationSeed({required this.itemId, this.legacyFolder});
@@ -146,30 +147,81 @@ class MediaOrganizationService extends ChangeNotifier {
     }
     for (final seed in seedList) {
       final legacy = _clean(seed.legacyFolder);
-      if (!_imported.add(seed.itemId)) continue;
-      changed = true;
-      if (legacy == null) continue;
-      final existing = _legacyFolders[legacy];
-      if (existing != null && _folders.containsKey(existing)) {
-        _itemFolders[seed.itemId] = existing;
+      final firstImport = _imported.add(seed.itemId);
+      if (!firstImport) {
+        if (_replaceImportedFallbackFolder(seed.itemId, legacy)) changed = true;
         continue;
       }
-      final displayName = mediaFolderDisplayName(legacy);
-      final folder = _folders.values.firstWhere(
-        (candidate) =>
-            candidate.parentId == null &&
-            candidate.name.toLowerCase() == displayName.toLowerCase(),
-        orElse: () =>
-            _createInMemory(displayName, parentId: null, stable: legacy),
-      );
-      _itemFolders[seed.itemId] = folder.id;
-      _legacyFolders[legacy] = folder.id;
+      changed = true;
+      if (legacy == null) continue;
+      _itemFolders[seed.itemId] = _folderForLegacy(legacy).id;
       changed = true;
     }
     if (changed) {
       await _persist();
       _notifyIfAlive();
     }
+  }
+
+  /// Upgrade only an untouched automatic fallback root. A user rename, a
+  /// manual move, nested content, or a user-created folder remains untouched.
+  bool _replaceImportedFallbackFolder(String itemId, String? legacy) {
+    if (legacy == null ||
+        isMediaFallbackDirectory(legacy) ||
+        _shouldNotNameMediaFolder(legacy)) {
+      return false;
+    }
+    final currentId = _itemFolders[itemId];
+    if (currentId == null) return false;
+    final current = _folders[currentId];
+    if (current == null ||
+        current.parentId != null ||
+        !isMediaFallbackDirectory(current.name) ||
+        _legacyFolders[current.name] != current.id ||
+        current.id != _legacyFolderId(current.name) ||
+        _folders.values.any((folder) => folder.parentId == current.id)) {
+      return false;
+    }
+    final target = _folderForLegacy(legacy);
+    if (target.id == current.id) return false;
+    _itemFolders[itemId] = target.id;
+    _removeAutomaticFolderIfEmpty(current.id);
+    return true;
+  }
+
+  bool _shouldNotNameMediaFolder(String value) {
+    final normalized = value.trim().toLowerCase();
+    return normalized.isEmpty ||
+        normalized == '批量媒体' ||
+        normalized == '媒体' ||
+        normalized == 'video' ||
+        normalized == 'media';
+  }
+
+  MediaOrganizationFolder _folderForLegacy(String legacy) {
+    final existing = _legacyFolders[legacy];
+    if (existing != null && _folders.containsKey(existing)) {
+      return _folders[existing]!;
+    }
+    final displayName = mediaFolderDisplayName(legacy);
+    final folder = _folders.values.firstWhere(
+      (candidate) =>
+          candidate.parentId == null &&
+          candidate.name.toLowerCase() == displayName.toLowerCase(),
+      orElse: () =>
+          _createInMemory(displayName, parentId: null, stable: legacy),
+    );
+    _legacyFolders[legacy] = folder.id;
+    return folder;
+  }
+
+  void _removeAutomaticFolderIfEmpty(String id) {
+    if (_itemFolders.values.contains(id) ||
+        _folders.values.any((folder) => folder.parentId == id)) {
+      return;
+    }
+    _folders.remove(id);
+    _legacyFolders.removeWhere((_, folderId) => folderId == id);
   }
 
   bool _normalizeGeneratedFolders() {

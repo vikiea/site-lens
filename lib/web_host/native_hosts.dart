@@ -274,7 +274,10 @@ class NativeHosts extends WebHostEvents {
   /// Some sites render the player in a nested frame while publishing media
   /// URLs from that frame. The page-level title remains the source of truth,
   /// so native work reads the active visible player rather than page JSON.
-  Future<String?> visiblePlaybackTitle(int hostId) async {
+  Future<String?> visiblePlaybackTitle(
+    int hostId, {
+    String? candidateId,
+  }) async {
     final session = sessions[hostId];
     if (session == null || session.disposed) return null;
     final selector = [
@@ -294,6 +297,14 @@ class NativeHosts extends WebHostEvents {
     final generation = session.generation;
     final url = session.url;
     if (url.isEmpty) return null;
+    final candidateBoundary = candidateId == null
+        ? null
+        : session.mediaCandidateFrames[candidateId];
+    if (candidateId != null &&
+        (!session.mediaCandidates.containsKey(candidateId) ||
+            candidateBoundary == null)) {
+      return null;
+    }
     try {
       final snapshot = await api.inspect(hostId, selector);
       final current = sessions[hostId];
@@ -303,17 +314,16 @@ class NativeHosts extends WebHostEvents {
           current.url != url ||
           snapshot.generation != generation ||
           snapshot.url != url ||
-          snapshot.error.isNotEmpty) {
+          snapshot.error.isNotEmpty ||
+          (candidateId != null &&
+              (!current.mediaCandidates.containsKey(candidateId) ||
+                  current.mediaCandidateFrames[candidateId] !=
+                      candidateBoundary))) {
         return null;
       }
       final text = snapshot.text.replaceAll(RegExp(r'\s+'), ' ').trim();
-      final rawTitle = pageSeriesTitle(text);
-      if (rawTitle == null ||
-          {'媒体', 'video', 'media'}.contains(rawTitle.toLowerCase())) {
-        return null;
-      }
-      final title = mediaSeriesDirectoryName(rawTitle);
-      return title == '未命名媒体' ? null : title;
+      return _playbackDirectoryTitle(text) ??
+          _playbackDirectoryTitle(_seriesTitleFromPageTitle(snapshot.title));
     } catch (_) {
       return null;
     }
@@ -1203,6 +1213,32 @@ class NativeHosts extends WebHostEvents {
 /// The series name a page states about itself, bounded and control-free.
 ///
 /// Only the folder name uses it; it never reaches authorization or identity.
+String? _playbackDirectoryTitle(String? raw) {
+  final value = pageSeriesTitle(raw);
+  if (value == null) return null;
+  final lower = value.toLowerCase();
+  if ({'媒体', 'video', 'media', mediaGenericBatchDirectory}.contains(lower)) {
+    return null;
+  }
+  final title = mediaSeriesDirectoryName(value);
+  if (title == '未命名媒体' || isMediaGenericBatchDirectory(title)) return null;
+  return title;
+}
+
+String? _seriesTitleFromPageTitle(String raw) {
+  final normalized = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (normalized.isEmpty) return null;
+  final withoutBrand = normalized.replaceFirst(
+    RegExp(r'\s*[|｜]\s*[^|｜]+\s*$'),
+    '',
+  );
+  final match = RegExp(
+    r'^(.*?)\s+[-–—]\s+(?:短剧视频在线观看|在线观看|在线播放|视频在线观看|高清播放).*$',
+    caseSensitive: false,
+  ).firstMatch(withoutBrand);
+  return match == null ? null : pageSeriesTitle(match.group(1));
+}
+
 String? pageSeriesTitle(Object? raw) {
   if (raw is! String) return null;
   final value = raw.trim();

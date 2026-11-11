@@ -47,12 +47,12 @@ MediaTaskRowAction? mediaTaskRowActionForState(MediaTaskState state) =>
     switch (state) {
       MediaTaskState.completed ||
       MediaTaskState.playable => MediaTaskRowAction.play,
+      MediaTaskState.queued ||
       MediaTaskState.downloading ||
       MediaTaskState.paused => MediaTaskRowAction.pause,
       MediaTaskState.failed ||
       MediaTaskState.cancelled ||
       MediaTaskState.reauthorize => MediaTaskRowAction.retry,
-      MediaTaskState.queued => null,
     };
 
 const _playbackSpeeds = <double>[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3, 4, 8];
@@ -4143,9 +4143,9 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   }
 
   Future<void> _togglePause(MediaTask task) async {
-    if (task.state == MediaTaskState.downloading) {
+    if (mediaTaskCanPause(task.state)) {
       await widget.app.mediaDownloads.pause(task.id);
-    } else if (task.state == MediaTaskState.paused) {
+    } else if (mediaTaskCanResume(task.state)) {
       final candidate = await widget.app.mediaCandidateForRetry(task);
       await widget.app.mediaDownloads.resumeNative(task.id, candidate);
     }
@@ -4221,8 +4221,8 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           MediaTaskState.paused,
           MediaTaskState.reauthorize,
         }.contains(task.state),
-        _MediaBatchAction.pause => task.state == MediaTaskState.downloading,
-        _MediaBatchAction.resume => task.state == MediaTaskState.paused,
+        _MediaBatchAction.pause => mediaTaskCanPause(task.state),
+        _MediaBatchAction.resume => mediaTaskCanResume(task.state),
         _MediaBatchAction.deleteFailed => task.state == MediaTaskState.failed,
         _MediaBatchAction.refresh || _MediaBatchAction.delete => true,
       };
@@ -4474,13 +4474,13 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         .where((task) => selectedTaskIds.contains(task.id))
         .toList(growable: false);
     final selectionExtras = <SiteLensGlassMenuAction<String>>[
-      if (selectedTasks.any((task) => task.state == MediaTaskState.downloading))
+      if (selectedTasks.any((task) => mediaTaskCanPause(task.state)))
         const SiteLensGlassMenuAction(
           value: 'pause',
           label: '批量暂停下载',
           icon: Icons.pause_circle_outline,
         ),
-      if (selectedTasks.any((task) => task.state == MediaTaskState.paused))
+      if (selectedTasks.any((task) => mediaTaskCanResume(task.state)))
         const SiteLensGlassMenuAction(
           value: 'resume',
           label: '批量继续下载',

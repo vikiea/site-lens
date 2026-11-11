@@ -54,6 +54,14 @@ int? mediaEpisodeNumber(String value) {
   return number != null && number > 0 ? number : null;
 }
 
+String? mediaEpisodeFileNameForCandidate(MediaCandidate candidate) {
+  final typed = candidate.episodeNumber;
+  final label = typed != null && typed > 0
+      ? '第$typed集'
+      : mediaEpisodeLabel(candidate.title);
+  return label == null ? null : '$label.mp4';
+}
+
 String mediaTitleForEpisode(String title, int episodeNumber) {
   var value = title.trim().replaceAll(RegExp(r'\s+'), ' ');
   value = value
@@ -1044,24 +1052,29 @@ class MediaTaskStore extends ChangeNotifier {
 
   /// Keep one batch's rows in one folder.
   ///
-  /// A row that already carries a batch folder keeps it: a retry must not be
-  /// relocated, and the directory it was recorded under is the one its bytes
-  /// already live in. A row that has no batch folder at all is the case this
-  /// fixes - it was created by a single download and would otherwise appear
-  /// beside the batch folder instead of inside it. Series-directory rows stay
-  /// untouched when the caller states no batch.
+  /// A row with a named batch folder keeps it: a retry must not relocate a
+  /// user-visible group. Only a deterministic temporary group may be upgraded
+  /// before transport starts. The shared directory is also the physical cache
+  /// parent, so a title correction intentionally abandons an obsolete partial
+  /// cache instead of keeping two competing directory identities.
   Future<MediaTask> _withTaskOrganization(
     Future<MediaTask> pending,
     String? batchDirectory,
   ) async {
-    final task = await pending;
+    final candidate = await pending;
+    final canonicalId = _resolveId(candidate.id);
+    final task = _tasks[canonicalId] ?? candidate;
     final directory = _preserveBatchDirectory(batchDirectory);
-    if (directory == null || task.batchDirectory != null) return task;
+    if (directory == null ||
+        !mediaTaskCanReplaceBatchDirectory(task.state) ||
+        !shouldReplaceMediaBatchDirectory(task.batchDirectory, directory)) {
+      return task;
+    }
     final updated = task.copyWith(
       batchDirectory: directory,
       updatedAt: DateTime.now().toUtc(),
     );
-    _tasks[updated.id] = updated;
+    _tasks[canonicalId] = updated;
     _saveTask(updated);
     return updated;
   }
@@ -1280,6 +1293,7 @@ class MediaTaskStore extends ChangeNotifier {
     final allowed = switch (task.state) {
       MediaTaskState.queued => {
         MediaTaskState.downloading,
+        MediaTaskState.paused,
         MediaTaskState.cancelled,
         MediaTaskState.failed,
       },
@@ -1654,14 +1668,7 @@ class MediaTaskStore extends ChangeNotifier {
   Future<Directory> cacheRootDirectory() => cacheDirectory();
 
   static String _storageDirectoryComponent(String value) {
-    final safe = value
-        .trim()
-        .replaceAll(RegExp(r'[\\/:*?"<>|\u0000-\u001f]'), '_')
-        .replaceAll('..', '_')
-        .replaceAll(RegExp(r'[. ]+$'), '');
-    return safe.isEmpty
-        ? '未命名媒体'
-        : safe.substring(0, safe.length.clamp(1, 120));
+    return mediaPhysicalDirectoryName(value);
   }
 
   Future<Directory> cacheDirectoryForTask(MediaTask task) async {
@@ -2226,7 +2233,13 @@ class MediaBatchDownloadRequest {
   final MediaCandidate candidate;
 }
 
-enum MediaBatchDownloadOutcome { started, failed, reauthorize }
+enum MediaBatchDownloadOutcome {
+  started,
+  paused,
+  cancelled,
+  failed,
+  reauthorize,
+}
 
 class MediaBatchDownloadItemResult {
   const MediaBatchDownloadItemResult({
@@ -2257,6 +2270,14 @@ class MediaBatchDownloadResult {
 
   int get reauthorize => items
       .where((item) => item.outcome == MediaBatchDownloadOutcome.reauthorize)
+      .length;
+
+  int get paused => items
+      .where((item) => item.outcome == MediaBatchDownloadOutcome.paused)
+      .length;
+
+  int get cancelled => items
+      .where((item) => item.outcome == MediaBatchDownloadOutcome.cancelled)
       .length;
 }
 
@@ -2301,6 +2322,8 @@ class MediaDownloadService {
   final _running = <String, Future<MediaTask>>{};
   final _controls = <String, Future<void>>{};
   final _stopping = <String>{};
+  final _pauseEpochs = <String, int>{};
+  final _stopIntents = <String, MediaTaskState>{};
   final _networkPaused = <String>{};
   final _dartTasks = <String>{};
   final _progressAtMs = <String, int>{};
@@ -2513,8 +2536,41 @@ class MediaDownloadService {
         final index = cursor++;
         if (index >= items.length) return;
         final request = items[index];
+        final expectedPauseEpoch = _pauseEpochs[request.task.id] ?? 0;
+        final scheduled = tasks.task(request.task.id);
+        if (scheduled == null) {
+          results[index] = MediaBatchDownloadItemResult(
+            request: request,
+            outcome: MediaBatchDownloadOutcome.failed,
+            error: StateError('媒体任务不存在'),
+          );
+          continue;
+        }
+        // A folder-level pause can suspend this item while its worker is still
+        // waiting for a concurrency slot. Do not let the original batch replay
+        // it as downloading after the pause.
+        if (scheduled.state == MediaTaskState.paused) {
+          results[index] = MediaBatchDownloadItemResult(
+            request: request,
+            task: scheduled,
+            outcome: MediaBatchDownloadOutcome.paused,
+          );
+          continue;
+        }
+        if (scheduled.state == MediaTaskState.cancelled) {
+          results[index] = MediaBatchDownloadItemResult(
+            request: request,
+            task: scheduled,
+            outcome: MediaBatchDownloadOutcome.cancelled,
+          );
+          continue;
+        }
         try {
-          final task = await startNative(request.task, request.candidate);
+          final task = await startNative(
+            request.task,
+            request.candidate,
+            expectedPauseEpoch: expectedPauseEpoch,
+          );
           results[index] = MediaBatchDownloadItemResult(
             request: request,
             task: task,
@@ -2522,9 +2578,28 @@ class MediaDownloadService {
                 ? MediaBatchDownloadOutcome.reauthorize
                 : task.state == MediaTaskState.failed
                 ? MediaBatchDownloadOutcome.failed
+                : task.state == MediaTaskState.paused
+                ? MediaBatchDownloadOutcome.paused
                 : MediaBatchDownloadOutcome.started,
           );
         } catch (error, stack) {
+          final latest = tasks.task(request.task.id);
+          if (latest?.state == MediaTaskState.paused ||
+              latest?.state == MediaTaskState.cancelled ||
+              error is Cancelled) {
+            final stoppedAsCancelled =
+                latest?.state == MediaTaskState.cancelled ||
+                (error is Cancelled &&
+                    _stopIntents[request.task.id] == MediaTaskState.cancelled);
+            results[index] = MediaBatchDownloadItemResult(
+              request: request,
+              task: latest,
+              outcome: stoppedAsCancelled
+                  ? MediaBatchDownloadOutcome.cancelled
+                  : MediaBatchDownloadOutcome.paused,
+            );
+            continue;
+          }
           AppErrorLogger.capture(
             error,
             module: 'media.download.batch',
@@ -2767,26 +2842,54 @@ class MediaDownloadService {
   Future<MediaTask> cancel(String taskId) => _stop(taskId, cancelled: true);
   Future<MediaTask> pauseNative(String taskId) => pause(taskId);
 
+  /// Cancels only an idle duplicate after an artifact lookup. The canonical
+  /// state is re-read synchronously here so a queued task that started while
+  /// the caller awaited the filesystem remains active.
+  Future<bool> cancelIdleForExistingArtifact(String taskId) {
+    final id = tasks.resolveTaskId(taskId);
+    final current = tasks.task(id);
+    if (current == null ||
+        !mediaTaskCanDiscardForExistingArtifact(current.state)) {
+      return Future<bool>.value(false);
+    }
+    return cancel(id).then((task) => task.state == MediaTaskState.cancelled);
+  }
+
   Future<MediaTask> _stop(String taskId, {required bool cancelled}) {
     final id = tasks.resolveTaskId(taskId);
     // Mark synchronously so a start queued during this operation cannot race it.
     _networkPaused.remove(id);
-    _networkPaused.remove(id);
+    _pauseEpochs[id] = (_pauseEpochs[id] ?? 0) + 1;
     _stopping.add(id);
     _active[id]?.cancel();
     final current = tasks.task(id);
+    // Publish a queued task's pause synchronously so a batch scheduler that
+    // already holds this request observes the user's intent before it starts.
+    if (current?.state == MediaTaskState.queued) {
+      tasks.transition(
+        id,
+        cancelled ? MediaTaskState.cancelled : MediaTaskState.paused,
+      );
+    }
+    _stopIntents[id] = cancelled
+        ? MediaTaskState.cancelled
+        : MediaTaskState.paused;
     final nativeStop =
-        current != null &&
-            !_dartTasks.contains(id) &&
-            current.state != MediaTaskState.completed &&
-            current.state != MediaTaskState.playable
+        current?.state == MediaTaskState.downloading && !_dartTasks.contains(id)
         ? cancelled
               ? native?.cancel(id)
               : native?.pause(id)
         : null;
+    // A launch future can exist before it has acquired the per-task control
+    // chain. Waiting for that future from this earlier control would deadlock:
+    // the launch waits behind the pause while the pause waits for the launch.
+    // The pause epoch makes that not-yet-started launch fail closed instead.
+    final runningBeforeControl = _controls.containsKey(id)
+        ? _running[id]
+        : null;
     return _control(id, (id) async {
       try {
-        final running = _running[id];
+        final running = runningBeforeControl;
         if (nativeStop != null) await nativeStop;
         if (running != null) {
           try {
@@ -2806,7 +2909,9 @@ class MediaDownloadService {
           await tasks.flush(id);
           return result;
         }
-        if (!cancelled && latest.state == MediaTaskState.downloading) {
+        if (!cancelled &&
+            (latest.state == MediaTaskState.downloading ||
+                latest.state == MediaTaskState.queued)) {
           final result = tasks.transition(id, MediaTaskState.paused);
           await tasks.flush(id);
           return result;
@@ -3076,14 +3181,23 @@ class MediaDownloadService {
     return result;
   }
 
-  Future<MediaTask> startNative(MediaTask task, MediaCandidate candidate) {
+  Future<MediaTask> startNative(
+    MediaTask task,
+    MediaCandidate candidate, {
+    int? expectedPauseEpoch,
+  }) {
+    final requestedId = tasks.resolveTaskId(task.id);
+    final pauseEpoch = expectedPauseEpoch ?? _pauseEpochs[requestedId] ?? 0;
+    if (expectedPauseEpoch == null) _stopIntents.remove(requestedId);
     if (native == null || candidate.isHls || candidate.hasRequestHeaders) {
-      return start(task, candidate);
+      return start(task, candidate, expectedPauseEpoch: pauseEpoch);
     }
     return _launch(
       task,
       (id) => _control(id, (id) async {
-        if (_stopping.contains(id)) throw const Cancelled();
+        if (_stopping.contains(id) || (_pauseEpochs[id] ?? 0) != pauseEpoch) {
+          throw const Cancelled();
+        }
         var current = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
         final authorized = authorize == null
             ? candidate
@@ -3148,109 +3262,117 @@ class MediaDownloadService {
     MediaCandidate candidate, {
     int maxBytes = 2 * 1024 * 1024 * 1024,
     MediaRetryBudgets? retryBudgets,
-  }) => _launch(
-    task,
-    (id) => _control(id, (id) async {
-      if (_stopping.contains(id)) throw const Cancelled();
-      _networkPaused.remove(id);
-      final currentTask = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
-      final authorized = authorize == null
-          ? candidate
-          : authorize!(currentTask, candidate);
-      _validateTaskCandidate(currentTask, authorized);
-      final requestContext = _requestContextFor(id, authorized);
-      final budgets =
-          retryBudgets ??
-          _activeRetryBudgets.putIfAbsent(
-            id,
-            () => MediaRetryBudgets(
-              policyTransfer != null ? 5 : retryPolicy.maxAttempts,
-            ),
-          );
-      _dartTasks.add(id);
-      final cancel = Cancellation();
-      _active[id] = cancel;
-      try {
-        final previous = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
-        if (previous.state == MediaTaskState.playable ||
-            previous.state == MediaTaskState.completed) {
-          return previous;
+    int? expectedPauseEpoch,
+  }) {
+    final requestedId = tasks.resolveTaskId(task.id);
+    final pauseEpoch = expectedPauseEpoch ?? _pauseEpochs[requestedId] ?? 0;
+    if (expectedPauseEpoch == null) _stopIntents.remove(requestedId);
+    return _launch(
+      task,
+      (id) => _control(id, (id) async {
+        if (_stopping.contains(id) || (_pauseEpochs[id] ?? 0) != pauseEpoch) {
+          throw const Cancelled();
         }
-        if (authorized.isHls) {
-          return await _startHls(
-            currentTask,
-            authorized,
-            cancel: cancel,
+        _networkPaused.remove(id);
+        final currentTask = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
+        final authorized = authorize == null
+            ? candidate
+            : authorize!(currentTask, candidate);
+        _validateTaskCandidate(currentTask, authorized);
+        final requestContext = _requestContextFor(id, authorized);
+        final budgets =
+            retryBudgets ??
+            _activeRetryBudgets.putIfAbsent(
+              id,
+              () => MediaRetryBudgets(
+                policyTransfer != null ? 5 : retryPolicy.maxAttempts,
+              ),
+            );
+        _dartTasks.add(id);
+        final cancel = Cancellation();
+        _active[id] = cancel;
+        try {
+          final previous = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
+          if (previous.state == MediaTaskState.playable ||
+              previous.state == MediaTaskState.completed) {
+            return previous;
+          }
+          if (authorized.isHls) {
+            return await _startHls(
+              currentTask,
+              authorized,
+              cancel: cancel,
+              maxBytes: maxBytes,
+              manifestHeaders: requestContext.manifest,
+              resourceHeaders: requestContext.resource,
+              retryBudgets: budgets,
+            );
+          }
+          var current = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
+          if (current.state == MediaTaskState.completed ||
+              current.state == MediaTaskState.playable) {
+            return current;
+          }
+          current = tasks.transition(id, MediaTaskState.downloading);
+          final directory = await tasks.cacheDirectoryForTask(task);
+          final base = File('${directory.path}/${task.cacheKey}.part');
+          await _downloadFile(
+            authorized.mediaUrl,
+            base,
+            cancel,
+            document: authorized.sourceUrl,
             maxBytes: maxBytes,
-            manifestHeaders: requestContext.manifest,
-            resourceHeaders: requestContext.resource,
-            retryBudgets: budgets,
+            headers: requestContext.resource,
+            retryBudget: budgets.resource(
+              'direct:$id',
+              _resumeContentIdentity(authorized.mediaUrl),
+            ),
+            onProgress: (bytes) => _reportTaskProgress(id, bytes),
           );
+          cancel.check();
+          final size = await base.length();
+          if (size == 0) throw StateError('媒体响应为空');
+          final destination = File('${directory.path}/${task.cacheKey}.media');
+          if (await destination.exists()) await destination.delete();
+          if (_stopping.contains(id)) throw const Cancelled();
+          final finalFile = await base.rename(destination.path);
+          await _deleteResumeState(base);
+          current = tasks.updateProgress(id, size, totalBytes: size);
+          tasks.setLocalRef(id, finalFile.path);
+          current = tasks.transition(id, MediaTaskState.completed);
+          return tasks.transition(id, MediaTaskState.playable);
+        } on Cancelled {
+          if (tasks.task(id)?.state == MediaTaskState.downloading) {
+            tasks.transition(id, MediaTaskState.paused);
+            if (!_stopping.contains(id)) _networkPaused.add(id);
+          }
+          return tasks.task(id)!;
+        } catch (error, stack) {
+          _fail(id, error, stack, 'download');
+          rethrow;
+        } finally {
+          if (identical(_active[id], cancel)) _active.remove(id);
+          _dartTasks.remove(id);
+          _progressAtMs.remove(id);
+          final latest = tasks.task(id);
+          if (latest?.state == MediaTaskState.completed ||
+              latest?.state == MediaTaskState.playable) {
+            _requestContexts.remove(id);
+          }
+          if (latest == null ||
+              latest.state == MediaTaskState.completed ||
+              latest.state == MediaTaskState.playable ||
+              latest.state == MediaTaskState.paused ||
+              latest.state == MediaTaskState.failed ||
+              latest.state == MediaTaskState.reauthorize ||
+              latest.state == MediaTaskState.cancelled) {
+            onTaskNotificationDone?.call(id);
+            _activeRetryBudgets.remove(id);
+          }
         }
-        var current = tasks.task(id) ?? (throw StateError('媒体任务不存在'));
-        if (current.state == MediaTaskState.completed ||
-            current.state == MediaTaskState.playable) {
-          return current;
-        }
-        current = tasks.transition(id, MediaTaskState.downloading);
-        final directory = await tasks.cacheDirectoryForTask(task);
-        final base = File('${directory.path}/${task.cacheKey}.part');
-        await _downloadFile(
-          authorized.mediaUrl,
-          base,
-          cancel,
-          document: authorized.sourceUrl,
-          maxBytes: maxBytes,
-          headers: requestContext.resource,
-          retryBudget: budgets.resource(
-            'direct:$id',
-            _resumeContentIdentity(authorized.mediaUrl),
-          ),
-          onProgress: (bytes) => _reportTaskProgress(id, bytes),
-        );
-        cancel.check();
-        final size = await base.length();
-        if (size == 0) throw StateError('媒体响应为空');
-        final destination = File('${directory.path}/${task.cacheKey}.media');
-        if (await destination.exists()) await destination.delete();
-        if (_stopping.contains(id)) throw const Cancelled();
-        final finalFile = await base.rename(destination.path);
-        await _deleteResumeState(base);
-        current = tasks.updateProgress(id, size, totalBytes: size);
-        tasks.setLocalRef(id, finalFile.path);
-        current = tasks.transition(id, MediaTaskState.completed);
-        return tasks.transition(id, MediaTaskState.playable);
-      } on Cancelled {
-        if (tasks.task(id)?.state == MediaTaskState.downloading) {
-          tasks.transition(id, MediaTaskState.paused);
-          if (!_stopping.contains(id)) _networkPaused.add(id);
-        }
-        return tasks.task(id)!;
-      } catch (error, stack) {
-        _fail(id, error, stack, 'download');
-        rethrow;
-      } finally {
-        if (identical(_active[id], cancel)) _active.remove(id);
-        _dartTasks.remove(id);
-        _progressAtMs.remove(id);
-        final latest = tasks.task(id);
-        if (latest?.state == MediaTaskState.completed ||
-            latest?.state == MediaTaskState.playable) {
-          _requestContexts.remove(id);
-        }
-        if (latest == null ||
-            latest.state == MediaTaskState.completed ||
-            latest.state == MediaTaskState.playable ||
-            latest.state == MediaTaskState.paused ||
-            latest.state == MediaTaskState.failed ||
-            latest.state == MediaTaskState.reauthorize ||
-            latest.state == MediaTaskState.cancelled) {
-          onTaskNotificationDone?.call(id);
-          _activeRetryBudgets.remove(id);
-        }
-      }
-    }),
-  );
+      }),
+    );
+  }
 
   /// Downloads an HLS playlist and its referenced local resources. Android's
   /// DownloadManager can fetch a single URL, but a `.m3u8` is only an index;
@@ -4655,7 +4777,7 @@ class Mp4ExportService {
       cancel.check();
       report(5);
       final root = await _directoryProvider();
-      final seriesFolder = task.seriesDirectoryName;
+      final seriesFolder = task.storageDirectoryName;
       final exportFolder = seriesFolder;
       outputDirectory = Directory('${root.path}/media_exports/$exportFolder');
       await outputDirectory.create(recursive: true);

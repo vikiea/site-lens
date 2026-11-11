@@ -89,6 +89,18 @@ HostEvent _event(
   }),
 );
 
+MediaCandidate _candidate(HostSession session, {required int episode}) =>
+    MediaCandidate(
+      id: 'candidate-$episode',
+      hostId: session.id,
+      generation: session.generation,
+      sourceUrl: Uri.parse(session.url),
+      mediaUrl: Uri.parse('https://cdn.example/episode-$episode.m3u8'),
+      title: 'Episode $episode',
+      mime: 'application/vnd.apple.mpegurl',
+      source: MediaCandidateSource.dom,
+    );
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -301,6 +313,103 @@ void main() {
       await db.close();
     }
   });
+
+  test('a descriptive page title is the visible-title fallback', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final api = FakeWebHostApi(
+      playbackDocumentTitle: '妈妈的答案 - 短剧视频在线观看 | 黄果短剧',
+    );
+    final hosts = NativeHosts(
+      db,
+      ScriptService(db, ControlledHttp()),
+      ControlledHttp(),
+      api: api,
+    );
+    final session = _session(hosts)..url = 'https://example.test/video/1/';
+    try {
+      expect(await hosts.visiblePlaybackTitle(session.id), '妈妈的答案');
+    } finally {
+      await db.close();
+    }
+  });
+
+  test('generic DOM titles fall back to the descriptive page title', () async {
+    for (final domTitle in ['批量媒体', '第1集']) {
+      final db = AppDatabase(NativeDatabase.memory());
+      final api = FakeWebHostApi(
+        playbackTitle: domTitle,
+        playbackDocumentTitle: '妈妈的答案 - 短剧视频在线观看 | 黄果短剧',
+      );
+      final hosts = NativeHosts(
+        db,
+        ScriptService(db, ControlledHttp()),
+        ControlledHttp(),
+        api: api,
+      );
+      final session = _session(hosts)..url = 'https://example.test/video/1/';
+      try {
+        expect(
+          await hosts.visiblePlaybackTitle(session.id),
+          '妈妈的答案',
+          reason: '$domTitle is not a truthful series title',
+        );
+      } finally {
+        await db.close();
+      }
+    }
+  });
+
+  test(
+    'same-URL candidate replacement rejects an older visible title',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final api = _HeldInspectionWebHostApi();
+      final hosts = NativeHosts(
+        db,
+        ScriptService(db, ControlledHttp()),
+        ControlledHttp(),
+        api: api,
+      );
+      final session = _session(hosts)..url = 'https://example.test/video/1/';
+      final candidate = _candidate(session, episode: 1);
+      session.mediaCandidates[candidate.id] = candidate;
+      session.mediaCandidateFrames[candidate.id] = (
+        frame: 'frame-1',
+        document: 'document-1',
+        main: true,
+        epoch: 1,
+      );
+      try {
+        final pending = hosts.visiblePlaybackTitle(
+          session.id,
+          candidateId: candidate.id,
+        );
+        await api.entered.future;
+        session.mediaCandidateFrames[candidate.id] = (
+          frame: 'frame-1',
+          document: 'document-2',
+          main: true,
+          epoch: 2,
+        );
+        api.snapshot.complete(
+          PageSnapshot(
+            url: 'https://example.test/video/1/',
+            title: '',
+            generation: session.generation,
+            ready: true,
+            challenge: false,
+            interactionRequired: false,
+            links: const [],
+            text: '旧页面标题',
+            error: '',
+          ),
+        );
+        expect(await pending, isNull);
+      } finally {
+        await db.close();
+      }
+    },
+  );
 
   test('same-document navigation rejects an older visible title', () async {
     final db = AppDatabase(NativeDatabase.memory());

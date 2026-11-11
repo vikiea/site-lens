@@ -130,6 +130,118 @@ void main() {
     },
   );
 
+  test(
+    'automatic fallback folder upgrades after a visible title is known',
+    () async {
+      await organization.restoreAndSync([
+        const MediaOrganizationSeed(
+          itemId: 'task-1',
+          legacyFolder: '媒体-12345678',
+        ),
+      ]);
+      final genericId = organization.folderFor('task-1');
+      expect(organization.folder(genericId!)?.name, '媒体-12345678');
+
+      await organization.restoreAndSync([
+        const MediaOrganizationSeed(itemId: 'task-1', legacyFolder: '妈妈的答案'),
+      ]);
+
+      final titledId = organization.folderFor('task-1');
+      expect(titledId, isNot(genericId));
+      expect(organization.folder(titledId!)?.name, '妈妈的答案');
+      expect(organization.folder(genericId), isNull);
+
+      final restored = MediaOrganizationService.reader(
+        db: db,
+        collection: organization.collection,
+      );
+      addTearDown(restored.dispose);
+      await restored.restore();
+      expect(restored.folderFor('task-1'), titledId);
+    },
+  );
+
+  test('fallback folder upgrade moves only the retitled task', () async {
+    await organization.restoreAndSync([
+      const MediaOrganizationSeed(
+        itemId: 'task-1',
+        legacyFolder: '媒体-12345678',
+      ),
+      const MediaOrganizationSeed(
+        itemId: 'task-2',
+        legacyFolder: '媒体-12345678',
+      ),
+    ]);
+    final genericId = organization.folderFor('task-1');
+    expect(organization.folderFor('task-2'), genericId);
+
+    await organization.restoreAndSync([
+      const MediaOrganizationSeed(itemId: 'task-1', legacyFolder: '妈妈的答案'),
+      const MediaOrganizationSeed(
+        itemId: 'task-2',
+        legacyFolder: '媒体-12345678',
+      ),
+    ]);
+
+    expect(organization.folderFor('task-1'), isNot(genericId));
+    expect(organization.folderFor('task-2'), genericId);
+    expect(
+      organization.folder(organization.folderFor('task-1')!)?.name,
+      '妈妈的答案',
+    );
+  });
+
+  test('historical generic folder is never migrated automatically', () async {
+    await organization.restoreAndSync([
+      const MediaOrganizationSeed(itemId: 'task-1', legacyFolder: '批量媒体'),
+    ]);
+    final genericId = organization.folderFor('task-1');
+    await organization.restoreAndSync([
+      const MediaOrganizationSeed(itemId: 'task-1', legacyFolder: '妈妈的答案'),
+    ]);
+
+    expect(organization.folderFor('task-1'), genericId);
+    expect(organization.folder(genericId!)?.name, '批量媒体');
+  });
+
+  test('a manually moved fallback folder is never overwritten', () async {
+    await organization.restoreAndSync([
+      const MediaOrganizationSeed(
+        itemId: 'task-1',
+        legacyFolder: '媒体-12345678',
+      ),
+    ]);
+    final genericId = organization.folderFor('task-1')!;
+    final parent = await organization.createFolder('我的手动分类');
+    await organization.moveFolder(genericId, parent.id);
+
+    await organization.restoreAndSync([
+      const MediaOrganizationSeed(itemId: 'task-1', legacyFolder: '妈妈的答案'),
+    ]);
+
+    expect(organization.folderFor('task-1'), genericId);
+    expect(organization.folder(genericId)?.name, '媒体-12345678');
+    expect(organization.folder(genericId)?.parentId, parent.id);
+  });
+
+  test('a user-renamed fallback folder is never overwritten', () async {
+    await organization.restoreAndSync([
+      const MediaOrganizationSeed(
+        itemId: 'task-1',
+        legacyFolder: '媒体-12345678',
+      ),
+    ]);
+    final folderId = organization.folderFor('task-1')!;
+    await organization.renameFolder(folderId, '我的媒体目录');
+
+    await organization.restoreAndSync([
+      const MediaOrganizationSeed(itemId: 'task-1', legacyFolder: '妈妈的答案'),
+    ]);
+
+    expect(organization.folderFor('task-1'), folderId);
+    expect(organization.folder(folderId)?.name, '我的媒体目录');
+  });
+
   test('ordinary legacy folder names are not normalized or merged', () async {
     await organization.restoreAndSync([
       const MediaOrganizationSeed(itemId: 'slash', legacyFolder: 'A/B'),

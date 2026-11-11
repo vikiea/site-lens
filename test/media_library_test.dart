@@ -194,6 +194,19 @@ class _CountingInspectRuntime extends NativeExportRuntime {
   }
 }
 
+class _EpisodeInspectRuntime extends NativeExportRuntime {
+  _EpisodeInspectRuntime({required this.playable});
+
+  final bool playable;
+
+  @override
+  Future<Map<String, Object?>> inspect(String source) async => {
+    'size': 6,
+    'mime': 'video/mp4',
+    'durationMs': playable ? 1000 : 0,
+  };
+}
+
 class _ScanRuntime extends NativeExportRuntime {
   _ScanRuntime(
     this.files, {
@@ -350,6 +363,72 @@ void main() {
   });
 
   test(
+    'readable episode lookup is scoped to task group and file name',
+    () async {
+      final item = await library.register(task, output.path);
+
+      expect(
+        (await library.readableArtifactForEpisode(
+          directory: '示例系列',
+          fileName: '第1集.mp4',
+        ))?.taskId,
+        item.taskId,
+      );
+      expect(
+        await library.readableArtifactForEpisode(
+          directory: '另一个系列',
+          fileName: '第1集.mp4',
+        ),
+        isNull,
+      );
+      expect(
+        await library.readableArtifactForEpisode(
+          directory: '示例系列-第1集',
+          fileName: '第1集.mp4',
+        ),
+        isNull,
+      );
+      expect(
+        await library.readableArtifactForEpisode(
+          directory: '示例系列',
+          fileName: '第2集.mp4',
+        ),
+        isNull,
+      );
+
+      final caseCandidate = MediaCandidate(
+        id: 'case-sensitive-episode',
+        hostId: 1,
+        generation: 1,
+        sourceUrl: Uri.parse('https://example.com/watch/case'),
+        mediaUrl: Uri.parse('https://cdn.example/case/index.m3u8'),
+        title: 'ExampleSeries - 第1集',
+        mime: 'application/vnd.apple.mpegurl',
+        source: MediaCandidateSource.dom,
+      );
+      await db.saveMediaCandidate(caseCandidate);
+      final caseTask = await tasks.create(caseCandidate);
+      final caseOutput = File('${root.path}/media_exports/case.mp4')
+        ..writeAsBytesSync([1, 2, 3, 4, 5, 6]);
+      await library.register(caseTask, caseOutput.path);
+      expect(
+        await library.readableArtifactForEpisode(
+          directory: 'ExampleSeries',
+          fileName: '第1集.mp4',
+        ),
+        isNotNull,
+      );
+      expect(
+        await library.readableArtifactForEpisode(
+          directory: 'exampleseries',
+          fileName: '第1集.mp4',
+        ),
+        isNull,
+      );
+    },
+  );
+
+  test(
     'artifact uses actual output bytes and persists title with current episode',
     () async {
       final item = await library.register(task, output.path);
@@ -363,6 +442,40 @@ void main() {
       expect((await restored.localFile(task.id))?.path, output.path);
     },
   );
+
+  test('native episode lookup rejects a non-playable MP4', () async {
+    final item = await library.register(task, output.path);
+    library.dispose();
+    library = MediaLibrary(
+      db: db,
+      tasks: tasks,
+      native: _EpisodeInspectRuntime(playable: false),
+    );
+    await library.restore();
+
+    expect(
+      await library.readableArtifactForEpisode(
+        directory: '示例系列',
+        fileName: '第1集.mp4',
+      ),
+      isNull,
+    );
+
+    library.dispose();
+    library = MediaLibrary(
+      db: db,
+      tasks: tasks,
+      native: _EpisodeInspectRuntime(playable: true),
+    );
+    await library.restore();
+    expect(
+      (await library.readableArtifactForEpisode(
+        directory: '示例系列',
+        fileName: '第1集.mp4',
+      ))?.taskId,
+      item.taskId,
+    );
+  });
 
   test(
     'reuses an existing thumbnail without re-inspecting the media file',
@@ -730,48 +843,47 @@ void main() {
     },
   );
 
-  test(
-    'batched delivery is idempotent after the batch folder is applied',
-    () async {
-      final batchedCandidate = MediaCandidate(
-        id: 'episode-batched',
-        hostId: 1,
-        generation: 1,
-        sourceUrl: Uri.parse('https://example.com/watch/batched'),
-        mediaUrl: Uri.parse('https://cdn.example/episode-batched/index.m3u8'),
-        title: '批量系列 - 第2集',
-        mime: 'application/vnd.apple.mpegurl',
-        source: MediaCandidateSource.dom,
-      );
-      await db.saveMediaCandidate(batchedCandidate);
-      final batched = await tasks.create(
-        batchedCandidate,
-        batchDirectory: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
-      );
-      final batchedSource = File('${root.path}/batched-source.mp4')
-        ..writeAsBytesSync([7, 8, 9]);
-      await library.register(batched, batchedSource.path);
-      final directory = Directory('${root.path}/batched-output');
+  test('batched delivery is idempotent after the batch folder is applied', () async {
+    final batchedCandidate = MediaCandidate(
+      id: 'episode-batched',
+      hostId: 1,
+      generation: 1,
+      sourceUrl: Uri.parse('https://example.com/watch/batched'),
+      mediaUrl: Uri.parse('https://cdn.example/episode-batched/index.m3u8'),
+      title: '批量系列 - 第2集',
+      mime: 'application/vnd.apple.mpegurl',
+      source: MediaCandidateSource.dom,
+    );
+    await db.saveMediaCandidate(batchedCandidate);
+    final batched = await tasks.create(
+      batchedCandidate,
+      batchDirectory: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
+    );
+    final batchedSource = File('${root.path}/batched-source.mp4')
+      ..writeAsBytesSync([7, 8, 9]);
+    await library.register(batched, batchedSource.path);
+    final directory = Directory('${root.path}/batched-output');
 
-      await library.deliver(batched.id, directory.path);
-      final first = library.item(batched.id)!;
-      await library.deliver(batched.id, directory.path);
+    await library.deliver(batched.id, directory.path);
+    final first = library.item(batched.id)!;
+    await library.deliver(batched.id, directory.path);
 
-      expect(library.item(batched.id)!.location, first.location);
-      expect(
-        first.location,
-        contains('${Platform.pathSeparator}批量系列${Platform.pathSeparator}'),
-      );
-      expect(first.location, isNot(contains('批次1792686431921372')));
-      expect(
-        await directory
-            .list(recursive: true)
-            .where((entity) => entity is File)
-            .length,
-        1,
-      );
-    },
-  );
+    expect(library.item(batched.id)!.location, first.location);
+    expect(
+      first.location,
+      contains(
+        '${Platform.pathSeparator}系统带我攻略弟弟（漫剧版） - 批次1792686431921372${Platform.pathSeparator}',
+      ),
+    );
+    expect(first.folder, '系统带我攻略弟弟（漫剧版） - 批次1792686431921372');
+    expect(
+      await directory
+          .list(recursive: true)
+          .where((entity) => entity is File)
+          .length,
+      1,
+    );
+  });
 
   test('copy cleanup persists progress and retries a later failure', () async {
     final runtime = _CleanupRuntime();

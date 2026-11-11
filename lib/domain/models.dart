@@ -1311,6 +1311,74 @@ String mediaResourceKeyForCandidate(MediaCandidate candidate) {
   return sha256.convert(utf8.encode(input)).toString();
 }
 
+/// Neutral fallback used only when several media candidates have no truthful
+/// shared title. A single native playback or download must never use it.
+const mediaGenericBatchDirectory = '批量媒体';
+
+bool isMediaGenericBatchDirectory(String? value) =>
+    value?.trim() == mediaGenericBatchDirectory;
+
+bool isMediaFallbackDirectory(String? value) => RegExp(
+  r'^(?:媒体|批量媒体)-[0-9a-f]{8}$',
+  caseSensitive: false,
+).hasMatch(value?.trim() ?? '');
+
+/// Whether an existing task group is a placeholder that a later visible title
+/// may replace. The historical bare `批量媒体` label remains immutable because
+/// it may name directories and rows that predate the deterministic fallback.
+bool shouldReplaceMediaBatchDirectory(String? current, String? desired) {
+  final previous = current?.trim() ?? '';
+  final next = desired?.trim() ?? '';
+  if (next.isEmpty || isMediaGenericBatchDirectory(next)) return false;
+  if (previous.isEmpty) return true;
+  if (isMediaFallbackDirectory(next)) return false;
+  return isMediaFallbackDirectory(previous);
+}
+
+/// Whether changing [state] is safe before a transport starts. Active,
+/// paused, and finished rows keep the directory their bytes already use.
+bool mediaTaskCanReplaceBatchDirectory(MediaTaskState state) => {
+  MediaTaskState.queued,
+  MediaTaskState.failed,
+  MediaTaskState.cancelled,
+  MediaTaskState.reauthorize,
+}.contains(state);
+
+/// Whether an independently readable episode artifact makes this idle task
+/// row redundant. Active, paused, and finished transport rows are preserved.
+bool mediaTaskCanDiscardForExistingArtifact(MediaTaskState state) =>
+    mediaTaskCanReplaceBatchDirectory(state);
+
+/// Filesystem component shared by task caches and configured export targets.
+/// It deliberately does not strip an episode suffix: callers that choose a
+/// task-group name have already made that decision, and deduplication must
+/// compare the same physical directory that delivery will use.
+String mediaPhysicalDirectoryName(String value) {
+  final safe = value
+      .trim()
+      .replaceAll(RegExp(r'[\\/:*?"<>|\u0000-\u001f]'), '_')
+      .replaceAll('..', '_')
+      .replaceAll(RegExp(r'[. ]+$'), '');
+  return safe.isEmpty ? '未命名媒体' : safe.substring(0, safe.length.clamp(1, 120));
+}
+
+/// Stable fallback for one playback/download with no usable page title.
+///
+/// The short media identity prevents unrelated unknown items from sharing a
+/// single catch-all directory while remaining deterministic across retries.
+String mediaSingleFallbackDirectoryName(MediaCandidate candidate) {
+  final identity = mediaResourceKeyForCandidate(candidate);
+  return '媒体-${identity.substring(0, 8)}';
+}
+
+String mediaBatchFallbackDirectoryName(Iterable<MediaCandidate> candidates) {
+  final identities =
+      candidates.map(mediaCandidateLogicalIdentity).toList(growable: false)
+        ..sort();
+  final digest = sha256.convert(utf8.encode(identities.join('\u0000')));
+  return '$mediaGenericBatchDirectory-${digest.toString().substring(0, 8)}';
+}
+
 /// Picks one human-readable directory for a user-triggered batch. Generic
 /// active-player labels must not win over explicit episode titles; when every
 /// candidate is generic, the caller can use a neutral batch fallback.
@@ -1346,7 +1414,9 @@ String? mediaBatchDirectoryName(Iterable<MediaCandidate> candidates) {
       continue;
     }
     final directory = mediaSeriesDirectoryName(title);
-    if (directory == '未命名媒体') {
+    if (directory == '未命名媒体' ||
+        isMediaGenericBatchDirectory(directory) ||
+        isMediaFallbackDirectory(directory)) {
       order++;
       continue;
     }
@@ -1373,8 +1443,8 @@ String? mediaBatchDirectoryName(Iterable<MediaCandidate> candidates) {
 ///
 /// A named playback surface always supplies the group. The neutral batch
 /// fallback is available only when the caller submits several candidates and
-/// no truthful shared title can be selected. A single item never receives that
-/// fallback: callers must fail closed when the playback title is unavailable.
+/// no truthful shared title can be selected. Single-item callers use the
+/// deterministic [mediaSingleFallbackDirectoryName] when no title is visible.
 String? mediaTaskGroupDirectoryName(
   Iterable<MediaCandidate> candidates, {
   bool allowBatchFallback = true,
@@ -1389,7 +1459,9 @@ String? mediaTaskGroupDirectoryName(
     return mediaBatchDirectoryName(values);
   }
   return mediaBatchDirectoryName(values) ??
-      (allowBatchFallback && values.length > 1 ? '批量媒体' : null);
+      (allowBatchFallback && values.length > 1
+          ? mediaBatchFallbackDirectoryName(values)
+          : null);
 }
 
 Uri? optionalMediaUri(String? raw) {
@@ -1427,6 +1499,13 @@ enum MediaTaskState {
   failed,
   reauthorize,
 }
+
+/// Queued and running members participate in a user pause. Pausing only the
+/// active transport lets the same batch start its waiting members afterward.
+bool mediaTaskCanPause(MediaTaskState state) =>
+    state == MediaTaskState.queued || state == MediaTaskState.downloading;
+
+bool mediaTaskCanResume(MediaTaskState state) => state == MediaTaskState.paused;
 
 class MediaTask {
   const MediaTask({
@@ -1466,6 +1545,7 @@ class MediaTask {
   ///
   /// Older rows omit this field and continue to use the series directory.
   final String? batchDirectory;
+
   final String? episodeLabel;
   final String? seriesKey;
   final int? episodeNumber;
@@ -1543,7 +1623,7 @@ class MediaTask {
   String get storageDirectoryName =>
       batchDirectory == null || batchDirectory!.trim().isEmpty
       ? seriesDirectoryName
-      : batchDirectory!.trim();
+      : mediaPhysicalDirectoryName(batchDirectory!);
 
   MediaTask copyWith({
     String? id,

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -23,6 +25,46 @@ void main() {
   tearDown(() async {
     await app.shutdown();
     await db.close();
+  });
+
+  test('direct storage detects an existing playable episode file', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'site-lens-direct-existing-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final target = File('${directory.path}/示例系列/第1集.mp4');
+    await target.parent.create(recursive: true);
+    await target.writeAsBytes([1, 2, 3]);
+    await app.updateSettings({
+      'mediaStorageMode': 'direct_path',
+      'mp4ExportDirectory': directory.path,
+    });
+    final media = MediaCandidate(
+      id: 'existing-direct',
+      hostId: 0,
+      generation: 0,
+      sourceUrl: Uri.parse('https://example.test/video/1/'),
+      mediaUrl: Uri.parse('https://cdn.example/existing-direct.m3u8'),
+      title: '示例系列 - 第1集',
+      mime: 'application/vnd.apple.mpegurl',
+      source: MediaCandidateSource.dom,
+      episodeNumber: 1,
+    );
+
+    expect(
+      await app.hasPlayableEpisodeInGroup(group: '示例系列', candidate: media),
+      isTrue,
+    );
+    expect(
+      await app.hasPlayableEpisodeInGroup(group: '另一个系列', candidate: media),
+      isFalse,
+    );
+
+    await app.updateSettings({'mp4ExportDirectory': null});
+    expect(
+      await app.hasPlayableEpisodeInGroup(group: '示例系列', candidate: media),
+      isFalse,
+    );
   });
 
   testWidgets('media library selection keeps every top-bar action visible', (
@@ -95,6 +137,45 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('queued tasks expose the shared batch pause action', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      await app.mediaTasks.ready;
+      for (var episode = 1; episode <= 2; episode++) {
+        final candidate = MediaCandidate(
+          id: 'queued-$episode',
+          hostId: 0,
+          generation: 0,
+          sourceUrl: Uri.parse('https://example.test/video/1/'),
+          mediaUrl: Uri.parse('https://cdn.example/queued-$episode.mp4'),
+          title: '排队测试 - 第$episode集',
+          mime: 'video/mp4',
+          source: MediaCandidateSource.dom,
+          episodeNumber: episode,
+        );
+        await db.saveMediaCandidate(candidate);
+        await app.mediaTasks.create(candidate);
+      }
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: MediaTasksScreen(app: app),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('选择任务'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('全选'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('批量操作'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('批量暂停下载'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('media task selection keeps every top-bar action visible', (
     tester,

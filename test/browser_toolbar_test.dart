@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
+import 'package:site_lens/domain/models.dart';
 import 'package:site_lens/ui/app_controller.dart';
 import 'package:site_lens/ui/app_theme.dart';
 import 'package:site_lens/ui/browser_entry.dart';
@@ -27,6 +28,8 @@ void main() {
     AppDatabase db, {
     MediaQueryData? mediaQuery,
     bool isolatedScripts = true,
+    FakeWebHostApi? api,
+    String siteUrl = _siteUrl,
   }) async {
     late final AppController app;
     late final ActiveBrowserSession tab;
@@ -36,10 +39,10 @@ void main() {
     await tester.runAsync(() async {
       app = AppController(
         db,
-        api: FakeWebHostApi(isolatedScripts: isolatedScripts),
+        api: api ?? FakeWebHostApi(isolatedScripts: isolatedScripts),
       );
       await app.load();
-      tab = await app.openUrl(Uri.parse(_siteUrl));
+      tab = await app.openUrl(Uri.parse(siteUrl));
     });
     await tester.pumpWidget(
       MaterialApp(
@@ -274,6 +277,183 @@ void main() {
     );
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
+  });
+
+  testWidgets(
+    'single episode download uses page title and repairs its fallback group',
+    (tester) async {
+      const siteUrl = 'https://toolbar.example/video/1/';
+      const mediaUrl = 'https://media.example/episode-1.m3u8';
+      final db = AppDatabase(NativeDatabase.memory());
+      final api = FakeWebHostApi(
+        playbackDocumentTitle: '妈妈的答案 - 短剧视频在线观看 | 黄果短剧',
+        playbackSnapshotUrl: siteUrl,
+      );
+      final app = await boot(tester, db, api: api, siteUrl: siteUrl);
+      addTearDown(() async {
+        await app.shutdown();
+        await db.close();
+      });
+      final host = app.activeBrowser!.loadedHost!;
+      await tester.runAsync(
+        () => app.hosts.onEvent(
+          HostEvent(
+            hostId: host.id,
+            generation: host.generation,
+            kind: 'mediaCandidate',
+            url: siteUrl,
+            detail: jsonEncode({
+              'frame': 'media-main',
+              'document': 'media-document',
+              'main': true,
+              'reason': 'snapshot',
+              'pageUrl': siteUrl,
+              'url': mediaUrl,
+              'title': '批量媒体 - 第1集',
+              'mime': 'application/vnd.apple.mpegurl',
+              'seriesTitle': '批量媒体',
+              'seriesKey': 'series-1',
+              'episodeNumber': 1,
+            }),
+          ),
+        ),
+      );
+      await tester.pump();
+      final candidate = app.hosts.mediaCandidates(host).single;
+      final authorized = app.hosts.authorizeMediaCandidate(
+        host.id,
+        candidate.id,
+      );
+      final placeholderGroup = mediaSingleFallbackDirectoryName(authorized);
+      final placeholder = (await tester.runAsync(() async {
+        await app.mediaTasks.ready;
+        final task = await app.mediaTasks.create(
+          authorized,
+          batchDirectory: placeholderGroup,
+        );
+        await app.mediaTasks.flush(task.id);
+        return task;
+      }))!;
+
+      await tester.tap(find.byIcon(Icons.keyboard_arrow_up));
+      await tester.pump();
+      await tester.tap(find.byTooltip('更多浏览器操作'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('媒体嗅探与候选'));
+      await tester.pumpAndSettle();
+      expect(find.text('下载 1 集'), findsOneWidget);
+      final downloadButton = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, '下载 1 集'),
+      );
+      final corrected = await tester.runAsync(() async {
+        downloadButton.onPressed!();
+        final deadline = DateTime.now().add(const Duration(seconds: 2));
+        while (DateTime.now().isBefore(deadline)) {
+          final task = app.mediaTasks.task(placeholder.id);
+          if (task?.batchDirectory == '妈妈的答案') {
+            while (DateTime.now().isBefore(deadline) &&
+                app.mediaTasks.task(task!.id)?.state == MediaTaskState.queued) {
+              await Future<void>.delayed(const Duration(milliseconds: 10));
+            }
+            final scheduled = app.mediaTasks.task(task!.id)!;
+            await app.mediaTasks.flush(scheduled.id);
+            return scheduled;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        final task = app.mediaTasks.task(placeholder.id)!;
+        await app.mediaTasks.flush(task.id);
+        return task;
+      });
+      await tester.pump();
+      expect(corrected!.batchDirectory, '妈妈的答案');
+      expect(corrected.storageDirectoryName, '妈妈的答案');
+      expect(corrected.cacheKey, placeholder.cacheKey);
+      expect(corrected.resourceKey, placeholder.resourceKey);
+      expect(corrected.displayName, isNot(contains('01-')));
+      expect(corrected.state, isNot(MediaTaskState.queued));
+    },
+  );
+
+  testWidgets('single episode without a title uses a notified fallback group', (
+    tester,
+  ) async {
+    const siteUrl = 'https://toolbar.example/empty-title/';
+    const mediaUrl = 'https://media.example/untitled.m3u8';
+    final db = AppDatabase(NativeDatabase.memory());
+    final api = FakeWebHostApi(
+      playbackDocumentTitle: '',
+      playbackSnapshotUrl: siteUrl,
+    );
+    final app = await boot(tester, db, api: api, siteUrl: siteUrl);
+    addTearDown(() async {
+      await app.shutdown();
+      await db.close();
+    });
+    final host = app.activeBrowser!.loadedHost!;
+    await tester.runAsync(
+      () => app.hosts.onEvent(
+        HostEvent(
+          hostId: host.id,
+          generation: host.generation,
+          kind: 'mediaCandidate',
+          url: siteUrl,
+          detail: jsonEncode({
+            'frame': 'media-main',
+            'document': 'media-document',
+            'main': true,
+            'reason': 'snapshot',
+            'pageUrl': siteUrl,
+            'url': mediaUrl,
+            'title': '第1集',
+            'mime': 'application/vnd.apple.mpegurl',
+            'seriesKey': 'untitled-series',
+            'episodeNumber': 1,
+          }),
+        ),
+      ),
+    );
+    await tester.pump();
+    final candidate = app.hosts.mediaCandidates(host).single;
+    final authorized = app.hosts.authorizeMediaCandidate(host.id, candidate.id);
+    final fallback = mediaSingleFallbackDirectoryName(authorized);
+    final placeholder = (await tester.runAsync(() async {
+      await app.mediaTasks.ready;
+      await db.saveMediaCandidate(authorized);
+      final task = await app.mediaTasks.create(authorized);
+      await app.mediaTasks.flush(task.id);
+      return task;
+    }))!;
+
+    await tester.tap(find.byIcon(Icons.keyboard_arrow_up));
+    await tester.pump();
+    await tester.tap(find.byTooltip('更多浏览器操作'));
+    await tester.pump();
+    await tester.tap(find.byTooltip('媒体嗅探与候选'));
+    await tester.pumpAndSettle();
+    final downloadButton = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, '下载 1 集'),
+    );
+    final corrected = await tester.runAsync(() async {
+      downloadButton.onPressed!();
+      final deadline = DateTime.now().add(const Duration(seconds: 2));
+      while (DateTime.now().isBefore(deadline)) {
+        final task = app.mediaTasks.task(placeholder.id);
+        if (task?.batchDirectory == fallback) {
+          await app.mediaTasks.flush(task!.id);
+          return task;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      final task = app.mediaTasks.task(placeholder.id)!;
+      await app.mediaTasks.flush(task.id);
+      return task;
+    });
+    await tester.pump();
+
+    expect(fallback, matches(RegExp(r'^媒体-[0-9a-f]{8}$')));
+    expect(corrected!.batchDirectory, fallback);
+    expect(find.textContaining('未获取到标题，使用临时任务组 $fallback'), findsOneWidget);
   });
 
   testWidgets(

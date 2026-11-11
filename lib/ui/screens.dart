@@ -3975,13 +3975,31 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     );
   }
 
-  Future<String?> _mediaTaskGroupName(
+  Future<({String? name, bool fallback})> _mediaTaskGroupName(
     HostSession current,
     List<MediaCandidate> candidates,
   ) async {
+    if (candidates.isEmpty) return (name: null, fallback: false);
+    if (candidates.length == 1) {
+      // A single playback/download names its group from the current visible
+      // playback surface. Candidate metadata is an observation snapshot and
+      // can lag behind an SPA episode switch on the same document.
+      final visible = await widget.app.hosts.visiblePlaybackTitle(
+        current.id,
+        candidateId: candidates.single.id,
+      );
+      if (visible != null) return (name: visible, fallback: false);
+      return (
+        name: mediaSingleFallbackDirectoryName(candidates.single),
+        fallback: true,
+      );
+    }
     final candidateGroup = mediaTaskGroupDirectoryName(candidates);
-    if (candidateGroup != null) return candidateGroup;
-    return widget.app.hosts.visiblePlaybackTitle(current.id);
+    if (candidateGroup != null) {
+      return (name: candidateGroup, fallback: false);
+    }
+    final visible = await widget.app.hosts.visiblePlaybackTitle(current.id);
+    return (name: visible, fallback: false);
   }
 
   Future<void> _playMediaCandidate(
@@ -3993,9 +4011,13 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
         current.id,
         candidate.id,
       );
-      final taskGroup = await _mediaTaskGroupName(current, [authorized]);
+      final group = await _mediaTaskGroupName(current, [authorized]);
+      final taskGroup = group.name;
       if (taskGroup == null) {
         throw StateError('未获取到播放标题，无法创建任务组');
+      }
+      if (group.fallback && mounted) {
+        showShortToast(context, '未获取到播放标题，使用临时任务组 $taskGroup');
       }
       await widget.app.mediaTasks.ready;
       final task = await widget.app.mediaTasks.create(
@@ -4056,9 +4078,14 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
   ) async {
     if (mounted) showShortToast(context, '开始下载…');
     var added = 0;
+    var startedExisting = 0;
     var skipped = 0;
     var failed = 0;
-    final batchDirectory = await _mediaTaskGroupName(current, candidates);
+    final group = await _mediaTaskGroupName(current, candidates);
+    final fallbackNotice = group.fallback
+        ? '未获取到标题，使用临时任务组 ${group.name}'
+        : null;
+    final batchDirectory = group.name;
     if (batchDirectory == null) {
       if (mounted) showShortToast(context, '未获取到播放标题，无法创建任务组');
       return;
@@ -4071,19 +4098,42 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
           candidate.id,
         );
         final existing = widget.app.mediaTasks.taskForCandidate(authorized);
-        if (existing != null &&
-            existing.state != MediaTaskState.failed &&
-            existing.state != MediaTaskState.cancelled &&
-            existing.state != MediaTaskState.reauthorize) {
-          if ((existing.batchDirectory?.trim() ?? '').isEmpty) {
-            await widget.app.mediaTasks.ready;
-            await widget.app.mediaTasks.create(
-              authorized,
-              batchDirectory: batchDirectory,
+        if (await widget.app.hasPlayableEpisodeInGroup(
+          group: batchDirectory,
+          candidate: authorized,
+        )) {
+          if (existing != null) {
+            await widget.app.mediaDownloads.cancelIdleForExistingArtifact(
+              existing.id,
             );
           }
           skipped++;
           continue;
+        }
+        if (existing != null) {
+          switch (existing.state) {
+            case MediaTaskState.queued:
+              await widget.app.mediaTasks.ready;
+              final task = await widget.app.mediaTasks.create(
+                authorized,
+                batchDirectory: batchDirectory,
+              );
+              pending.add(
+                MediaBatchDownloadRequest(task: task, candidate: authorized),
+              );
+              startedExisting++;
+              continue;
+            case MediaTaskState.paused:
+            case MediaTaskState.downloading:
+            case MediaTaskState.completed:
+            case MediaTaskState.playable:
+              skipped++;
+              continue;
+            case MediaTaskState.failed:
+            case MediaTaskState.cancelled:
+            case MediaTaskState.reauthorize:
+              break;
+          }
         }
         await widget.app.mediaTasks.ready;
         final task = await widget.app.mediaTasks.create(
@@ -4102,10 +4152,16 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
       final result = await widget.app.mediaDownloads.startNativeBatch(pending);
       failed += result.failed;
       final reauthorize = result.reauthorize;
+      final paused = result.paused;
+      final cancelled = result.cancelled;
       if (!mounted) return;
       final parts = <String>[];
+      if (fallbackNotice != null) parts.add(fallbackNotice);
       if (added > 0) parts.add('已加入 $added 个');
+      if (startedExisting > 0) parts.add('已启动 $startedExisting 个');
       if (skipped > 0) parts.add('跳过 $skipped 个');
+      if (paused > 0) parts.add('$paused 个已暂停');
+      if (cancelled > 0) parts.add('$cancelled 个已取消');
       if (failed > 0) parts.add('$failed 个失败');
       if (reauthorize > 0) parts.add('$reauthorize 个需重新授权');
       showShortToast(context, parts.isEmpty ? '没有可下载媒体' : parts.join('，'));
@@ -4113,7 +4169,9 @@ class _BrowserScreenState extends State<BrowserScreen> with RouteAware {
     }
     if (!mounted) return;
     final parts = <String>[];
+    if (fallbackNotice != null) parts.add(fallbackNotice);
     if (added > 0) parts.add('已加入 $added 个');
+    if (startedExisting > 0) parts.add('已启动 $startedExisting 个');
     if (skipped > 0) parts.add('跳过 $skipped 个');
     if (failed > 0) parts.add('$failed 个失败');
     showShortToast(context, parts.isEmpty ? '没有可下载媒体' : parts.join('，'));

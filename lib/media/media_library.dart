@@ -308,6 +308,37 @@ class MediaLibrary extends ChangeNotifier {
     }
   }
 
+  Future<MediaArtifact?> readableArtifactForEpisode({
+    required String directory,
+    required String fileName,
+  }) async {
+    await restore();
+    final expectedFolder = mediaPhysicalDirectoryName(directory);
+    final expectedName = fileName.toLowerCase();
+    for (final value in _items.values) {
+      if (value.size <= 0 || value.name.toLowerCase() != expectedName) continue;
+      final folder = value.folder?.trim() ?? '';
+      if (folder.isEmpty ||
+          mediaPhysicalDirectoryName(folder) != expectedFolder) {
+        continue;
+      }
+      if (await _isPlayableEpisode(value)) return value;
+    }
+    return null;
+  }
+
+  Future<bool> _isPlayableEpisode(MediaArtifact value) async {
+    final runtime = native;
+    if (runtime == null) return isReadableLocation(value.location);
+    try {
+      final metadata = await runtime.inspect(value.location);
+      return (metadata['mime'] as String? ?? '').toLowerCase() == 'video/mp4' &&
+          ((metadata['durationMs'] as num?)?.toInt() ?? 0) > 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<bool> isReadableLocation(String location) async {
     try {
       if (native != null) {
@@ -977,7 +1008,7 @@ class MediaLibrary extends ChangeNotifier {
       name: name ?? mediaExportFileName(task),
       size: stat.size,
       mime: mime,
-      folder: task.seriesDirectoryName,
+      folder: task.storageDirectoryName,
       libraryCopy: previous?.location != path
           ? previous?.location
           : previous?.libraryCopy,
@@ -1300,7 +1331,7 @@ class MediaLibrary extends ChangeNotifier {
     final task = tasks.task(taskId);
     final seriesDirectory = task == null
         ? value.folder
-        : task.seriesDirectoryName;
+        : task.storageDirectoryName;
     Directory? targetDirectory;
     if (uri.scheme != 'content') {
       targetDirectory = uri.scheme == 'file'
@@ -1313,7 +1344,7 @@ class MediaLibrary extends ChangeNotifier {
       targetDirectory = Directory(
         p.join(
           targetDirectory!.path,
-          mediaSeriesDirectoryName(mediaFolderDisplayName(seriesDirectory)),
+          mediaPhysicalDirectoryName(seriesDirectory),
         ),
       );
       uri = targetDirectory.uri;
@@ -1349,7 +1380,7 @@ class MediaLibrary extends ChangeNotifier {
         fileName: value.name,
         subdirectory: seriesDirectory == null || seriesDirectory.trim().isEmpty
             ? null
-            : mediaSeriesDirectoryName(mediaFolderDisplayName(seriesDirectory)),
+            : mediaPhysicalDirectoryName(seriesDirectory),
         reuseExistingIfSameSize: true,
       );
     } else {

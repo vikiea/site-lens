@@ -4,10 +4,17 @@ import 'package:site_lens/web_host/web_host.g.dart';
 /// between tabs. It records what happened so tests can assert tab lifecycle
 /// (which hosts were navigated, which were destroyed) without a device.
 class FakeWebHostApi extends WebHostApi {
-  FakeWebHostApi({this.isolatedScripts = true, this.playbackTitle});
+  FakeWebHostApi({
+    this.isolatedScripts = true,
+    this.playbackTitle,
+    this.playbackDocumentTitle,
+    this.playbackSnapshotUrl = 'https://example.test/video/1/',
+  });
 
   final bool isolatedScripts;
   final String? playbackTitle;
+  final String? playbackDocumentTitle;
+  final String playbackSnapshotUrl;
   final created = <int>[];
   final destroyed = <int>[];
   final navigated = <int, List<String>>{};
@@ -57,19 +64,21 @@ class FakeWebHostApi extends WebHostApi {
 
   @override
   Future<PageSnapshot> inspect(int hostId, String selector) async {
-    if (playbackTitle == null) return super.inspect(hostId, selector);
+    if (playbackTitle == null && playbackDocumentTitle == null) {
+      return super.inspect(hostId, selector);
+    }
     if (!selector.contains('.hg-play__slide.is-active .hg-play__title-text')) {
       throw StateError('unexpected playback title selector');
     }
     return PageSnapshot(
-      url: 'https://example.test/video/1/',
-      title: '',
+      url: playbackSnapshotUrl,
+      title: playbackDocumentTitle ?? '',
       generation: 0,
       ready: true,
       challenge: false,
       interactionRequired: false,
       links: const [],
-      text: playbackTitle!,
+      text: playbackTitle ?? '',
       error: '',
     );
   }

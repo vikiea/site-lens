@@ -22,8 +22,38 @@ void main() {
       mediaTaskRowActionForState(MediaTaskState.failed),
       MediaTaskRowAction.retry,
     );
-    expect(mediaTaskRowActionForState(MediaTaskState.queued), isNull);
+    expect(
+      mediaTaskRowActionForState(MediaTaskState.queued),
+      MediaTaskRowAction.pause,
+    );
   });
+
+  test(
+    'batch pause includes queued members but resume only paused members',
+    () {
+      expect(mediaTaskCanPause(MediaTaskState.queued), isTrue);
+      expect(mediaTaskCanPause(MediaTaskState.downloading), isTrue);
+      expect(mediaTaskCanPause(MediaTaskState.paused), isFalse);
+      expect(mediaTaskCanResume(MediaTaskState.paused), isTrue);
+      expect(
+        mediaTaskCanDiscardForExistingArtifact(MediaTaskState.queued),
+        isTrue,
+      );
+      expect(
+        mediaTaskCanDiscardForExistingArtifact(MediaTaskState.downloading),
+        isFalse,
+      );
+      expect(
+        mediaTaskCanDiscardForExistingArtifact(MediaTaskState.paused),
+        isFalse,
+      );
+      expect(
+        mediaTaskCanDiscardForExistingArtifact(MediaTaskState.completed),
+        isFalse,
+      );
+      expect(mediaTaskCanResume(MediaTaskState.queued), isFalse);
+    },
+  );
 
   test(
     'row descriptions show exact playable, progress and retry information',
@@ -69,26 +99,29 @@ void main() {
     },
   );
 
-  test('HLS progress does not claim an exact total before completion', () async {
-    final candidate = MediaCandidate(
-      id: 'hls-row-candidate',
-      hostId: 1,
-      generation: 1,
-      sourceUrl: Uri.parse('https://example.test/watch/1'),
-      mediaUrl: Uri.parse('https://cdn.example/1.m3u8'),
-      title: '示例系列 - 第1集',
-      mime: 'application/vnd.apple.mpegurl',
-      source: MediaCandidateSource.dom,
-      episodeNumber: 1,
-    );
-    final store = MediaTaskStore();
-    var task = await store.create(candidate);
-    task = store.transition(task.id, MediaTaskState.downloading);
-    task = store.updateProgress(task.id, 512, totalBytes: 1024);
+  test(
+    'HLS progress does not claim an exact total before completion',
+    () async {
+      final candidate = MediaCandidate(
+        id: 'hls-row-candidate',
+        hostId: 1,
+        generation: 1,
+        sourceUrl: Uri.parse('https://example.test/watch/1'),
+        mediaUrl: Uri.parse('https://cdn.example/1.m3u8'),
+        title: '示例系列 - 第1集',
+        mime: 'application/vnd.apple.mpegurl',
+        source: MediaCandidateSource.dom,
+        episodeNumber: 1,
+      );
+      final store = MediaTaskStore();
+      var task = await store.create(candidate);
+      task = store.transition(task.id, MediaTaskState.downloading);
+      task = store.updateProgress(task.id, 512, totalBytes: 1024);
 
-    expect(
-      mediaTaskRowDescription(task, candidate: candidate),
-      '下载中 · 已下载 512 B · 总大小未知',
-    );
-  });
+      expect(
+        mediaTaskRowDescription(task, candidate: candidate),
+        '下载中 · 已下载 512 B · 总大小未知',
+      );
+    },
+  );
 }

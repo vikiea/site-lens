@@ -77,6 +77,27 @@ class FakeNativeDownloads extends NativeDownloadRuntime {
   }
 }
 
+class _GatedNativeDownloads extends FakeNativeDownloads {
+  final firstStarted = Completer<void>();
+  final releaseFirst = Completer<void>();
+  var _starts = 0;
+
+  @override
+  Future<Map<String, Object?>> start(
+    MediaTask task,
+    MediaCandidate candidate, {
+    String? title,
+    String? storageDirectory,
+  }) async {
+    calls.add('start:${task.id}');
+    if (++_starts == 1) {
+      firstStarted.complete();
+      await releaseFirst.future;
+    }
+    return statuses[task.id] ?? {'state': 'downloading'};
+  }
+}
+
 class _CaptureExportRuntime extends NativeExportRuntime {
   List<String> validatedResources = const [];
   List<String> validatedRoots = const [];
@@ -844,21 +865,53 @@ void main() {
     },
   );
 
-  test('batch directory survives media task persistence and restore', () async {
-    final db = AppDatabase(NativeDatabase.memory());
-    addTearDown(db.close);
-    final source = candidate(id: 'batch-persisted', title: '系列 - 第1集');
-    await db.saveMediaCandidate(source);
-    final first = MediaTaskStore(db: db);
-    final task = await first.create(source, batchDirectory: '批次目录');
-    await first.flush(task.id);
+  test(
+    'title correction relocates the cache and abandons the old partial',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-organization-title-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final source = candidate(
+        id: 'batch-persisted',
+        title: '系列 - 第1集',
+        url: 'https://cdn.example/batch-persisted.m3u8',
+        mime: 'application/vnd.apple.mpegurl',
+      );
+      await db.saveMediaCandidate(source);
+      final first = MediaTaskStore(db: db, directoryProvider: () async => root);
+      final fallback = mediaSingleFallbackDirectoryName(source);
+      final task = await first.create(source, batchDirectory: fallback);
+      final directory = await first.cacheDirectoryForTask(task);
+      final cache = await Directory('${directory.path}/${task.cacheKey}.hls')
+          .create(recursive: true);
+      await File('${cache.path}/resource_segment.bin').writeAsBytes([1, 2, 3]);
+      final playlist = File('${cache.path}/index.m3u8');
+      await playlist.writeAsString(
+        '#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\nresource_segment.bin\n',
+      );
+      final corrected = await first.create(source, batchDirectory: '整理标题');
+      await first.flush(task.id);
 
-    final restored = MediaTaskStore(db: db);
-    await restored.restore();
+      final correctedDirectory = await first.cacheDirectoryForTask(corrected);
+      expect(corrected.batchDirectory, '整理标题');
+      expect(corrected.storageDirectoryName, '整理标题');
+      expect(correctedDirectory.path, isNot(directory.path));
+      expect(await playlist.exists(), isTrue);
+      expect(await first.partialPlaybackFile(task.id), isNull);
 
-    expect(restored.task(task.id)?.batchDirectory, '批次目录');
-    expect(restored.task(task.id)?.storageDirectoryName, '批次目录');
-  });
+      final restored = MediaTaskStore(
+        db: db,
+        directoryProvider: () async => root,
+      );
+      await restored.restore();
+      expect(restored.task(task.id)?.batchDirectory, '整理标题');
+      expect(restored.task(task.id)?.storageDirectoryName, '整理标题');
+      expect(await restored.partialPlaybackFile(task.id), isNull);
+    },
+  );
 
   test('media playlist groups one series and sorts episodes', () async {
     final store = MediaTaskStore();
@@ -1202,6 +1255,66 @@ void main() {
     expect(batched.storageDirectoryName, '示例剧');
   });
 
+  test(
+    'a real playback title replaces the deterministic fallback group',
+    () async {
+      final store = MediaTaskStore();
+      final source = candidate(
+        id: 'generic-single',
+        title: '第1集',
+        url: 'https://cdn.example/generic-single.mp4',
+      );
+      final placeholder = await store.create(
+        source,
+        batchDirectory: mediaSingleFallbackDirectoryName(source),
+      );
+      final corrected = await store.create(source, batchDirectory: '妈妈的答案');
+
+      expect(corrected.id, placeholder.id);
+      expect(corrected.batchDirectory, '妈妈的答案');
+      expect(corrected.cacheKey, placeholder.cacheKey);
+      expect(corrected.resourceKey, placeholder.resourceKey);
+      expect(corrected.localRef, placeholder.localRef);
+      expect(corrected.storageDirectoryName, '妈妈的答案');
+    },
+  );
+
+  test(
+    'a queued row with stale progress still keeps its physical cache',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'site-lens-queued-partial-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final store = MediaTaskStore(directoryProvider: () async => root);
+      final source = candidate(
+        id: 'queued-partial',
+        title: '系列 - 第1集',
+        url: 'https://cdn.example/queued-partial.m3u8',
+        mime: 'application/vnd.apple.mpegurl',
+      );
+      final task = await store.create(
+        source,
+        batchDirectory: mediaSingleFallbackDirectoryName(source),
+      );
+      final before = await store.cacheDirectoryForTask(task);
+      final cache = await Directory('${before.path}/${task.cacheKey}.hls')
+          .create(recursive: true);
+      final playlist = File('${cache.path}/index.m3u8');
+      await playlist.writeAsString(
+        '#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\nmissing.ts\n',
+      );
+
+      final corrected = await store.create(source, batchDirectory: '妈妈的答案');
+      final after = await store.cacheDirectoryForTask(corrected);
+
+      expect(corrected.state, MediaTaskState.queued);
+      expect(corrected.batchDirectory, '妈妈的答案');
+      expect(after.path, isNot(before.path));
+      expect(await playlist.exists(), isTrue);
+    },
+  );
+
   test('a batch never relocates a row that already has a batch folder', () async {
     // The recorded batch directory names the folder the bytes already live in.
     // A retry or a second selection must not move the row out of it.
@@ -1225,6 +1338,77 @@ void main() {
     expect(again.id, existing.id);
     expect(again.batchDirectory, '第一批');
   });
+
+  test(
+    'historical generic and active rows keep their physical folder',
+    () async {
+      final store = MediaTaskStore();
+      final source = candidate(
+        id: 'state-matrix',
+        title: '第1集',
+        url: 'https://cdn.example/state-matrix.mp4',
+      );
+      final generic = await store.create(source, batchDirectory: '批量媒体');
+      final stillGeneric = await store.create(source, batchDirectory: '妈妈的答案');
+      expect(stillGeneric.batchDirectory, '批量媒体');
+
+      final fallbackStore = MediaTaskStore();
+      final fallbackSource = candidate(
+        id: 'active-fallback',
+        title: '第1集',
+        url: 'https://cdn.example/active-fallback.mp4',
+      );
+      final fallback = await fallbackStore.create(
+        fallbackSource,
+        batchDirectory: mediaSingleFallbackDirectoryName(fallbackSource),
+      );
+      fallbackStore.transition(fallback.id, MediaTaskState.downloading);
+      final active = await fallbackStore.create(
+        fallbackSource,
+        batchDirectory: '妈妈的答案',
+      );
+      expect(active.batchDirectory, fallback.batchDirectory);
+
+      final queuedSource = candidate(
+        id: 'queued-fallback',
+        title: '第1集',
+        url: 'https://cdn.example/queued-fallback.mp4',
+      );
+      final queued = await fallbackStore.create(
+        queuedSource,
+        batchDirectory: mediaSingleFallbackDirectoryName(queuedSource),
+      );
+      expect(queued.state, MediaTaskState.queued);
+      final retitled = await fallbackStore.create(
+        queuedSource,
+        batchDirectory: '妈妈的答案',
+      );
+      expect(retitled.batchDirectory, '妈妈的答案');
+      expect(generic.id, isNotEmpty);
+    },
+  );
+
+  test(
+    'directory update rechecks the canonical state after awaiting',
+    () async {
+      final store = MediaTaskStore();
+      final source = candidate(
+        id: 'create-state-race',
+        title: '第1集',
+        url: 'https://cdn.example/create-state-race.mp4',
+      );
+      final fallback = mediaSingleFallbackDirectoryName(source);
+      final task = await store.create(source, batchDirectory: fallback);
+
+      final updating = store.create(source, batchDirectory: '妈妈的答案');
+      store.transition(task.id, MediaTaskState.downloading);
+      final result = await updating;
+
+      expect(result.state, MediaTaskState.downloading);
+      expect(store.task(task.id)?.state, MediaTaskState.downloading);
+      expect(result.batchDirectory, fallback);
+    },
+  );
 
   test('the page-owned series names the batch folder', () {
     // document.title carries the playing episode and the site suffix, so it
@@ -1271,6 +1455,11 @@ void main() {
       url: 'https://cdn.example/unnamed.m3u8',
     );
     expect(mediaTaskGroupDirectoryName([unnamed]), isNull);
+    final fallback = mediaSingleFallbackDirectoryName(unnamed);
+    expect(fallback, matches(RegExp(r'^媒体-[0-9a-f]{8}$')));
+    expect(mediaSingleFallbackDirectoryName(unnamed), fallback);
+    expect(shouldReplaceMediaBatchDirectory(null, fallback), isTrue);
+    expect(shouldReplaceMediaBatchDirectory(fallback, '妈妈的答案'), isTrue);
 
     final documentTitleOnly = candidate(
       id: 'document-title-only',
@@ -1297,7 +1486,28 @@ void main() {
         url: 'https://cdn.example/generic-2.m3u8',
       ),
     ];
-    expect(mediaTaskGroupDirectoryName(generic), '批量媒体');
+    final fallback = mediaTaskGroupDirectoryName(generic);
+    expect(fallback, matches(RegExp(r'^批量媒体-[0-9a-f]{8}$')));
+    expect(mediaTaskGroupDirectoryName(generic), fallback);
+    final reversed = generic.reversed.toList();
+    expect(mediaTaskGroupDirectoryName(reversed), fallback);
+    expect(
+      mediaTaskGroupDirectoryName([
+        candidate(
+          id: 'generic-series-1',
+          title: '第1集',
+          seriesTitle: '批量媒体',
+          url: 'https://cdn.example/generic-series-1.m3u8',
+        ),
+        candidate(
+          id: 'generic-series-2',
+          title: '第2集',
+          seriesTitle: '批量媒体',
+          url: 'https://cdn.example/generic-series-2.m3u8',
+        ),
+      ]),
+      matches(RegExp(r'^批量媒体-[0-9a-f]{8}$')),
+    );
     expect(
       mediaTaskGroupDirectoryName(generic, allowBatchFallback: false),
       isNull,
@@ -1980,6 +2190,214 @@ void main() {
     expect(native.calls, contains('start:${first.id}'));
     expect(native.calls, contains('start:${second.id}'));
     expect(store.task(second.id)?.state, MediaTaskState.reauthorize);
+  });
+
+  test(
+    'batch pause suspends running and queued group members until resume',
+    () async {
+      final store = MediaTaskStore();
+      final candidates = <MediaCandidate>[
+        candidate(
+          id: 'group-1',
+          url: 'https://cdn.example/group-1.mp4',
+          title: '系列 - 第1集',
+          seriesKey: 'series:group',
+          episodeNumber: 1,
+        ),
+        candidate(
+          id: 'group-2',
+          url: 'https://cdn.example/group-2.mp4',
+          title: '系列 - 第2集',
+          seriesKey: 'series:group',
+          episodeNumber: 2,
+        ),
+        candidate(
+          id: 'group-3',
+          url: 'https://cdn.example/group-3.mp4',
+          title: '系列 - 第3集',
+          seriesKey: 'series:group',
+          episodeNumber: 3,
+        ),
+      ];
+      final tasks = <MediaTask>[
+        for (final item in candidates)
+          await store.create(item, batchDirectory: '系列'),
+      ];
+      final native = _GatedNativeDownloads();
+      final service = MediaDownloadService(tasks: store, native: native)
+        ..maxConcurrency = 1;
+      final batch = service.startNativeBatch([
+        for (var index = 0; index < tasks.length; index++)
+          MediaBatchDownloadRequest(
+            task: tasks[index],
+            candidate: candidates[index],
+          ),
+      ]);
+      await native.firstStarted.future;
+      expect(store.task(tasks.first.id)?.state, MediaTaskState.downloading);
+      expect(store.task(tasks[1].id)?.state, MediaTaskState.queued);
+      expect(store.task(tasks[2].id)?.state, MediaTaskState.queued);
+
+      final pauses = [for (final task in tasks) service.pause(task.id)];
+      expect(store.task(tasks[1].id)?.state, MediaTaskState.paused);
+      expect(store.task(tasks[2].id)?.state, MediaTaskState.paused);
+      native.releaseFirst.complete();
+
+      final result = await batch;
+      await Future.wait(pauses);
+      for (final task in tasks) {
+        expect(store.task(task.id)?.state, MediaTaskState.paused);
+      }
+      expect(result.paused, greaterThanOrEqualTo(2));
+      expect(native.calls, [
+        'start:${tasks.first.id}',
+        'pause:${tasks.first.id}',
+      ]);
+
+      await Future.wait([
+        for (var index = 0; index < tasks.length; index++)
+          service.resumeNative(tasks[index].id, candidates[index]),
+      ]);
+      for (final task in tasks) {
+        expect(store.task(task.id)?.state, MediaTaskState.downloading);
+      }
+      expect(native.calls, contains('start:${tasks[1].id}'));
+      expect(native.calls, contains('start:${tasks[2].id}'));
+    },
+  );
+
+  test('a pause racing batch start wins before native dispatch', () async {
+    final store = MediaTaskStore();
+    final media = candidate(
+      id: 'race-paused',
+      url: 'https://cdn.example/race-paused.mp4',
+    );
+    final task = await store.create(media, batchDirectory: '系列');
+    final native = FakeNativeDownloads();
+    final service = MediaDownloadService(tasks: store, native: native);
+
+    final batch = service.startNativeBatch([
+      MediaBatchDownloadRequest(task: task, candidate: media),
+    ]);
+    final paused = service.pause(task.id);
+    final result = await batch;
+    await paused;
+
+    expect(store.task(task.id)?.state, MediaTaskState.paused);
+    expect(result.paused, 1);
+    expect(native.calls, isEmpty);
+  });
+
+  test('an ordinary start racing pause cannot restart the task', () async {
+    final store = MediaTaskStore();
+    final media = candidate(
+      id: 'ordinary-race',
+      url: 'https://cdn.example/ordinary-race.mp4',
+    );
+    final task = await store.create(media);
+    final service = MediaDownloadService(tasks: store);
+
+    final starting = service.start(task, media);
+    final paused = service.pause(task.id);
+    await expectLater(starting, throwsA(isA<Cancelled>()));
+    await paused;
+
+    expect(store.task(task.id)?.state, MediaTaskState.paused);
+  });
+
+  test('a cancel racing batch start is reported as cancelled', () async {
+    final store = MediaTaskStore();
+    final media = candidate(
+      id: 'cancel-race',
+      url: 'https://cdn.example/cancel-race.mp4',
+    );
+    final task = await store.create(media, batchDirectory: '系列');
+    final native = FakeNativeDownloads();
+    final service = MediaDownloadService(tasks: store, native: native);
+
+    final batch = service.startNativeBatch([
+      MediaBatchDownloadRequest(task: task, candidate: media),
+    ]);
+    final cancelled = service.cancel(task.id);
+    final result = await batch;
+    await cancelled;
+
+    expect(result.cancelled, 1);
+    expect(result.paused, 0);
+    expect(store.task(task.id)?.state, MediaTaskState.cancelled);
+    expect(native.calls, isEmpty);
+  });
+
+  test('artifact cleanup never cancels a task that already started', () async {
+    final store = MediaTaskStore();
+    final media = candidate(
+      id: 'artifact-active',
+      url: 'https://cdn.example/artifact-active.mp4',
+    );
+    final task = await store.create(media);
+    store.transition(task.id, MediaTaskState.downloading);
+    final native = FakeNativeDownloads();
+    final service = MediaDownloadService(tasks: store, native: native);
+
+    expect(await service.cancelIdleForExistingArtifact(task.id), isFalse);
+
+    expect(store.task(task.id)?.state, MediaTaskState.downloading);
+    expect(native.calls, isEmpty);
+  });
+
+  test(
+    'artifact cleanup prevents a queued batch member from starting',
+    () async {
+      final store = MediaTaskStore();
+      final firstCandidate = candidate(
+        id: 'artifact-batch-first',
+        url: 'https://cdn.example/artifact-batch-first.mp4',
+      );
+      final secondCandidate = candidate(
+        id: 'artifact-batch-second',
+        url: 'https://cdn.example/artifact-batch-second.mp4',
+      );
+      final first = await store.create(firstCandidate);
+      final second = await store.create(secondCandidate);
+      final native = _GatedNativeDownloads();
+      final service = MediaDownloadService(tasks: store, native: native)
+        ..maxConcurrency = 1;
+
+      final batch = service.startNativeBatch([
+        MediaBatchDownloadRequest(task: first, candidate: firstCandidate),
+        MediaBatchDownloadRequest(task: second, candidate: secondCandidate),
+      ]);
+      await native.firstStarted.future;
+      expect(store.task(second.id)?.state, MediaTaskState.queued);
+      expect(await service.cancelIdleForExistingArtifact(second.id), isTrue);
+
+      native.releaseFirst.complete();
+      final result = await batch;
+
+      expect(result.cancelled, 1);
+      expect(store.task(second.id)?.state, MediaTaskState.cancelled);
+      expect(native.calls, isNot(contains('start:${second.id}')));
+    },
+  );
+
+  test('a cancelled queued batch item stays cancelled', () async {
+    final store = MediaTaskStore();
+    final media = candidate(
+      id: 'batch-cancelled',
+      url: 'https://cdn.example/batch-cancelled.mp4',
+    );
+    final task = await store.create(media, batchDirectory: '系列');
+    store.transition(task.id, MediaTaskState.cancelled);
+    final native = FakeNativeDownloads();
+    final result = await MediaDownloadService(tasks: store, native: native)
+        .startNativeBatch([
+          MediaBatchDownloadRequest(task: task, candidate: media),
+        ]);
+
+    expect(result.cancelled, 1);
+    expect(result.paused, 0);
+    expect(store.task(task.id)?.state, MediaTaskState.cancelled);
+    expect(native.calls, isEmpty);
   });
 
   test(
@@ -2729,8 +3147,8 @@ void main() {
       final segment = File('${root.path}/seg.ts')..writeAsBytesSync([1, 2, 3]);
       final store = MediaTaskStore(directoryProvider: () async => root);
       final task = await store.create(
-        candidate(title: '系统带我攻略弟弟（漫剧版） - 第1集'),
-        batchDirectory: '系统带我攻略弟弟（漫剧版） - 批次1792686431921372',
+        candidate(title: '批量媒体 - 第1集'),
+        batchDirectory: '妈妈的答案',
       );
       store.transition(task.id, MediaTaskState.downloading);
       store.transition(task.id, MediaTaskState.completed);
@@ -2760,9 +3178,9 @@ void main() {
       );
       expect(successful.state, ExportState.deliverable);
       expect(await File(successful.outputPath!).exists(), isTrue);
-      expect(successful.outputPath, contains('系统带我攻略弟弟（漫剧版）'));
-      expect(successful.outputPath, isNot(contains('批次1792686431921372')));
-      expect(successful.outputPath, endsWith('/系统带我攻略弟弟（漫剧版）/第1集.mp4'));
+      expect(successful.outputPath, contains('妈妈的答案'));
+      expect(successful.outputPath, isNot(contains('批量媒体')));
+      expect(successful.outputPath, endsWith('/妈妈的答案/第1集.mp4'));
       expect(store.task(task.id)?.localRef, isNull);
       expect(progress, containsAllInOrder([0, 50, 100]));
 

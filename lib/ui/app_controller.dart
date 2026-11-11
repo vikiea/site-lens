@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../backup/backup_service.dart';
@@ -1590,6 +1591,46 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Returns true when this episode already has readable output in its task
+  /// group, even when the previous download task was deleted.
+  Future<bool> hasPlayableEpisodeInGroup({
+    required String group,
+    required MediaCandidate candidate,
+  }) async {
+    final fileName = mediaEpisodeFileNameForCandidate(candidate);
+    if (fileName == null) return false;
+    if (await mediaLibrary.readableArtifactForEpisode(
+          directory: group,
+          fileName: fileName,
+        ) !=
+        null) {
+      return true;
+    }
+    if (mediaStorageMode != MediaStorageMode.directPath) return false;
+    final rawDirectory = mp4ExportDirectory?.trim() ?? '';
+    if (rawDirectory.isEmpty) return false;
+    final configured = Uri.tryParse(rawDirectory);
+    if (configured == null ||
+        (configured.hasScheme && configured.scheme != 'file')) {
+      return false;
+    }
+    final root = configured.scheme == 'file'
+        ? Directory.fromUri(configured)
+        : Directory(rawDirectory);
+    final folder = mediaPhysicalDirectoryName(group);
+    final target = File(p.join(root.path, folder, fileName));
+    try {
+      if (!await target.exists() || await target.length() <= 0) return false;
+      final exports = nativeExports;
+      if (exports == null) return true;
+      final metadata = await exports.inspect(target.path);
+      return (metadata['mime'] as String? ?? '').toLowerCase() == 'video/mp4' &&
+          ((metadata['durationMs'] as num?)?.toInt() ?? 0) > 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<MediaArtifact> _prepareMediaArtifact(
     MediaTask task, {
     bool forceRegenerate = false,
@@ -1647,7 +1688,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           artifactMime = mime;
           final baseName = mediaExportFileName(task)
               .replaceFirst(RegExp(r'\.mp4$', caseSensitive: false), '');
-          final folder = task.seriesDirectoryName;
+          final folder = task.storageDirectoryName;
           final directory = Directory(
             '${(await mediaTasks.cacheRootDirectory()).parent.path}/media_exports/$folder',
           );
