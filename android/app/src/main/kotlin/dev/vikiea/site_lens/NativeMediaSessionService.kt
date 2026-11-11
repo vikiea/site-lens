@@ -1011,24 +1011,24 @@ class NativeMediaSessionService : MediaSessionService() {
             )
             val storedOwner = preferences.getString(PREF_POLICY_OWNER, "") ?: ""
             val storedSequence = preferences.getLong(PREF_POLICY_SEQUENCE, 0L)
-            if (NativeMediaSessionPolicy.acceptsLifecyclePolicy(
-                    ownerId = ownerId,
-                    sequence = sequence,
-                    currentOwnerId = storedOwner,
-                    currentSequence = storedSequence,
-                )
-            ) {
-                preferences.edit()
-                    .putBoolean(PREF_ALLOW_NATIVE_BACKGROUND_PLAYBACK, allowBackground)
-                    .putBoolean(PREF_APPLICATION_FOREGROUND, foreground)
-                    .putString(PREF_POLICY_OWNER, ownerId)
-                    .putLong(PREF_POLICY_SEQUENCE, sequence)
-                    .commit()
-            }
             val service = synchronized(pendingLock) {
                 instance?.takeIf { it.acceptsDispatch() }
             }
             if (service == null) {
+                if (NativeMediaSessionPolicy.acceptsLifecyclePolicy(
+                        ownerId = ownerId,
+                        sequence = sequence,
+                        currentOwnerId = storedOwner,
+                        currentSequence = storedSequence,
+                    )
+                ) {
+                    preferences.edit()
+                        .putBoolean(PREF_ALLOW_NATIVE_BACKGROUND_PLAYBACK, allowBackground)
+                        .putBoolean(PREF_APPLICATION_FOREGROUND, foreground)
+                        .putString(PREF_POLICY_OWNER, ownerId)
+                        .putLong(PREF_POLICY_SEQUENCE, sequence)
+                        .commit()
+                }
                 callback(
                     Result.success(
                         mapOf(
