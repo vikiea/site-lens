@@ -18,7 +18,7 @@ Alpha74 已由远端发布，但只包含版本提交 `fb222c8`；本记录绑�
 
 ## 已完成本地门禁
 
-- `python3 tool/verify_release_pubspec.py --tag v0.6.0.alpha75 --version-code 208`：待版本提交后复核。
+- `python3 tool/verify_release_pubspec.py --tag v0.6.0.alpha75 --version-code 208`：通过。
 - `make check`：通过；892 项 Flutter 测试及脚本、Pigeon、Android、回归契约、UI token 检查通过。
 - `./gradlew :app:testDebugUnitTest`：通过。
 - 独立复审：Alpha74 之前的时间 epoch 方案被拒绝；owner/sequence 方案及最终提交需取得新的 `APPROVE` 后才能发布。

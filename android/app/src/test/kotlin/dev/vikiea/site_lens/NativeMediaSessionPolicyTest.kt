@@ -105,6 +105,26 @@ class NativeMediaSessionPolicyTest {
         )
     }
 
+    @Test fun oldOwnerIsRejectedAfterNewOwnerClaimsThePolicy() {
+        val claimedOwner = "new-bridge"
+        assertFalse(
+            NativeMediaSessionPolicy.acceptsLifecyclePolicy(
+                ownerId = "old-bridge",
+                sequence = 100L,
+                currentOwnerId = claimedOwner,
+                currentSequence = 0L,
+            ),
+        )
+        assertTrue(
+            NativeMediaSessionPolicy.acceptsLifecyclePolicy(
+                ownerId = claimedOwner,
+                sequence = 1L,
+                currentOwnerId = claimedOwner,
+                currentSequence = 0L,
+            ),
+        )
+    }
+
     @Test fun controllerPolicyRejectsUntrustedPackages() {
         assertTrue(
             NativeMediaSessionPolicy.isAllowedController(
