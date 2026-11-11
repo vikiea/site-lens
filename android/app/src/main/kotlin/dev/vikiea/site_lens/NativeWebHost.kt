@@ -307,8 +307,8 @@ class NativeWebHostRegistry(private val activity: Activity, engine: FlutterEngin
             }
         } catch (error: Exception) { callback(Result.failure(error)) }
     }
-    override fun setHostActivity(hostId: Long, isCurrent: Boolean, visible: Boolean, foreground: Boolean, allowBackgroundPlayback: Boolean): Boolean =
-        host(hostId).media.activity(isCurrent, visible, foreground, allowBackgroundPlayback)
+    override fun setHostActivity(hostId: Long, isCurrent: Boolean, visible: Boolean, foreground: Boolean): Boolean =
+        host(hostId).media.activity(isCurrent, visible, foreground)
     fun foreground(value: Boolean) {
         if (disposed) return
         isForeground = value

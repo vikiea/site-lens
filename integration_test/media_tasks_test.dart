@@ -895,6 +895,32 @@ void main() {
           if (state.positionMs >= 500) break;
         }
         expect(state.positionMs, greaterThanOrEqualTo(500));
+        final policyPaused = await player.setApplicationLifecycle(
+          foreground: false,
+          allowNativeBackgroundPlayback: false,
+        );
+        expect(policyPaused.state, NativePlaybackState.paused);
+        expect(policyPaused.backgroundPolicyPaused, isTrue);
+        debugPrint('NATIVE_BACKGROUND_DISABLED_PAUSE_PASS');
+
+        await player.setApplicationLifecycle(
+          foreground: true,
+          allowNativeBackgroundPlayback: false,
+        );
+        final noAutoResume = await player.state(sessionId: session.id);
+        expect(noAutoResume.state, NativePlaybackState.paused);
+        expect(noAutoResume.backgroundPolicyPaused, isFalse);
+        debugPrint('NATIVE_BACKGROUND_NO_AUTOPLAY_PASS');
+
+        await player.setApplicationLifecycle(
+          foreground: false,
+          allowNativeBackgroundPlayback: true,
+        );
+        await player.play(sessionId: session.id);
+        final enabledPlayback = await player.state(sessionId: session.id);
+        expect(enabledPlayback.state, isNot(NativePlaybackState.failed));
+        debugPrint('NATIVE_BACKGROUND_ENABLED_PASS');
+
         await player.pause(sessionId: session.id);
         final paused = await player.state(sessionId: session.id);
         await tester.pump(const Duration(milliseconds: 300));

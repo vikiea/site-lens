@@ -25,7 +25,7 @@ List<CapabilityRecord> records(
   allSurfacesHighQuality: true,
   webViewMounted: true,
   backgroundHealthCheck: true,
-  allowBackgroundPlayback: false,
+  allowNativeBackgroundPlayback: false,
   exportDirectory: directory,
 );
 

@@ -252,7 +252,7 @@ void main() {
             ),
           );
         }
-        await hosts.api.setHostActivity(browser.id, true, true, true, false);
+        await hosts.api.setHostActivity(browser.id, true, true, true);
         debugPrint(
           'HOST_CAPABILITIES ${browser.capabilities.platform}: ${browser.capabilities.reason}',
         );

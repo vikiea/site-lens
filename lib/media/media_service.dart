@@ -327,6 +327,7 @@ class NativePlaybackSession {
     required this.state,
     this.taskId = '',
     this.userPaused = false,
+    this.backgroundPolicyPaused = false,
     this.textureId,
     this.positionMs = 0,
     this.durationMs = 0,
@@ -340,6 +341,7 @@ class NativePlaybackSession {
   final String candidateId;
   final String taskId;
   final bool userPaused;
+  final bool backgroundPolicyPaused;
   final NativePlaybackState state;
   final int? textureId;
   final int positionMs;
@@ -354,6 +356,7 @@ class NativePlaybackSession {
     String? candidateId,
     String? taskId,
     bool? userPaused,
+    bool? backgroundPolicyPaused,
     NativePlaybackState? state,
     int? textureId,
     int? positionMs,
@@ -367,6 +370,8 @@ class NativePlaybackSession {
     candidateId: candidateId ?? this.candidateId,
     taskId: taskId ?? this.taskId,
     userPaused: userPaused ?? this.userPaused,
+    backgroundPolicyPaused:
+        backgroundPolicyPaused ?? this.backgroundPolicyPaused,
     state: state ?? this.state,
     textureId: textureId ?? this.textureId,
     positionMs: positionMs ?? this.positionMs,

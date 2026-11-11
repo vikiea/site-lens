@@ -23,11 +23,22 @@ internal object NativeMediaSessionPolicy {
         RELEASE,
     }
 
-    fun taskRemovalAction(userPaused: Boolean, state: String): TaskRemovalAction = when {
+    fun taskRemovalAction(
+        allowNativeBackgroundPlayback: Boolean,
+        userPaused: Boolean,
+        backgroundPolicyPaused: Boolean,
+        state: String,
+    ): TaskRemovalAction = when {
         state in TERMINAL_STATES -> TaskRemovalAction.RELEASE
-        userPaused -> TaskRemovalAction.PRESERVE_RESTORABLE
+        !allowNativeBackgroundPlayback || userPaused || backgroundPolicyPaused ->
+            TaskRemovalAction.PRESERVE_RESTORABLE
         else -> TaskRemovalAction.KEEP_RUNNING
     }
+
+    fun canStartPlayback(
+        applicationForeground: Boolean,
+        allowNativeBackgroundPlayback: Boolean,
+    ): Boolean = applicationForeground || allowNativeBackgroundPlayback
 
     fun isAppController(controllerPackage: String?, appPackage: String): Boolean =
         controllerPackage == appPackage

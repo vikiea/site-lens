@@ -56,6 +56,10 @@ class NativeMediaSessionService : MediaSessionService() {
     private var lastError: String? = null
     private var sourceRetryCount = 0
     private var userPaused = false
+    private var backgroundPolicyPaused = false
+    private var applicationForeground = true
+    private var allowNativeBackgroundPlayback = false
+    private var lifecyclePolicyEpoch = 0L
     private var stopping = false
     private var releaseWasExplicitStop = false
     private var engineReleased = false
@@ -145,6 +149,15 @@ class NativeMediaSessionService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        allowNativeBackgroundPlayback = statePrefs.getBoolean(
+            PREF_ALLOW_NATIVE_BACKGROUND_PLAYBACK,
+            false,
+        )
+        applicationForeground = statePrefs.getBoolean(
+            PREF_APPLICATION_FOREGROUND,
+            true,
+        )
+        lifecyclePolicyEpoch = statePrefs.getLong(PREF_POLICY_EPOCH, 0L)
         // Media3 publishes the controllable notification after the player and
         // session are built. Android's foreground-service deadline starts at
         // startForegroundService(), so publish a concrete placeholder first;
@@ -337,6 +350,40 @@ class NativeMediaSessionService : MediaSessionService() {
         ) && sessionId != null && !stopping && !engineReleased
     }
 
+    private fun applicationLifecycle(
+        foreground: Boolean,
+        allowBackground: Boolean,
+        epoch: Long,
+    ): Map<String, Any?> {
+        if (epoch < lifecyclePolicyEpoch) return snapshot()
+        lifecyclePolicyEpoch = epoch
+        applicationForeground = foreground
+        allowNativeBackgroundPlayback = allowBackground
+        statePrefs.edit()
+            .putBoolean(PREF_ALLOW_NATIVE_BACKGROUND_PLAYBACK, allowBackground)
+            .putBoolean(PREF_APPLICATION_FOREGROUND, foreground)
+            .putLong(PREF_POLICY_EPOCH, epoch)
+            .commit()
+        if (foreground) {
+            backgroundPolicyPaused = false
+        } else if (!allowBackground && sessionId != null &&
+            (player.isPlaying || player.playWhenReady)
+        ) {
+            backgroundPolicyPaused = true
+            player.pause()
+            userPaused = false
+            state = "paused"
+        }
+        if (sessionId != null && !stopping && !engineReleased) {
+            if (state != "failed" && state != "stopped") {
+                syncState()
+            } else {
+                publish()
+            }
+        }
+        return snapshot()
+    }
+
     override fun onTaskRemoved(rootIntent: Intent?) {
         if (sessionId == null) {
             // Starting the service to inspect a restorable snapshot must not
@@ -344,7 +391,14 @@ class NativeMediaSessionService : MediaSessionService() {
             super.onTaskRemoved(rootIntent)
             return
         }
-        when (NativeMediaSessionPolicy.taskRemovalAction(userPaused, state)) {
+        when (
+            NativeMediaSessionPolicy.taskRemovalAction(
+                allowNativeBackgroundPlayback = allowNativeBackgroundPlayback,
+                userPaused = userPaused,
+                backgroundPolicyPaused = backgroundPolicyPaused,
+                state = state,
+            )
+        ) {
             NativeMediaSessionPolicy.TaskRemovalAction.KEEP_RUNNING ->
                 super.onTaskRemoved(rootIntent)
             NativeMediaSessionPolicy.TaskRemovalAction.PRESERVE_RESTORABLE ->
@@ -422,6 +476,7 @@ class NativeMediaSessionService : MediaSessionService() {
     private fun syncState() {
         if (state == "failed" || state == "stopped" || stopping || engineReleased) return
         state = when {
+            backgroundPolicyPaused -> "paused"
             userPaused -> "paused"
             player.playbackState == Player.STATE_ENDED -> "completed"
             player.playbackState == Player.STATE_BUFFERING -> "buffering"
@@ -454,6 +509,13 @@ class NativeMediaSessionService : MediaSessionService() {
         "videoHeight" to if (!engineReleased) player.videoSize.height else 0,
         "speed" to if (sessionId != null) speed else restorable?.speed ?: 1f,
         "userPaused" to if (sessionId != null) userPaused else restorable?.userPaused ?: true,
+        "backgroundPolicyPaused" to if (sessionId != null) {
+            backgroundPolicyPaused
+        } else {
+            restorable?.backgroundPolicyPaused ?: false
+        },
+        "applicationForeground" to applicationForeground,
+        "allowNativeBackgroundPlayback" to allowNativeBackgroundPlayback,
         "errorCode" to lastError,
         "backend" to "media_session",
         "restorable" to (sessionId == null && restorable != null),
@@ -473,6 +535,13 @@ class NativeMediaSessionService : MediaSessionService() {
             .putLong("durationMs", player.duration.coerceAtLeast(0L))
             .putFloat("speed", speed)
             .putBoolean("userPaused", userPaused)
+            .putBoolean("backgroundPolicyPaused", backgroundPolicyPaused)
+            .putBoolean(
+                PREF_ALLOW_NATIVE_BACKGROUND_PLAYBACK,
+                allowNativeBackgroundPlayback,
+            )
+            .putBoolean(PREF_APPLICATION_FOREGROUND, applicationForeground)
+            .putLong(PREF_POLICY_EPOCH, lifecyclePolicyEpoch)
             .putString("state", state)
             .putBoolean("known", true)
         check(edit.commit()) { "无法保存原生媒体恢复状态" }
@@ -492,6 +561,10 @@ class NativeMediaSessionService : MediaSessionService() {
             durationMs = statePrefs.getLong("durationMs", 0L).coerceAtLeast(0L),
             speed = statePrefs.getFloat("speed", 1f).coerceIn(0.25f, 8f),
             userPaused = statePrefs.getBoolean("userPaused", true),
+            backgroundPolicyPaused = statePrefs.getBoolean(
+                "backgroundPolicyPaused",
+                false,
+            ),
             state = statePrefs.getString("state", "paused") ?: "paused",
         )
     }
@@ -503,6 +576,8 @@ class NativeMediaSessionService : MediaSessionService() {
 
     private fun open(request: OpenRequest): Map<String, Any?> {
         check(!stopping && !engineReleased) { "媒体服务正在关闭" }
+        applicationForeground = request.applicationForeground
+        allowNativeBackgroundPlayback = request.allowNativeBackgroundPlayback
         val uri = Uri.parse(request.uri)
         require(uri.scheme == "file" || uri.scheme == "content") { "本地媒体地址无效" }
         if (uri.scheme == "file") {
@@ -555,6 +630,7 @@ class NativeMediaSessionService : MediaSessionService() {
             lastError = null
             sourceRetryCount = 0
             userPaused = false
+            backgroundPolicyPaused = false
             clearRestorable()
             val item = MediaItem.Builder()
                 .setMediaId(sessionId ?: "")
@@ -572,9 +648,17 @@ class NativeMediaSessionService : MediaSessionService() {
             } else {
                 player.setMediaItem(item)
             }
-            state = if (request.autoPlay) "preparing" else "paused"
+            val shouldAutoPlay = request.autoPlay &&
+                NativeMediaSessionPolicy.canStartPlayback(
+                    applicationForeground = applicationForeground,
+                    allowNativeBackgroundPlayback = allowNativeBackgroundPlayback,
+                )
+            if (request.autoPlay && !shouldAutoPlay) {
+                backgroundPolicyPaused = true
+            }
+            state = if (shouldAutoPlay) "preparing" else "paused"
             userPaused = !request.autoPlay
-            player.playWhenReady = request.autoPlay
+            player.playWhenReady = shouldAutoPlay
             player.prepare()
             lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.ACTIVE
             startPositionPersistence()
@@ -595,11 +679,19 @@ class NativeMediaSessionService : MediaSessionService() {
         }
         when (method) {
             "play" -> {
+                require(
+                    NativeMediaSessionPolicy.canStartPlayback(
+                        applicationForeground = applicationForeground,
+                        allowNativeBackgroundPlayback = allowNativeBackgroundPlayback,
+                    ),
+                ) { "后台播放已关闭" }
+                backgroundPolicyPaused = false
                 userPaused = false
                 if (player.playbackState == Player.STATE_ENDED) player.seekToDefaultPosition()
                 player.play()
             }
             "pause" -> {
+                backgroundPolicyPaused = false
                 userPaused = true
                 player.pause()
                 state = "paused"
@@ -633,6 +725,7 @@ class NativeMediaSessionService : MediaSessionService() {
         player.clearMediaItems()
         lifecyclePhase = phaseAfter
         userPaused = false
+        backgroundPolicyPaused = false
         state = "stopped"
         lastError = null
     }
@@ -651,6 +744,7 @@ class NativeMediaSessionService : MediaSessionService() {
         runCatching { releaseMediaEngine() }.onFailure { releaseFailure = it }
         state = "stopped"
         userPaused = false
+        backgroundPolicyPaused = false
         lastError = null
         sessionId = null
         candidateId = null
@@ -691,6 +785,7 @@ class NativeMediaSessionService : MediaSessionService() {
         mediaIsHls = false
         lastError = null
         userPaused = restorable?.userPaused ?: true
+        backgroundPolicyPaused = restorable?.backgroundPolicyPaused ?: false
         state = if (restorable != null) "restorable" else "stopped"
         publish()
         releaseMediaEngine()
@@ -804,6 +899,8 @@ class NativeMediaSessionService : MediaSessionService() {
         val title: String,
         val hls: Boolean,
         val autoPlay: Boolean = true,
+        val applicationForeground: Boolean = true,
+        val allowNativeBackgroundPlayback: Boolean = false,
         val surface: Surface?,
         val surfaceBindingId: String? = null,
         val isCurrent: () -> Boolean = { true },
@@ -821,6 +918,7 @@ class NativeMediaSessionService : MediaSessionService() {
         val durationMs: Long,
         val speed: Float,
         val userPaused: Boolean,
+        val backgroundPolicyPaused: Boolean,
         val state: String,
     )
 
@@ -828,6 +926,10 @@ class NativeMediaSessionService : MediaSessionService() {
         private const val CHANNEL = "site-lens-native-media"
         private const val ID = 24002
         private const val POSITION_PERSISTENCE_MS = 2_000L
+        private const val PREF_ALLOW_NATIVE_BACKGROUND_PLAYBACK =
+            "allowNativeBackgroundPlayback"
+        private const val PREF_APPLICATION_FOREGROUND = "applicationForeground"
+        private const val PREF_POLICY_EPOCH = "policyEpoch"
         private var instance: NativeMediaSessionService? = null
         private val observers = CopyOnWriteArraySet<(Map<String, Any?>) -> Unit>()
         private data class PendingAction(
@@ -865,6 +967,56 @@ class NativeMediaSessionService : MediaSessionService() {
                 context,
                 action = { service -> callback(runCatching { service.snapshot() }) },
                 cancel = { callback(Result.failure(IllegalStateException("媒体服务已停止"))) },
+            )
+        }
+
+        fun applicationLifecycle(
+            context: Context,
+            foreground: Boolean,
+            allowBackground: Boolean,
+            epoch: Long,
+            callback: (Result<Map<String, Any?>>) -> Unit,
+        ) {
+            val preferences = context.getSharedPreferences(
+                "native_media_session_state",
+                Context.MODE_PRIVATE,
+            )
+            val storedEpoch = preferences.getLong(PREF_POLICY_EPOCH, 0L)
+            if (epoch >= storedEpoch) {
+                preferences.edit()
+                    .putBoolean(PREF_ALLOW_NATIVE_BACKGROUND_PLAYBACK, allowBackground)
+                    .putBoolean(PREF_APPLICATION_FOREGROUND, foreground)
+                    .putLong(PREF_POLICY_EPOCH, epoch)
+                    .commit()
+            }
+            val service = synchronized(pendingLock) {
+                instance?.takeIf { it.acceptsDispatch() }
+            }
+            if (service == null) {
+                callback(
+                    Result.success(
+                        mapOf(
+                            "sessionId" to null,
+                            "state" to "stopped",
+                            "backgroundPolicyPaused" to false,
+                            "allowNativeBackgroundPlayback" to allowBackground,
+                            "applicationForeground" to foreground,
+                        ),
+                    ),
+                )
+                return
+            }
+            service.enqueue(
+                action = {
+                    callback(
+                        runCatching {
+                            it.applicationLifecycle(foreground, allowBackground, epoch)
+                        },
+                    )
+                },
+                cancel = {
+                    callback(Result.failure(IllegalStateException("媒体服务已停止")))
+                },
             )
         }
 

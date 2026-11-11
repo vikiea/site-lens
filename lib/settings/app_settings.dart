@@ -157,7 +157,7 @@ class AppSettings {
     this.highQualityAllSurfaces = false,
     this.autoHideBrowserControls = true,
     this.expandAllBrowserControls = false,
-    this.allowBackgroundPlayback = false,
+    this.allowNativeBackgroundPlayback = false,
     this.allowStreamingWhileDownloading = true,
     this.autoSaveWebPlayback = false,
     this.autoConvertToMp4 = false,
@@ -193,7 +193,7 @@ class AppSettings {
   final bool highQualityAllSurfaces;
   final bool autoHideBrowserControls;
   final bool expandAllBrowserControls;
-  final bool allowBackgroundPlayback;
+  final bool allowNativeBackgroundPlayback;
   final bool allowStreamingWhileDownloading;
   final bool autoSaveWebPlayback;
   final bool autoConvertToMp4;
@@ -217,7 +217,7 @@ class AppSettings {
   final double controlsY;
 
   Map<String, Object?> toJson() => {
-    'version': 3,
+    'version': 4,
     'themeMode': themeMode.name,
     'themePreset': themePreset.wireId,
     'backgroundMode': backgroundMode.wireId,
@@ -229,7 +229,7 @@ class AppSettings {
     'highQualityAllSurfaces': highQualityAllSurfaces,
     'autoHideBrowserControls': autoHideBrowserControls,
     'expandAllBrowserControls': expandAllBrowserControls,
-    'allowBackgroundPlayback': allowBackgroundPlayback,
+    'allowNativeBackgroundPlayback': allowNativeBackgroundPlayback,
     'allowStreamingWhileDownloading': allowStreamingWhileDownloading,
     'autoSaveWebPlayback': autoSaveWebPlayback,
     'autoConvertToMp4': autoConvertToMp4,
@@ -257,7 +257,7 @@ class AppSettings {
   factory AppSettings.decode(String raw) {
     final decoded = jsonDecode(raw);
     if (decoded is! Map<String, dynamic> ||
-        !{2, 3}.contains(decoded['version'])) {
+        !{2, 3, 4}.contains(decoded['version'])) {
       throw const FormatException('不支持的设置版本');
     }
     return AppSettings.fromJson(decoded);
@@ -329,6 +329,11 @@ class AppSettings {
       T fallback,
     ) => values.where((v) => wire(v) == json[key]).firstOrNull ?? fallback;
 
+    final nativeBackgroundPlayback =
+        json.containsKey('allowNativeBackgroundPlayback')
+        ? flag('allowNativeBackgroundPlayback', false)
+        : flag('allowBackgroundPlayback', false);
+
     return AppSettings(
       themeMode: choice(
         'themeMode',
@@ -372,7 +377,7 @@ class AppSettings {
       highQualityAllSurfaces: flag('highQualityAllSurfaces', false),
       autoHideBrowserControls: flag('autoHideBrowserControls', true),
       expandAllBrowserControls: flag('expandAllBrowserControls', false),
-      allowBackgroundPlayback: flag('allowBackgroundPlayback', false),
+      allowNativeBackgroundPlayback: nativeBackgroundPlayback,
       allowStreamingWhileDownloading: flag(
         'allowStreamingWhileDownloading',
         true,
@@ -421,6 +426,12 @@ class AppSettings {
   }
 
   AppSettings patch(Map<String, Object?> changes) {
+    final normalizedChanges = {...changes};
+    if (!normalizedChanges.containsKey('allowNativeBackgroundPlayback') &&
+        normalizedChanges.containsKey('allowBackgroundPlayback')) {
+      normalizedChanges['allowNativeBackgroundPlayback'] = normalizedChanges
+          .remove('allowBackgroundPlayback');
+    }
     const fields = {
       'themeMode',
       'themePreset',
@@ -433,7 +444,7 @@ class AppSettings {
       'highQualityAllSurfaces',
       'autoHideBrowserControls',
       'expandAllBrowserControls',
-      'allowBackgroundPlayback',
+      'allowNativeBackgroundPlayback',
       'allowStreamingWhileDownloading',
       'autoSaveWebPlayback',
       'autoConvertToMp4',
@@ -456,7 +467,7 @@ class AppSettings {
       'controlsX',
       'controlsY',
     };
-    if (changes.keys.any((key) => !fields.contains(key))) {
+    if (normalizedChanges.keys.any((key) => !fields.contains(key))) {
       throw const FormatException('未知设置项');
     }
     const enums = {
@@ -497,7 +508,7 @@ class AppSettings {
       'playerVerticalGesture': {'brightnessVolume', 'episodeSwitch'},
       'mediaStorageMode': {'app_private', 'saf_tree', 'direct_path'},
     };
-    for (final entry in changes.entries) {
+    for (final entry in normalizedChanges.entries) {
       final choices = enums[entry.key];
       if (choices != null && !choices.contains(entry.value)) {
         throw const FormatException('不支持的设置选项');
@@ -530,14 +541,16 @@ class AppSettings {
       } else if (entry.key == 'mediaStorageMode') {
         final value = entry.value;
         if (value == 'saf_tree') {
-          final directory = changes['mp4ExportDirectory'] ?? mp4ExportDirectory;
+          final directory =
+              normalizedChanges['mp4ExportDirectory'] ?? mp4ExportDirectory;
           if (directory is! String ||
               Uri.tryParse(directory)?.scheme != 'content') {
             throw const FormatException('SAF 模式需要系统目录授权');
           }
         }
         if (value == 'direct_path') {
-          final directory = changes['mp4ExportDirectory'] ?? mp4ExportDirectory;
+          final directory =
+              normalizedChanges['mp4ExportDirectory'] ?? mp4ExportDirectory;
           final uri = directory is String ? Uri.tryParse(directory) : null;
           if (directory is! String || uri?.scheme == 'content') {
             throw const FormatException('直接文件模式需要普通目录路径');
@@ -563,7 +576,7 @@ class AppSettings {
         throw const FormatException('开关设置必须是布尔值');
       }
     }
-    return AppSettings.fromJson({...toJson(), ...changes});
+    return AppSettings.fromJson({...toJson(), ...normalizedChanges});
   }
 
   bool isNoticeDismissed(String id) =>

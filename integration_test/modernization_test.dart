@@ -1573,7 +1573,7 @@ window.addEventListener('resize', () => state(null));
       navigator.currentState!.pop();
       await tester.pumpAndSettle();
       await play();
-      await app.setAllowBackgroundPlayback(true);
+      await app.setAllowNativeBackgroundPlayback(true);
       navigator.currentState!.push(
         MaterialPageRoute<void>(
           builder: (_) => const Scaffold(body: Center(child: Text('后台播放验收'))),

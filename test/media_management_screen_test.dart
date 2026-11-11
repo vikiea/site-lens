@@ -114,6 +114,22 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('media management exposes native background playback setting', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: MediaManagementScreen(app: app),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('后台播放'), findsOneWidget);
+    expect(find.text('当前标签后台播放'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'media task route pops back to the media page instead of exiting the app',
     (tester) async {

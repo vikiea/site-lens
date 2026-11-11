@@ -132,14 +132,6 @@ class SettingsPage extends StatelessWidget {
       if (Theme.of(context).platform == TargetPlatform.android)
         _settingsSection('网络', [_SecureDnsSetting(app: app)]),
       _settingsSection('媒体', [
-        _settingsSwitch(
-          context,
-          title: '当前标签后台播放',
-          subtitle: app.mediaSupported ? '离开浏览页后继续播放' : '打开网页后检查播放能力',
-          value: app.allowBackgroundPlayback,
-          enabled: app.mediaSupported || app.allowBackgroundPlayback,
-          onChanged: app.setAllowBackgroundPlayback,
-        ),
         _settingsLink(
           context,
           title: '媒体管理',

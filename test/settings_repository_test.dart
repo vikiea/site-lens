@@ -75,6 +75,40 @@ void main() {
   );
 
   test(
+    'legacy background playback setting migrates to native-only semantics',
+    () async {
+      final restored = AppSettings.fromJson({
+        'version': 3,
+        'allowBackgroundPlayback': true,
+      });
+      expect(restored.allowNativeBackgroundPlayback, isTrue);
+
+      await settings.update({'allowNativeBackgroundPlayback': true});
+      final decoded = jsonDecode(
+        (await db.setting(AppPolicy.settingsKey))!,
+      ) as Map<String, dynamic>;
+      expect(decoded['allowNativeBackgroundPlayback'], isTrue);
+      expect(decoded.containsKey('allowBackgroundPlayback'), isFalse);
+
+      await settings.update({'allowBackgroundPlayback': false});
+      expect((await settings.read()).allowNativeBackgroundPlayback, isFalse);
+    },
+  );
+
+  test('invalid native background playback values fail closed', () {
+    expect(
+      AppSettings.fromJson({'allowNativeBackgroundPlayback': 'true'})
+          .allowNativeBackgroundPlayback,
+      isFalse,
+    );
+    expect(
+      AppSettings.fromJson({'allowBackgroundPlayback': 1})
+          .allowNativeBackgroundPlayback,
+      isFalse,
+    );
+  });
+
+  test(
     'media refresh and download concurrency settings validate and restore',
     () async {
       final restored = AppSettings.fromJson({
@@ -220,7 +254,7 @@ void main() {
     final decoded = jsonDecode(
       (await db.setting(AppPolicy.settingsKey))!,
     ) as Map<String, dynamic>;
-    expect(decoded['version'], 3);
+    expect(decoded['version'], 4);
     expect(decoded['glassQualityMode'], 'automatic');
     expect(decoded.containsKey('glassMode'), isFalse);
     expect(decoded['themePreset'], 'mist_pine');

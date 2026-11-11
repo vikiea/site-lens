@@ -51,11 +51,10 @@ class BrowserMediaController(
     private var requestedForeground = true
     private var platformForeground = true
     private val foreground get() = requestedForeground && platformForeground
-    private var background = false
     private var manualPause = false
     private var disposed = false
     private var title = "当前标签"
-    private val allowed get() = browsing && current && ((foreground && visible) || background)
+    private val allowed get() = browsing && current && foreground && visible
     private val playing get() = frames.values.any { it.playing }
     private val script = activity.assets.open("flutter_assets/web_assets/media_lifecycle.js").bufferedReader().use { it.readText() }
 
@@ -345,9 +344,8 @@ class BrowserMediaController(
                 " bridge=" + bridge,
         )
     }
-    fun activity(current: Boolean, visible: Boolean, foreground: Boolean, background: Boolean): Boolean {
+    fun activity(current: Boolean, visible: Boolean, foreground: Boolean): Boolean {
         this.current = current; this.visible = visible; requestedForeground = foreground
-        this.background = background && supported
         enforce()
         return supported && browsing
     }
@@ -428,7 +426,7 @@ class BrowserMediaController(
         val run = allowed && !manualPause
         mute(!run)
         broadcast(if (run) "unblock" else "pause")
-        runCatching { if (run || (allowed && background)) view.onResume() else view.onPause() }
+        runCatching { if (run) view.onResume() else view.onPause() }
         if (!allowed) stopService()
         updateNotification()
     }
@@ -468,7 +466,7 @@ class BrowserMediaController(
             "SiteLensMedia",
             "code=$code action=$action frames=" + frames.size +
                 " current=$current visible=$visible foreground=$foreground " +
-                "background=$background manualPause=$manualPause epoch=$epoch",
+                "manualPause=$manualPause epoch=$epoch",
         )
     }
     private fun stopService() { runCatching { BrowserMediaService.stop(activity, ownerToken) } }

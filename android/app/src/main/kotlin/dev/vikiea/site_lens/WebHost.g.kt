@@ -1481,8 +1481,8 @@ interface DeviceDiagnosticsApi {
 interface WebHostApi {
   fun create(hostId: Long, purpose: HostPurpose, preferences: HostPreferences): HostCapabilities
   fun applyPreferences(hostId: Long, preferences: HostPreferences)
-  /** Returns false when the native host cannot enforce background media policy. */
-  fun setHostActivity(hostId: Long, isCurrent: Boolean, visible: Boolean, foreground: Boolean, allowBackgroundPlayback: Boolean): Boolean
+  /** Returns false when the native host cannot enforce page media policy. */
+  fun setHostActivity(hostId: Long, isCurrent: Boolean, visible: Boolean, foreground: Boolean): Boolean
   fun registerScripts(hostId: Long, scripts: List<ScriptRegistration>)
   /**
    * Installs an immutable filter snapshot before the next document starts.
@@ -1556,9 +1556,8 @@ interface WebHostApi {
             val isCurrentArg = args[1] as Boolean
             val visibleArg = args[2] as Boolean
             val foregroundArg = args[3] as Boolean
-            val allowBackgroundPlaybackArg = args[4] as Boolean
             val wrapped: List<Any?> = try {
-              listOf(api.setHostActivity(hostIdArg, isCurrentArg, visibleArg, foregroundArg, allowBackgroundPlaybackArg))
+              listOf(api.setHostActivity(hostIdArg, isCurrentArg, visibleArg, foregroundArg))
             } catch (exception: Throwable) {
               WebHostPigeonUtils.wrapError(exception)
             }

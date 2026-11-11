@@ -28,9 +28,8 @@ class FakeWebHostApi extends WebHostApi {
     bool current,
     bool visible,
     bool foreground,
-    bool background,
   ) async {
-    activity[id] = [current, visible, foreground, background];
+    activity[id] = [current, visible, foreground];
     return true;
   }
 

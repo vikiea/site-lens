@@ -68,7 +68,7 @@ final class NativeWebHostRegistry: NSObject, WebHostApi, AppRuntimeApi {
     hosts[hostId] = host
     return HostCapabilities(platform: "iOS WKWebView", isolatedScripts: true, documentStart: true, privateProbes: true, reason: "WKContentWorld / same-world WithReply; nonpersistent discovery and verification. Simulator acceptance must be run separately.")
   }
-  func setHostActivity(hostId: Int64, isCurrent: Bool, visible: Bool, foreground: Bool, allowBackgroundPlayback: Bool) throws -> Bool {
+  func setHostActivity(hostId: Int64, isCurrent: Bool, visible: Bool, foreground: Bool) throws -> Bool {
     // Android-only media policy. Do not advertise unverified background support.
     _ = try host(hostId)
     return false

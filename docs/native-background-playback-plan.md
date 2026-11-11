@@ -1,5 +1,23 @@
 # 原生后台播放与系统控制子计划
 
+## 2026-11-11 implementation delta
+
+“当前标签后台播放”已迁移到媒体管理并改名为“后台播放”。设置记录使用
+allowNativeBackgroundPlayback，读取旧的 allowBackgroundPlayback 作为兼容回退；
+新写入只保存 native-only 字段。
+
+该设置不再进入 WebView setHostActivity 或网页媒体策略。网页标签继续按当前、
+可见性、前台状态和 WebView 能力执行暂停/静音。
+
+原生 MediaSessionService 现在接收应用前后台状态和策略 epoch。关闭后台播放时，
+原生播放器进入后台会以 backgroundPolicyPaused 暂停并保留会话、进度、租约和
+通知；回到前台只清除策略暂停标记，不自动调用 play。开启时继续保留原生会话和
+系统控制。userPaused 与策略暂停分开持久化，任务移除和服务恢复会按当前策略
+决定 keep-running 或 preserve-restorable。
+
+当前代码门禁和 Android unit tests 已通过；真实 Android L3、锁屏、任务移除、
+音频焦点和 tombstone 证据仍必须在最终源码上单独完成，不能由本地测试推导。
+
 日期：2026-10-23（2026-11-04 对齐到 `v0.6.0.alpha22` / `2c37cf2`）。早期代码基线为
 `145ab61` 之后的修复检查点；B1 的 Media3 `MediaSessionService` 自 v0.5.0.alpha1
 （`16da0a8`，2026-10-25）起已落地，B0 剩余项、B2/B3 与设备验收仍未完成。
@@ -79,6 +97,11 @@
    接入后的最终复审和对应设备证据均满足，才进入 B1。
 
 ## B1 服务持有播放器与界面重建
+
+当前源码状态补充：Flutter Activity/Engine detach 时，NativeMediaRuntime.dispose()
+对活动 MediaSession 只 detach 临时 Surface 并解绑回调；显式 close/stop 和应用
+shutdown 才释放原生会话。下方早期记录中的 dispose=close 描述属于历史基线，
+以当前源码和最新设备证据为准。
 
 - [x] 使用 Media3 `MediaSessionService` 持有 application-context ExoPlayer 和
   `MediaSession`；Flutter/Activity 只持有 surface 与命令桥，不保留在服务中的 Activity 闭包。

@@ -405,7 +405,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         allSurfacesHighQuality: settings.highQualityAllSurfaces,
         webViewMounted: browserSurfaceActive,
         backgroundHealthCheck: settings.backgroundHealthCheck,
-        allowBackgroundPlayback: settings.allowBackgroundPlayback,
+        allowNativeBackgroundPlayback: settings.allowNativeBackgroundPlayback,
         exportDirectory: settings.mp4ExportDirectory,
       );
   late final AppErrorLogger errorLogger;
@@ -428,6 +428,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   int _browserSurfaceLease = 0;
   final _browserSurfaces = <int, bool>{};
   bool _foreground = true;
+  bool _nativeForeground = true;
   bool mediaSupported = false;
   bool get browserVisible => _browserVisible;
   set browserVisible(bool value) {
@@ -491,6 +492,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     // inactive/hidden before a real pause. Keep the media policy foreground
     // during those short transitions so MediaSession actions are not revoked
     // while the user is interacting with the notification.
+    _nativeForeground =
+        state != AppLifecycleState.paused &&
+        state != AppLifecycleState.hidden &&
+        state != AppLifecycleState.detached;
     _foreground =
         state != AppLifecycleState.paused &&
         state != AppLifecycleState.detached;
@@ -502,7 +507,25 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(_observeActivePlayback());
       unawaited(watchSaves.flush());
     }
+    unawaited(_syncNativeMediaLifecycle());
     unawaited(syncMediaPolicy());
+  }
+
+  Future<void> _syncNativeMediaLifecycle() async {
+    if (_disposed || !Platform.isAndroid) return;
+    try {
+      await nativeMedia.setApplicationLifecycle(
+        foreground: _nativeForeground,
+        allowNativeBackgroundPlayback: allowNativeBackgroundPlayback,
+      );
+    } catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.native.lifecycle',
+        context: 'foreground=$_nativeForeground',
+        stack: stack,
+      );
+    }
   }
 
   Future<void> syncMediaPolicy() {
@@ -549,7 +572,6 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           identical(h, activeBrowser?.loadedHost),
           _browserVisible,
           _foreground,
-          allowBackgroundPlayback,
         );
         if (_disposed || epoch != _mediaPolicyEpoch) return;
         final selected = identical(h, activeBrowser?.loadedHost);
@@ -655,7 +677,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   ThemeModePreference themeModePreference = ThemeModePreference.system;
   ThemePresetId themePreset = ThemePresetId.sunsetCoral;
   bool restoreBrowserSessions = true;
-  bool allowBackgroundPlayback = false;
+  bool allowNativeBackgroundPlayback = false;
   bool allowStreamingWhileDownloading = true;
   bool autoSaveWebPlayback = false;
   bool autoConvertToMp4 = false;
@@ -1029,6 +1051,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
     if (!settings.restoreBrowserSessions) await sessionStore.clear();
     _applySettings();
+    if (patch.containsKey('allowNativeBackgroundPlayback') ||
+        patch.containsKey('allowBackgroundPlayback')) {
+      await _syncNativeMediaLifecycle();
+    }
     if (nativeExports != null &&
         (patch.containsKey('mediaStorageMode') ||
             patch.containsKey('mp4ExportDirectory'))) {
@@ -1220,7 +1246,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     secureDnsResolver.setProvider(settings.secureDnsProvider);
     secureDnsResolver.syncNativeProvider();
     restoreBrowserSessions = settings.restoreBrowserSessions;
-    allowBackgroundPlayback = settings.allowBackgroundPlayback;
+    allowNativeBackgroundPlayback = settings.allowNativeBackgroundPlayback;
     allowStreamingWhileDownloading = settings.allowStreamingWhileDownloading;
     autoSaveWebPlayback = settings.autoSaveWebPlayback;
     autoConvertToMp4 = settings.autoConvertToMp4;
@@ -1318,8 +1344,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     await _persistSessions();
   }
 
-  Future<void> setAllowBackgroundPlayback(bool value) =>
-      updateSettings({'allowBackgroundPlayback': value});
+  Future<void> setAllowNativeBackgroundPlayback(bool value) =>
+      updateSettings({'allowNativeBackgroundPlayback': value});
 
   Future<void> setAllowStreamingWhileDownloading(bool value) =>
       updateSettings({'allowStreamingWhileDownloading': value});
@@ -2104,6 +2130,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     if (prepareRuntime) {
       await _prepareBrowserRuntime(suppressCorruption: suppressCorruption);
     }
+    await _syncNativeMediaLifecycle();
     if (_disposed) return;
     _persistentStateLoaded = true;
     trace.markOnce(

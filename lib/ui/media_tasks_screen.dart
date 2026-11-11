@@ -3465,6 +3465,35 @@ class _MediaManagementScreenState extends State<MediaManagementScreen>
                 ),
                 const SiteLensPanelDivider(),
                 SiteLensCompactRow(
+                  title: const Text('后台播放'),
+                  subtitle: Text(
+                    Platform.isAndroid
+                        ? (app.allowNativeBackgroundPlayback
+                              ? '原生播放器离开应用后继续播放'
+                              : '离开应用时暂停并保留会话')
+                        : '当前平台不支持原生后台播放',
+                  ),
+                  onTap: Platform.isAndroid
+                      ? () => safely(
+                          context,
+                          () => app.setAllowNativeBackgroundPlayback(
+                            !app.allowNativeBackgroundPlayback,
+                          ),
+                        )
+                      : null,
+                  trailing: SiteLensCompactSwitch(
+                    value: app.allowNativeBackgroundPlayback,
+                    semanticLabel: '后台播放',
+                    onChanged: Platform.isAndroid
+                        ? (value) => safely(
+                            context,
+                            () => app.setAllowNativeBackgroundPlayback(value),
+                          )
+                        : null,
+                  ),
+                ),
+                const SiteLensPanelDivider(),
+                SiteLensCompactRow(
                   title: const Text('下载完成自动导出 MP4'),
                   subtitle: const Text('保留原生HLS，MP4另存一份到媒体库'),
                   onTap: () => safely(

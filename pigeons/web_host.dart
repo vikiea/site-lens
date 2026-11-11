@@ -344,8 +344,8 @@ abstract class WebHostApi {
     HostPreferences preferences,
   );
   void applyPreferences(int hostId, HostPreferences preferences);
-  /// Returns false when the native host cannot enforce background media policy.
-  bool setHostActivity(int hostId, bool isCurrent, bool visible, bool foreground, bool allowBackgroundPlayback);
+  /// Returns false when the native host cannot enforce page media policy.
+  bool setHostActivity(int hostId, bool isCurrent, bool visible, bool foreground);
   void registerScripts(int hostId, List<ScriptRegistration> scripts);
   /// Installs an immutable filter snapshot before the next document starts.
   /// Native request callbacks must use this in-memory snapshot only.

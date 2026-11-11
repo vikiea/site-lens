@@ -380,7 +380,7 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn("if (!allowed) { stopService(); return }", CONTROLLER)
         self.assertIn("BrowserMediaService.update(", CONTROLLER)
         self.assertNotIn("if (!allowed || !background)", CONTROLLER)
-        self.assertIn("if (run || (allowed && background)) view.onResume()", CONTROLLER)
+        self.assertIn("if (run) view.onResume() else view.onPause()", CONTROLLER)
 
     def test_service_rejects_stale_owner_and_pending_intent_data(self):
         self.assertIn('intent?.getStringExtra("owner") != next.token', SERVICE)

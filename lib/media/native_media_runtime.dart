@@ -22,6 +22,9 @@ class NativeMediaRuntime {
   NativePlaybackSession? _active;
   NativePlaybackSession? get active => _active;
   int _openGeneration = 0;
+  int _lifecycleEpoch = 0;
+  bool _applicationForeground = true;
+  bool _allowNativeBackgroundPlayback = false;
 
   int _beginOpen() => ++_openGeneration;
 
@@ -30,6 +33,26 @@ class NativeMediaRuntime {
       throw StateError('原生媒体请求已过期');
     }
   }
+
+  Future<NativePlaybackSession> setApplicationLifecycle({
+    required bool foreground,
+    required bool allowNativeBackgroundPlayback,
+  }) async {
+    final epoch = ++_lifecycleEpoch;
+    _applicationForeground = foreground;
+    _allowNativeBackgroundPlayback = allowNativeBackgroundPlayback;
+    final raw = await _invokeMap('applicationLifecycle', {
+      'foreground': foreground,
+      'allowNativeBackgroundPlayback': allowNativeBackgroundPlayback,
+      'policyEpoch': epoch,
+    });
+    return _decode(raw ?? const <String, Object?>{});
+  }
+
+  Map<String, Object?> _lifecycleArguments() => {
+    'applicationForeground': _applicationForeground,
+    'allowNativeBackgroundPlayback': _allowNativeBackgroundPlayback,
+  };
 
   Future<({double brightness, double volume})> levels() async {
     try {
@@ -99,6 +122,7 @@ class NativeMediaRuntime {
       'mime': candidate.effectiveMime,
       'sourceUrl': sourceUrl.toString(),
       'title': candidate.title,
+      ..._lifecycleArguments(),
     });
     _ensureOpenCurrent(requestGeneration);
     return _decode(raw ?? const <String, Object?>{});
@@ -143,6 +167,7 @@ class NativeMediaRuntime {
       'autoPlay': autoPlay,
       'partial': partial,
       'resourcePaths': resourcePaths,
+      ..._lifecycleArguments(),
     });
     _ensureOpenCurrent(requestGeneration);
     return _decode(raw ?? const <String, Object?>{});
@@ -193,6 +218,7 @@ class NativeMediaRuntime {
       'mime': 'video/mp4',
       'title': task.displayName,
       'autoPlay': autoPlay,
+      ..._lifecycleArguments(),
     });
     _ensureOpenCurrent(requestGeneration);
     return _decode(raw ?? const <String, Object?>{});
@@ -273,6 +299,7 @@ class NativeMediaRuntime {
       candidateId: raw['candidateId'] as String? ?? '',
       taskId: raw['taskId'] as String? ?? '',
       userPaused: raw['userPaused'] as bool? ?? false,
+      backgroundPolicyPaused: raw['backgroundPolicyPaused'] as bool? ?? false,
       textureId: (raw['textureId'] as num?)?.toInt(),
       state: NativePlaybackState.values.firstWhere(
         (state) => state.name == raw['state'],

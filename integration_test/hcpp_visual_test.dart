@@ -105,7 +105,7 @@ void main() {
           'autoHideBrowserControls': false,
           'highQualityAllSurfaces': true,
           'glassQualityMode': SiteLensGlassQualityMode.high.name,
-          'allowBackgroundPlayback': true,
+          'allowNativeBackgroundPlayback': true,
         });
         await tester.pumpWidget(
           ProviderScope(

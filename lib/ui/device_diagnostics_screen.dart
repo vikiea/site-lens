@@ -429,7 +429,7 @@ class _CapabilityRow extends StatelessWidget {
 
   String _detailLabel(String key) => switch (key) {
     'healthCheckEnabled' => '存活检查',
-    'allowBackgroundPlayback' => '后台播放',
+    'allowNativeBackgroundPlayback' => '后台播放',
     'hcppEffective' => 'HCPP',
     'shaderSupported' => 'Shader 支持',
     'requested' => '请求质量',

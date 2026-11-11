@@ -16,9 +16,8 @@ class UnsupportedMediaApi extends FakeWebHostApi {
     bool current,
     bool visible,
     bool foreground,
-    bool background,
   ) async {
-    await super.setHostActivity(id, current, visible, foreground, background);
+    await super.setHostActivity(id, current, visible, foreground);
     return false;
   }
 }
@@ -32,13 +31,12 @@ class HeldUnsupportedMediaApi extends UnsupportedMediaApi {
     bool current,
     bool visible,
     bool foreground,
-    bool background,
   ) async {
     if (hold && current && visible && foreground) {
       if (!entered.isCompleted) entered.complete();
       await release.future;
     }
-    return super.setHostActivity(id, current, visible, foreground, background);
+    return super.setHostActivity(id, current, visible, foreground);
   }
 }
 
@@ -52,7 +50,6 @@ class DestroyedHostMediaApi extends FakeWebHostApi {
     bool current,
     bool visible,
     bool foreground,
-    bool background,
   ) async {
     if (!entered.isCompleted) entered.complete();
     await release.future;
@@ -62,36 +59,37 @@ class DestroyedHostMediaApi extends FakeWebHostApi {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  test('media policy follows current tab, route coverage, lifecycle and user setting', () async {
-    final db = AppDatabase(NativeDatabase.memory());
-    final api = FakeWebHostApi();
-    final app = AppController(db, api: api);
-    addTearDown(() async {
-      await app.shutdown();
-      await db.close();
-    });
-    await app.load();
-    final a = await app.openUrl(Uri.parse('https://a.example/'));
-    final b = await app.openUrl(Uri.parse('https://b.example/'));
-    app.browserVisible = true;
-    await app.syncMediaPolicy();
-    expect(api.activity[a.host.id]![0], false);
-    expect(api.activity[b.host.id], [true, true, true, false]);
-    app.browserVisible = false;
-    await app.syncMediaPolicy();
-    expect(api.activity[b.host.id], [true, false, true, false]);
-    await app.setAllowBackgroundPlayback(true);
-    app.didChangeAppLifecycleState(AppLifecycleState.paused);
-    await app.syncMediaPolicy();
-    expect(api.activity[b.host.id], [true, false, false, true]);
-    await app.activateTab(a);
-    await app.syncMediaPolicy();
-    expect(api.activity[b.host.id]![0], false);
-    expect(api.activity[a.host.id]![0], true);
-    await app.setAllowBackgroundPlayback(false);
-    await app.syncMediaPolicy();
-    expect(api.activity[a.host.id]![3], false);
-  });
+  test(
+    'media policy follows current tab, route coverage and lifecycle',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final api = FakeWebHostApi();
+      final app = AppController(db, api: api);
+      addTearDown(() async {
+        await app.shutdown();
+        await db.close();
+      });
+      await app.load();
+      final a = await app.openUrl(Uri.parse('https://a.example/'));
+      final b = await app.openUrl(Uri.parse('https://b.example/'));
+      app.browserVisible = true;
+      await app.syncMediaPolicy();
+      expect(api.activity[a.host.id]![0], false);
+      expect(api.activity[b.host.id], [true, true, true]);
+      app.browserVisible = false;
+      await app.syncMediaPolicy();
+      expect(api.activity[b.host.id], [true, false, true]);
+      app.didChangeAppLifecycleState(AppLifecycleState.paused);
+      await app.syncMediaPolicy();
+      expect(api.activity[b.host.id], [true, false, false]);
+      await app.activateTab(a);
+      await app.syncMediaPolicy();
+      expect(api.activity[b.host.id]![0], false);
+      expect(api.activity[a.host.id]![0], true);
+      await app.syncMediaPolicy();
+      expect(api.activity[a.host.id]![2], false);
+    },
+  );
 
   test(
     'host_destroyed from a removed host is treated as stale policy work',

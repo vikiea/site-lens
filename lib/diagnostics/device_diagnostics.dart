@@ -167,7 +167,7 @@ class DeviceDiagnosticsService extends ChangeNotifier {
     required bool allSurfacesHighQuality,
     required bool webViewMounted,
     required bool backgroundHealthCheck,
-    required bool allowBackgroundPlayback,
+    required bool allowNativeBackgroundPlayback,
     required String? exportDirectory,
   }) {
     final now = _now().millisecondsSinceEpoch;
@@ -278,7 +278,7 @@ class DeviceDiagnosticsService extends ChangeNotifier {
         capturedAtMs: now,
         detailsJson: jsonEncode({
           'healthCheckEnabled': backgroundHealthCheck,
-          'allowBackgroundPlayback': allowBackgroundPlayback,
+          'allowNativeBackgroundPlayback': allowNativeBackgroundPlayback,
         }),
       ),
     );

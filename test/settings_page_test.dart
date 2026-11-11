@@ -183,6 +183,7 @@ void main() {
       scrollable: find.byType(Scrollable),
     );
     expect(find.text('媒体'), findsOneWidget);
+    expect(find.text('当前标签后台播放'), findsNothing);
     await tester.scrollUntilVisible(
       find.text('数据与诊断'),
       200,

@@ -59,6 +59,10 @@ class NativeMediaRuntime(
     private val bridgeId = UUID.randomUUID().toString()
     private var serviceSurfaceBindingId: String? = null
     private var openRequestId = 0L
+    private var applicationForeground = true
+    private var allowNativeBackgroundPlayback = false
+    private var backgroundPolicyPaused = false
+    private var lifecycleEpoch = 0L
 
     fun attach(channel: MethodChannel) {
         serviceObserver?.let(NativeMediaSessionService::unregisterObserver)
@@ -100,6 +104,45 @@ class NativeMediaRuntime(
                 serviceCommand(call, result)
                 return
             }
+            if (call.method == "applicationLifecycle") {
+                val foreground = call.argument<Boolean>("foreground") ?: true
+                val allowed =
+                    call.argument<Boolean>("allowNativeBackgroundPlayback") ?: false
+                val epoch = call.argument<Number>("policyEpoch")?.toLong() ?: 0L
+                if (epoch < lifecycleEpoch) {
+                    result.success(snapshot())
+                    return
+                }
+                lifecycleEpoch = epoch
+                applicationForeground = foreground
+                allowNativeBackgroundPlayback = allowed
+                if (!foreground && !allowed && player?.isPlaying == true) {
+                    backgroundPolicyPaused = true
+                    player?.pause()
+                    state = "paused"
+                } else if (foreground) {
+                    backgroundPolicyPaused = false
+                }
+                val hadServiceSession = serviceSessionId != null
+                NativeMediaSessionService.applicationLifecycle(
+                    context,
+                    foreground,
+                    allowed,
+                    epoch,
+                ) { outcome ->
+                    if (!hadServiceSession) {
+                        result.success(snapshot())
+                        return@applicationLifecycle
+                    }
+                    outcome.fold(
+                        onSuccess = { result.success(it) },
+                        onFailure = { error ->
+                            result.error("native_media", error.message, null)
+                        },
+                    )
+                }
+                return
+            }
             if (call.method == "state" && player == null &&
                 (NativeMediaSessionService.hasActiveSession() ||
                     NativeMediaSessionService.hasRestorableState(context))) {
@@ -125,6 +168,10 @@ class NativeMediaRuntime(
                 "openLocal" -> openLocal(call, result)
                 "play" -> {
                     requireSession(call)
+                    require(applicationForeground || allowNativeBackgroundPlayback) {
+                        "后台播放已关闭"
+                    }
+                    backgroundPolicyPaused = false
                     if (player!!.playbackState == Player.STATE_ENDED) {
                         player!!.seekToDefaultPosition()
                     }
@@ -134,6 +181,7 @@ class NativeMediaRuntime(
                 }
                 "pause" -> {
                     requireSession(call)
+                    backgroundPolicyPaused = false
                     player!!.pause()
                     state = "paused"
                     emit("paused")
@@ -359,6 +407,8 @@ class NativeMediaRuntime(
                 title = call.argument<String>("title").orEmpty(),
                 hls = hls,
                 autoPlay = call.argument<Boolean>("autoPlay") ?: true,
+                    applicationForeground = applicationForeground,
+                    allowNativeBackgroundPlayback = allowNativeBackgroundPlayback,
                 surface = surface,
                 surfaceBindingId = bindingId,
                 isCurrent = {
@@ -416,6 +466,18 @@ class NativeMediaRuntime(
         inputLease: Closeable? = null,
     ) {
         val generation = ++localGeneration
+        applicationForeground =
+            call.argument<Boolean>("applicationForeground") ?: applicationForeground
+        allowNativeBackgroundPlayback =
+            call.argument<Boolean>("allowNativeBackgroundPlayback")
+                ?: allowNativeBackgroundPlayback
+        val requestedAutoPlay = call.argument<Boolean>("autoPlay") ?: true
+        val shouldAutoPlay = requestedAutoPlay &&
+            NativeMediaSessionPolicy.canStartPlayback(
+                applicationForeground = applicationForeground,
+                allowNativeBackgroundPlayback = allowNativeBackgroundPlayback,
+            )
+        backgroundPolicyPaused = requestedAutoPlay && !shouldAutoPlay
         fileLease = inputLease
         sessionId = call.argument<String>("sessionId")?.takeIf { it.isNotBlank() }
             ?: "native_${UUID.randomUUID()}"
@@ -545,8 +607,8 @@ class NativeMediaRuntime(
         } else {
             next.setMediaItem(item)
         }
-        state = "preparing"
-        next.playWhenReady = true
+        state = if (shouldAutoPlay) "preparing" else "paused"
+        next.playWhenReady = shouldAutoPlay
         next.prepare()
         result.success(snapshot())
     }
@@ -592,6 +654,10 @@ class NativeMediaRuntime(
             "videoWidth" to (active?.videoSize?.width ?: 0),
             "videoHeight" to (active?.videoSize?.height ?: 0),
             "speed" to speed,
+            "userPaused" to false,
+            "backgroundPolicyPaused" to backgroundPolicyPaused,
+            "applicationForeground" to applicationForeground,
+            "allowNativeBackgroundPlayback" to allowNativeBackgroundPlayback,
             "errorCode" to (error ?: lastError),
         )
     }
@@ -649,6 +715,7 @@ class NativeMediaRuntime(
         sessionId = null
         candidateId = null
         speed = 1f
+        backgroundPolicyPaused = false
         state = "stopped"
     }
 

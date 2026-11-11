@@ -1576,15 +1576,15 @@ class WebHostApi {
     ;
   }
 
-  /// Returns false when the native host cannot enforce background media policy.
-  Future<bool> setHostActivity(int hostId, bool isCurrent, bool visible, bool foreground, bool allowBackgroundPlayback) async {
+  /// Returns false when the native host cannot enforce page media policy.
+  Future<bool> setHostActivity(int hostId, bool isCurrent, bool visible, bool foreground) async {
     final pigeonVar_channelName = 'dev.flutter.pigeon.site_lens.WebHostApi.setHostActivity$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
     );
-    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[hostId, isCurrent, visible, foreground, allowBackgroundPlayback]);
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[hostId, isCurrent, visible, foreground]);
     final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
 
     final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(

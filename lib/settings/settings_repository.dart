@@ -6,8 +6,8 @@ import 'app_settings.dart';
 /// The only persistence boundary for user preferences, including background
 /// isolates. Transactions merge patches against the current persisted record.
 ///
-/// There is no legacy key migration: the stored record is always the current
-/// format, and anything else is rejected rather than reinterpreted.
+/// The record is versioned and rejects unsupported formats. Narrow field aliases
+/// may be read for compatibility, then are written back in the current format.
 class SettingsRepository {
   SettingsRepository(this.db);
   final AppDatabase db;

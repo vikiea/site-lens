@@ -10,15 +10,63 @@ class NativeMediaSessionPolicyTest {
     @Test fun taskRemovalPreservesExplicitlyPausedPlayback() {
         assertEquals(
             NativeMediaSessionPolicy.TaskRemovalAction.PRESERVE_RESTORABLE,
-            NativeMediaSessionPolicy.taskRemovalAction(userPaused = true, state = "paused"),
+            NativeMediaSessionPolicy.taskRemovalAction(
+                allowNativeBackgroundPlayback = true,
+                userPaused = true,
+                backgroundPolicyPaused = false,
+                state = "paused",
+            ),
         )
         assertEquals(
             NativeMediaSessionPolicy.TaskRemovalAction.KEEP_RUNNING,
-            NativeMediaSessionPolicy.taskRemovalAction(userPaused = false, state = "buffering"),
+            NativeMediaSessionPolicy.taskRemovalAction(
+                allowNativeBackgroundPlayback = true,
+                userPaused = false,
+                backgroundPolicyPaused = false,
+                state = "buffering",
+            ),
         )
         assertEquals(
             NativeMediaSessionPolicy.TaskRemovalAction.RELEASE,
-            NativeMediaSessionPolicy.taskRemovalAction(userPaused = true, state = "completed"),
+            NativeMediaSessionPolicy.taskRemovalAction(
+                allowNativeBackgroundPlayback = false,
+                userPaused = true,
+                backgroundPolicyPaused = false,
+                state = "completed",
+            ),
+        )
+    }
+
+    @Test fun disabledBackgroundPolicyPreservesActivePlaybackAsRestorable() {
+        assertEquals(
+            NativeMediaSessionPolicy.TaskRemovalAction.PRESERVE_RESTORABLE,
+            NativeMediaSessionPolicy.taskRemovalAction(
+                allowNativeBackgroundPlayback = false,
+                userPaused = false,
+                backgroundPolicyPaused = true,
+                state = "paused",
+            ),
+        )
+    }
+
+    @Test fun backgroundPlaybackPolicyControlsWhetherPlayMayStart() {
+        assertTrue(
+            NativeMediaSessionPolicy.canStartPlayback(
+                applicationForeground = true,
+                allowNativeBackgroundPlayback = false,
+            ),
+        )
+        assertTrue(
+            NativeMediaSessionPolicy.canStartPlayback(
+                applicationForeground = false,
+                allowNativeBackgroundPlayback = true,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.canStartPlayback(
+                applicationForeground = false,
+                allowNativeBackgroundPlayback = false,
+            ),
         )
     }
 

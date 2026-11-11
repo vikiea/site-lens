@@ -1445,8 +1445,8 @@ class DeviceDiagnosticsApiSetup {
 protocol WebHostApi {
   func create(hostId: Int64, purpose: HostPurpose, preferences: HostPreferences) throws -> HostCapabilities
   func applyPreferences(hostId: Int64, preferences: HostPreferences) throws
-  /// Returns false when the native host cannot enforce background media policy.
-  func setHostActivity(hostId: Int64, isCurrent: Bool, visible: Bool, foreground: Bool, allowBackgroundPlayback: Bool) throws -> Bool
+  /// Returns false when the native host cannot enforce page media policy.
+  func setHostActivity(hostId: Int64, isCurrent: Bool, visible: Bool, foreground: Bool) throws -> Bool
   func registerScripts(hostId: Int64, scripts: [ScriptRegistration]) throws
   /// Installs an immutable filter snapshot before the next document starts.
   /// Native request callbacks must use this in-memory snapshot only.
@@ -1502,7 +1502,7 @@ class WebHostApiSetup {
     } else {
       applyPreferencesChannel.setMessageHandler(nil)
     }
-    /// Returns false when the native host cannot enforce background media policy.
+    /// Returns false when the native host cannot enforce page media policy.
     let setHostActivityChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.site_lens.WebHostApi.setHostActivity\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
       setHostActivityChannel.setMessageHandler { message, reply in
@@ -1511,9 +1511,8 @@ class WebHostApiSetup {
         let isCurrentArg = args[1] as! Bool
         let visibleArg = args[2] as! Bool
         let foregroundArg = args[3] as! Bool
-        let allowBackgroundPlaybackArg = args[4] as! Bool
         do {
-          let result = try api.setHostActivity(hostId: hostIdArg, isCurrent: isCurrentArg, visible: visibleArg, foreground: foregroundArg, allowBackgroundPlayback: allowBackgroundPlaybackArg)
+          let result = try api.setHostActivity(hostId: hostIdArg, isCurrent: isCurrentArg, visible: visibleArg, foreground: foregroundArg)
           reply(wrapResult(result))
         } catch {
           reply(wrapError(error))
