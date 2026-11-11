@@ -252,6 +252,19 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       policyTransfer: mediaNetwork?.transferFileWithPolicy,
       resourceCoordinator: mediaResourceCoordinator,
     );
+    unawaited(
+      mediaDownloads.reconcileOrphanedSharedResources().catchError((
+        error,
+        stack,
+      ) {
+        AppErrorLogger.capture(
+          error,
+          module: 'media.resource-gc',
+          context: 'startup',
+          stack: stack,
+        );
+      }),
+    );
     _mediaNetworkUnsubscribe = mediaNetwork?.onNetworkChanged(() {
       if (!_disposed) unawaited(mediaDownloads.recoverAfterNetworkChange());
     });
@@ -301,6 +314,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     mediaExportQueue = MediaExportQueue(
       tasks: mediaTasks,
       db: db,
+      concurrencyProvider: () => mediaExportConcurrency,
       execute: _performQueuedMediaExport,
       onError: (taskId, error, stack) {
         AppErrorLogger.capture(
@@ -311,6 +325,19 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         );
       },
     );
+    if (nativeExports != null) {
+      unawaited(
+        nativeExports!
+            .setExportConcurrency(settings.mediaExportConcurrency)
+            .catchError((error, stack) {
+              AppErrorLogger.capture(
+                error,
+                module: 'media.settings',
+                stack: stack,
+              );
+            }),
+      );
+    }
     mediaDownloads.onCompleted = _autoConvertCompletedMedia;
     castSessions = CastSessionController(tasks: mediaTasks);
     mediaCast = DlnaCastController(
@@ -686,6 +713,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   String? mp4ExportDirectory;
   bool mediaLibraryAutoRefresh = true;
   int mediaDownloadConcurrency = AppPolicy.defaultMediaDownloadConcurrency;
+  int mediaExportConcurrency = AppPolicy.defaultMediaExportConcurrency;
   PlayerVerticalGestureMode playerVerticalGesture =
       PlayerVerticalGestureMode.brightnessVolume;
   FilterPolicy filterPolicy = const FilterPolicy();
@@ -1255,8 +1283,22 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     mp4ExportDirectory = settings.mp4ExportDirectory;
     mediaLibraryAutoRefresh = settings.mediaLibraryAutoRefresh;
     mediaDownloadConcurrency = settings.mediaDownloadConcurrency;
+    mediaExportConcurrency = settings.mediaExportConcurrency;
     if (_mediaRuntimeReady) {
       mediaDownloads.maxConcurrency = mediaDownloadConcurrency;
+      if (nativeExports != null) {
+        unawaited(
+          nativeExports!
+              .setExportConcurrency(mediaExportConcurrency)
+              .catchError((error, stack) {
+                AppErrorLogger.capture(
+                  error,
+                  module: 'media.settings',
+                  stack: stack,
+                );
+              }),
+        );
+      }
     }
     playerVerticalGesture = settings.playerVerticalGesture;
     scriptsDisabled = settings.scriptsDisabled;
@@ -1375,6 +1417,14 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     if (nativeDownloads != null) {
       await nativeDownloads!.setConcurrency(mediaDownloadConcurrency);
     }
+  }
+
+  Future<void> setMediaExportConcurrency(int value) async {
+    await updateSettings({'mediaExportConcurrency': value});
+    if (nativeExports != null) {
+      await nativeExports!.setExportConcurrency(mediaExportConcurrency);
+    }
+    mediaExportQueue.wake();
   }
 
   Future<void> setMediaLibraryNoticeDismissed(bool value) =>

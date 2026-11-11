@@ -97,6 +97,7 @@ class MediaOperationRunner extends ChangeNotifier {
     if (ids.isEmpty) {
       throw StateError('没有可执行的媒体操作');
     }
+    await pruneHistory();
     final now = DateTime.now().toUtc().toIso8601String();
     final id =
         'media_op_${now.replaceAll(RegExp(r'[^0-9]'), '')}_${_ids.nextInt(1 << 32)}';
@@ -128,6 +129,9 @@ class MediaOperationRunner extends ChangeNotifier {
     notifyListeners();
     return (await operation(id))!;
   }
+
+  Future<void> pruneHistory({int maxOperations = 100}) =>
+      db.pruneMediaOperations(maxOperations: maxOperations);
 
   Future<void> _execute(
     String id,

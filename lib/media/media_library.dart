@@ -952,6 +952,46 @@ class MediaLibrary extends ChangeNotifier {
     return path == appRoot || p.isWithin(appRoot, path);
   }
 
+  Future<String?> _disposableThumbnail(MediaArtifact value) async {
+    final thumbnail = value.thumbnailPath;
+    if (thumbnail == null) return null;
+    final path = _localPath(thumbnail);
+    if (path == null) return null;
+    final cacheRoot = await tasks.cacheRootDirectory();
+    final root = p.join(cacheRoot.parent.path, 'media_thumbnails');
+    // Thumbnail metadata never authorizes deletion of directories, links or
+    // arbitrary app data. Native thumbnails are direct children of this root.
+    if (p.dirname(path) != root ||
+        p.extension(path).toLowerCase() != '.jpg' ||
+        await FileSystemEntity.type(root, followLinks: false) !=
+            FileSystemEntityType.directory ||
+        await FileSystemEntity.type(path, followLinks: false) !=
+            FileSystemEntityType.file) {
+      return null;
+    }
+    final canonicalRoot = await Directory(root).resolveSymbolicLinks();
+    final canonicalPath = await File(path).resolveSymbolicLinks();
+    if (p.dirname(canonicalPath) != canonicalRoot) return null;
+    // Another library instance may have indexed a shared thumbnail since this
+    // instance restored. Persisted references must protect that file too.
+    for (final raw in await db.mediaArtifacts()) {
+      if (raw['taskId'] == value.taskId) continue;
+      final other = raw['thumbnailPath'];
+      if (other is! String) continue;
+      final otherPath = _localPath(other);
+      if (otherPath == path || otherPath == canonicalPath) return null;
+    }
+    if (_items.values.any(
+      (item) =>
+          item.taskId != value.taskId &&
+          item.thumbnailPath != null &&
+          _localPath(item.thumbnailPath!) == path,
+    )) {
+      return null;
+    }
+    return canonicalPath;
+  }
+
   MediaArtifact _rewriteLocationMetadata(
     MediaArtifact item,
     String location, {
@@ -1965,7 +2005,7 @@ class MediaLibrary extends ChangeNotifier {
     bool exclusiveAlreadyHeld = false,
     String? nativeMutationReservation,
   }) => _mutate(taskId, (value) async {
-    final ownedPaths = {
+    final ownedPaths = <String>{
       if (Uri.tryParse(value.location)?.scheme != 'content') value.location,
       if (value.libraryCopy != null &&
           Uri.tryParse(value.libraryCopy!)?.scheme != 'content')
@@ -1974,6 +2014,10 @@ class MediaLibrary extends ChangeNotifier {
           Uri.tryParse(value.materializedCopy!)?.scheme != 'content')
         value.materializedCopy!,
     };
+    final thumbnail = await _disposableThumbnail(value);
+    if (thumbnail != null) {
+      ownedPaths.add(thumbnail);
+    }
     final primaryContent = Uri.tryParse(value.location)?.scheme == 'content';
     var cache = await tasks.cachedFile(taskId);
     var cachePath = cache == null ? null : await cache.resolveSymbolicLinks();

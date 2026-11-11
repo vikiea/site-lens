@@ -1,10 +1,12 @@
 package dev.vikiea.site_lens
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
+import android.os.Debug
 import android.os.Environment
 import android.provider.Settings
 import android.provider.DocumentsContract
@@ -40,6 +42,7 @@ import androidx.media3.common.util.Clock
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.util.Log
 import java.io.File
 import java.io.Closeable
 import java.io.FileNotFoundException
@@ -47,10 +50,10 @@ import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
-import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
@@ -61,13 +64,14 @@ import javax.crypto.spec.SecretKeySpec
 @androidx.annotation.OptIn(UnstableApi::class)
 class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCallHandler {
     private val filesRoot = context.filesDir.canonicalFile
-    private val worker = Executors.newFixedThreadPool(2) { runnable ->
+    private val worker = Executors.newFixedThreadPool(4) { runnable ->
         Thread(runnable, "site-lens-media-io").apply { isDaemon = true }
     }
     // Metadata/frame inspection and Transformer both allocate Media3/native
-    // decoder state. Serialize only these heavy operations so thumbnail loads
-    // cannot overlap an export and push the app into native memory pressure.
-    private val heavyMediaGate = Semaphore(1)
+    // decoder state. Bound these heavy operations so thumbnail loads and
+    // exports cannot exceed the configured native memory budget.
+    private val heavyMediaGate = MediaConcurrencyGate(MAX_EXPORT_CONCURRENCY)
+    private val requestedExportConcurrency = AtomicInteger(DEFAULT_EXPORT_CONCURRENCY)
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var progressChannel: MethodChannel? = null
     @Volatile private var disposed = false
@@ -87,6 +91,9 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         private const val INSPECTION_COPY_BUFFER_BYTES = 128 * 1024
         private const val STALE_INSPECTION_TEMP_MILLIS = 60 * 60 * 1000L
         private const val PROGRESS_POLL_INTERVAL_MS = 200L
+        private const val MAX_EXPORT_CONCURRENCY = 4
+        private const val DEFAULT_EXPORT_CONCURRENCY = 2
+        private const val MEMORY_TAG = "SiteLensMediaMemory"
     }
 
     init {
@@ -94,6 +101,7 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
         directRoot = context.getSharedPreferences("media_access", Context.MODE_PRIVATE)
             .getString("directRoot", null)
             ?.let { runCatching { File(it).canonicalFile }.getOrNull() }
+        refreshHeavyConcurrency()
     }
 
     private external fun nativeValidatePath(path: String, root: String): Boolean
@@ -174,6 +182,19 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             )
             return
         }
+        if (call.method == "setExportConcurrency") {
+            runCatching {
+                requestedExportConcurrency.set(
+                    call.argument<Int>("value")?.coerceIn(1, MAX_EXPORT_CONCURRENCY)
+                        ?: error("缺少导出并发数"),
+                )
+                refreshHeavyConcurrency()
+            }.fold(
+                onSuccess = { result.success(null) },
+                onFailure = { error -> result.error("media_export", error.message, null) },
+            )
+            return
+        }
         val supported = setOf("validateLocalInput", "muxHls", "validateOutput", "deliver", "deliverToDirectory", "checkDirectory", "checkDirectDirectory", "isDocumentWithinTree", "listDirectory", "listDirectDirectory", "createDirectory", "copyEntry", "stat", "sha256", "inspect", "inspectSamples", "scanMedia", "materialize", "rename", "move", "delete", "deleteOwnedSources", "copyVerified")
         if (call.method !in supported) { result.notImplemented(); return }
         val jobId = call.argument<String>("jobId") ?: "job-${System.nanoTime()}"
@@ -235,19 +256,34 @@ class NativeExportRuntime(private val context: Context) : MethodChannel.MethodCa
             "validateOutput",
         )
         return if (heavy) {
-            withHeavyMediaGate { execute(call, cancellation) }
+            refreshHeavyConcurrency()
+            heavyMediaGate.withPermit(cancellation) { execute(call, cancellation) }
         } else {
             execute(call, cancellation)
         }
     }
 
-    private fun <T> withHeavyMediaGate(block: () -> T): T {
-        heavyMediaGate.acquire()
-        return try {
-            block()
-        } finally {
-            heavyMediaGate.release()
-        }
+    private fun refreshHeavyConcurrency() {
+        val manager = context.getSystemService(ActivityManager::class.java)
+        val info = ActivityManager.MemoryInfo()
+        manager?.getMemoryInfo(info)
+        val lowMemory = manager?.isLowRamDevice == true || info.lowMemory
+        val effective = if (lowMemory) 1 else requestedExportConcurrency.get()
+        heavyMediaGate.configure(requestedExportConcurrency.get(), lowMemory)
+        val process = Debug.MemoryInfo()
+        Debug.getMemoryInfo(process)
+        val heap = Runtime.getRuntime()
+        Log.d(
+            MEMORY_TAG,
+            "export_memory requested=${requestedExportConcurrency.get()} " +
+                "effective=$effective lowMemory=$lowMemory " +
+                "availMem=${info.availMem} totalPssKb=${process.totalPss} " +
+                "dalvikPssKb=${process.dalvikPss} nativePssKb=${process.nativePss} " +
+                "nativeHeapBytes=${Debug.getNativeHeapAllocatedSize()} " +
+                "javaHeapUsedBytes=${heap.totalMemory() - heap.freeMemory()} " +
+                "javaHeapMaxBytes=${heap.maxMemory()} " +
+                "filesUsableBytes=${filesRoot.usableSpace}",
+        )
     }
 
     private fun currentCancellation(): AtomicBoolean =

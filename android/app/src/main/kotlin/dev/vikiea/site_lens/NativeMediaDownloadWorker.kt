@@ -245,6 +245,7 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
         // OS lock additionally protects against a second app process.
         private val fileMonitors = ConcurrentHashMap<String, Any>()
         fun abort(taskId: String) { transfers[taskId]?.abort() }
+        fun isActive(taskId: String): Boolean = transfers.containsKey(taskId)
 
         fun root(context: Context): File = File(
             context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
@@ -271,6 +272,10 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
             File(partialFile(context, record).path + ".legacy.tmp"),
         )
 
+        fun lockFile(context: Context, taskId: String): File = File(
+            root(context), ".${taskId}.lock",
+        )
+
         fun <T> withFileLock(
             context: Context,
             taskId: String,
@@ -279,7 +284,7 @@ class NativeMediaDownloadWorker(appContext: Context, params: WorkerParameters) :
             require(taskId.matches(Regex("[A-Za-z0-9._-]{1,128}")) && taskId !in listOf(".", ".."))
             val run = {
                 synchronized(fileMonitors.getOrPut(taskId) { Any() }) {
-                    val lock = File(root(context), "." + taskId + ".lock")
+                    val lock = lockFile(context, taskId)
                     lock.parentFile?.mkdirs()
                     java.io.RandomAccessFile(lock, "rw").use { file ->
                         file.channel.lock().use { action() }

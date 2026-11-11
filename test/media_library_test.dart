@@ -1248,6 +1248,127 @@ void main() {
     expect(restored.items, isEmpty);
   });
 
+  test(
+    'deletes an unreferenced thumbnail but preserves shared thumbnails',
+    () async {
+      final thumbnail = File('${root.path}/media_thumbnails/shared.jpg')
+        ..createSync(recursive: true)
+        ..writeAsBytesSync([1, 2, 3]);
+      final secondTask = await tasks.create(
+        MediaCandidate(
+          id: 'thumbnail-second',
+          hostId: 1,
+          generation: 1,
+          sourceUrl: Uri.parse('https://example.com/thumbnail-second'),
+          mediaUrl: Uri.parse('https://cdn.example/thumbnail-second.mp4'),
+          title: '缩略图二',
+          mime: 'video/mp4',
+          source: MediaCandidateSource.dom,
+        ),
+      );
+      final firstValue = MediaArtifact(
+        taskId: task.id,
+        location: output.path,
+        name: '第1集.mp4',
+        size: 6,
+        thumbnailPath: thumbnail.path,
+        createdAt: DateTime.now().toUtc(),
+      );
+      final secondOutput = File('${root.path}/second.mp4')
+        ..writeAsBytesSync([6]);
+      final secondValue = MediaArtifact(
+        taskId: secondTask.id,
+        location: secondOutput.path,
+        name: '第2集.mp4',
+        size: 1,
+        thumbnailPath: thumbnail.path,
+        createdAt: DateTime.now().toUtc(),
+      );
+      await db.saveMediaArtifact(task.id, firstValue.toJson());
+      await db.saveMediaArtifact(secondTask.id, secondValue.toJson());
+      await library.restore();
+
+      await library.delete(task.id);
+      expect(await thumbnail.exists(), isTrue);
+
+      await library.delete(secondTask.id);
+      expect(await thumbnail.exists(), isFalse);
+    },
+  );
+
+  test(
+    'persisted thumbnail references protect a stale library snapshot',
+    () async {
+      final thumbnail = File('${root.path}/media_thumbnails/shared.jpg')
+        ..createSync(recursive: true)
+        ..writeAsBytesSync([1, 2, 3]);
+      final first = MediaArtifact(
+        taskId: task.id,
+        location: output.path,
+        name: '第1集.mp4',
+        size: 6,
+        thumbnailPath: thumbnail.path,
+        createdAt: DateTime.now().toUtc(),
+      );
+      await db.saveMediaArtifact(task.id, first.toJson());
+      await library.restore();
+      final secondOutput = File('${root.path}/second.mp4')
+        ..writeAsBytesSync([1]);
+      final second = MediaArtifact(
+        taskId: 'library_second',
+        location: secondOutput.path,
+        name: '第2集.mp4',
+        size: 1,
+        thumbnailPath: thumbnail.uri.toString(),
+        createdAt: DateTime.now().toUtc(),
+      );
+      await db.saveMediaArtifact(second.taskId, second.toJson());
+
+      await library.delete(task.id);
+
+      expect(await thumbnail.exists(), isTrue);
+      final restored = MediaLibrary(db: db, tasks: tasks);
+      addTearDown(restored.dispose);
+      await restored.delete(second.taskId);
+      expect(await thumbnail.exists(), isFalse);
+    },
+  );
+
+  for (final kind in ['outside', 'directory', 'symlink']) {
+    test('thumbnail cleanup preserves $kind paths', () async {
+      final sentinel = File('${root.path}/other-data/keep.jpg')
+        ..createSync(recursive: true)
+        ..writeAsBytesSync([7, 8, 9]);
+      final thumbnails = Directory('${root.path}/media_thumbnails')
+        ..createSync();
+      final invalid = switch (kind) {
+        'directory' => Directory('${thumbnails.path}/folder.jpg')..createSync(),
+        'symlink' => Link(
+          '${thumbnails.path}/linked.jpg',
+        )..createSync(sentinel.path),
+        _ => sentinel,
+      };
+      final runtime = _CleanupRuntime();
+      library.dispose();
+      library = MediaLibrary(db: db, tasks: tasks, native: runtime);
+      final artifact = MediaArtifact(
+        taskId: task.id,
+        location: output.path,
+        name: '第1集.mp4',
+        size: 6,
+        thumbnailPath: invalid.path,
+        createdAt: DateTime.now().toUtc(),
+      );
+      await db.saveMediaArtifact(task.id, artifact.toJson());
+
+      await library.delete(task.id);
+
+      expect(runtime.deleted, isNot(contains(invalid.path)));
+      expect(await sentinel.readAsBytes(), [7, 8, 9]);
+      expect(await invalid.exists(), isTrue);
+    });
+  }
+
   test('invalid configured URI never reports a delivered artifact', () async {
     final previous = await library.register(task, output.path);
     await expectLater(

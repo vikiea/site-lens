@@ -53,6 +53,7 @@ void main() {
         'themePreset': 'aurora_cyan',
         'mediaLibraryAutoRefresh': false,
         'mediaDownloadConcurrency': 5,
+        'mediaExportConcurrency': 4,
       });
       final decoded = jsonDecode(
         (await db.setting(AppPolicy.settingsKey))!,
@@ -67,6 +68,7 @@ void main() {
       expect(decoded['themePreset'], 'aurora_cyan');
       expect(decoded['mediaLibraryAutoRefresh'], isFalse);
       expect(decoded['mediaDownloadConcurrency'], 5);
+      expect(decoded['mediaExportConcurrency'], 4);
       expect(decoded['backgroundMode'], 'default_gradient');
       expect(decoded['secureDnsProvider'], 'off');
       expect(await db.setting('glassOpacity'), isNull);
@@ -114,6 +116,7 @@ void main() {
       final restored = AppSettings.fromJson({
         'mediaLibraryAutoRefresh': false,
         'mediaDownloadConcurrency': 99,
+        'mediaExportConcurrency': 99,
         'deleteMediaTaskAfterMp4Export': true,
       });
       expect(restored.mediaLibraryAutoRefresh, isFalse);
@@ -122,12 +125,24 @@ void main() {
         restored.mediaDownloadConcurrency,
         AppPolicy.maxMediaDownloadConcurrency,
       );
+      expect(
+        restored.mediaExportConcurrency,
+        AppPolicy.maxMediaExportConcurrency,
+      );
       await expectLater(
         settings.update({'mediaDownloadConcurrency': 0}),
         throwsA(isA<FormatException>()),
       );
       await expectLater(
         settings.update({'mediaDownloadConcurrency': 2.5}),
+        throwsA(isA<FormatException>()),
+      );
+      await expectLater(
+        settings.update({'mediaExportConcurrency': 0}),
+        throwsA(isA<FormatException>()),
+      );
+      await expectLater(
+        settings.update({'mediaExportConcurrency': 2.5}),
         throwsA(isA<FormatException>()),
       );
     },

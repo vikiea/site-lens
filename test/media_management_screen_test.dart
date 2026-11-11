@@ -313,6 +313,7 @@ void main() {
         expect(fullPath.maxLines, isNull);
 
         await tester.ensureVisible(restoreRow);
+        await tester.pumpAndSettle();
         await tester.tap(find.text('迁移应用媒体库'));
         await tester.pumpAndSettle();
         expect(find.text(readable), findsNothing);
@@ -412,6 +413,8 @@ void main() {
       expect(find.text('自动同步媒体目录'), findsOneWidget);
       expect(find.text('下载并发数量'), findsOneWidget);
       expect(find.text('同时下载的媒体任务数量，范围 1 到 6'), findsOneWidget);
+      expect(find.text('导出并发数量'), findsOneWidget);
+      expect(find.text('同时导出的媒体任务数量，范围 1 到 4'), findsOneWidget);
       expect(find.text('导出 MP4 后删除任务和缓存'), findsOneWidget);
       expect(app.deleteMediaTaskAfterMp4Export, isFalse);
       await tester.tap(find.text('导出 MP4 后删除任务和缓存'));

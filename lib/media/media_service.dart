@@ -1451,7 +1451,12 @@ class MediaTaskStore extends ChangeNotifier {
     }
   }
 
-  Future<void> delete(
+  /// Deletes only the durable task row and in-memory task state.
+  ///
+  /// Product callers must use [MediaDownloadService.delete], which also stops
+  /// transport and removes task-owned bytes. This row-only seam remains public
+  /// for recovery and focused persistence tests.
+  Future<void> deleteTaskRow(
     String taskId, {
     bool exclusiveAlreadyHeld = false,
   }) async {
@@ -1459,7 +1464,7 @@ class MediaTaskStore extends ChangeNotifier {
     if (!exclusiveAlreadyHeld) {
       await withExclusive(
         taskId,
-        () => delete(taskId, exclusiveAlreadyHeld: true),
+        () => deleteTaskRow(taskId, exclusiveAlreadyHeld: true),
       );
       return;
     }
@@ -1476,6 +1481,10 @@ class MediaTaskStore extends ChangeNotifier {
     _byCacheKey.removeWhere((_, id) => id == canonicalId);
     notifyListeners();
   }
+
+  @Deprecated('Use MediaDownloadService.delete for product task deletion')
+  Future<void> delete(String taskId, {bool exclusiveAlreadyHeld = false}) =>
+      deleteTaskRow(taskId, exclusiveAlreadyHeld: exclusiveAlreadyHeld);
 
   Future<void> reconcileCachedFiles() async {
     await ready;
@@ -2325,6 +2334,7 @@ class MediaDownloadService {
   final _active = <String, Cancellation>{};
   final _activeRetryBudgets = <String, MediaRetryBudgets>{};
   final _running = <String, Future<MediaTask>>{};
+  final _pendingResourceGc = <String>{};
   final _controls = <String, Future<void>>{};
   final _stopping = <String>{};
   final _pauseEpochs = <String, int>{};
@@ -3018,7 +3028,7 @@ class MediaDownloadService {
         );
         await _releaseSharedResources(id, sharedResourceKeys);
         if (deleteTask) {
-          await tasks.delete(id, exclusiveAlreadyHeld: true);
+          await tasks.deleteTaskRow(id, exclusiveAlreadyHeld: true);
         } else if (tasks.task(id)?.state == MediaTaskState.downloading ||
             tasks.task(id)?.state == MediaTaskState.paused) {
           tasks.transition(id, MediaTaskState.cancelled);
@@ -3123,10 +3133,50 @@ class MediaDownloadService {
         );
         if (deleted) await db.deleteMediaResourceIfUnowned(key);
       } catch (error, stack) {
+        _pendingResourceGc.add(key);
         AppErrorLogger.capture(
           error,
           module: 'media.resource-gc',
           context: key,
+          stack: stack,
+        );
+      }
+    }
+  }
+
+  /// Retries shared-resource cleanup after a previous deletion lost its
+  /// filesystem lease or the process was interrupted. The database owner
+  /// list remains authoritative, so active resources are never removed.
+  Future<void> reconcileOrphanedSharedResources() async {
+    final db = tasks.db;
+    final coordinator = resourceCoordinator;
+    if (db == null) return;
+    final keys = <String>{
+      ..._pendingResourceGc,
+      ...await db.mediaResourceKeys(),
+    };
+    for (final key in keys) {
+      final owners = await db.mediaResourceOwners(key);
+      if (owners.isNotEmpty) {
+        _pendingResourceGc.remove(key);
+        continue;
+      }
+      try {
+        if (coordinator != null) {
+          final deleted = await coordinator.deleteIf(
+            key,
+            () async => (await db.mediaResourceOwners(key)).isEmpty,
+          );
+          if (!deleted) continue;
+        }
+        await db.deleteMediaResourceIfUnowned(key);
+        _pendingResourceGc.remove(key);
+      } catch (error, stack) {
+        _pendingResourceGc.add(key);
+        AppErrorLogger.capture(
+          error,
+          module: 'media.resource-gc',
+          context: 'startup:$key',
           stack: stack,
         );
       }

@@ -1800,6 +1800,20 @@ class AppDatabase extends GeneratedDatabase {
     [taskId],
   );
 
+  Future<void> pruneMediaOperations({int maxOperations = 100}) async {
+    final limit = maxOperations.clamp(1, 10000);
+    await transaction(() async {
+      await customStatement(
+        'DELETE FROM media_operations WHERE id IN ('
+        'SELECT id FROM media_operations '
+        'WHERE state IN (?,?,?,?) '
+        "ORDER BY substr(replace(updated_at,'Z','000'),1,26) DESC, id DESC "
+        'LIMIT -1 OFFSET ?)',
+        ['completed', 'partial', 'stopped', 'interrupted', limit],
+      );
+    });
+  }
+
   Future<bool> saveWatchSave(WatchSave save) => transaction(() async {
     await customStatement(
       'INSERT INTO watch_saves(owner_id,source_key,source_url,series_key,episode_number,title,page_url,host_id,generation,state,profile_id,created_at,updated_at,position_ms,duration_ms,evidence_revision) '

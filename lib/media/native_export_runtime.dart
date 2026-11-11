@@ -57,6 +57,9 @@ class NativeExportRuntime {
   Future<void> endBackgroundExport(String taskId) =>
       _channel.invokeMethod<void>('endBackgroundExport', {'taskId': taskId});
 
+  Future<void> setExportConcurrency(int value) =>
+      _channel.invokeMethod<void>('setExportConcurrency', {'value': value});
+
   Future<List<Map<String, Object?>>> listDirectDirectory(String path) async {
     final raw = await _channel.invokeMethod<List<Object?>>(
       'listDirectDirectory',

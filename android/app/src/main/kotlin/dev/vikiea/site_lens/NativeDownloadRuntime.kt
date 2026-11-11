@@ -32,6 +32,17 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
     private val runtimeId = UUID.randomUUID().toString()
     @Volatile private var disposed = false
 
+    init {
+        executor.submit { cleanupStaleDownloadFiles() }
+    }
+
+    private fun cleanupStaleDownloadFiles() {
+        val root = NativeMediaDownloadWorker.root(context)
+        NativeDownloadCleanup.reconcile(root) { taskId ->
+            !NativeMediaDownloadWorker.isActive(taskId) && repository.read(taskId) == null
+        }
+    }
+
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         if (disposed) {
             return
@@ -454,6 +465,9 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
             }
             repository.remove(taskId)
         }
+        NativeDownloadCleanup.taskDeleted(
+            NativeMediaDownloadWorker.root(context), taskId, record.seriesDirectory,
+        )
     }
 
     private fun validTaskId(raw: String?): String = (raw?.trim() ?: error("缺少任务 ID")).also {

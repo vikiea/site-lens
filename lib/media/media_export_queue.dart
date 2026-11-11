@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../data/database.dart';
+import '../settings/app_settings.dart';
 import '../domain/models.dart';
 import 'media_library.dart';
 import 'media_service.dart';
@@ -145,20 +146,22 @@ typedef MediaExportExecutor = Future<MediaArtifact> Function(
   MediaExportRequest request,
 );
 
-/// A single export worker, independent of the page that requested the export.
-/// Only IDs, options and retry state are persisted; files and leases stay with
-/// their existing owners. Successful jobs are removed, failed jobs stay inert
-/// until an explicit manual retry.
+/// A bounded export worker pool, independent of the page that requested the
+/// export. Only IDs, options and retry state are persisted; files and leases
+/// stay with their existing owners. Successful jobs are removed, failed jobs
+/// stay inert until an explicit manual retry.
 class MediaExportQueue extends ChangeNotifier {
   MediaExportQueue({
     required this.tasks,
     required this.execute,
     this.db,
+    int Function()? concurrencyProvider,
     this.retryDelays = const [Duration(seconds: 1), Duration(seconds: 4)],
     this.availabilityPollInterval = const Duration(seconds: 2),
     this.onError,
     DateTime Function()? now,
-  }) : _now = now ?? DateTime.now {
+  }) : _now = now ?? DateTime.now,
+       _concurrencyProvider = concurrencyProvider ?? (() => 1) {
     tasks.addListener(wake);
     if (tasks is ExportNotifyingMediaTaskStore) {
       _availabilityStore = tasks as ExportNotifyingMediaTaskStore;
@@ -173,6 +176,7 @@ class MediaExportQueue extends ChangeNotifier {
   final Duration availabilityPollInterval;
   final void Function(String taskId, Object error, StackTrace stack)? onError;
   final DateTime Function() _now;
+  final int Function() _concurrencyProvider;
   final _jobs = <String, _ExportJob>{};
   ExportNotifyingMediaTaskStore? _availabilityStore;
   Future<void>? _restoring;
@@ -182,6 +186,8 @@ class MediaExportQueue extends ChangeNotifier {
   bool _restored = false;
   bool _closed = false;
   bool _wakeAgain = false;
+  int _wakeEpoch = 0;
+  Completer<void>? _drainSignal;
 
   List<MediaExportJobSnapshot> get jobs => List.unmodifiable(
     _jobs.values.map(
@@ -295,10 +301,12 @@ class MediaExportQueue extends ChangeNotifier {
 
   void wake() {
     if (_closed || !_restored) return;
+    _wakeEpoch++;
     _timer?.cancel();
     _timer = null;
     if (_running != null) {
       _wakeAgain = true;
+      _signalDrain();
       return;
     }
     // A microtask prevents a release callback from re-entering its owner.
@@ -320,77 +328,159 @@ class MediaExportQueue extends ChangeNotifier {
   }
 
   Future<void> _drain() async {
-    for (final job in _jobs.values.toList()) {
-      if (_closed) return;
-      if (job.state == MediaExportJobState.failed ||
-          job.nextAttempt.isAfter(_now())) {
+    final claimed = <String>{};
+    final destinations = <String>{};
+    final blocked = <String>{};
+    var epoch = _wakeEpoch;
+    _drainSignal = Completer<void>();
+    Future<void> worker() async {
+      while (!_closed) {
+        if (epoch != _wakeEpoch) {
+          blocked.clear();
+          epoch = _wakeEpoch;
+        }
+        final signal = _drainSignal!.future;
+        final limit = _concurrencyProvider().clamp(
+          AppPolicy.minMediaExportConcurrency,
+          AppPolicy.maxMediaExportConcurrency,
+        );
+        final job = claimed.length < limit
+            ? _nextRunnable(claimed, blocked, destinations)
+            : null;
+        if (job == null) {
+          if (claimed.isEmpty) return;
+          // Keep spare workers available for jobs accepted during a long
+          // export, and for increases to the configured concurrency.
+          await signal;
+          continue;
+        }
+        final task = tasks.task(job.taskId);
+        final destination = task == null ? null : _destinationKey(task);
+        claimed.add(job.taskId);
+        if (destination != null) destinations.add(destination);
+        try {
+          await _runJob(job);
+        } finally {
+          claimed.remove(job.taskId);
+          if (destination != null) destinations.remove(destination);
+          if (job.state == MediaExportJobState.waiting) {
+            blocked.add(job.taskId);
+          }
+          _signalDrain();
+        }
+      }
+    }
+
+    try {
+      await Future.wait([
+        for (var i = 0; i < AppPolicy.maxMediaExportConcurrency; i++) worker(),
+      ]);
+    } finally {
+      _drainSignal = null;
+    }
+  }
+
+  void _signalDrain() {
+    final signal = _drainSignal;
+    if (signal == null) return;
+    _drainSignal = Completer<void>();
+    signal.complete();
+  }
+
+  // Different sources can share an episode filename. Protect the whole
+  // prepare/register/deliver sequence, including its .part and .previous files.
+  String _destinationKey(MediaTask task) =>
+      '${task.storageDirectoryName}/${mediaExportFileName(task)}';
+
+  _ExportJob? _nextRunnable(
+    Set<String> claimed,
+    Set<String> blocked,
+    Set<String> destinations,
+  ) {
+    final now = _now();
+    for (final job in _jobs.values) {
+      if (claimed.contains(job.taskId) ||
+          blocked.contains(job.taskId) ||
+          job.state == MediaExportJobState.failed ||
+          job.state == MediaExportJobState.running ||
+          job.nextAttempt.isAfter(now)) {
         continue;
       }
       final task = tasks.task(job.taskId);
-      if (task == null) {
-        await db?.deleteMediaExportJob(job.taskId);
-        _jobs.remove(job.taskId);
-        if (!job.result.isCompleted) {
-          job.result.completeError(StateError('媒体任务不存在'));
-        }
-        _notify();
+      if (task != null && destinations.contains(_destinationKey(task))) {
         continue;
       }
-      if (!tasks.available || !tasks.canDelete(job.taskId)) {
-        job.state = MediaExportJobState.waiting;
-        await _persist(job);
-        _notify();
-        continue;
+      return job;
+    }
+    return null;
+  }
+
+  Future<void> _runJob(_ExportJob job) async {
+    if (_closed) return;
+    final task = tasks.task(job.taskId);
+    if (task == null) {
+      await db?.deleteMediaExportJob(job.taskId);
+      _jobs.remove(job.taskId);
+      if (!job.result.isCompleted) {
+        job.result.completeError(StateError('媒体任务不存在'));
       }
-      final deliver = job.deliver;
-      final force = job.force;
-      job.state = MediaExportJobState.running;
-      job.attempts++;
+      _notify();
+      return;
+    }
+    if (!tasks.available || !tasks.canDelete(job.taskId)) {
+      job.state = MediaExportJobState.waiting;
       await _persist(job);
       _notify();
-      try {
-        final artifact = await execute(
-          MediaExportRequest(
-            task: task,
-            deliverToConfiguredDirectory: deliver,
-            forceRegenerate: force,
-            preparedArtifact: job.preparedArtifact,
-          ),
-        );
-        // A stronger request arriving during a run joins the same result.
-        if (job.force != force || job.deliver != deliver) {
-          job.preparedArtifact = job.force != force ? null : artifact;
-          job.state = MediaExportJobState.queued;
-          job.attempts--;
-          await _persist(job);
-          _wakeAgain = true;
-          continue;
-        }
-        await db?.deleteMediaExportJob(job.taskId);
-        _jobs.remove(job.taskId);
-        if (!job.result.isCompleted) job.result.complete(artifact);
-      } on MediaExportDeferred catch (deferred) {
-        job.attempts--;
-        job.state = MediaExportJobState.waiting;
-        job.preparedArtifact = deferred.preparedArtifact;
-        await _persist(job);
-      } catch (error, stack) {
-        final terminal = job.attempts > retryDelays.length;
-        job.state = terminal
-            ? MediaExportJobState.failed
-            : MediaExportJobState.retrying;
-        if (!terminal) {
-          job.nextAttempt = _now().add(retryDelays[job.attempts - 1]);
-        }
-        // Exception text can contain paths or signed URLs; persist a code.
-        await _persist(job, lastError: 'export_failed');
-        if (terminal) {
-          if (!job.result.isCompleted) job.result.completeError(error, stack);
-          onError?.call(job.taskId, error, stack);
-        }
-      }
-      _notify();
+      return;
     }
+    final deliver = job.deliver;
+    final force = job.force;
+    job.state = MediaExportJobState.running;
+    job.attempts++;
+    await _persist(job);
+    _notify();
+    try {
+      final artifact = await execute(
+        MediaExportRequest(
+          task: task,
+          deliverToConfiguredDirectory: deliver,
+          forceRegenerate: force,
+          preparedArtifact: job.preparedArtifact,
+        ),
+      );
+      // A stronger request arriving during a run joins the same result.
+      if (job.force != force || job.deliver != deliver) {
+        job.preparedArtifact = job.force != force ? null : artifact;
+        job.state = MediaExportJobState.queued;
+        job.attempts--;
+        await _persist(job);
+        _wakeAgain = true;
+        return;
+      }
+      await db?.deleteMediaExportJob(job.taskId);
+      _jobs.remove(job.taskId);
+      if (!job.result.isCompleted) job.result.complete(artifact);
+    } on MediaExportDeferred catch (deferred) {
+      job.attempts--;
+      job.state = MediaExportJobState.waiting;
+      job.preparedArtifact = deferred.preparedArtifact;
+      await _persist(job);
+    } catch (error, stack) {
+      final terminal = job.attempts > retryDelays.length;
+      job.state = terminal
+          ? MediaExportJobState.failed
+          : MediaExportJobState.retrying;
+      if (!terminal) {
+        job.nextAttempt = _now().add(retryDelays[job.attempts - 1]);
+      }
+      // Exception text can contain paths or signed URLs; persist a code.
+      await _persist(job, lastError: 'export_failed');
+      if (terminal) {
+        if (!job.result.isCompleted) job.result.completeError(error, stack);
+        onError?.call(job.taskId, error, stack);
+      }
+    }
+    _notify();
   }
 
   Future<void> _persist(_ExportJob job, {String? lastError}) async {
@@ -428,6 +518,7 @@ class MediaExportQueue extends ChangeNotifier {
     if (!_closed) {
       _closed = true;
       _timer?.cancel();
+      _signalDrain();
       tasks.removeListener(wake);
       _availabilityStore?.removeAvailabilityListener(wake);
       for (final job in _jobs.values) {

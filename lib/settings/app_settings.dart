@@ -166,6 +166,7 @@ class AppSettings {
     this.mp4ExportDirectory,
     this.mediaLibraryAutoRefresh = true,
     this.mediaDownloadConcurrency = AppPolicy.defaultMediaDownloadConcurrency,
+    this.mediaExportConcurrency = AppPolicy.defaultMediaExportConcurrency,
     this.mediaLibraryNoticeDismissed = false,
     this.mediaTasksNoticeDismissed = false,
     this.dismissedNotices = const {},
@@ -202,6 +203,7 @@ class AppSettings {
   final String? mp4ExportDirectory;
   final bool mediaLibraryAutoRefresh;
   final int mediaDownloadConcurrency;
+  final int mediaExportConcurrency;
   final bool mediaLibraryNoticeDismissed;
   final bool mediaTasksNoticeDismissed;
   final Set<String> dismissedNotices;
@@ -238,6 +240,7 @@ class AppSettings {
     'mp4ExportDirectory': mp4ExportDirectory,
     'mediaLibraryAutoRefresh': mediaLibraryAutoRefresh,
     'mediaDownloadConcurrency': mediaDownloadConcurrency,
+    'mediaExportConcurrency': mediaExportConcurrency,
     'mediaLibraryNoticeDismissed': mediaLibraryNoticeDismissed,
     'mediaTasksNoticeDismissed': mediaTasksNoticeDismissed,
     'dismissedNotices': dismissedNotices.toList()..sort(),
@@ -275,13 +278,15 @@ class AppSettings {
           : fallback;
     }
 
-    int concurrency(String key, int fallback) {
+    int concurrency(
+      String key,
+      int fallback, {
+      int min = AppPolicy.minMediaDownloadConcurrency,
+      int max = AppPolicy.maxMediaDownloadConcurrency,
+    }) {
       final value = json[key];
       return value is num && value.isFinite
-          ? value.round().clamp(
-              AppPolicy.minMediaDownloadConcurrency,
-              AppPolicy.maxMediaDownloadConcurrency,
-            )
+          ? value.round().clamp(min, max)
           : fallback;
     }
 
@@ -395,6 +400,12 @@ class AppSettings {
         'mediaDownloadConcurrency',
         AppPolicy.defaultMediaDownloadConcurrency,
       ),
+      mediaExportConcurrency: concurrency(
+        'mediaExportConcurrency',
+        AppPolicy.defaultMediaExportConcurrency,
+        min: AppPolicy.minMediaExportConcurrency,
+        max: AppPolicy.maxMediaExportConcurrency,
+      ),
       mediaLibraryNoticeDismissed: flag('mediaLibraryNoticeDismissed', false),
       mediaTasksNoticeDismissed: flag('mediaTasksNoticeDismissed', false),
       dismissedNotices: Set.unmodifiable(
@@ -453,6 +464,7 @@ class AppSettings {
       'mp4ExportDirectory',
       'mediaLibraryAutoRefresh',
       'mediaDownloadConcurrency',
+      'mediaExportConcurrency',
       'mediaLibraryNoticeDismissed',
       'mediaTasksNoticeDismissed',
       'dismissedNotices',
@@ -565,6 +577,15 @@ class AppSettings {
             value > AppPolicy.maxMediaDownloadConcurrency) {
           throw const FormatException('下载并发数必须是 1 到 6 之间的整数');
         }
+      } else if (entry.key == 'mediaExportConcurrency') {
+        final value = entry.value;
+        if (value is! num ||
+            !value.isFinite ||
+            value != value.round() ||
+            value < AppPolicy.minMediaExportConcurrency ||
+            value > AppPolicy.maxMediaExportConcurrency) {
+          throw const FormatException('导出并发数必须是 1 到 4 之间的整数');
+        }
       } else if (entry.key == 'backgroundAssetId') {
         if (entry.value != null &&
             (entry.value is! String ||
@@ -593,5 +614,8 @@ abstract final class AppPolicy {
   static const minMediaDownloadConcurrency = 1;
   static const maxMediaDownloadConcurrency = 6;
   static const defaultMediaDownloadConcurrency = 2;
+  static const minMediaExportConcurrency = 1;
+  static const maxMediaExportConcurrency = 4;
+  static const defaultMediaExportConcurrency = 2;
   static const browserSessionsKey = 'browserSession_v1';
 }

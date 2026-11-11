@@ -77,4 +77,68 @@ void main() {
       );
     },
   );
+
+  test('prunes completed operation history to the requested bound', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final runner = MediaOperationRunner(db);
+    addTearDown(runner.dispose);
+
+    for (var index = 0; index < 3; index++) {
+      final started = await runner.run(
+        kind: 'test',
+        action: 'delete',
+        itemIds: ['item-$index'],
+        concurrency: 1,
+        execute: (_) async {},
+      );
+      await runner.wait(started.id);
+    }
+
+    await runner.pruneHistory(maxOperations: 2);
+    final rows = await db
+        .customSelect('SELECT id FROM media_operations ORDER BY updated_at ASC')
+        .get();
+    expect(rows, hasLength(2));
+  });
+
+  test(
+    'history ordering normalizes UTC precision and preserves active rows',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      for (final entry in [
+        ('older', 'completed', '2026-11-11T01:00:00.123Z'),
+        ('newer', 'completed', '2026-11-11T01:00:00.123001Z'),
+        ('active', 'running', '2026-11-10T01:00:00.000Z'),
+      ]) {
+        await db.customStatement(
+          'INSERT INTO media_operations(id,kind,action,state,concurrency,total,started_at,updated_at) '
+          'VALUES(?,?,?,?,?,?,?,?)',
+          [entry.$1, 'test', 'delete', entry.$2, 1, 1, entry.$3, entry.$3],
+        );
+        await db.customStatement(
+          'INSERT INTO media_operation_items(operation_id,position,item_id,state) VALUES(?,?,?,?)',
+          [entry.$1, 0, 'item', 'queued'],
+        );
+      }
+
+      await db.pruneMediaOperations(maxOperations: 1);
+
+      final rows = await db
+          .customSelect('SELECT id FROM media_operations')
+          .get();
+      expect(
+        rows.map((row) => row.read<String>('id')),
+        unorderedEquals(['newer', 'active']),
+      );
+      final items = await db
+          .customSelect('SELECT operation_id FROM media_operation_items')
+          .get();
+      expect(
+        items.map((row) => row.read<String>('operation_id')),
+        unorderedEquals(['newer', 'active']),
+      );
+    },
+  );
 }

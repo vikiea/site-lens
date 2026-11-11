@@ -3591,6 +3591,27 @@ class _MediaManagementScreenState extends State<MediaManagementScreen>
                 ),
                 const SiteLensPanelDivider(),
                 SiteLensCompactRow(
+                  title: const Text('导出并发数量'),
+                  subtitle: const Text('同时导出的媒体任务数量，范围 1 到 4'),
+                  trailing: SiteLensMenuSelector<int>(
+                    label: '导出并发数量',
+                    value: app.mediaExportConcurrency,
+                    options: [
+                      for (
+                        var value = AppPolicy.minMediaExportConcurrency;
+                        value <= AppPolicy.maxMediaExportConcurrency;
+                        value++
+                      )
+                        SiteLensMenuOption(value: value, label: '$value 个'),
+                    ],
+                    onSelected: (value) => safely(
+                      context,
+                      () => app.setMediaExportConcurrency(value),
+                    ),
+                  ),
+                ),
+                const SiteLensPanelDivider(),
+                SiteLensCompactRow(
                   leading: const Icon(Icons.storage_outlined),
                   title: const Text('媒体存储模式'),
                   subtitle: Text(switch (app.mediaStorageMode) {
@@ -4339,7 +4360,9 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           kind: 'media_tasks',
           action: action.name,
           itemIds: eligibleIds,
-          concurrency: action == _MediaBatchAction.export ? 1 : 4,
+          concurrency: action == _MediaBatchAction.export
+              ? widget.app.mediaExportConcurrency
+              : 4,
           execute: (id) async {
             final task = widget.app.mediaTasks.task(id);
             if (task == null || !_batchEligible(task, action)) {
