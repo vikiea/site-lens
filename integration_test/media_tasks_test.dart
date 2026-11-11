@@ -424,10 +424,18 @@ void main() {
         allowNativeBackgroundPlayback: false,
       );
       await rebound.play(sessionId: restored.id);
-      final reboundPolicy = await rebound.setApplicationLifecycle(
+      await rebound.setApplicationLifecycle(
         foreground: false,
         allowNativeBackgroundPlayback: false,
       );
+      final policyDeadline = DateTime.now().add(const Duration(seconds: 5));
+      var reboundPolicy = await rebound.state(sessionId: restored.id);
+      while (DateTime.now().isBefore(policyDeadline) &&
+          (reboundPolicy.state != NativePlaybackState.paused ||
+              !reboundPolicy.backgroundPolicyPaused)) {
+        await tester.pump(const Duration(milliseconds: 100));
+        reboundPolicy = await rebound.state(sessionId: restored.id);
+      }
       expect(reboundPolicy.state, NativePlaybackState.paused);
       expect(reboundPolicy.backgroundPolicyPaused, isTrue);
       debugPrint('NATIVE_MEDIA_REBIND_POLICY_PASS');

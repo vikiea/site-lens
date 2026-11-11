@@ -389,6 +389,11 @@ class NativeMediaRuntime(
         mime: String,
         hls: Boolean,
     ) {
+        applicationForeground =
+            call.argument<Boolean>("applicationForeground") ?: applicationForeground
+        allowNativeBackgroundPlayback =
+            call.argument<Boolean>("allowNativeBackgroundPlayback")
+                ?: allowNativeBackgroundPlayback
         ensureTexture()
         val requestGeneration = bridgeGeneration
         val requestId = openRequestId
