@@ -85,6 +85,7 @@ class NativeMediaRuntime(
                     surface,
                     active,
                     serviceSurfaceBindingId,
+                    lifecycleOwnerId,
                 )
                 val snapshot = raw.toMutableMap().apply { this["textureId"] = textureEntry?.id() }
                 channel.invokeMethod("state", snapshot)
@@ -415,6 +416,7 @@ class NativeMediaRuntime(
                     allowNativeBackgroundPlayback = allowNativeBackgroundPlayback,
                 surface = surface,
                 surfaceBindingId = bindingId,
+                    surfaceOwnerId = lifecycleOwnerId,
                 isCurrent = {
                     !disposed &&
                         requestGeneration == bridgeGeneration &&

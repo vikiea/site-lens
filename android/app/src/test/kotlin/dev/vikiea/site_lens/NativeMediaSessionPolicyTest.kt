@@ -306,28 +306,53 @@ class NativeMediaSessionPolicyTest {
         assertTrue(
             NativeMediaSessionPolicy.acceptsSurfaceBinding(
                 requestedSessionId = "session-7",
+                requestedBindingId = "binding-new",
+                requestedOwnerId = "bridge-new",
                 activeSessionId = "session-7",
+                activeOwnerId = "bridge-new",
                 phase = NativeMediaSessionPolicy.LifecyclePhase.ACTIVE,
             ),
         )
         assertFalse(
             NativeMediaSessionPolicy.acceptsSurfaceBinding(
                 requestedSessionId = "old-session",
+                requestedBindingId = "binding-new",
+                requestedOwnerId = "bridge-new",
                 activeSessionId = "session-7",
+                activeOwnerId = "bridge-new",
                 phase = NativeMediaSessionPolicy.LifecyclePhase.ACTIVE,
             ),
         )
         assertFalse(
             NativeMediaSessionPolicy.acceptsSurfaceBinding(
                 requestedSessionId = "session-7",
+                requestedBindingId = "binding-new",
+                requestedOwnerId = "bridge-new",
                 activeSessionId = "session-7",
+                activeOwnerId = "bridge-new",
                 phase = NativeMediaSessionPolicy.LifecyclePhase.STOPPING,
             ),
         )
         assertFalse(
             NativeMediaSessionPolicy.acceptsSurfaceBinding(
                 requestedSessionId = null,
+                requestedBindingId = "binding-new",
+                requestedOwnerId = "bridge-new",
                 activeSessionId = null,
+                activeOwnerId = "bridge-new",
+                phase = NativeMediaSessionPolicy.LifecyclePhase.ACTIVE,
+            ),
+        )
+    }
+
+    @Test fun staleSurfaceBindingFromOldOwnerIsRejectedAfterRebind() {
+        assertFalse(
+            NativeMediaSessionPolicy.acceptsSurfaceBinding(
+                requestedSessionId = "session-7",
+                requestedBindingId = "binding-old",
+                requestedOwnerId = "bridge-old",
+                activeSessionId = "session-7",
+                activeOwnerId = "bridge-new",
                 phase = NativeMediaSessionPolicy.LifecyclePhase.ACTIVE,
             ),
         )

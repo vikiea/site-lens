@@ -112,13 +112,19 @@ internal object NativeMediaSessionPolicy {
 
     fun acceptsSurfaceBinding(
         requestedSessionId: String?,
+        requestedBindingId: String?,
+        requestedOwnerId: String?,
         activeSessionId: String?,
+        activeOwnerId: String?,
         phase: LifecyclePhase,
     ): Boolean =
         phase != LifecyclePhase.STOPPING &&
             phase != LifecyclePhase.RELEASED &&
             activeSessionId != null &&
-            (requestedSessionId.isNullOrBlank() || requestedSessionId == activeSessionId)
+            (requestedSessionId.isNullOrBlank() || requestedSessionId == activeSessionId) &&
+            !requestedBindingId.isNullOrBlank() &&
+            !requestedOwnerId.isNullOrBlank() &&
+            requestedOwnerId == activeOwnerId
 
     private val TERMINAL_STATES = setOf("failed", "completed", "stopped")
 }

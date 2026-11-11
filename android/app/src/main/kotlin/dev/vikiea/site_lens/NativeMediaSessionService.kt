@@ -861,6 +861,7 @@ class NativeMediaSessionService : MediaSessionService() {
         surface: Surface?,
         requestedSessionId: String? = null,
         requestedBindingId: String? = null,
+        requestedOwnerId: String? = null,
     ) {
         if (stopping || engineReleased) return
         if (surface == null) {
@@ -869,7 +870,10 @@ class NativeMediaSessionService : MediaSessionService() {
         }
         if (!NativeMediaSessionPolicy.acceptsSurfaceBinding(
                 requestedSessionId = requestedSessionId,
+                requestedBindingId = requestedBindingId,
+                requestedOwnerId = requestedOwnerId,
                 activeSessionId = sessionId,
+                activeOwnerId = lifecyclePolicyOwner,
                 phase = lifecyclePhase,
             )
         ) return
@@ -924,6 +928,7 @@ class NativeMediaSessionService : MediaSessionService() {
         val allowNativeBackgroundPlayback: Boolean = false,
         val surface: Surface?,
         val surfaceBindingId: String? = null,
+        val surfaceOwnerId: String? = null,
         val isCurrent: () -> Boolean = { true },
         val callback: (Result<Map<String, Any?>>) -> Unit,
     )
@@ -1064,7 +1069,12 @@ class NativeMediaSessionService : MediaSessionService() {
                         check(request.isCurrent()) { "原生媒体请求已过期" }
                         val snapshot = service.open(request)
                         request.surface?.let { surface ->
-                            service.attachSurface(surface, request.sessionId, request.surfaceBindingId)
+                            service.attachSurface(
+                                surface,
+                                request.sessionId,
+                                request.surfaceBindingId,
+                                request.surfaceOwnerId,
+                            )
                         }
                         snapshot
                     }
@@ -1096,8 +1106,9 @@ class NativeMediaSessionService : MediaSessionService() {
             surface: Surface?,
             sessionId: String? = null,
             bindingId: String? = null,
+            ownerId: String? = null,
         ) {
-            existing({ service -> service.attachSurface(surface, sessionId, bindingId) })
+            existing({ service -> service.attachSurface(surface, sessionId, bindingId, ownerId) })
         }
 
         fun detachSurface(

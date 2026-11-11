@@ -1480,7 +1480,7 @@ window.addEventListener('resize', () => state(null));
     timeout: const Timeout(Duration(minutes: 2)),
   );
 
-  testWidgets('WebView media ignores native background setting', (
+  testWidgets('WebView policy stays independent during native MediaSession controls', (
     tester,
   ) async {
     final server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
