@@ -1,6 +1,7 @@
 package dev.vikiea.site_lens
 
 import androidx.media3.common.Player
+import androidx.media3.session.SessionResult
 
 internal object NativeMediaSessionPolicy {
     enum class LifecyclePhase {
@@ -118,6 +119,12 @@ internal object NativeMediaSessionPolicy {
             PlayerCommandDecision.REJECT
         command == Player.COMMAND_STOP -> PlayerCommandDecision.ALLOW_AND_RELEASE
         else -> PlayerCommandDecision.ALLOW
+    }
+
+    fun playerCommandResult(decision: PlayerCommandDecision): Int = when (decision) {
+        PlayerCommandDecision.REJECT -> SessionResult.RESULT_ERROR_PERMISSION_DENIED
+        PlayerCommandDecision.ALLOW,
+        PlayerCommandDecision.ALLOW_AND_RELEASE -> SessionResult.RESULT_SUCCESS
     }
 
     fun shouldReleaseAfterPlayerCommand(command: Int): Boolean =

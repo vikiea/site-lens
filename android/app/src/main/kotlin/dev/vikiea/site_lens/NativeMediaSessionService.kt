@@ -118,9 +118,10 @@ class NativeMediaSessionService : MediaSessionService() {
                 userPaused = player.playWhenReady || player.isPlaying
             }
             return when (decision) {
-                NativeMediaSessionPolicy.PlayerCommandDecision.REJECT -> Player.COMMAND_INVALID
+                NativeMediaSessionPolicy.PlayerCommandDecision.REJECT,
                 NativeMediaSessionPolicy.PlayerCommandDecision.ALLOW,
-                NativeMediaSessionPolicy.PlayerCommandDecision.ALLOW_AND_RELEASE -> playerCommand
+                NativeMediaSessionPolicy.PlayerCommandDecision.ALLOW_AND_RELEASE ->
+                    NativeMediaSessionPolicy.playerCommandResult(decision)
             }
         }
 

@@ -1,6 +1,7 @@
 package dev.vikiea.site_lens
 
 import androidx.media3.common.Player
+import androidx.media3.session.SessionResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -178,6 +179,27 @@ class NativeMediaSessionPolicyTest {
                 appController = false,
                 command = Player.COMMAND_PLAY_PAUSE,
                 playbackCommandAllowed = true,
+            ),
+        )
+    }
+
+    @Test fun playerCommandResultUsesSessionSuccessForAllowedCommands() {
+        assertEquals(
+            SessionResult.RESULT_SUCCESS,
+            NativeMediaSessionPolicy.playerCommandResult(
+                NativeMediaSessionPolicy.PlayerCommandDecision.ALLOW,
+            ),
+        )
+        assertEquals(
+            SessionResult.RESULT_SUCCESS,
+            NativeMediaSessionPolicy.playerCommandResult(
+                NativeMediaSessionPolicy.PlayerCommandDecision.ALLOW_AND_RELEASE,
+            ),
+        )
+        assertEquals(
+            SessionResult.RESULT_ERROR_PERMISSION_DENIED,
+            NativeMediaSessionPolicy.playerCommandResult(
+                NativeMediaSessionPolicy.PlayerCommandDecision.REJECT,
             ),
         )
     }
