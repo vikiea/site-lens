@@ -157,6 +157,55 @@ class NativeMediaSessionPolicyTest {
         )
     }
 
+    @Test fun systemUiControllerCanIssuePauseWhenBackgroundPlaybackIsDisabled() {
+        assertTrue(
+            NativeMediaSessionPolicy.isSystemUiController("com.android.systemui"),
+        )
+        assertTrue(
+            NativeMediaSessionPolicy.isAllowedController(
+                controllerPackage = "com.android.systemui",
+                appPackage = "dev.vikiea.site_lens",
+                trusted = false,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.isSystemUiController("com.example.other"),
+        )
+        assertEquals(
+            NativeMediaSessionPolicy.PlayerCommandDecision.ALLOW,
+            NativeMediaSessionPolicy.playerCommandDecision(
+                controllerAllowed = true,
+                appController = false,
+                command = Player.COMMAND_PLAY_PAUSE,
+                playbackCommandAllowed = true,
+            ),
+        )
+    }
+
+    @Test fun notificationRefreshWaitsForBackgroundPolicyPauseToSettle() {
+        assertTrue(
+            NativeMediaSessionPolicy.shouldDeferNotificationRefresh(
+                applicationForeground = false,
+                allowNativeBackgroundPlayback = false,
+                playerIsPlaying = true,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.shouldDeferNotificationRefresh(
+                applicationForeground = false,
+                allowNativeBackgroundPlayback = false,
+                playerIsPlaying = false,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.shouldDeferNotificationRefresh(
+                applicationForeground = false,
+                allowNativeBackgroundPlayback = true,
+                playerIsPlaying = true,
+            ),
+        )
+    }
+
     @Test fun notificationPlayPauseIsExplicitUserIntent() {
         assertTrue(
             NativeMediaSessionPolicy.isExplicitPlayPauseCommand(

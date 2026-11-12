@@ -312,11 +312,18 @@ class NativeMediaSessionService : MediaSessionService() {
                 syncState()
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (acceptsCallback(generation)) syncState()
+                if (!acceptsCallback(generation)) return
+                syncState()
+                if (!applicationForeground && !allowNativeBackgroundPlayback) {
+                    scheduleControllerCommandsRefresh()
+                }
             }
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
                 if (!acceptsCallback(generation)) return
                 syncState()
+                if (!applicationForeground && !allowNativeBackgroundPlayback) {
+                    scheduleControllerCommandsRefresh()
+                }
             }
             override fun onPlayerError(error: PlaybackException) {
                 if (!acceptsCallback(generation)) return
@@ -425,7 +432,7 @@ class NativeMediaSessionService : MediaSessionService() {
                 publish()
             }
         }
-        refreshControllerCommands()
+        scheduleControllerCommandsRefresh()
         return snapshot()
     }
 
@@ -462,6 +469,18 @@ class NativeMediaSessionService : MediaSessionService() {
 
     private fun refreshControllerCommands() {
         if (!::mediaSession.isInitialized || mediaSessionReleased) return
+        // Media3 may still report playWhenReady=true in the notification
+        // controller during the same turn in which the policy pause was
+        // requested. Refreshing then makes Media3 try to promote the service
+        // from the background, which Android 14 rejects. Wait for the player
+        // pause callback; that callback schedules the next refresh.
+        if (::player.isInitialized &&
+            NativeMediaSessionPolicy.shouldDeferNotificationRefresh(
+                applicationForeground = applicationForeground,
+                allowNativeBackgroundPlayback = allowNativeBackgroundPlayback,
+                playerIsPlaying = player.isPlaying || player.playWhenReady,
+            )
+        ) return
         val sessionCommandsByController = mediaSession.connectedControllers
         sessionCommandsByController.forEach { controllerInfo ->
             if (!isAllowedController(controllerInfo)) return@forEach
@@ -478,6 +497,13 @@ class NativeMediaSessionService : MediaSessionService() {
             }
         }
         triggerNotificationUpdate()
+    }
+
+    private fun scheduleControllerCommandsRefresh() {
+        if (!::mediaSession.isInitialized || mediaSessionReleased) return
+        operationHandler.post {
+            if (!stopping && !engineReleased) refreshControllerCommands()
+        }
     }
 
     private fun claimLifecycleOwner(ownerId: String) {

@@ -56,6 +56,14 @@ internal object NativeMediaSessionPolicy {
         playerIsPlaying: Boolean,
     ): Boolean = applicationForeground || allowNativeBackgroundPlayback || playerIsPlaying
 
+    fun shouldDeferNotificationRefresh(
+        applicationForeground: Boolean,
+        allowNativeBackgroundPlayback: Boolean,
+        playerIsPlaying: Boolean,
+    ): Boolean = !applicationForeground &&
+        !allowNativeBackgroundPlayback &&
+        playerIsPlaying
+
     fun isExplicitPlayPauseCommand(command: Int): Boolean =
         command == Player.COMMAND_PLAY_PAUSE
 
@@ -77,11 +85,16 @@ internal object NativeMediaSessionPolicy {
     fun isAppController(controllerPackage: String?, appPackage: String): Boolean =
         controllerPackage == appPackage
 
+    fun isSystemUiController(controllerPackage: String?): Boolean =
+        controllerPackage == SYSTEM_UI_PACKAGE
+
     fun isAllowedController(
         controllerPackage: String?,
         appPackage: String,
         trusted: Boolean,
-    ): Boolean = trusted || isAppController(controllerPackage, appPackage)
+    ): Boolean = trusted ||
+        isAppController(controllerPackage, appPackage) ||
+        isSystemUiController(controllerPackage)
 
     fun isExternalPlayerCommandAllowed(command: Int): Boolean = command !in setOf(
         Player.COMMAND_SET_MEDIA_ITEM,
@@ -154,5 +167,6 @@ internal object NativeMediaSessionPolicy {
             !requestedOwnerId.isNullOrBlank() &&
             requestedOwnerId == activeOwnerId
 
+    private const val SYSTEM_UI_PACKAGE = "com.android.systemui"
     private val TERMINAL_STATES = setOf("failed", "completed", "stopped")
 }
