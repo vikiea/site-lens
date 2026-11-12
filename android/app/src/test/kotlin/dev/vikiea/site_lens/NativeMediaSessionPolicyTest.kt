@@ -136,6 +136,30 @@ class NativeMediaSessionPolicyTest {
         )
     }
 
+    @Test fun notificationRefreshWaitsForBackgroundPolicyPauseToSettle() {
+        assertTrue(
+            NativeMediaSessionPolicy.shouldDeferNotificationRefresh(
+                applicationForeground = false,
+                allowNativeBackgroundPlayback = false,
+                playerIsPlaying = true,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.shouldDeferNotificationRefresh(
+                applicationForeground = false,
+                allowNativeBackgroundPlayback = false,
+                playerIsPlaying = false,
+            ),
+        )
+        assertFalse(
+            NativeMediaSessionPolicy.shouldDeferNotificationRefresh(
+                applicationForeground = false,
+                allowNativeBackgroundPlayback = true,
+                playerIsPlaying = true,
+            ),
+        )
+    }
+
     @Test fun notificationPlayIsRejectedOnlyWhenItWouldStartBackgroundPlayback() {
         assertEquals(
             NativeMediaSessionPolicy.PlayerCommandDecision.REJECT,

@@ -56,6 +56,14 @@ internal object NativeMediaSessionPolicy {
         playerIsPlaying: Boolean,
     ): Boolean = applicationForeground || allowNativeBackgroundPlayback || playerIsPlaying
 
+    fun shouldDeferNotificationRefresh(
+        applicationForeground: Boolean,
+        allowNativeBackgroundPlayback: Boolean,
+        playerIsPlaying: Boolean,
+    ): Boolean = !applicationForeground &&
+        !allowNativeBackgroundPlayback &&
+        playerIsPlaying
+
     fun isExplicitPlayPauseCommand(command: Int): Boolean =
         command == Player.COMMAND_PLAY_PAUSE
 

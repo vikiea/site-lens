@@ -474,8 +474,12 @@ class NativeMediaSessionService : MediaSessionService() {
         // requested. Refreshing then makes Media3 try to promote the service
         // from the background, which Android 14 rejects. Wait for the player
         // pause callback; that callback schedules the next refresh.
-        if (!applicationForeground && !allowNativeBackgroundPlayback &&
-            ::player.isInitialized && (player.isPlaying || player.playWhenReady)
+        if (::player.isInitialized &&
+            NativeMediaSessionPolicy.shouldDeferNotificationRefresh(
+                applicationForeground = applicationForeground,
+                allowNativeBackgroundPlayback = allowNativeBackgroundPlayback,
+                playerIsPlaying = player.isPlaying || player.playWhenReady,
+            )
         ) return
         val sessionCommandsByController = mediaSession.connectedControllers
         sessionCommandsByController.forEach { controllerInfo ->
