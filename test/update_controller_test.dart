@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -25,6 +26,22 @@ void main() {
   tearDown(() async {
     if (await work.exists()) await work.delete(recursive: true);
     if (await handoff.exists()) await handoff.delete(recursive: true);
+  });
+
+  test('native release client receives the configured GitHub token', () async {
+    final httpClient = _SingleStableReleaseClient();
+    Future<String?> tokenLoader() async => 'github_pat_test_token';
+    final client = buildUpdateReleaseClient(
+      tokenLoader: tokenLoader,
+      useNativeClient: true,
+      client: httpClient,
+    );
+
+    final release = await client.fetchLatest();
+
+    expect(release.tagName, 'v0.2.0');
+    expect(httpClient.apiAuthorization, 'Bearer github_pat_test_token');
+    client.close();
   });
 
   ({
@@ -424,6 +441,53 @@ void main() {
     expect(controller.downloadState, UpdateDownloadState.ready);
     expect(await controller.readyApk!.exists(), isTrue);
   });
+}
+
+class _SingleStableReleaseClient extends http.BaseClient {
+  String? apiAuthorization;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    if (request.url.host == 'api.github.com') {
+      apiAuthorization = request.headers['authorization'];
+      return _response(
+        http.Response.bytes(
+          utf8.encode(
+            jsonEncode({
+              'tag_name': 'v0.2.0',
+              'draft': false,
+              'prerelease': false,
+              'html_url':
+                  'https://github.com/vikiea/site-lens/releases/tag/v0.2.0',
+              'assets': const [
+                {'name': 'site-lens-v0.2.0.apk', 'size': 123},
+              ],
+            }),
+          ),
+          200,
+        ),
+        request,
+      );
+    }
+    if (request.url.path.endsWith('.sha256')) {
+      return _response(
+        http.Response('${'a' * 64}  site-lens-v0.2.0.apk\n', 200),
+        request,
+      );
+    }
+    return _response(http.Response('', 404), request);
+  }
+
+  static http.StreamedResponse _response(
+    http.Response response,
+    http.BaseRequest request,
+  ) => http.StreamedResponse(
+    Stream<List<int>>.value(response.bodyBytes),
+    response.statusCode,
+    contentLength: response.contentLength,
+    headers: response.headers,
+    request: request,
+  );
 }
 
 Future<void> _waitFor(

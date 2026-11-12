@@ -5,6 +5,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
 
 import '../settings/app_settings.dart';
 import '../ui/navigation_observer.dart';
@@ -12,6 +13,20 @@ import '../network/native_system_http.dart';
 import '../ui/software_update_screen.dart';
 import 'github_token_store.dart';
 import 'update_service.dart';
+
+/// Builds the release client used by the app-owned update service.
+///
+GitHubReleaseClient buildUpdateReleaseClient({
+  required Future<String?> Function()? tokenLoader,
+  bool? useNativeClient,
+  http.Client? client,
+}) {
+  final native = useNativeClient ?? Platform.isAndroid;
+  return GitHubReleaseClient(
+    client: client ?? (native ? NativeSystemHttpClient() : null),
+    tokenLoader: tokenLoader,
+  );
+}
 
 /// App-level owner of the software update flow.
 ///
@@ -24,7 +39,10 @@ final updateControllerProvider = Provider<UpdateController>((ref) {
     service: UpdateService(
       tokenLoader: tokenStore.read,
       client: Platform.isAndroid
-          ? GitHubReleaseClient(client: NativeSystemHttpClient())
+          ? buildUpdateReleaseClient(
+              tokenLoader: tokenStore.read,
+              useNativeClient: true,
+            )
           : null,
       nativeBackend: Platform.isAndroid ? MethodChannelUpdateBackend() : null,
     ),

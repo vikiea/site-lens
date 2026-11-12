@@ -139,6 +139,19 @@ void main() {
     },
   );
 
+  test('stable channel falls back to the release list when latest redirect is unavailable', () async {
+    final httpClient = _ReleaseListStableFallbackClient();
+    final client = GitHubReleaseClient(
+      client: httpClient,
+      tokenLoader: () async => 'github_pat_test_token',
+    );
+
+    final release = await client.fetchLatest();
+
+    expect(release.tagName, 'v0.2.0');
+    expect(httpClient.listRequested, isTrue);
+  });
+
   test('surfaces GitHub API authorization failures', () async {
     final client = GitHubReleaseClient(
       client: _TokenCaptureClient(status: 403),
@@ -948,6 +961,50 @@ class _ReleasePageFallbackClient extends http.BaseClient {
       final tag = checksum.group(1)!;
       return _response(
         http.Response('${'a' * 64}  site-lens-$tag.apk\n', 200),
+        request,
+      );
+    }
+    return _response(http.Response('', 404), request);
+  }
+
+  static http.StreamedResponse _response(
+    http.Response response,
+    http.BaseRequest request,
+  ) => http.StreamedResponse(
+    Stream<List<int>>.value(response.bodyBytes),
+    response.statusCode,
+    contentLength: response.contentLength,
+    headers: response.headers,
+    request: request,
+  );
+}
+
+class _ReleaseListStableFallbackClient extends http.BaseClient {
+  bool listRequested = false;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    if (request.url.host == 'api.github.com') {
+      return _response(http.Response('', 403), request);
+    }
+    if (request.url.host == 'github.com' &&
+        request.url.path == '/vikiea/site-lens/releases/latest') {
+      return _response(http.Response('', 503), request);
+    }
+    if (request.url.host == 'github.com' &&
+        request.url.path == '/vikiea/site-lens/releases') {
+      listRequested = true;
+      return _response(
+        http.Response(
+          '<a href="/vikiea/site-lens/releases/tag/v0.2.0">stable</a>',
+          200,
+        ),
+        request,
+      );
+    }
+    if (request.url.path.endsWith('.sha256')) {
+      return _response(
+        http.Response('${'a' * 64}  site-lens-v0.2.0.apk\n', 200),
         request,
       );
     }

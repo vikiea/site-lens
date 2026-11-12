@@ -456,8 +456,12 @@ class GitHubReleaseClient {
     throw const FormatException('更新地址重定向过多');
   }
 
-  Future<List<int>> _read(Uri uri, int maxBytes) async {
-    final response = await _request(uri);
+  Future<List<int>> _read(
+    Uri uri,
+    int maxBytes, {
+    Map<String, String> headers = const {},
+  }) async {
+    final response = await _request(uri, headers: headers);
     if (response.statusCode != 200) {
       await response.stream.listen((_) {}).cancel();
       if (response.statusCode == 404) {
@@ -600,8 +604,60 @@ class GitHubReleaseClient {
   }
 
   Future<ReleaseInfo> _fetchStableFromPage() async {
-    final tag = await _resolveLatestTag();
+    String tag;
+    try {
+      tag = await _resolveLatestTag();
+    } catch (latestError, latestStack) {
+      try {
+        tag = await _resolveLatestStableTagFromList();
+      } catch (_) {
+        Error.throwWithStackTrace(latestError, latestStack);
+      }
+    }
     return _releaseForTag(tag);
+  }
+
+  /// Some proxies or HTML mirrors do not expose the `/releases/latest`
+  /// redirect even though the release list is available. Parse a few bounded
+  /// list pages as a second HTML-only path so API rate limits do not make the
+  /// updater depend on one redirect response shape.
+  Future<String> _resolveLatestStableTagFromList() async {
+    final tags = <String>{};
+    final tagPattern = RegExp(
+      r'(?:https://github\.com)?/vikiea/site-lens/releases/tag/'
+      r'(v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
+      r')(?:[^A-Za-z0-9.]|$)',
+    );
+    for (var page = 1; page <= 10; page++) {
+      final uri = page == 1
+          ? _releasesUri
+          : _releasesUri.replace(queryParameters: {'page': '$page'});
+      String html;
+      try {
+        html = utf8.decode(
+          await _read(
+            uri,
+            2 * 1024 * 1024,
+            headers: const {'Accept': 'text/html'},
+          ),
+        );
+      } catch (_) {
+        if (page == 1) rethrow;
+        break;
+      }
+      for (final match in tagPattern.allMatches(html)) {
+        tags.add(match.group(1)!);
+      }
+    }
+    if (tags.isEmpty) {
+      throw const FormatException('尚无可用的正式发布版本');
+    }
+    final candidates = tags.toList()
+      ..sort(
+        (left, right) =>
+            AppVersion.parse(right).compareTo(AppVersion.parse(left)),
+      );
+    return candidates.first;
   }
 
   Future<ReleaseInfo> _releaseForTag(
@@ -727,7 +783,13 @@ class GitHubReleaseClient {
   }
 
   Future<ReleaseInfo> _fetchBetaFromPage() async {
-    final html = utf8.decode(await _read(_releasesUri, 2 * 1024 * 1024));
+    final html = utf8.decode(
+      await _read(
+        _releasesUri,
+        2 * 1024 * 1024,
+        headers: const {'Accept': 'text/html'},
+      ),
+    );
     final tags = <String>{};
     final tagPattern = RegExp(
       r'(?:https://github\.com)?/vikiea/site-lens/releases/tag/'
