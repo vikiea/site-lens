@@ -97,7 +97,7 @@ APK_RELEASE := build/app/outputs/flutter-apk/app-release.apk
 BUILD_NAME ?=
 BUILD_NUMBER ?=
 
-.PHONY: help setup setup-system setup-agent doctor deps analyze format test check verify-level manual-evidence-template manual-evidence-approve build build-debug build-release \
+.PHONY: help setup setup-system setup-agent doctor deps analyze format test check check-native verify-level manual-evidence-template manual-evidence-approve build build-debug build-release \
         devices emulator-check connect install install-debug install-release acceptance acceptance-per-file \
         restore-device verify-script clean clean-flutter-cache clean-flutter-cache-preview require-device require-backup
 
@@ -115,6 +115,7 @@ help:
 	  '  make format                dart format lib test integration_test tool' \
 	  '  make test                  unit/widget tests' \
 	  '  make check                 analyze + Flutter tests + JS/tooling contracts' \
+	  '  make check-native          Android JVM unit tests (:app:testDebugUnitTest)' \
 	  '  make verify-level         choose and run the smallest validation level' \
 	  '  make manual-evidence-template LEVEL=L2 EVIDENCE=...  create a manual validation checklist' \
 	  '  make manual-evidence-approve EVIDENCE=...            approve every manual checklist item' \
@@ -182,6 +183,13 @@ test:
 
 check:
 	./tool/check.sh
+
+# Android JVM unit tests for the Kotlin policy objects. Kept out of `check` on
+# purpose: `check` must not require a Gradle bootstrap on top of Flutter.
+# `-x compileFlutterBuildDebug` skips the Dart asset build; it only produces
+# Flutter assets the JVM tests never load, and it needs network on a cold cache.
+check-native:
+	cd android && ./gradlew :app:testDebugUnitTest -x :app:compileFlutterBuildDebug
 
 verify-level:
 	python3 tool/verify_level.py $(ARGS)
