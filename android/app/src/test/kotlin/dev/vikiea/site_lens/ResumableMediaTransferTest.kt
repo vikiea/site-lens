@@ -286,13 +286,15 @@ class ResumableMediaTransferTest {
     }
 
     @Test
-    fun missingResumeValidatorRestartsFromZero() = fixture { root ->
-        val first = FakeConnection(
-            200,
-            mapOf("ETag" to "\"v1\"", "Content-Length" to "2"),
-            FailingInputStream(byteArrayOf(1, 2)),
-        )
-        val missingValidator = FakeConnection(
+    fun aServerWithoutValidatorStillResumesInsteadOfRestarting() = fixture { root ->
+        // The page asks for the address and the CDN answers with neither ETag
+        // nor Last-Modified, which is common on signed HLS hosts. The 206 is
+        // the server's own confirmation that the bytes on disk are this
+        // resource's prefix, so nothing is thrown away.
+        val partial = File(root, "video.part")
+        partial.writeBytes(byteArrayOf(1, 2))
+        var requests = 0
+        val connection = FakeConnection(
             206,
             mapOf(
                 "Content-Range" to "bytes 2-3/4",
@@ -300,19 +302,52 @@ class ResumableMediaTransferTest {
             ),
             ByteArrayInputStream(byteArrayOf(3, 4)),
         )
-        val replacement = FakeConnection(
-            200,
-            mapOf("ETag" to "\"v2\"", "Content-Length" to "4"),
-            ByteArrayInputStream(byteArrayOf(5, 6, 7, 8)),
-        )
-        val responses = ArrayDeque(listOf(first, missingValidator, replacement))
-        val partial = File(root, "video.part")
         val url = URL("https://cdn.example/video").toURI()
-        val size = ResumableMediaTransfer(connect = { responses.removeFirst() })
-            .transfer(url, url, partial, "test")
+        val size = ResumableMediaTransfer(connect = {
+            requests++
+            connection
+        }).transfer(url, url, partial, "test")
         assertEquals(4L, size)
-        assertArrayEquals(byteArrayOf(5, 6, 7, 8), partial.readBytes())
-        assertNull(replacement.properties["Range"])
+        assertArrayEquals(byteArrayOf(1, 2, 3, 4), partial.readBytes())
+        assertEquals("bytes=2-", connection.properties["Range"])
+        assertNull(connection.properties["If-Range"])
+        assertEquals(1, requests)
+    }
+
+    @Test
+    fun aRotatedValidatorKeepsTheBytesTheServerAlreadyConfirmed() = fixture { root ->
+        // Edge rotation and regenerated manifests move the ETag even though the
+        // content is unchanged, so a changed validator is recorded, not obeyed:
+        // the 206 proved the prefix, and throwing it away would restart every
+        // transfer on those hosts.
+        val partial = File(root, "video.part")
+        partial.writeBytes(byteArrayOf(1, 2))
+        val stale = FakeConnection(
+            206,
+            mapOf(
+                "ETag" to "\"v2\"",
+                "Content-Range" to "bytes 2-3/4",
+                "Content-Length" to "2",
+            ),
+            ByteArrayInputStream(byteArrayOf(3, 4)),
+        )
+        val url = URL("https://cdn.example/video").toURI()
+        val size = ResumableMediaTransfer(connect = { stale })
+            .transfer(url, url, partial, "test", maxAttempts = 1)
+        assertEquals(4L, size)
+        assertArrayEquals(byteArrayOf(1, 2, 3, 4), partial.readBytes())
+        assertEquals("bytes=2-", stale.properties["Range"])
+        assertEquals(
+            true,
+            File(partial.path + ".resume").readText().contains("\"v2\""),
+        )
+    }
+
+    private fun identityOf(url: String): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(url.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        return digest
     }
 
     @Test
@@ -352,28 +387,32 @@ class ResumableMediaTransferTest {
     }
 
     @Test
-    fun bounded206WithoutValidatorFailsWithinTheRetryBudget() = fixture { root ->
-        var requests = 0
+    fun boundedSegmentsWithoutValidatorContinueUntilTheWholeFileIsPresent() = fixture { root ->
+        // Every hop omits the validator; each 206 still proves where the next
+        // bytes start, so the transfer walks to the end rather than looping.
+        val ranges = listOf("bytes 0-1/6", "bytes 2-3/6", "bytes 4-5/6")
+        val bodies = listOf(
+            byteArrayOf(1, 2),
+            byteArrayOf(3, 4),
+            byteArrayOf(5, 6),
+        )
+        var served = 0
         val partial = File(root, "video.part")
         val url = URL("https://cdn.example/video").toURI()
-        var failed = false
-        try {
-            ResumableMediaTransfer(connect = {
-                requests++
-                FakeConnection(
-                    206,
-                    mapOf(
-                        "Content-Range" to "bytes 0-1/6",
-                        "Content-Length" to "2",
-                    ),
-                    ByteArrayInputStream(byteArrayOf(1, 2)),
-                )
-            }).transfer(url, url, partial, "test")
-        } catch (_: IOException) {
-            failed = true
-        }
-        assertEquals(true, failed)
-        assertEquals(5, requests)
+        val size = ResumableMediaTransfer(connect = {
+            val body = ByteArrayInputStream(bodies[served])
+            FakeConnection(
+                206,
+                mapOf(
+                    "Content-Range" to ranges[served],
+                    "Content-Length" to bodies[served].size.toString(),
+                ),
+                body,
+            ).also { served++ }
+        }).transfer(url, url, partial, "test", maxAttempts = 1)
+        assertEquals(6L, size)
+        assertArrayEquals(byteArrayOf(1, 2, 3, 4, 5, 6), partial.readBytes())
+        assertEquals(3, served)
     }
 
     @Test

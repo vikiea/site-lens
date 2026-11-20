@@ -491,8 +491,17 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn('Content-Range', TRANSFER)
         self.assertIn('RandomAccessFile(partial, "rw")', TRANSFER)
         self.assertIn('partial.length()', TRANSFER)
-        self.assertIn('媒体分段响应缺少验证标识', TRANSFER)
         self.assertIn('publishIfActive', TRANSFER)
+
+    def test_native_transfer_never_discards_bytes_the_server_can_confirm(self):
+        # Bytes on disk are kept and offered as a Range: a 206 or a 416 that
+        # proves the file is complete confirms them, and a 200 rewrites them.
+        # Neither a missing validator nor a rotated signature may force a
+        # restart from zero, which is what made every retry re-download.
+        self.assertNotIn('媒体分段响应缺少验证标识', TRANSFER)
+        self.assertNotIn('媒体响应验证标识缺失或已变化', TRANSFER)
+        self.assertIn('媒体响应 Range 无效', TRANSFER)
+        self.assertIn('if (offset > 0 && total == offset) return offset', TRANSFER)
 
     def test_native_playback_claims_media_audio_focus(self):
         self.assertIn("setAudioAttributes", NATIVE_MEDIA)

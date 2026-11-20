@@ -364,7 +364,14 @@ void main() {
     late Directory cache;
     late AppDatabase db;
 
-    Future<({AppController app, MediaTask task, MediaCandidate stored})>
+    Future<
+      ({
+        AppController app,
+        MediaTask task,
+        MediaCandidate stored,
+        FakeNativeDownloads native,
+      })
+    >
     pageRequired(
       MediaAuthorizationRefreshResult Function(
         MediaTask task,
@@ -399,8 +406,71 @@ void main() {
         MediaTaskState.reauthorize,
         errorCode: MediaErrorCode.authorizationRequired,
       );
-      return (app: app, task: failed, stored: stored);
+      return (app: app, task: failed, stored: stored, native: native);
     }
+
+    test(
+      'a cacheMissing retry resumes instead of deleting the bytes',
+      () async {
+        // cache_missing means the finished file is gone or the record was
+        // lost. The bytes already fetched are still on disk, so retrying hands
+        // them back to the native runtime as a Range instead of deleting and
+        // restarting from zero.
+        final root = await Directory.systemTemp.createTemp('site-lens-cache-');
+        addTearDown(() => root.delete(recursive: true));
+        final db = AppDatabase(NativeDatabase.memory());
+        final native = FakeNativeDownloads();
+        final app = AppController(
+          db,
+          nativeDownloads: native,
+          nativeMediaAuthRefresh: FakeAuthRefreshBridge(
+            (task, candidate) => const MediaAuthorizationRefreshResult(
+              state: 'refreshed',
+              mediaUrl: 'https://cdn.example/video.mp4?token=fresh',
+            ),
+          ),
+          mediaDirectoryProvider: () async => root,
+          mediaPolicyTransfer: offlineTransfer([]),
+        );
+        addTearDown(() async {
+          await app.shutdown();
+          await db.close();
+        });
+        await app.load();
+        final stored = MediaCandidate(
+          id: 'cand-direct',
+          hostId: 7,
+          generation: 3,
+          sourceUrl: Uri.parse('https://site.example/watch/1'),
+          mediaUrl: Uri.parse('https://cdn.example/video.mp4?token=old'),
+          title: '系列 - 第1集',
+          mime: 'video/mp4',
+          source: MediaCandidateSource.dom,
+        );
+        await db.saveMediaCandidate(stored);
+        final created = await app.mediaTasks.create(stored);
+        app.mediaTasks.transition(created.id, MediaTaskState.downloading);
+        final failed = app.mediaTasks.transition(
+          created.id,
+          MediaTaskState.reauthorize,
+          errorCode: MediaErrorCode.authorizationRequired,
+        );
+        final missing = app.mediaTasks.transition(
+          failed.id,
+          MediaTaskState.failed,
+          errorCode: MediaErrorCode.cacheMissing,
+        );
+
+        final outcome = await app.retryMediaTaskResult(missing);
+
+        expect(outcome.kind, MediaRetryOutcomeKind.resumed);
+        expect(
+          native.calls.where((call) => call.startsWith('start:${missing.id}')),
+          isNotEmpty,
+        );
+        expect(native.calls.where((call) => call.contains('delete')), isEmpty);
+      },
+    );
 
     test('refreshed answers with the existing resume wording', () async {
       final h = await pageRequired(

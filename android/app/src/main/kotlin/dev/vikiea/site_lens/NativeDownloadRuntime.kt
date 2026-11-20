@@ -235,10 +235,7 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
                 put("totalBytes", bytes)
                 put("localUri", Uri.fromFile(final).toString())
             } else if (total != null) put("totalBytes", total)
-            if (info == null && !hasFinal && !hasPartial) {
-                put("errorCode", "cache_missing")
-                put("errorReason", "后台下载任务丢失，请重试")
-            } else if (info?.state == WorkInfo.State.SUCCEEDED && !hasFinal) {
+            if (info?.state == WorkInfo.State.SUCCEEDED && !hasFinal) {
                 put("errorCode", "cache_missing")
                 put("errorReason", "后台下载文件缺失，请重试")
             } else {

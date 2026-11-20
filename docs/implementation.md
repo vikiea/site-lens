@@ -36,6 +36,12 @@ A successful refresh is authoritative. The address it produced has already passe
 
 The 来源页 entry in a task's menu opens that page in the app's browser tab, reusing an existing tab. It opens exactly the page the task records and refuses any page the task cannot vouch for, and it reports success only when the browser is actually showing the page. Persistent outcomes such as 需回来源页 or 授权未变化 are shown on the page's shared notice surface with the 打开来源页 action; a resumed transfer stays a short confirmation.
 
+## Media resume
+
+Bytes on disk are never discarded by the client. Both transfer paths — the native worker and the Dart HLS path — take the file length as the offset, offer it as `Range`, and let the server decide: `206` continues from the offset, `416` whose range equals the file length means the file is already complete, and only a `200` rewrites from the start. A missing `ETag`/`Last-Modified` is no longer read as "cannot be stitched" and a rotated validator no longer clears bytes the server already confirmed; the validator is remembered, and it serves only as an `If-Range` hint. A partial file with no metadata beside it is still a partial file.
+
+A retry never deletes bytes either. The `cache_missing` path used to delete the native partial before restarting; it now resumes it, because losing the bytes is the one outcome the user cannot tell apart from "downloading from zero". Native `status` reports `cache_missing` only when the worker finished successfully and the final file is gone — never merely because the runtime has no record.
+
 The batch refresh is part of the `site_lens/media_auth` platform protocol: the channel accepts `refresh` for one task and `refreshBatch` for many, both speaking the same field layout, and answers every request exactly once.
 
 ## Development and verification

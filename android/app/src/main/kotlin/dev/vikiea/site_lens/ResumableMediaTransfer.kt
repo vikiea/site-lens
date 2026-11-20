@@ -104,11 +104,12 @@ class ResumableMediaTransfer(
                     }
                     var offset = partial.length()
                     val validator = metadata.getProperty("validator")?.takeIf { it.isNotBlank() }
-                    if (offset > 0 && (metadata.getProperty("identity") != identity || validator == null)) {
-                        RandomAccessFile(partial, "rw").use { it.setLength(0) }
-                        metadataFile.delete()
-                        offset = 0
-                    }
+                    // Bytes on disk are kept and offered to the server as a
+                    // Range. A 206 (or a 416 proving the file is complete)
+                    // confirms they belong to this resource; a 200 rewrites
+                    // them from the start. A missing or rotated query parameter
+                    // no longer throws the transfer away, and a host that never
+                    // sends ETag/Last-Modified no longer forces a restart.
                     var uri = url
                     var response: HttpURLConnection? = null
                     try {
@@ -166,10 +167,14 @@ class ResumableMediaTransfer(
                         val contentRange = current.getHeaderField("Content-Range").orEmpty()
                         if (status == 416) {
                             val total = Regex("bytes \\*/(\\d+)").matchEntire(contentRange)?.groupValues?.get(1)?.toLongOrNull()
-                            if (offset > 0 && total == offset && receivedValidator == validator) return offset
+                            if (offset > 0 && total == offset) return offset
+                            // The server cannot continue from these bytes, so the
+                            // transfer restarts from zero instead of reporting a
+                            // failure the caller would have to answer for.
                             RandomAccessFile(partial, "rw").use { it.setLength(0) }
                             metadataFile.delete()
-                            throw IOException("媒体 Range 已失效")
+                            offset = 0
+                            continue
                         }
                         if (status == 401 || status == 403) {
                             throw MediaAuthorizationException(attemptsUsed, status)
@@ -195,12 +200,12 @@ class ResumableMediaTransfer(
                             check(start == offset && end != null && total != null && end >= start && end < total) {
                                 "媒体响应 Range 无效"
                             }
-                            if (offset > 0L &&
-                                (receivedValidator == null || receivedValidator != validator)) {
-                                RandomAccessFile(partial, "rw").use { it.setLength(0) }
-                                metadataFile.delete()
-                                throw IOException("媒体响应验证标识缺失或已变化，重新下载")
-                            }
+                            // A 206 is the server's own confirmation that the
+                            // bytes on disk are this resource's prefix, whatever
+                            // the validator says. A rotated ETag (another edge,
+                            // a regenerated manifest) must not discard them; the
+                            // validator learned here is stored below and feeds
+                            // If-Range on the next hop.
                         }
                         val append = status == 206 && offset > 0
                         val expected = current.contentLengthLong.takeIf { it >= 0 }
@@ -253,9 +258,8 @@ class ResumableMediaTransfer(
                         }
                         checkActive()
                         if (status == 206 && length < total!!) {
-                            if (receivedValidator == null && validator == null) {
-                                throw IOException("媒体分段响应缺少验证标识")
-                            }
+                            // The next hop re-reads the validator written above,
+                            // so a segment server that omits it is fine as well.
                             continue
                         }
                         return length

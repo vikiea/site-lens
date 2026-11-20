@@ -4274,13 +4274,12 @@ class MediaDownloadService {
       retryBudget.claim();
       final metadata = await _resumeState(partial);
       final validator = metadata['validator'] as String?;
-      var offset = await partial.exists() ? await partial.length() : 0;
-      if (offset > 0 &&
-          (metadata['identity'] != identity || validator == null)) {
-        // Without a validator two representations cannot safely be joined.
-        await partial.writeAsBytes(const [], flush: true);
-        offset = 0;
-      }
+      final offset = await partial.exists() ? await partial.length() : 0;
+      // Bytes on disk are kept and offered as a Range: a 206 (or a 416 proving
+      // the file is complete) confirms they belong to this resource, and a 200
+      // rewrites them from the start. Neither a rotated query parameter nor a
+      // host that omits ETag/Last-Modified may throw a partial transfer away.
+
       try {
         final response = await http.fetchToFile(
           url,
@@ -4299,13 +4298,9 @@ class MediaDownloadService {
           },
           onHeaders: (status, headers) async {
             final received = _responseValidator(headers);
-            if (status == 206 &&
-                offset > 0 &&
-                (received == null || received != validator)) {
-              await partial.writeAsBytes(const [], flush: true);
-              await _deleteResumeState(partial);
-              throw const HttpException('媒体响应验证标识缺失或已变化，重新下载');
-            }
+            // The 206 below is the server's own confirmation that the bytes on
+            // disk are this resource's prefix; a rotated validator (another
+            // edge, a regenerated manifest) is recorded, not treated as a veto.
             final state = File('${partial.path}.resume.json');
             final temporary = File('${state.path}.tmp');
             await temporary.writeAsString(
@@ -4324,15 +4319,12 @@ class MediaDownloadService {
             r'^bytes \*/(\d+)$',
           ).firstMatch(response.headers[HttpHeaders.contentRangeHeader] ?? '');
           final total = match == null ? null : int.tryParse(match.group(1)!);
-          if (offset > 0 &&
-              total == offset &&
-              _responseValidator(response.headers) == validator) {
-            return;
-          }
+          if (offset > 0 && total == offset) return;
+          // The server cannot continue from these bytes, so the transfer
+          // restarts from zero instead of failing.
           await partial.writeAsBytes(const [], flush: true);
           await _deleteResumeState(partial);
-          lastError = StateError('媒体 Range 已失效，重新下载');
-          if (retryBudget.exhausted) throw lastError;
+          if (retryBudget.exhausted) throw StateError('媒体 Range 已失效，重新下载');
           await Future<void>.delayed(
             Duration(milliseconds: 100 * (1 << attempt)),
           );

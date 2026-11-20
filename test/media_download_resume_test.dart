@@ -332,7 +332,7 @@ void main() {
 
   for (final changed in [false, true]) {
     test(
-      'HLS refreshed signatures ${changed ? "replace changed" : "retain matching"} partial bytes',
+      'HLS refreshed signatures ${changed ? "keep" : "keep matching"} the bytes the server already confirmed',
       () async {
         final root = await Directory.systemTemp.createTemp(
           'site-lens-signature-resume-',
@@ -352,11 +352,15 @@ void main() {
         expect(result.state, MediaTaskState.playable);
         final cached = (await store.cachedFile(task.id))!;
         final input = await const HlsPlaylistParser().parseFile(cached.uri);
-        expect(
-          await File.fromUri(input.segments.single).readAsBytes(),
-          changed ? [8, 9, 10] : [1, 2, 3],
-        );
-        expect(http.offsets, changed ? [0, 2, 0] : [0, 2]);
+        // A rotated signature is not a different resource: the 206 over the
+        // bytes already on disk is the server's own confirmation, so nothing
+        // is thrown away and the download never restarts from zero.
+        expect(await File.fromUri(input.segments.single).readAsBytes(), [
+          1,
+          2,
+          3,
+        ]);
+        expect(http.offsets, [0, 2]);
       },
     );
   }
@@ -752,7 +756,7 @@ void main() {
   });
 
   test(
-    'HLS bounded 206 without a validator stops within the retry budget',
+    'HLS bounded 206 without a validator walks to the end of the file',
     () async {
       final root = await Directory.systemTemp.createTemp(
         'site-lens-hls-no-validator-',
@@ -777,11 +781,12 @@ void main() {
         source: MediaCandidateSource.dom,
       );
       final task = await store.create(candidate);
-      await expectLater(
-        MediaDownloadService(tasks: store, http: http).start(task, candidate),
-        throwsA(isA<HttpException>()),
-      );
-      expect(http.segmentCalls, 4);
+      final progress = await MediaDownloadService(
+        tasks: store,
+        http: http,
+      ).start(task, candidate);
+      expect(progress.state, MediaTaskState.playable);
+      expect(http.segmentCalls, 2);
     },
   );
 
@@ -1162,7 +1167,7 @@ class _BoundedHlsResumeHttp extends ControlledHttp {
   }) async {
     expect(url, segment);
     segmentCalls++;
-    if (segmentCalls == 1 || !includeValidator) {
+    if (segmentCalls == 1) {
       expect(resumeOffset, 0);
       if (onHeaders != null) {
         await onHeaders(

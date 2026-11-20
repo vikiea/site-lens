@@ -2326,12 +2326,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   /// Resumes a task whose address is already resolved and authorized.
   Future<MediaTask> _resumePrepared(MediaTask task, MediaCandidate resolved) {
     final current = mediaTasks.task(task.id) ?? task;
-    if (task.errorCode == MediaErrorCode.cacheMissing) {
-      return () async {
-        await mediaDownloads.delete(task.id, deleteTask: false);
-        return mediaDownloads.startNative(current, resolved);
-      }();
-    }
+    // cache_missing says the finished file vanished, and the transfer keeps its
+    // own bytes beside it: a resumable partial is offered to the server as a
+    // Range, and a 200 rewrites it. Deleting the task's cache here would also
+    // delete that partial through the native runtime and turn every retry into
+    // a download from zero, so the transfer decides for itself.
     if (task.state == MediaTaskState.failed &&
         nativeDownloads != null &&
         !resolved.isHls) {
