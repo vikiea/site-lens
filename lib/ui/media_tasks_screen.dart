@@ -4203,36 +4203,9 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   }
 
   Future<void> _retry(MediaTask task, {bool notify = true}) async {
-    final resolved = await widget.app.mediaCandidateForRetry(task);
-    final currentTask = widget.app.mediaTasks.task(task.id) ?? task;
-    if (task.state == MediaTaskState.paused) {
-      await _togglePause(task);
-    } else if (task.state == MediaTaskState.reauthorize) {
-      final refresh = await widget.app.refreshMediaAuthorization(
-        task,
-        resolved,
-      );
-      if (!refresh.refreshed) {
-        throw StateError(
-          refresh.reason ??
-              (refresh.waitingExecution ? '等待系统允许后台授权刷新' : '需要人工重新授权'),
-        );
-      }
-      final rebound = await widget.app.mediaCandidateForRetry(task);
-      await widget.app.mediaDownloads.resumeNative(task.id, rebound);
-    } else if (task.errorCode == MediaErrorCode.cacheMissing) {
-      await widget.app.mediaDownloads.delete(task.id, deleteTask: false);
-      await widget.app.mediaDownloads.startNative(
-        widget.app.mediaTasks.task(task.id)!,
-        resolved,
-      );
-    } else if (task.state == MediaTaskState.failed &&
-        widget.app.nativeDownloads != null &&
-        !resolved.isHls) {
-      await widget.app.mediaDownloads.resumeNative(task.id, resolved);
-    } else {
-      await widget.app.mediaDownloads.startNative(currentTask, resolved);
-    }
+    // A page-required task may have outlived its source tab, so the refresh has
+    // to run before any live-candidate lookup; the controller owns that order.
+    await widget.app.retryMediaTask(task);
     if (mounted && notify) {
       showShortToast(context, '已开始续传');
       setState(() {});

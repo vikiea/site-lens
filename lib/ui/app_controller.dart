@@ -141,7 +141,17 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     DeviceDiagnosticsService? diagnostics,
     StartupTrace? startupTrace,
     Future<Directory> Function()? mediaDirectoryProvider,
+    NativeMediaAuthRefresh? nativeMediaAuthRefresh,
+    NativeDownloadRuntime? nativeDownloads,
+    NativeTlsTransferWithPolicy? mediaPolicyTransfer,
   }) : startupTrace = startupTrace ?? StartupTrace() {
+    this.mediaPolicyTransfer = mediaPolicyTransfer;
+    this.nativeMediaAuthRefresh =
+        nativeMediaAuthRefresh ??
+        (Platform.isAndroid ? NativeMediaAuthRefresh() : null);
+    this.nativeDownloads =
+        nativeDownloads ??
+        (Platform.isAndroid ? NativeDownloadRuntime() : null);
     if (bootstrap != null) {
       settings = bootstrap.settings;
       background = bootstrap.background;
@@ -202,7 +212,6 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(mediaOperations.markInterrupted().catchError((_) {}));
     watchSaves = WatchSaveStore(db);
     nativePlayback = NativePlaybackStore(db);
-    nativeDownloads = Platform.isAndroid ? NativeDownloadRuntime() : null;
     nativeExports = Platform.isAndroid ? NativeExportRuntime() : null;
     if (nativeExports != null &&
         settings.mediaStorageMode == MediaStorageMode.directPath) {
@@ -211,9 +220,6 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       );
     }
     nativeMedia = NativeMediaRuntime();
-    nativeMediaAuthRefresh = Platform.isAndroid
-        ? NativeMediaAuthRefresh()
-        : null;
     _diagnosticPlaybackEvents = nativeMedia.states.listen((session) {
       if (session.state == NativePlaybackState.stopped ||
           session.state == NativePlaybackState.restorable) {
@@ -249,7 +255,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           rethrow;
         }
       },
-      policyTransfer: mediaNetwork?.transferFileWithPolicy,
+      policyTransfer:
+          mediaPolicyTransfer ?? mediaNetwork?.transferFileWithPolicy,
       resourceCoordinator: mediaResourceCoordinator,
     );
     unawaited(
@@ -270,10 +277,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     });
     _mediaRuntimeReady = true;
     mediaDownloads.maxConcurrency = settings.mediaDownloadConcurrency;
-    if (nativeDownloads != null) {
+    final downloads = nativeDownloads;
+    if (downloads != null) {
       mediaDownloads.onProgressNotification = (taskId, title, bytes, total) {
         unawaited(
-          nativeDownloads!.progressNotification(
+          downloads.progressNotification(
             taskId,
             title,
             bytes,
@@ -282,18 +290,15 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         );
       };
       mediaDownloads.onTaskNotificationDone = (taskId) {
-        unawaited(nativeDownloads!.clearProgressNotification(taskId));
+        unawaited(downloads.clearProgressNotification(taskId));
       };
       unawaited(
-        nativeDownloads!
-            .setConcurrency(settings.mediaDownloadConcurrency)
-            .catchError((error, stack) {
-              AppErrorLogger.capture(
-                error,
-                module: 'media.settings',
-                stack: stack,
-              );
-            }),
+        downloads.setConcurrency(settings.mediaDownloadConcurrency).catchError((
+          error,
+          stack,
+        ) {
+          AppErrorLogger.capture(error, module: 'media.settings', stack: stack);
+        }),
       );
     }
     mediaExports = Mp4ExportService(tasks: mediaTasks, native: nativeExports);
@@ -673,8 +678,20 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   late final DlnaCastController mediaCast;
   late final NativePlaybackController mediaPlayback;
   late final NativeMediaRuntime nativeMedia;
+
+  /// Android authorization-refresh bridge. Injectable so the adoption path can
+  /// be exercised without a device; production keeps the real bridge.
   late final NativeMediaAuthRefresh? nativeMediaAuthRefresh;
+
+  /// Media addresses this controller adopted from a completed authorization
+  /// refresh, per task. Only these may authorize a transfer after the source
+  /// tab has closed; the map is bounded by the live task list.
+  final _adoptedMediaUrls = <String, Set<String>>{};
   late final NativeDownloadRuntime? nativeDownloads;
+
+  /// Test seam for the native transfer; production gets it from the media
+  /// network runtime below.
+  NativeTlsTransferWithPolicy? mediaPolicyTransfer;
   late final NativeExportRuntime? nativeExports;
   late final ProbeCoordinator probes;
   List<Candidate> sites = [];
@@ -1414,8 +1431,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> setMediaDownloadConcurrency(int value) async {
     await updateSettings({'mediaDownloadConcurrency': value});
-    if (nativeDownloads != null) {
-      await nativeDownloads!.setConcurrency(mediaDownloadConcurrency);
+    final downloads = nativeDownloads;
+    if (downloads != null) {
+      await downloads.setConcurrency(mediaDownloadConcurrency);
     }
   }
 
@@ -1487,16 +1505,14 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     MediaTask task,
     MediaCandidate candidate,
   ) {
-    final requiresLiveAuthorization =
-        task.state == MediaTaskState.reauthorize ||
-        task.errorCode == MediaErrorCode.authorizationRequired;
+    final requiresLiveAuthorization = _mediaTaskNeedsAuthorizationRefresh(task);
     if (!requiresLiveAuthorization) return candidate;
-    if (candidate.id != task.candidateId) {
-      throw StateError(MediaErrorCode.staleGeneration);
-    }
     final session = hosts.sessions[task.hostId];
     if (session == null || session.disposed) {
-      throw StateError('下载地址已失效，请返回播放页重新选择媒体');
+      // A background authorization refresh already re-authorized the stored
+      // observation against the page itself, so the missing tab is no longer a
+      // reason to block. Anything else keeps the old page-required failure.
+      return _authorizedWithoutLiveSession(task, candidate);
     }
     if (session.generation != task.generation) {
       throw StateError('页面已更新，请返回播放页重新选择媒体');
@@ -1508,6 +1524,30 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       throw StateError('媒体资源已变化，请返回播放页重新选择媒体');
     }
     return current;
+  }
+
+  /// Authorization for a task whose source tab has closed.
+  ///
+  /// Only an address this controller adopted from a completed refresh may use
+  /// it: [adoptRefreshedMediaUrl] records the adopted address, and anything
+  /// else keeps the old page-required failure.
+  MediaCandidate _authorizedWithoutLiveSession(
+    MediaTask task,
+    MediaCandidate candidate,
+  ) {
+    if (candidate.id != task.candidateId) {
+      throw StateError(MediaErrorCode.staleGeneration);
+    }
+    final adopted = _adoptedMediaUrls[task.id];
+    if (adopted == null || !adopted.contains(candidate.mediaUrl.toString())) {
+      throw StateError('下载地址已失效，请返回播放页重新选择媒体');
+    }
+    if (candidate.generation != task.generation ||
+        mediaDocumentIdentity(candidate.sourceUrl) !=
+            mediaDocumentIdentity(task.sourceUrl)) {
+      throw StateError('媒体资源已变化，请返回播放页重新选择媒体');
+    }
+    return candidate;
   }
 
   /// Refreshes surfaces that derive their content from the durable media task
@@ -1925,6 +1965,163 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       );
     }
     return bridge.refresh(task, candidate);
+  }
+
+  /// Retries a task whose page-required state blocks the transfer.
+  ///
+  /// The refresh runs before any candidate lookup: [mediaCandidateForRetry]
+  /// needs the source tab to still exist, and a tab the user left long ago is
+  /// exactly the case the refresh exists to recover. Adoption goes through
+  /// [adoptRefreshedMediaUrl]; when it fails the task keeps its page-required
+  /// state so the row can offer the source page again.
+  ///
+  /// The confirmation toast stays in the screen, which owns progress reporting
+  /// for batch and single retries alike.
+  Future<MediaTask> retryMediaTask(MediaTask task) async {
+    mediaDownloads.resetRetryBudget(task.id);
+    if (task.state == MediaTaskState.paused) {
+      final stored = await db.mediaCandidate(task.candidateId);
+      if (stored == null) {
+        throw StateError('媒体候选已不存在，请返回播放页重新选择媒体');
+      }
+      return mediaDownloads.resumeNative(task.id, stored);
+    }
+    if (!_mediaTaskNeedsAuthorizationRefresh(task)) {
+      final resolved = await mediaCandidateForRetry(task);
+      final current = mediaTasks.task(task.id) ?? task;
+      if (task.errorCode == MediaErrorCode.cacheMissing) {
+        await mediaDownloads.delete(task.id, deleteTask: false);
+        return mediaDownloads.startNative(current, resolved);
+      }
+      if (task.state == MediaTaskState.failed &&
+          nativeDownloads != null &&
+          !resolved.isHls) {
+        return mediaDownloads.resumeNative(task.id, resolved);
+      }
+      return mediaDownloads.startNative(current, resolved);
+    }
+    final stored = await db.mediaCandidate(task.candidateId);
+    if (stored == null) {
+      throw StateError('媒体候选已不存在，请返回播放页重新选择媒体');
+    }
+    final result = await refreshMediaAuthorization(task, stored);
+    if (!result.refreshed) throw StateError(_refreshOutcomeReason(result));
+    final rebound = await adoptRefreshedMediaUrl(task, result);
+    return mediaDownloads.resumeNative(task.id, rebound);
+  }
+
+  static bool _mediaTaskNeedsAuthorizationRefresh(MediaTask task) =>
+      task.state == MediaTaskState.reauthorize ||
+      task.errorCode == MediaErrorCode.authorizationRequired;
+
+  /// User-facing wording for an authorization refresh that produced no usable
+  /// address. The three-state vocabulary lives in GLOSSARY.md; #10 turns these
+  /// into the task-row messages and the source-page action.
+  String _refreshOutcomeReason(MediaAuthorizationRefreshResult result) {
+    final reason = result.reason?.trim() ?? '';
+    if (result.requiresPage) {
+      return reason.isNotEmpty ? reason : '需回来源页重新授权媒体';
+    }
+    if (result.waitingExecution) {
+      return reason.isNotEmpty ? reason : '等待系统允许后台授权刷新';
+    }
+    return reason.isNotEmpty ? reason : '授权状态未变化，请返回来源页重新授权';
+  }
+
+  /// Copies [candidate] with only its address replaced.
+  ///
+  /// Every identity bearing field stays as observed, so the rebound candidate
+  /// keeps the same id, host, generation, page and selection and the task's
+  /// cache key survives. [MediaCandidate] has no copyWith by design; the
+  /// identity fields are enumerated here instead.
+  MediaCandidate _mediaCandidateWithUrl(
+    MediaCandidate candidate,
+    Uri mediaUrl,
+  ) => MediaCandidate(
+    id: candidate.id,
+    hostId: candidate.hostId,
+    generation: candidate.generation,
+    sourceUrl: candidate.sourceUrl,
+    mediaUrl: mediaUrl,
+    title: candidate.title,
+    mime: candidate.mime,
+    source: candidate.source,
+    seriesKey: candidate.seriesKey,
+    episodeNumber: candidate.episodeNumber,
+    representationRank: candidate.representationRank,
+    qualityLabel: candidate.qualityLabel,
+    audioLabel: candidate.audioLabel,
+    thumbnailUrl: candidate.thumbnailUrl,
+    durationMs: candidate.durationMs,
+    createdAt: candidate.createdAt,
+    manifestHeaders: candidate.manifestHeaders,
+    resourceHeaders: candidate.resourceHeaders,
+    seriesTitle: candidate.seriesTitle,
+  );
+
+  /// Rebinds [task] to the address the source page itself requested during an
+  /// authorization refresh.
+  ///
+  /// Fails closed at every step: the result must be a successful refresh, the
+  /// address must be an HTTP(S) locator without embedded credentials, it must
+  /// describe the same logical resource as the candidate the task is bound to,
+  /// and it must carry the task's own resource identity. The rebound candidate
+  /// keeps the stored observation's id, host, generation and source page and
+  /// differs only in its address, so the task's cache key and partial bytes
+  /// survive.
+  Future<MediaCandidate> adoptRefreshedMediaUrl(
+    MediaTask task,
+    MediaAuthorizationRefreshResult result,
+  ) async {
+    if (!result.refreshed) throw StateError(_refreshOutcomeReason(result));
+    final raw = result.mediaUrl?.trim() ?? '';
+    if (raw.isEmpty) throw StateError('授权刷新未提供媒体地址，需回来源页重新授权');
+    final mediaUrl = Uri.tryParse(raw);
+    if (mediaUrl == null ||
+        !const {'http', 'https'}.contains(mediaUrl.scheme) ||
+        mediaUrl.host.isEmpty ||
+        mediaUrl.userInfo.isNotEmpty) {
+      throw StateError('授权刷新提供的媒体地址无效，需回来源页重新授权');
+    }
+    final stored = await db.mediaCandidate(task.candidateId);
+    if (stored == null) throw StateError('媒体候选已不存在，请返回来源页重新选择媒体');
+    final next = _mediaCandidateWithUrl(stored, mediaUrl);
+    if (mediaCandidateLogicalIdentity(next) !=
+        mediaCandidateLogicalIdentity(stored)) {
+      throw StateError('授权刷新提供的是另一个媒体资源，需回来源页重新选择媒体');
+    }
+    if (task.resourceKey.isNotEmpty &&
+        mediaResourceKeyForCandidate(next) != task.resourceKey) {
+      throw StateError('授权刷新的媒体资源身份不一致，需回来源页重新选择媒体');
+    }
+    const validator = MediaCandidateValidator();
+    try {
+      validator.validate(
+        next,
+        hostId: stored.hostId,
+        generation: stored.generation,
+        sourceUrl: stored.sourceUrl,
+      );
+    } on Object {
+      throw StateError('授权刷新提供的媒体地址未通过校验，需回来源页重新授权');
+    }
+    await db.saveMediaCandidate(next);
+    final session = hosts.sessions[task.hostId];
+    if (session != null && !session.disposed) {
+      try {
+        hosts.authorizeMediaCandidate(task.hostId, next.id);
+      } on Object {
+        throw StateError('授权刷新提供的媒体地址未通过校验，需回来源页重新授权');
+      }
+    }
+    final adopted = _adoptedMediaUrls.putIfAbsent(task.id, () => <String>{});
+    adopted.add(next.mediaUrl.toString());
+    await mediaTasks.rebindCandidate(
+      task.id,
+      next,
+      allowAuthorizationRefresh: true,
+    );
+    return next;
   }
 
   Future<void> restoreSavedSessions({bool force = false}) async {
