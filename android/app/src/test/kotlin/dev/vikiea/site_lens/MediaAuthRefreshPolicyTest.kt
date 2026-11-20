@@ -271,15 +271,25 @@ class MediaAuthRefreshPolicyTest {
         )
     }
 
-    @Test fun capturedThirdPartyOrTransportRequestDoesNotCountAsACapture() {
-        val settledNoCookie = MediaAuthRefreshPolicy.classify(
-            capturedUrl = "https://third-party-cdn.example/master.m3u8",
+    @Test fun aManifestOnAnotherHostIsStillThePagesOwnAddress() {
+        // The HLS host is reached after the page's own multi-hop resolution and
+        // usually shares no registrable domain with it.
+        val outcome = MediaAuthRefreshPolicy.classify(
+            capturedUrl = "https://yd-lphu-hls.tjyyjk.cn/hls/19140/playlist.m3u8",
             acceptHeader = null,
             pageOrigin = "https://site.example",
             cookieChanged = false,
             pageSettled = true,
         )
-        assertTrue(settledNoCookie is MediaAuthRefreshPolicy.RefreshOutcome.PageRequired)
+        assertEquals(
+            MediaAuthRefreshPolicy.RefreshOutcome.Refreshed(
+                "https://yd-lphu-hls.tjyyjk.cn/hls/19140/playlist.m3u8",
+            ),
+            outcome,
+        )
+    }
+
+    @Test fun transportRequestsAreNotCaptures() {
 
         val settledCookie = MediaAuthRefreshPolicy.classify(
             capturedUrl = "https://site.example/seg-1.ts",
@@ -410,13 +420,39 @@ class MediaAuthRefreshPolicyTest {
         assertTrue(assigned.isEmpty())
     }
 
-    @Test fun captureFromAnotherSiteNeverSatisfiesARequest() {
+    @Test fun captureOnAnUnrelatedHostStillReachesItsOwner() {
+        // A play address is resolved by the page through several hops and
+        // routinely lives on another registrable domain, so the capture's host
+        // says nothing about ownership; the address is what both sides know.
         val requests = listOf(
-            request("ep1", "show/episode-1", pageUrl = "https://site.example/watch?episode=1"),
+            request(
+                "ep1",
+                "show/episode-1",
+                pageUrl = "https://site.example/watch?episode=1",
+                mediaUrl = "https://yd-lphu-hls.tjyyjk.cn/hls/19140/playlist.m3u8?sign=STALE",
+            ),
         )
         val captured = listOf(
             MediaAuthRefreshPolicy.CapturedPlaylist(
-                url = "https://third-party-cdn.example/ep1.m3u8",
+                url = "https://yd-lphu-hls.tjyyjk.cn/hls/19140/playlist.m3u8?sign=FRESH",
+                pageUrl = "https://site.example/watch?episode=1",
+            ),
+        )
+
+        assertEquals(
+            mapOf(
+                "ep1" to
+                    "https://yd-lphu-hls.tjyyjk.cn/hls/19140/playlist.m3u8?sign=FRESH",
+            ),
+            MediaAuthRefreshPolicy.assignCapture(captured, requests),
+        )
+    }
+
+    @Test fun aCaptureOnAnotherPathIsNotTheRequestsOwnAddress() {
+        val requests = listOf(request("ep1", "show/episode-1"))
+        val captured = listOf(
+            MediaAuthRefreshPolicy.CapturedPlaylist(
+                url = "https://site.example/other-show/episode.m3u8",
                 pageUrl = "https://site.example/watch?episode=1",
             ),
         )
@@ -424,12 +460,62 @@ class MediaAuthRefreshPolicyTest {
         assertTrue(MediaAuthRefreshPolicy.assignCapture(captured, requests).isEmpty())
     }
 
-    @Test fun aCaptureMustAlsoAgreeWithThePageThatAskedForIt() {
-        val requests = listOf(request("ep1", "show/episode-1"))
+    @Test fun thePagesOwnSpellingOfItsAddressStillOwnsTheCapture() {
+        // The page decides where its manifest lives: the recorded address sat
+        // in one subdirectory of the episode, the refreshed load serves it from
+        // another. Both are the same episode, so the task keeps ownership.
+        val requests = listOf(
+            request(
+                "ep2",
+                "show/episode-2",
+                mediaUrl = "https://site.example/11987/ep-2/index.m3u8",
+            ),
+        )
         val captured = listOf(
             MediaAuthRefreshPolicy.CapturedPlaylist(
-                url = "https://site.example/ep1.m3u8",
-                pageUrl = "https://other.example/watch?episode=1",
+                url = "https://site.example/11987/ep-2/index.m3u8?v=2",
+                pageUrl = "https://site.example/video/11987/ep-2/",
+            ),
+        )
+
+        assertEquals(
+            mapOf("ep2" to "https://site.example/11987/ep-2/index.m3u8?v=2"),
+            MediaAuthRefreshPolicy.assignCapture(captured, requests),
+        )
+    }
+
+    @Test fun theSameManifestOnAnotherHostIsNotTheRequestsOwnAddress() {
+        // Different host means different resource: a same-path deck on another
+        // origin is never adopted, even when the path looks familiar.
+        val requests = listOf(
+            request(
+                "ep2",
+                "show/episode-2",
+                mediaUrl = "http://page.example/media/553877/1/index.m3u8",
+            ),
+        )
+        val captured = listOf(
+            MediaAuthRefreshPolicy.CapturedPlaylist(
+                url = "https://other.example/media/553877/1/index.m3u8?token=FRESH",
+                pageUrl = "http://page.example/video/553877/1",
+            ),
+        )
+
+        assertTrue(MediaAuthRefreshPolicy.assignCapture(captured, requests).isEmpty())
+    }
+
+    @Test fun aSiblingEpisodeIsNeverClaimedByAPathExtension() {
+        val requests = listOf(
+            request(
+                "ep2",
+                "show/episode-2",
+                mediaUrl = "https://site.example/11987/ep-2/index.m3u8",
+            ),
+        )
+        val captured = listOf(
+            MediaAuthRefreshPolicy.CapturedPlaylist(
+                url = "https://site.example/11987/ep-20/master.m3u8",
+                pageUrl = "https://site.example/video/11987/ep-20/",
             ),
         )
 

@@ -239,7 +239,7 @@ void main() {
       await app.load();
     });
 
-    test('a page-required task reports 需回播放页 and starts nothing', () async {
+    test('a page-required task reports 需回来源页 and starts nothing', () async {
       final stored = _candidate(
         id: 'cand-page',
         sourceUrl: 'https://site.example/watch/1',
@@ -307,7 +307,7 @@ void main() {
     });
 
     test(
-      'a refresh whose address cannot be adopted degrades to 需回播放页',
+      'a refresh whose address cannot be adopted degrades to 需回来源页',
       () async {
         final stored = _candidate(
           id: 'cand-empty',
@@ -328,6 +328,36 @@ void main() {
         expect(app.mediaTasks.task(task.id)!.state, MediaTaskState.reauthorize);
       },
     );
+
+    test('a refreshed address stands even when the page moved on to another address', () async {
+      // The page now plays a later episode, so its own candidate is a
+      // different resource. The refresh already proved this task's address,
+      // so the live tab cannot turn that into 需回来源页.
+      final stored = _candidate(
+        id: 'cand-moved-on',
+        sourceUrl: 'https://site.example/watch/1',
+        mediaUrl: 'https://cdn.example/index.m3u8?token=old',
+      );
+      final task = await pageRequiredTask(stored);
+      final live = _candidate(
+        id: 'cand-later-episode',
+        sourceUrl: 'https://site.example/watch/2',
+        mediaUrl: 'https://cdn.example/later.m3u8?token=old',
+      );
+      await app.db.saveMediaCandidate(live);
+      bridge.answer = (value) => const MediaAuthorizationRefreshResult(
+        state: 'refreshed',
+        mediaUrl: 'https://cdn.example/index.m3u8?token=fresh',
+      );
+
+      final outcome = await app.retryMediaTaskResult(task);
+
+      expect(outcome.kind, MediaRetryOutcomeKind.resumed);
+      expect(
+        (await app.db.mediaCandidate(stored.id))!.mediaUrl,
+        Uri.parse('https://cdn.example/index.m3u8?token=fresh'),
+      );
+    });
 
     test('a refreshed outcome keeps the existing retry toast', () async {
       final stored = _candidate(
@@ -452,7 +482,7 @@ void main() {
             )
           : const MediaAuthorizationRefreshResult(
               state: 'reauthorize',
-              reason: '页面没有为这一集请求主清单，需回播放页重新选择',
+              reason: '页面没有为这一集请求主清单，需回来源页重新选择',
             );
 
       final outcomes = await app.retryMediaTasks(tasks);
@@ -520,7 +550,11 @@ void main() {
     });
 
     /// A widget host, because the entry reports refusals on screen.
-    Future<void> pumpHost(WidgetTester tester) async {
+    Future<void> pumpHost(
+      WidgetTester tester, {
+      required String taskId,
+      String sourceUrl = 'https://other.example/watch/9',
+    }) async {
       tester.view.physicalSize = const Size(1080, 2400);
       tester.view.devicePixelRatio = 3;
       addTearDown(tester.view.reset);
@@ -532,8 +566,8 @@ void main() {
                 onPressed: () => lastOpened = openMediaTaskSourcePage(
                   context,
                   app,
-                  taskId: 'entry-task',
-                  sourceUrl: Uri.parse('https://other.example/watch/9'),
+                  taskId: taskId,
+                  sourceUrl: Uri.parse(sourceUrl),
                 ),
                 child: const Text('open'),
               ),
@@ -543,7 +577,11 @@ void main() {
       );
     }
 
-    Future<MediaTask> storeTask(WidgetTester tester) async =>
+    /// Stores a task and returns the id the store actually keeps it under.
+    ///
+    /// A row identity is derived from the candidate, so it is read back rather
+    /// than assumed: the entry looks the task up by id.
+    Future<String> storeTask(WidgetTester tester) async =>
         (await tester.runAsync(() async {
           final candidate = _candidate(
             id: 'cand-entry',
@@ -551,14 +589,56 @@ void main() {
             mediaUrl: 'https://cdn.example/index.m3u8?token=old',
           );
           await db.saveMediaCandidate(candidate);
-          return app.mediaTasks.create(candidate);
+          return (await app.mediaTasks.create(candidate)).id;
         }))!;
+
+    test('a source page whose media sits on another site still belongs to its task', () {
+      // The play address is resolved by the page itself through several hops
+      // and lands on its own HLS host; that never makes the recorded page
+      // someone else's. The entry's gate is covered here, without the browser
+      // route, which needs a live host contract of its own.
+      final candidate = _candidate(
+        id: 'cand-recorded',
+        sourceUrl: 'https://1bb4a2.ipycpknh.cc/video/11987/ep-2/',
+        mediaUrl:
+            'https://yd-lphu-hls.tjyyjk.cn/hls/19140/playlist.m3u8?sign=old',
+      );
+      final task = MediaTask(
+        id: 'media-recorded',
+        candidateId: candidate.id,
+        hostId: candidate.hostId,
+        generation: candidate.generation,
+        sourceUrl: candidate.sourceUrl,
+        cacheKey: 'cache-recorded',
+        state: MediaTaskState.reauthorize,
+        updatedAt: DateTime.now().toUtc(),
+      );
+
+      expect(
+        sourcePageBelongsToTask(
+          task,
+          Uri.parse('https://1bb4a2.ipycpknh.cc/video/11987/ep-2/'),
+        ),
+        isTrue,
+      );
+      expect(
+        sourcePageBelongsToTask(
+          task,
+          Uri.parse('https://elsewhere.example/video/11987/ep-2/'),
+        ),
+        isFalse,
+      );
+      expect(
+        sourcePageBelongsToTask(null, Uri.parse('https://a.example/')),
+        isFalse,
+      );
+    });
 
     testWidgets('a cross-origin source page is refused and opens nothing', (
       tester,
     ) async {
-      await storeTask(tester);
-      await pumpHost(tester);
+      final taskId = await storeTask(tester);
+      await pumpHost(tester, taskId: taskId);
 
       await tester.tap(find.text('open'));
       await tester.pumpAndSettle();
@@ -571,7 +651,7 @@ void main() {
       );
       expect(app.browserTabs, isEmpty, reason: 'no tab was opened');
       expect(app.activeBrowser, isNull);
-      expect(find.text('来源页与任务所在站点不一致，已停止打开'), findsOneWidget);
+      expect(find.text('该来源页不属于这个任务，已停止打开'), findsOneWidget);
     });
   });
 }

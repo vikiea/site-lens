@@ -209,17 +209,17 @@ class NativeMediaAuthRefreshService : Service() {
         }
         val requestsByIdentity = listOf(refreshRequest.identity())
         view.webViewClient = object : WebViewClient() {
+            /**
+             * The page may redirect wherever it likes — a layout redirect, a
+             * host shim, an episode rewritten to its canonical spelling. Only
+             * whether the page asks for a main playlist matters, so a
+             * navigation is never a verdict on its own.
+             */
             override fun onPageStarted(
                 view: WebView,
                 url: String,
                 favicon: android.graphics.Bitmap?,
-            ) {
-                val current = parseHttp(url)
-                if (current == null || origin(current) != pageOrigin) {
-                    finish(token, refreshRequest.callback, result("reauthorize", "授权页面来源已变化"))
-                    view.stopLoading()
-                }
-            }
+            ) = Unit
 
             /**
              * Runs on a WebView background thread: every state change is posted
@@ -230,23 +230,11 @@ class NativeMediaAuthRefreshService : Service() {
                 request: WebResourceRequest,
             ): WebResourceResponse? {
                 val raw = request.url.toString()
-                if (request.isForMainFrame) {
-                    val next = parseHttp(raw)
-                    if (next == null || origin(next) != pageOrigin) {
-                        main.post {
-                            finish(token, refreshRequest.callback, result("reauthorize", "页面尝试跨站跳转"))
-                        }
-                        return WebResourceResponse(
-                            "text/plain",
-                            "UTF-8",
-                            ByteArrayInputStream(ByteArray(0)),
-                        )
-                    }
-                    return super.shouldInterceptRequest(view, request)
-                }
+                // A navigation carries no media address, whatever host it
+                // names; only subresource requests are candidates.
+                if (request.isForMainFrame) return super.shouldInterceptRequest(view, request)
                 val accept = runCatching { request.requestHeaders?.get("Accept") }.getOrNull()
-                val isCandidate = MediaAuthRefreshPolicy.isMainPlaylist(raw, accept) &&
-                    MediaAuthRefreshPolicy.isSameSessionOrigin(pageOrigin, raw)
+                val isCandidate = MediaAuthRefreshPolicy.isMainPlaylist(raw, accept)
                 if (!isCandidate) return super.shouldInterceptRequest(view, request)
                 val diagnostic = MediaAuthRefreshPolicy.hasUnknownQuery(raw)
                 main.post {
@@ -255,21 +243,10 @@ class NativeMediaAuthRefreshService : Service() {
                 return super.shouldInterceptRequest(view, request)
             }
 
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                val next = parseHttp(request.url.toString())
-                if (next == null || origin(next) != pageOrigin) {
-                    finish(token, refreshRequest.callback, result("reauthorize", "页面尝试跨站跳转"))
-                    return true
-                }
-                return false
-            }
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
+                false
 
             override fun onPageFinished(view: WebView, url: String) {
-                val current = parseHttp(url)
-                if (current == null || origin(current) != pageOrigin) {
-                    finish(token, refreshRequest.callback, result("reauthorize", "授权页面来源已变化"))
-                    return
-                }
                 val title = (view.title ?: "").lowercase()
                 val challenge = title.contains("captcha") || title.contains("验证") ||
                     title.contains("登录") || title.contains("login") ||
