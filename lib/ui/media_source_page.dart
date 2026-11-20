@@ -19,10 +19,11 @@ const mediaTaskSourcePageActionLabel = '打开来源页';
 /// again, so the page is the natural next stop. Two rules keep the entry from
 /// turning into a general navigation hatch:
 ///
-/// * the page must belong to the same site as the task's own page, and both
-///   must agree with the site the task itself is bound to — the bound media
-///   candidate and the live host session are the references, so a request that
-///   names someone else's page is refused outright;
+/// * the page must be the one the task records, and it may only be asked for
+///   by an existing task — the recorded address is the reference, because a
+///   task's play address is resolved by the page through several hops and
+///   routinely lives on another site, so the media's host says nothing about
+///   which page is the task's;
 /// * the visit goes through the same tab path as every other entry, so an
 ///   already open tab for that page is reused and activated instead of a
 ///   duplicate appearing.
@@ -42,8 +43,8 @@ Future<bool> openMediaTaskSourcePage(
     _refuse(context, '该任务没有可打开的来源页');
     return false;
   }
-  if (!await _sourcePageMatchesTask(app, taskId, task, page)) {
-    if (context.mounted) _refuse(context, '来源页与任务所在站点不一致，已停止打开');
+  if (!sourcePageBelongsToTask(task, page)) {
+    if (context.mounted) _refuse(context, '该来源页不属于这个任务，已停止打开');
     return false;
   }
   if (!context.mounted) return false;
@@ -72,42 +73,19 @@ Future<bool> openMediaTaskSourcePage(
   return shown && app.browserTabs.contains(app.activeBrowser);
 }
 
-/// Whether [page] is the source site [taskId] is actually bound to.
+/// Whether [page] is the page [task] records as its 来源页.
 ///
-/// The reference comes from the task's own bindings, never from the request:
-/// the bound media candidate is the observation the task downloads, and the
-/// live host session is the page currently loaded for it. Either one
-/// disagreeing with [page] is a refusal; a task with neither reference has
-/// nothing to compare against and cannot vouch for [page] either.
-Future<bool> _sourcePageMatchesTask(
-  AppController app,
-  String taskId,
-  MediaTask? task,
-  Uri page,
-) async {
+/// Exposed so the entry's gate can be exercised without a browser.
+///
+/// The recorded source page is the only reference: the media address is
+/// resolved by the page itself and may sit on any host, so comparing the two
+/// would refuse the normal case. A task without a recorded page has nothing to
+/// vouch for [page] and is refused instead.
+bool sourcePageBelongsToTask(MediaTask? task, Uri page) {
   if (task == null) return false;
-  final candidate = await app.db.mediaCandidate(task.candidateId);
-  if (candidate == null) return false;
-  // The bound candidate is the observation the task downloads, so its page and
-  // its media are the reference pair the request has to match.
-  if (!sameWebOrigin(page, webSourcePageUrl(candidate.sourceUrl))) return false;
-  if (!sameWebOrigin(page, candidate.mediaUrl)) return false;
-  final references = <Uri>[
-    // The task's own stored page.
-    ?webSourcePageUrl(task.sourceUrl),
-    // The page currently loaded in the task's host, when it is still alive.
-    ?_sessionUrl(app, task.hostId),
-  ];
-  // A task with no live host and no stored page has nothing beyond the
-  // candidate to compare against, and the candidate already matched.
-  if (references.isEmpty) return true;
-  return references.any((reference) => sameWebOrigin(reference, page));
-}
-
-Uri? _sessionUrl(AppController app, int hostId) {
-  final session = app.hosts.sessions[hostId];
-  if (session == null || session.disposed) return null;
-  return webSourcePageUrl(session.url);
+  final recorded = webSourcePageUrl(task.sourceUrl);
+  if (recorded == null) return false;
+  return sameWebOrigin(recorded, page);
 }
 
 void _refuse(BuildContext context, String message) {

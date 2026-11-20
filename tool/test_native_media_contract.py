@@ -196,7 +196,7 @@ class NativeMediaContractTests(unittest.TestCase):
         for token in (
             'view.settings.javaScriptEnabled = true',
             'override fun shouldOverrideUrlLoading',
-            'origin(next) != pageOrigin',
+            'override fun onPageStarted',
             'onCreateWindow',
             'setSupportMultipleWindows(false)',
             '"waiting_execution"',
@@ -225,7 +225,6 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn('override fun shouldInterceptRequest', AUTH_REFRESH)
         for token in (
             'MediaAuthRefreshPolicy.isMainPlaylist',
-            'MediaAuthRefreshPolicy.isSameSessionOrigin',
             'MediaAuthRefreshPolicy.classify',
             'MediaAuthRefreshPolicy.finishBatch',
             'MediaAuthRefreshPolicy.groupByOrigin',
@@ -243,6 +242,13 @@ class NativeMediaContractTests(unittest.TestCase):
         # The address is returned to the caller under its own key.
         self.assertIn('put("mediaUrl", mediaUrl)', AUTH_REFRESH)
         self.assertIn('put("logicalIdentity", request.logicalIdentity)', AUTH_REFRESH)
+        # A play address is not on the page's site, so neither the capture nor
+        # the page load may be gated on origin: redirects and cross-site
+        # manifests are normal.
+        self.assertNotIn('页面尝试跨站跳转', AUTH_REFRESH)
+        self.assertNotIn('授权页面来源已变化', AUTH_REFRESH)
+        self.assertIn('if (request.isForMainFrame) return super.shouldInterceptRequest(view, request)', AUTH_REFRESH)
+        self.assertNotIn('isSameSessionOrigin(pageOrigin, raw)', AUTH_REFRESH)
         # The query allowlist moved into the policy object and is never a gate.
         self.assertIn('fun hasUnknownQuery(url: String): Boolean', POLICY)
         self.assertNotIn('NON_AUTH_MEDIA_QUERY_KEYS', AUTH_REFRESH)

@@ -24,13 +24,17 @@ A media address expires with the page that authorized it, so a retry cannot simp
 
 - **授权刷新 (authorization refresh)**: the page handed over its own main playlist address, which replaces the stored one; the task resumes. Cookies stay in the platform layer, and the address is never written to a log line.
 - **授权未变化 (unchanged)**: the page loaded and changed nothing observable, so retrying the same page cannot help. The task keeps its state.
-- **需回播放页 (page reauthorization required)**: no usable address was obtained; the user has to return to the 来源页 and pick the media again. The task keeps its state.
+- **需回来源页 (page reauthorization required)**: no usable address was obtained; the user has to return to the 来源页 and pick the media again. The task keeps its state.
 
-The three outcomes are the vocabulary the UI uses; free-form instructions say 来源页, never 播放页. A refresh that reports success but whose address cannot be adopted degrades to 需回播放页 rather than 授权未变化, because the page did answer and only its hand-over failed.
+The three outcomes are the vocabulary the UI uses; free-form instructions say 来源页, never 播放页. A refresh that reports success but whose address cannot be adopted degrades to 需回来源页 rather than 授权未变化, because the page did answer and only its hand-over failed.
 
-Ownership rules are fail-closed. An adopted address must be HTTP(S), carry no embedded credentials, pass media candidacy validation, and replace the same resource for the same task; a capture is attributed to the task whose own address it replaces, never to a task identity supplied by a caller. Tasks that share one 来源页 are refreshed in one page load, and each of them receives only its own address.
+A play address is resolved by the page through several hops and routinely lives on another registrable domain, so nothing about the capture path is gated on the page's site: any main playlist the loaded page itself asks for is its address, wherever it is served. That also means the page load is never vetoed — a layout redirect, a host shim, or a canonical rewrite of the episode URL is normal navigation.
 
-The 来源页 entry in a task's menu opens that page in the app's browser tab, reusing an existing tab. It refuses a page whose site disagrees with the task's own binding, and it reports success only when the browser is actually showing the page. Persistent outcomes such as 需回播放页 or 授权未变化 are shown on the page's shared notice surface with the 打开来源页 action; a resumed transfer stays a short confirmation.
+Ownership rules are fail-closed. An adopted address must be HTTP(S), carry no embedded credentials, pass media candidacy validation, and replace the same resource for the same task: same scheme, host and port, with the path equal or an extension of the other's directory (the page decides its own spelling), and the query treated as the part a refresh replaces. A capture is attributed to the task whose own address it replaces, never to a task identity supplied by a caller, and one address never serves two tasks. Tasks that share one 来源页 are refreshed in one page load, and each of them receives only its own address.
+
+A successful refresh is authoritative. The address it produced has already passed every gate above, so a live tab that has since moved to another generation or another episode cannot veto it — otherwise a refresh that worked would still report 需回来源页.
+
+The 来源页 entry in a task's menu opens that page in the app's browser tab, reusing an existing tab. It opens exactly the page the task records and refuses any page the task cannot vouch for, and it reports success only when the browser is actually showing the page. Persistent outcomes such as 需回来源页 or 授权未变化 are shown on the page's shared notice surface with the 打开来源页 action; a resumed transfer stays a short confirmation.
 
 The batch refresh is part of the `site_lens/media_auth` platform protocol: the channel accepts `refresh` for one task and `refreshBatch` for many, both speaking the same field layout, and answers every request exactly once.
 

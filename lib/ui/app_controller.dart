@@ -2270,7 +2270,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       } on StateError catch (error) {
         // The refresh reported success, so the page did answer; an address
         // that cannot be adopted is the page's own hand-over failing, which the
-        // glossary calls 需回播放页, not "授权未变化".
+        // glossary calls 需回来源页, not "授权未变化".
         outcomes.add(
           MediaRetryOutcome(
             taskId: task.id,
@@ -2311,7 +2311,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     } on StateError catch (error) {
       // The refresh did report success; only the adoption failed. Nothing is
       // adopted and no state is touched, and the outcome degrades to
-      // 需回播放页 because retrying the same refresh cannot help.
+      // 需回来源页 because retrying the same refresh cannot help.
       return Future.error(
         _MediaRefreshFailure(
           null,
@@ -2453,12 +2453,18 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       throw StateError('授权刷新提供的媒体地址未通过校验，需回来源页重新授权');
     }
     await db.saveMediaCandidate(next);
+    // The refresh has already proved the address: the page that owns the task
+    // asked for it and it passed every identity gate above. A live tab is only
+    // a convenience — its host may have moved on to a later generation, or be
+    // showing a different episode by now — so a refusal there is recorded and
+    // the adopted address still stands. Turning a successful refresh into
+    // 需回来源页 here is exactly the "刷新成功却还要求授权" symptom.
     final session = hosts.sessions[task.hostId];
     if (session != null && !session.disposed) {
       try {
         hosts.authorizeMediaCandidate(task.hostId, next.id);
       } on Object {
-        throw StateError('授权刷新提供的媒体地址未通过校验，需回来源页重新授权');
+        // Nothing to adopt from the tab; the address below is the authority.
       }
     }
     _adoptedMediaUrls[task.id] = next.mediaUrl.toString();

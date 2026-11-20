@@ -252,9 +252,12 @@ internal object MediaAuthRefreshPolicy {
         cookieChanged: Boolean,
         pageSettled: Boolean,
     ): RefreshOutcome? {
+        // Any main playlist the page itself asks for is its address, whatever
+        // host serves it: plays routinely live on another registrable domain
+        // (a HLS host, a CDN, a signed edge) reached after the page's own
+        // multi-hop resolution, so the page's site says nothing about it.
         if (!capturedUrl.isNullOrBlank() &&
-            isMainPlaylist(capturedUrl, acceptHeader) &&
-            isSameSessionOrigin(pageOrigin, capturedUrl)
+            isMainPlaylist(capturedUrl, acceptHeader)
         ) {
             return RefreshOutcome.Refreshed(capturedUrl)
         }
@@ -272,12 +275,13 @@ internal object MediaAuthRefreshPolicy {
      * A capture is the page's request, so it cannot name the task it belongs
      * to; the address is the only thing both sides know. Ownership is decided
      * without any trust in a caller-supplied probe:
-     * - a capture is dropped unless its address is a main playlist on the
-     *   capture's own site ([isSameSessionOrigin]);
-     * - the owning request must have been asked for that page
-     *   ([isSameSessionOrigin] against the request's page) and must describe the
-     *   same resource: the same scheme, host, port and path, with the query
-     *   treated as the part a refresh replaces ([sameMediaAddress]);
+     * - a capture is dropped unless its address is a main playlist; the page's
+     *   own site is deliberately not consulted, because a play address is
+     *   routinely served from another registrable domain;
+     * - the owning request must describe the same resource: the same scheme,
+     *   host and port, with the query treated as the part a refresh replaces
+     *   and the path matched exactly or as a directory-prefix extension
+     *   ([sameMediaAddress]);
      * - when several requests claim one address, the tie is broken only by the
      *   resource identity both sides can derive from the address itself — never
      *   by a caller-supplied probe string;
@@ -296,10 +300,8 @@ internal object MediaAuthRefreshPolicy {
             val url = capture.url.trim()
             if (url.isEmpty() || !claimed.add(url)) continue
             if (!isMainPlaylist(url, null)) continue
-            if (!isSameSessionOrigin(capture.pageUrl, url)) continue
             val owners = requests.filter { request ->
                 request.taskId !in assignment &&
-                    isSameSessionOrigin(request.pageUrl, url) &&
                     sameMediaAddress(request.mediaUrl, url)
             }
             if (owners.isEmpty()) continue
@@ -321,10 +323,12 @@ internal object MediaAuthRefreshPolicy {
      *
      * The query is part of the identity: a playlist address usually carries a
      * signature or an expiry, and that is exactly what a refresh replaces. So
-     * equality is on scheme, host, port and path; the query only has to agree
-     * on the keys it keeps, and the fresh signature is adopted from the
-     * capture. Anything else (a different path, a different host) is another
-     * resource and never replaces the request's own address.
+     * equality is on scheme, host and port; the query only has to agree on the
+     * keys it keeps, and the fresh signature is adopted from the capture.
+     * The path either matches or is a directory-prefix extension of the other,
+     * because the page decides its own spelling. Anything else (a different
+     * host, an unrelated path) is another resource and never replaces the
+     * request's own address.
      */
     internal fun sameMediaAddress(mediaUrl: String, url: String): Boolean {
         val left = runCatching { URI(mediaUrl.trim()) }.getOrNull() ?: return false
@@ -332,7 +336,22 @@ internal object MediaAuthRefreshPolicy {
         if (!left.scheme.equals(right.scheme, ignoreCase = true)) return false
         if (!left.host.equals(right.host, ignoreCase = true)) return false
         if (effectivePort(left) != effectivePort(right)) return false
-        return left.rawPath.orEmpty() == right.rawPath.orEmpty()
+        val leftPath = left.rawPath.orEmpty()
+        val rightPath = right.rawPath.orEmpty()
+        if (leftPath == rightPath) return true
+        // The page owns its own location: a refreshed load may settle on the
+        // same episode's canonical spelling (a `/ep-2/` page served as
+        // `?ep=2`, or the reverse) and the manifest follows the page, not the
+        // spelling the task was recorded with. Only a prefix relation counts,
+        // so one episode never claims another's address.
+        return pathPrefix(leftPath, rightPath) || pathPrefix(rightPath, leftPath)
+    }
+
+    /** True when one manifest path extends the other without changing directory. */
+    private fun pathPrefix(shorter: String, longer: String): Boolean {
+        if (shorter.length < 2) return true
+        val prefix = if (shorter.endsWith("/")) shorter else "$shorter/"
+        return longer.startsWith(prefix)
     }
 
     private fun logicalIdentityOf(url: String): String {

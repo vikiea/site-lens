@@ -3883,7 +3883,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   String? _startupError;
 
   /// The last retry outcome that still needs the 来源页, kept on the page
-  /// instead of in a snack bar: 需回播放页 and 授权未变化 are states the user
+  /// instead of in a snack bar: 需回来源页 and 授权未变化 are states the user
   /// has to act on later, and a transient bar disappears before they can.
   MediaRetryOutcome? _retryNotice;
   final _retryNoticeKey = GlobalKey();

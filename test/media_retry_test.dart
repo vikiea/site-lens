@@ -441,14 +441,14 @@ void main() {
       final h = await pageRequired(
         (task, candidate) => const MediaAuthorizationRefreshResult(
           state: 'reauthorize',
-          reason: '需回播放页重新授权媒体',
+          reason: '需回来源页重新授权媒体',
         ),
       );
 
       final outcome = await h.app.retryMediaTaskResult(h.task);
 
       expect(outcome.kind, MediaRetryOutcomeKind.requiresPage);
-      expect(outcome.message, '需回播放页重新授权媒体');
+      expect(outcome.message, '需回来源页重新授权媒体');
       expect(outcome.offersSourcePage, isTrue);
       expect(
         h.app.mediaTasks.task(h.task.id)!.state,
@@ -475,7 +475,7 @@ void main() {
       expect(outcome.message, '系统暂不允许后台授权刷新');
     });
 
-    test('a refresh without an address degrades to 需回播放页', () async {
+    test('a refresh without an address degrades to 需回来源页', () async {
       final h = await pageRequired(
         (task, candidate) =>
             const MediaAuthorizationRefreshResult(state: 'refreshed'),
