@@ -73,7 +73,7 @@ class WatchSaveStore extends ChangeNotifier {
     }
     await restore();
     if (_disposed || isCurrent?.call() == false) {
-      _recordFailure('播放页面已切换，已忽略陈旧播放事件');
+      _recordFailure('来源页面已切换，已忽略陈旧播放事件');
       return null;
     }
     final next = WatchSave.fromEvidence(evidence, profileId: profileId);

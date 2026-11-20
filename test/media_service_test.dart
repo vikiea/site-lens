@@ -2854,7 +2854,7 @@ void main() {
       final failed = store.task(task.id)!;
       expect(failed.state, MediaTaskState.reauthorize);
       expect(failed.errorCode, MediaErrorCode.authorizationRequired);
-      expect(failed.errorReason, contains('返回播放页'));
+      expect(failed.errorReason, contains('返回来源页'));
     },
   );
 

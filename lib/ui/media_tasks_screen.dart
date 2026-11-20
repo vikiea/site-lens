@@ -10,6 +10,7 @@ import 'package:path/path.dart' as p;
 import '../diagnostics/error_log.dart';
 import '../domain/models.dart';
 import '../domain/media_artifact_identity.dart';
+import '../domain/web_page_origin.dart';
 import '../media/media_service.dart';
 import '../media/media_library.dart';
 import '../media/media_organization.dart';
@@ -28,6 +29,7 @@ import 'app_theme.dart';
 import 'player_gestures_screen.dart';
 import 'navigation_observer.dart';
 import 'media_browser.dart';
+import 'media_source_page.dart';
 
 enum _VideoFitMode { contain, cover, fill }
 
@@ -3879,6 +3881,12 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   }
 
   String? _startupError;
+
+  /// The last retry outcome that still needs the 来源页, kept on the page
+  /// instead of in a snack bar: 需回播放页 and 授权未变化 are states the user
+  /// has to act on later, and a transient bar disappears before they can.
+  MediaRetryOutcome? _retryNotice;
+  final _retryNoticeKey = GlobalKey();
   Future<void> _syncOrganization() async {
     try {
       await widget.app.mediaTasks.ready;
@@ -4202,42 +4210,129 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _retry(MediaTask task, {bool notify = true}) async {
-    final resolved = await widget.app.mediaCandidateForRetry(task);
-    final currentTask = widget.app.mediaTasks.task(task.id) ?? task;
-    if (task.state == MediaTaskState.paused) {
-      await _togglePause(task);
-    } else if (task.state == MediaTaskState.reauthorize) {
-      final refresh = await widget.app.refreshMediaAuthorization(
-        task,
-        resolved,
-      );
-      if (!refresh.refreshed) {
-        throw StateError(
-          refresh.reason ??
-              (refresh.waitingExecution ? '等待系统允许后台授权刷新' : '需要人工重新授权'),
-        );
-      }
-      final rebound = await widget.app.mediaCandidateForRetry(task);
-      await widget.app.mediaDownloads.resumeNative(task.id, rebound);
-    } else if (task.errorCode == MediaErrorCode.cacheMissing) {
-      await widget.app.mediaDownloads.delete(task.id, deleteTask: false);
-      await widget.app.mediaDownloads.startNative(
-        widget.app.mediaTasks.task(task.id)!,
-        resolved,
-      );
-    } else if (task.state == MediaTaskState.failed &&
-        widget.app.nativeDownloads != null &&
-        !resolved.isHls) {
-      await widget.app.mediaDownloads.resumeNative(task.id, resolved);
-    } else {
-      await widget.app.mediaDownloads.startNative(currentTask, resolved);
-    }
-    if (mounted && notify) {
-      showShortToast(context, '已开始续传');
+  /// Retries one task and reports which of the three refresh states it hit.
+  ///
+  /// A page-required task may have outlived its source tab, so the refresh has
+  /// to run before any live-candidate lookup; the controller owns that order.
+  /// The outcome decides the wording: only a resumed transfer is a success, and
+  /// the two states that need the page again carry the 打开来源页 action.
+  Future<MediaRetryOutcome> _retry(MediaTask task, {bool notify = true}) async {
+    final outcome = await widget.app.retryMediaTaskResult(task);
+    if (mounted) {
+      if (notify) _showRetryOutcome(outcome, task: task);
       setState(() {});
     }
+    return outcome;
   }
+
+  /// Reports [outcome] on the surface that matches its lifetime.
+  ///
+  /// A resumed transfer is a confirmation and stays a short toast. The states
+  /// that need the source page are persistent feedback: they go to the shared
+  /// notice surface with the 打开来源页 action, where they stay readable until
+  /// the user acts on them or dismisses them.
+  void _showRetryOutcome(MediaRetryOutcome outcome, {MediaTask? task}) {
+    if (!outcome.offersSourcePage) {
+      if (mounted) setState(() => _retryNotice = null);
+      showShortToast(context, outcome.message);
+      return;
+    }
+    if (mounted) {
+      setState(() => _retryNotice = outcome);
+      _scrollToRetryNotice();
+    }
+  }
+
+  /// Brings the persistent retry notice into view.
+  ///
+  /// The notice sits above the list, so a retry started from a row far down the
+  /// page would otherwise leave the user reading a row that did not change.
+  void _scrollToRetryNotice() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final context = _retryNoticeKey.currentContext;
+      if (context == null || !mounted) return;
+      Scrollable.ensureVisible(
+        context,
+        duration: const Duration(milliseconds: 200),
+        alignment: 0.1,
+      );
+    });
+  }
+
+  /// The kept retry notice, if any, as the shared notice surface.
+  Widget _retryNoticeBanner() {
+    final outcome = _retryNotice;
+    if (outcome == null) return const SizedBox.shrink();
+    final sourceUrl = webSourcePageUrl(
+      widget.app.mediaTasks.task(outcome.taskId)?.sourceUrl,
+    );
+    return Padding(
+      key: _retryNoticeKey,
+      padding: const EdgeInsets.fromLTRB(
+        SiteLensMetrics.pagePadding,
+        12,
+        SiteLensMetrics.pagePadding,
+        0,
+      ),
+      child: SiteLensErrorBanner(
+        text: outcome.message,
+        onDismiss: () => setState(() => _retryNotice = null),
+        action: sourceUrl == null
+            ? null
+            : TextButton(
+                onPressed: () => unawaited(
+                  openMediaTaskSourcePage(
+                    context,
+                    widget.app,
+                    taskId: outcome.taskId,
+                    sourceUrl: sourceUrl,
+                  ),
+                ),
+                child: const Text(mediaTaskSourcePageActionLabel),
+              ),
+      ),
+    );
+  }
+
+  /// Reports every batch retry outcome the same way a single retry is
+  /// reported: one success confirmation for the batch, and one persistent
+  /// notice per task that still needs its 来源页, in task order.
+  ///
+  /// The old code discarded the per-task outcomes and only spoke when *all* of
+  /// them failed, so a mixed batch said nothing about the rows that need the
+  /// page. Only the first notice is kept on the page; the toast names the rest
+  /// so the user knows how many tasks are waiting.
+  void _reportBatchRetry(List<MediaRetryOutcome> outcomes) {
+    if (outcomes.isEmpty) return;
+    final resumed = outcomes.where((outcome) => outcome.resumed).length;
+    final needingPage = [
+      for (final outcome in outcomes)
+        if (outcome.offersSourcePage) outcome,
+    ];
+    if (needingPage.isEmpty) {
+      if (resumed > 0) showShortToast(context, mediaRetryResumedMessage);
+      setState(() => _retryNotice = null);
+      return;
+    }
+    setState(() => _retryNotice = needingPage.first);
+    _scrollToRetryNotice();
+    if (needingPage.length > 1) {
+      showShortToast(context, '${needingPage.length} 个任务需回来源页重新授权媒体');
+    } else if (resumed > 0) {
+      showShortToast(context, mediaRetryResumedMessage);
+    }
+  }
+
+  /// Opens the task's 来源页 in the app's own browser tab.
+  ///
+  /// Not wrapped in `_run`: the row is not doing work on the task, so the row
+  /// must not show a spinner, and a refused page leaves everything as it was.
+  Future<void> _openSourcePage(MediaTask task) => openMediaTaskSourcePage(
+    context,
+    widget.app,
+    taskId: task.id,
+    sourceUrl: mediaTaskSourcePage(task),
+  );
 
   Future<void> _showDetails(MediaTask task, MediaCandidate? candidate) =>
       showMediaTaskDetails(context, widget.app, task);
@@ -4355,7 +4450,23 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
           eligibleIds.add(task.id);
         }
       }
-      if (eligibleIds.isNotEmpty) {
+      if (eligibleIds.isNotEmpty && action == _MediaBatchAction.retry) {
+        // Batch retry refreshes once per source page and navigates nothing:
+        // the grouped controller call sends one request per page origin, so
+        // three tasks on one page do not cost three page loads.
+        final grouped = [
+          for (final id in eligibleIds) ?widget.app.mediaTasks.task(id),
+        ];
+        final outcomes = await widget.app.retryMediaTasks(grouped);
+        for (final outcome in outcomes) {
+          if (outcome.resumed) {
+            succeeded++;
+          } else {
+            failedIds.add(outcome.taskId);
+          }
+        }
+        if (mounted) _reportBatchRetry(outcomes);
+      } else if (eligibleIds.isNotEmpty) {
         final operation = await widget.app.mediaOperations.run(
           kind: 'media_tasks',
           action: action.name,
@@ -4370,7 +4481,10 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
             }
             switch (action) {
               case _MediaBatchAction.retry:
-                await _retry(task, notify: false);
+                // Batches go through the grouped path below so one source
+                // page costs one refresh; this branch only runs when a caller
+                // starts a batch outside [retryMediaTasks].
+                await widget.app.retryMediaTaskResult(task);
               case _MediaBatchAction.pause:
                 await widget.app.mediaDownloads.pause(task.id);
               case _MediaBatchAction.resume:
@@ -4620,6 +4734,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
               text: '这里管理媒体任务的下载、播放和导出，可批量暂停、继续、重试、刷新、删除或导出。',
             ),
           ),
+          _retryNoticeBanner(),
           Expanded(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(
@@ -4786,6 +4901,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
         onRefresh: (value) =>
             _run(() => _refreshNative(value), taskId: value.id),
         onDetails: _showDetails,
+        onSourcePage: (value) => _openSourcePage(value),
         onPlay: (value) => _run(() => _play(value), taskId: value.id),
         onCast: (value) => _run(() => _cast(value), taskId: value.id),
         onExport: (value) => _run(() => _export(value), taskId: value.id),
@@ -4824,6 +4940,7 @@ class _MediaTaskRow extends StatefulWidget {
     required this.taskTitle,
     required this.onRefresh,
     required this.onDetails,
+    required this.onSourcePage,
     required this.onPlay,
     required this.onCast,
     required this.onExport,
@@ -4843,6 +4960,7 @@ class _MediaTaskRow extends StatefulWidget {
   final String Function(MediaTask, MediaCandidate?) taskTitle;
   final Future<void> Function(MediaTask) onRefresh;
   final Future<void> Function(MediaTask, MediaCandidate?) onDetails;
+  final Future<void> Function(MediaTask) onSourcePage;
   final Future<void> Function(MediaTask) onPlay;
   final Future<void> Function(MediaTask) onCast;
   final Future<void> Function(MediaTask) onExport;
@@ -4854,6 +4972,12 @@ class _MediaTaskRow extends StatefulWidget {
   @override
   State<_MediaTaskRow> createState() => _MediaTaskRowState();
 }
+
+/// The source page this row can open, or `null` when it recorded none.
+///
+/// A parsed, openable page is the only thing that may show the entry: a task
+/// whose stored address is empty or not a web page hides it.
+Uri? _sourcePageFor(MediaTask task) => mediaTaskSourcePage(task);
 
 class _MediaTaskRowState extends State<_MediaTaskRow> {
   late Future<MediaCandidate?> _candidate;
@@ -4943,6 +5067,15 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
                 label: '查看详情',
                 icon: Icons.info_outline,
               ),
+              // The source page is a destination, not an operation, so it stays
+              // available in every state and only disappears when the task
+              // recorded no page to go back to.
+              if (_sourcePageFor(widget.task) != null)
+                const SiteLensGlassMenuAction(
+                  value: 'sourcePage',
+                  label: mediaTaskSourcePageActionLabel,
+                  icon: Icons.open_in_new,
+                ),
               SiteLensGlassMenuAction(
                 value: 'refresh',
                 label: '刷新后台状态',
@@ -5021,6 +5154,8 @@ class _MediaTaskRowState extends State<_MediaTaskRow> {
                 unawaited(widget.onRefresh(widget.task));
               case 'details':
                 unawaited(widget.onDetails(widget.task, candidate));
+              case 'sourcePage':
+                unawaited(widget.onSourcePage(widget.task));
               case 'play':
                 unawaited(widget.onPlay(widget.task));
               case 'cast':

@@ -31,6 +31,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--report", type=Path, help="write the terminal report to this path")
     parser.add_argument("--cache-dir", type=Path, help="override the .ci_cache directory")
+    parser.add_argument(
+        "--no-native",
+        dest="native",
+        action="store_false",
+        help=(
+            "skip the L2 `make check-native` stage (Android JVM policy tests); "
+            "use only where no Gradle toolchain exists, and say so in the evidence"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -43,6 +52,7 @@ def main() -> int:
             requested_level=args.level,
             device=args.device,
             manual_evidence=args.manual_evidence,
+            native=args.native,
         )
         report = execute_plan(plan, cache_dir=args.cache_dir)
     except ValidationConfigurationError as exc:

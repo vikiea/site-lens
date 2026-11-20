@@ -335,12 +335,18 @@ def _integration_target(paths: Sequence[str]) -> str | None:
     return None
 
 
+def _needs_native_check(paths: Sequence[str]) -> bool:
+    """True when the change touches Android or the policy the JVM tests cover."""
+    return _has_any(paths, "android/", "lib/media/", "lib/web_host/", "pigeons/")
+
+
 def build_plan(
     paths: Sequence[str],
     requested_level: str | None = None,
     device: str | None = None,
     manual_evidence: Path | None = None,
     root: Path = ROOT,
+    native: bool = True,
 ) -> ValidationPlan:
     recommended, reasons = classify_paths(paths, root=root)
     requested = requested_level or recommended
@@ -357,6 +363,18 @@ def build_plan(
         stages.append(StagePlan("full local check", ("./tool/check.sh",)))
     elif requested == "L2":
         stages.append(StagePlan("full local check", ("./tool/check.sh",)))
+        # The Android JVM policy tests are deliberately outside `make check`
+        # (they need a Gradle toolchain no Dart host has); L2 therefore owns
+        # them, and `--auto` needs a device only for the stage after this one.
+        if native and _needs_native_check(paths):
+            stages.append(
+                StagePlan(
+                    "Android JVM unit tests",
+                    ("make", "check-native"),
+                    cacheable=False,
+                    critical=True,
+                )
+            )
         target = _integration_target(paths)
         if device:
             command = ["python3", "tool/run_android_acceptance.py", device, "--skip-check", "--skip-build", "--single-suite"]

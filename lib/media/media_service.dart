@@ -2232,7 +2232,7 @@ typedef MediaAuthorizationRefresh = Future<MediaCandidate?> Function(
 
 class MediaAuthorizationRequiredException extends StateError {
   MediaAuthorizationRequiredException([this.status = 403])
-    : super('媒体下载需要重新授权 HTTP $status：请返回播放页刷新并重新选择媒体；如网页通过代理播放，请保持相同代理后重试');
+    : super('媒体下载需要重新授权 HTTP $status：请返回来源页刷新并重新选择媒体；如网页通过代理播放，请保持相同代理后重试');
 
   final int status;
 }

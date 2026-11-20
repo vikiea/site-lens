@@ -18,6 +18,22 @@ The application stores site profiles, candidates, probe history, scripts, approv
 
 Users select sites manually. Detection results are scoped to the current round, and historical reachability is not presented as current verification. Entry redirects, navigation leases, scripts, permissions, and media controls are independently checked.
 
+## Media authorization refresh
+
+A media address expires with the page that authorized it, so a retry cannot simply reuse the stored address. The refresh path reloads the 来源页 (source page) headlessly, accepts only the main playlist request that the page itself issues, and adopts that address under three honest outcomes:
+
+- **授权刷新 (authorization refresh)**: the page handed over its own main playlist address, which replaces the stored one; the task resumes. Cookies stay in the platform layer, and the address is never written to a log line.
+- **授权未变化 (unchanged)**: the page loaded and changed nothing observable, so retrying the same page cannot help. The task keeps its state.
+- **需回播放页 (page reauthorization required)**: no usable address was obtained; the user has to return to the 来源页 and pick the media again. The task keeps its state.
+
+The three outcomes are the vocabulary the UI uses; free-form instructions say 来源页, never 播放页. A refresh that reports success but whose address cannot be adopted degrades to 需回播放页 rather than 授权未变化, because the page did answer and only its hand-over failed.
+
+Ownership rules are fail-closed. An adopted address must be HTTP(S), carry no embedded credentials, pass media candidacy validation, and replace the same resource for the same task; a capture is attributed to the task whose own address it replaces, never to a task identity supplied by a caller. Tasks that share one 来源页 are refreshed in one page load, and each of them receives only its own address.
+
+The 来源页 entry in a task's menu opens that page in the app's browser tab, reusing an existing tab. It refuses a page whose site disagrees with the task's own binding, and it reports success only when the browser is actually showing the page. Persistent outcomes such as 需回播放页 or 授权未变化 are shown on the page's shared notice surface with the 打开来源页 action; a resumed transfer stays a short confirmation.
+
+The batch refresh is part of the `site_lens/media_auth` platform protocol: the channel accepts `refresh` for one task and `refreshBatch` for many, both speaking the same field layout, and answers every request exactly once.
+
 ## Development and verification
 
 Run the repository gate with:

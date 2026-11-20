@@ -20,6 +20,7 @@ import androidx.webkit.WebViewFeature
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.FlutterShellArgs
+import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.security.MessageDigest
@@ -276,34 +277,128 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/media_auth")
             .setMethodCallHandler { call, result ->
                 if (generation != authRefreshGeneration) return@setMethodCallHandler
-                if (call.method != "refresh") {
-                    result.notImplemented()
-                    return@setMethodCallHandler
+                when (call.method) {
+                    "refresh" -> refreshOne(generation, call, result)
+                    "refreshBatch" -> refreshBatch(generation, call, result)
+                    else -> result.notImplemented()
                 }
-                val taskId = call.argument<String>("taskId")?.trim().orEmpty()
-                val pageUrl = call.argument<String>("pageUrl")?.trim().orEmpty()
-                val mediaUrl = call.argument<String>("mediaUrl")?.trim().orEmpty()
-                val resourceKey = call.argument<String>("resourceKey")?.trim().orEmpty()
-                if (taskId.isEmpty() || pageUrl.isEmpty() || mediaUrl.isEmpty()) {
-                    result.error("invalid_auth_refresh", "授权刷新参数不完整", null)
-                    return@setMethodCallHandler
-                }
-                NativeMediaAuthRefreshService.refresh(
-                    applicationContext,
-                    NativeMediaAuthRefreshService.Request(taskId, pageUrl, mediaUrl, resourceKey) { value ->
-                        if (generation == authRefreshGeneration) {
-                            result.success(value)
-                        } else {
-                            result.error(
-                                "engine_replaced",
-                                "Flutter 引擎已替换，授权刷新已取消",
-                                null,
-                            )
-                        }
-                    },
-                )
             }
     }
+
+    private fun refreshOne(
+        generation: Int,
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        val request = authRefreshRequest(call)
+        if (request == null) {
+            result.error("invalid_auth_refresh", "授权刷新参数不完整", null)
+            return
+        }
+        NativeMediaAuthRefreshService.refresh(
+            applicationContext,
+            request.copy(callback = { value ->
+                if (generation == authRefreshGeneration) {
+                    result.success(value)
+                } else {
+                    result.error(
+                        "engine_replaced",
+                        "Flutter 引擎已替换，授权刷新已取消",
+                        null,
+                    )
+                }
+            }),
+        )
+    }
+
+    /**
+     * One service lifetime per page origin, one page load per page URL.
+     *
+     * An incomplete entry fails the whole call: a partially understood batch
+     * would bind some tasks to an address nobody verified.
+     */
+    private fun refreshBatch(
+        generation: Int,
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        val raw = call.argument<List<Map<String, Any?>>>("requests").orEmpty()
+        val requests = ArrayList<NativeMediaAuthRefreshService.Request>(raw.size)
+        for (entry in raw) {
+            val request = authRefreshRequest(entry)
+            if (request == null) {
+                result.error("invalid_auth_refresh", "授权刷新参数不完整", null)
+                return
+            }
+            requests.add(request)
+        }
+        if (requests.isEmpty()) {
+            result.error("invalid_auth_refresh", "授权刷新参数不完整", null)
+            return
+        }
+        NativeMediaAuthRefreshService.refreshBatch(applicationContext, requests) { values ->
+            if (generation == authRefreshGeneration) {
+                result.success(mapOf("results" to values))
+            } else {
+                result.error(
+                    "engine_replaced",
+                    "Flutter 引擎已替换，授权刷新已取消",
+                    null,
+                )
+            }
+        }
+    }
+
+    /**
+     * The one place a single refresh argument map is read.
+     *
+     * Both channel shapes (a method-call map and one entry of a batch list)
+     * carry exactly the same fields, so they share this reader: a field added
+     * later cannot be understood by one path and silently dropped by the other.
+     */
+    private fun authRefreshRequest(call: MethodCall): NativeMediaAuthRefreshService.Request? =
+        authRefreshRequest(call.arguments as? Map<*, *>)
+
+    private fun authRefreshRequest(args: Map<*, *>?): NativeMediaAuthRefreshService.Request? {
+        if (args == null) return null
+        val taskId = args.authRefreshField("taskId").orEmpty()
+        return authRefreshRequest(
+            taskId = taskId,
+            pageUrl = args.authRefreshField("pageUrl").orEmpty(),
+            mediaUrl = args.authRefreshField("mediaUrl").orEmpty(),
+            resourceKey = args.authRefreshField("resourceKey").orEmpty(),
+            logicalIdentity = args.authRefreshField("logicalIdentity")
+                ?: zeroWidthLogicalIdentity(taskId),
+        )
+    }
+
+    /** One trimmed string field, or `null` when it is absent or not a string. */
+    private fun Map<*, *>.authRefreshField(key: String): String? =
+        (this[key] as? String)?.trim()
+
+    private fun authRefreshRequest(
+        taskId: String,
+        pageUrl: String,
+        mediaUrl: String,
+        resourceKey: String,
+        logicalIdentity: String,
+    ): NativeMediaAuthRefreshService.Request? {
+        if (taskId.isEmpty() || pageUrl.isEmpty() || mediaUrl.isEmpty()) return null
+        return NativeMediaAuthRefreshService.Request(
+            taskId = taskId,
+            pageUrl = pageUrl,
+            mediaUrl = mediaUrl,
+            resourceKey = resourceKey,
+            logicalIdentity = logicalIdentity,
+        ) { _ -> }
+    }
+
+    /**
+     * A caller that omits the logical identity keeps the old single-request
+     * behaviour: its own task id is the identity, so it can only adopt the
+     * capture of its own load.
+     */
+    private fun zeroWidthLogicalIdentity(taskId: String): String = "task:$taskId"
 
     private fun registerNativeDownloadChannel(flutterEngine: FlutterEngine) {
         mediaNetworkRuntime?.dispose()
