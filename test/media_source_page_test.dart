@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:drift/native.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
@@ -11,6 +12,7 @@ import 'package:site_lens/media/native_download_runtime.dart';
 import 'package:site_lens/media/native_media_auth_refresh.dart';
 import 'package:site_lens/network/transport.dart';
 import 'package:site_lens/ui/app_controller.dart';
+import 'package:site_lens/ui/media_source_page.dart';
 
 import 'fake_web_host_api.dart';
 
@@ -138,6 +140,8 @@ NativeTlsTransferWithPolicy _offlineTransfer(List<String> requested) =>
       return MediaTransferResult(attemptsUsed: 1, finalUrl: url);
     };
 
+Future<bool>? lastOpened;
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -244,14 +248,14 @@ void main() {
       final task = await pageRequiredTask(stored);
       bridge.answer = (value) => const MediaAuthorizationRefreshResult(
         state: 'reauthorize',
-        reason: '授权状态未更新，请返回播放页重新授权',
+        reason: '授权状态未更新，请返回来源页重新授权',
       );
 
       final outcome = await app.retryMediaTaskResult(task);
 
       expect(outcome.kind, MediaRetryOutcomeKind.requiresPage);
       expect(outcome.offersSourcePage, isTrue);
-      expect(outcome.message, '授权状态未更新，请返回播放页重新授权');
+      expect(outcome.message, '授权状态未更新，请返回来源页重新授权');
       expect(bridge.singles, hasLength(1));
       expect(native.calls, isEmpty);
       expect(app.mediaTasks.task(task.id)!.state, MediaTaskState.reauthorize);
@@ -303,7 +307,7 @@ void main() {
     });
 
     test(
-      'a refresh without an address is still an unchanged outcome',
+      'a refresh whose address cannot be adopted degrades to 需回播放页',
       () async {
         final stored = _candidate(
           id: 'cand-empty',
@@ -316,8 +320,11 @@ void main() {
 
         final outcome = await app.retryMediaTaskResult(task);
 
-        expect(outcome.kind, MediaRetryOutcomeKind.unchanged);
+        expect(outcome.kind, MediaRetryOutcomeKind.requiresPage);
         expect(outcome.offersSourcePage, isTrue);
+        expect(outcome.message, isNot(startsWith('授权未变化：')));
+        expect(native.calls, isEmpty);
+        expect((await db.mediaCandidate(stored.id))!.mediaUrl, stored.mediaUrl);
         expect(app.mediaTasks.task(task.id)!.state, MediaTaskState.reauthorize);
       },
     );
@@ -339,7 +346,7 @@ void main() {
       expect(outcome.kind, MediaRetryOutcomeKind.resumed);
       expect(outcome.message, '已开始续传');
       expect(outcome.offersSourcePage, isFalse);
-      expect(outcome.leavesTaskUntouched, isFalse);
+      expect(outcome.resumed, isTrue);
       expect(
         {
           MediaTaskState.downloading,
@@ -484,6 +491,87 @@ void main() {
 
       expect(bridge.singles, hasLength(1));
       expect(bridge.batches, isEmpty);
+    });
+  });
+
+  group('来源页 entry', () {
+    late Directory cache;
+    late AppDatabase db;
+    late AppController app;
+
+    setUp(() async {
+      cache = await Directory.systemTemp.createTemp('site-lens-source-open-');
+      db = AppDatabase(NativeDatabase.memory());
+      app = AppController(
+        db,
+        api: FakeWebHostApi(),
+        nativeDownloads: _FakeNativeDownloads(),
+        nativeMediaAuthRefresh: _FakeAuthRefreshBridge(
+          (task) => const MediaAuthorizationRefreshResult(state: 'unchanged'),
+        ),
+        mediaDirectoryProvider: () async => cache,
+      );
+      addTearDown(() async {
+        await app.shutdown();
+        await db.close();
+        if (cache.existsSync()) await cache.delete(recursive: true);
+      });
+      await app.load();
+    });
+
+    /// A widget host, because the entry reports refusals on screen.
+    Future<void> pumpHost(WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 3;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () => lastOpened = openMediaTaskSourcePage(
+                  context,
+                  app,
+                  taskId: 'entry-task',
+                  sourceUrl: Uri.parse('https://other.example/watch/9'),
+                ),
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    Future<MediaTask> storeTask(WidgetTester tester) async =>
+        (await tester.runAsync(() async {
+          final candidate = _candidate(
+            id: 'cand-entry',
+            sourceUrl: 'https://site.example/watch/1',
+            mediaUrl: 'https://cdn.example/index.m3u8?token=old',
+          );
+          await db.saveMediaCandidate(candidate);
+          return app.mediaTasks.create(candidate);
+        }))!;
+
+    testWidgets('a cross-origin source page is refused and opens nothing', (
+      tester,
+    ) async {
+      await storeTask(tester);
+      await pumpHost(tester);
+
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+
+      final opened = await tester.runAsync(() async => await lastOpened);
+      expect(
+        opened,
+        isFalse,
+        reason: 'the refusal must not be reported as a page on screen',
+      );
+      expect(app.browserTabs, isEmpty, reason: 'no tab was opened');
+      expect(app.activeBrowser, isNull);
+      expect(find.text('来源页与任务所在站点不一致，已停止打开'), findsOneWidget);
     });
   });
 }

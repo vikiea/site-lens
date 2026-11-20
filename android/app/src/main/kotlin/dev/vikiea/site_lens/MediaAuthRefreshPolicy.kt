@@ -17,12 +17,23 @@ import java.security.MessageDigest
  *   loads. Only that address can replace a media address.
  * - **transport artefact**: segments, init segments and concrete media files.
  *   They are real media requests but never the address a task is bound to.
- * - **logical identity**: the task-level resource identity the capture and the
- *   queued requests are matched on, supplied by the caller.
+ * - **logical identity**: the task-level resource identity a queued request
+ *   carries, supplied by the caller.
+ * - **capture owner**: a capture belongs to the page load that asked for it,
+ *   not to a task. The service records the load's page URL with the capture;
+ *   [assignCapture] decides which queued request, if any, owns the captured
+ *   address.
  */
 internal object MediaAuthRefreshPolicy {
-    /** A media request captured from the page a refresh actually loaded. */
-    data class CapturedPlaylist(val url: String, val logicalIdentity: String)
+    /**
+     * A main playlist captured from the page a refresh actually loaded.
+     *
+     * A capture is the page's own request, so it is attributed by the page that
+     * made it ([pageUrl]) and never by a task identity: the page load is shared
+     * by every task on that page, and no task can be named in advance. The
+     * owner is decided by [assignCapture] from the address itself.
+     */
+    data class CapturedPlaylist(val url: String, val pageUrl: String)
 
     /** A queued refresh, and the identities used to route a capture to it. */
     data class RefreshRequestIdentity(
@@ -41,48 +52,6 @@ internal object MediaAuthRefreshPolicy {
      */
     data class RequestOutcome(val state: String, val reason: String?, val mediaUrl: String?)
 
-    /**
-     * One page origin and every queued task it serves. A slot is filled by the
-     * first capture whose origin matches, so a page load can answer all of the
-     * slot's tasks that share the captured logical identity.
-     */
-    data class CaptureSlot(
-        val origin: String,
-        val requests: List<RefreshRequestIdentity>,
-        val captured: List<CapturedPlaylist> = emptyList(),
-    )
-
-    /** Slots for one batch, in first-seen origin order. */
-    data class CapturePlan(val slots: List<CaptureSlot>) {
-        /**
-         * Slots still able to answer: those that already hold a capture (to
-         * hand it to the rest of their tasks) as well as those whose page is
-         * still loading. A closed slot is absent from the plan.
-         */
-        val freeSlots: Int
-            get() = slots.size
-
-        /** The slot a capture at [capturedUrl] belongs to, if any. */
-        fun slotFor(capturedUrl: String): Int? {
-            val capture = originOf(capturedUrl) ?: return null
-            val index = slots.indexOfFirst { slot -> slot.origin == capture }
-            return if (index < 0) null else index
-        }
-    }
-
-    /** One slot plus what has already been adopted from it. */
-    data class CaptureSlotState(
-        val slot: CaptureSlot,
-        val captured: List<CapturedPlaylist> = emptyList(),
-    )
-
-    /** Progress of one batch page load. */
-    data class PlanProgress(
-        val assignments: Map<String, String>,
-        val captured: List<CapturedPlaylist> = emptyList(),
-        val settledOrigins: Set<String> = emptySet(),
-    )
-
     /** Three-state result of one refresh page load. */
     sealed class RefreshOutcome {
         /** The page requested a main playlist for this task. */
@@ -96,6 +65,38 @@ internal object MediaAuthRefreshPolicy {
     }
 
     const val PAGE_REQUIRED_REASON = "页面加载完成但没有捕获到主清单地址"
+
+    /**
+     * Second-level labels that are themselves suffixes, so `co.uk` is never
+     * treated as one site. Not a full Public Suffix List: it only has to keep
+     * the site rule from collapsing unrelated hosts, and anything unlisted
+     * still needs three labels to match a sibling.
+     */
+    private val PUBLIC_SUFFIXES = setOf(
+        "co.uk",
+        "org.uk",
+        "ac.uk",
+        "gov.uk",
+        "com.cn",
+        "net.cn",
+        "org.cn",
+        "gov.cn",
+        "com.au",
+        "net.au",
+        "org.au",
+        "co.jp",
+        "or.jp",
+        "ne.jp",
+        "com.br",
+        "com.mx",
+        "co.in",
+        "co.kr",
+        "co.za",
+        "co.nz",
+        "com.tw",
+        "com.hk",
+        "com.sg",
+    )
 
     /** Channel spelling of [RefreshOutcome.Refreshed]. */
     const val STATE_REFRESHED = "refreshed"
@@ -169,15 +170,72 @@ internal object MediaAuthRefreshPolicy {
     }
 
     /**
-     * True when [candidateUrl] shares scheme, host and effective port with
-     * [pageOrigin]. Scheme and host are compared case-insensitively and the
-     * default port is elided. A URL without a scheme, without a host, or with
-     * embedded credentials never matches.
+     * True when [candidateUrl] is served from the same site as [pageOrigin].
+     *
+     * The rule is the one the specification states — a capture must share the
+     * session's *site domain* — and not scheme/port equality: pages routinely
+     * serve their manifest from `https://cdn.example/...`, so requiring an
+     * identical origin would make every CDN-hosted playlist uncapturable.
+     *
+     * Matching is therefore on the host only:
+     * - an identical host (case-insensitive) always matches, whatever the
+     *   scheme and port;
+     * - a sibling host of the same registrable site matches only when both
+     *   hosts are plainly multi-label (`www.site.example` / `cdn.site.example`);
+     * - single-label hosts (`example`, `localhost`) match only exactly, so two
+     *   unrelated intranet names never collapse into one site;
+     * - a public suffix (`example`, `co.uk`) is a site label, not a site.
+     *
+     * A URL without a scheme, without a host, or with embedded credentials never
+     * matches: an address that carries its own credentials is not something the
+     * page handed over in the session.
      */
     fun isSameSessionOrigin(pageOrigin: String, candidateUrl: String): Boolean {
         val page = originOf(pageOrigin) ?: return false
         val candidate = originOf(candidateUrl) ?: return false
-        return page == candidate
+        if (page == candidate) return true
+        val pageHost = hostOf(page) ?: return false
+        val candidateHost = hostOf(candidate) ?: return false
+        if (pageHost == candidateHost) return true
+        val pageSite = registrableSite(pageHost) ?: return false
+        return pageSite == registrableSite(candidateHost)
+    }
+
+    /**
+     * The two-label site a host belongs to, or `null` when the host cannot name
+     * one on its own (`localhost`, a bare intranet name, or a public suffix).
+     */
+    private fun registrableSite(host: String): String? {
+        val parts = host.split('.')
+        val labels = ArrayList<String>(parts.size)
+        for (part in parts) {
+            if (part.isNotEmpty()) labels.add(part)
+        }
+        // A two-label host under no public suffix (`site.example`) is a
+        // registrable site in its own right; `cdn.example` is a different
+        // site, not a sibling of it.
+        if (labels.size < 2) return null
+        val suffix = labels[labels.size - 2] + "." + labels[labels.size - 1]
+        // A public suffix (`co.uk`) is never a site by itself, and a host that
+        // is only a suffix names no site at all.
+        if (suffix in PUBLIC_SUFFIXES) {
+            if (labels.size < 3) return null
+            return labels[labels.size - 3] + "." + suffix
+        }
+        return suffix
+    }
+
+    /**
+     * The host part of a normalized origin, without the port.
+     *
+     * [originOf] always appends the effective port, so the authority has to be
+     * split from the right; taking everything before the first colon would
+     * truncate an IPv6 literal.
+     */
+    private fun hostOf(origin: String): String? {
+        val afterScheme = origin.substringAfter("://", "")
+        if (afterScheme.isEmpty()) return null
+        return afterScheme.substringBeforeLast(':').ifEmpty { null }
     }
 
     /**
@@ -209,30 +267,94 @@ internal object MediaAuthRefreshPolicy {
     }
 
     /**
-     * Hand each capture to the first still-unassigned request whose logical
-     * identity matches and whose page origin matches the capture origin.
-     * Captures are consumed in order, so one address never serves two tasks.
-     * A request without a match is absent from the result.
+     * Hand each capture to the request whose own media address it replaces.
+     *
+     * A capture is the page's request, so it cannot name the task it belongs
+     * to; the address is the only thing both sides know. Ownership is decided
+     * without any trust in a caller-supplied probe:
+     * - a capture is dropped unless its address is a main playlist on the
+     *   capture's own site ([isSameSessionOrigin]);
+     * - the owning request must have been asked for that page
+     *   ([isSameSessionOrigin] against the request's page) and must describe the
+     *   same resource: the same scheme, host, port and path, with the query
+     *   treated as the part a refresh replaces ([sameMediaAddress]);
+     * - when several requests claim one address, the tie is broken only by the
+     *   resource identity both sides can derive from the address itself — never
+     *   by a caller-supplied probe string;
+     * - one address never serves two tasks, and a request is answered at most
+     *   once.
+     * A capture no request owns is left unassigned, and so is a request with no
+     * capture: no task ever inherits another task's address.
      */
     fun assignCapture(
         captured: List<CapturedPlaylist>,
         requests: List<RefreshRequestIdentity>,
     ): Map<String, String> {
-        val remaining = captured.toMutableList()
         val assignment = LinkedHashMap<String, String>()
-        for (request in requests) {
-            val identity = request.logicalIdentity.trim()
-            if (identity.isEmpty()) continue
-            if (request.taskId in assignment) continue
-            val pageOrigin = originOf(request.pageUrl) ?: continue
-            val index = remaining.indexOfFirst { candidate ->
-                candidate.logicalIdentity.trim().equals(identity, ignoreCase = true) &&
-                    originOf(candidate.url) == pageOrigin
+        val claimed = HashSet<String>()
+        for (capture in captured) {
+            val url = capture.url.trim()
+            if (url.isEmpty() || !claimed.add(url)) continue
+            if (!isMainPlaylist(url, null)) continue
+            if (!isSameSessionOrigin(capture.pageUrl, url)) continue
+            val owners = requests.filter { request ->
+                request.taskId !in assignment &&
+                    isSameSessionOrigin(request.pageUrl, url) &&
+                    sameMediaAddress(request.mediaUrl, url)
             }
-            if (index < 0) continue
-            assignment[request.taskId] = remaining.removeAt(index).url
+            if (owners.isEmpty()) continue
+            // One address belongs to one task. When only one request claims it
+            // that request is the owner; when several do, the tie is broken
+            // only by the task's own recognized media identity, never by a
+            // caller-supplied probe string.
+            val owner = owners.singleOrNull() ?: owners.firstOrNull { request ->
+                request.logicalIdentity.isNotBlank() &&
+                    logicalIdentityOf(request.mediaUrl) == logicalIdentityOf(url)
+            } ?: continue
+            assignment[owner.taskId] = url
         }
         return assignment
+    }
+
+    /**
+     * True when the captured [url] is a refreshed spelling of [mediaUrl].
+     *
+     * The query is part of the identity: a playlist address usually carries a
+     * signature or an expiry, and that is exactly what a refresh replaces. So
+     * equality is on scheme, host, port and path; the query only has to agree
+     * on the keys it keeps, and the fresh signature is adopted from the
+     * capture. Anything else (a different path, a different host) is another
+     * resource and never replaces the request's own address.
+     */
+    internal fun sameMediaAddress(mediaUrl: String, url: String): Boolean {
+        val left = runCatching { URI(mediaUrl.trim()) }.getOrNull() ?: return false
+        val right = runCatching { URI(url.trim()) }.getOrNull() ?: return false
+        if (!left.scheme.equals(right.scheme, ignoreCase = true)) return false
+        if (!left.host.equals(right.host, ignoreCase = true)) return false
+        if (effectivePort(left) != effectivePort(right)) return false
+        return left.rawPath.orEmpty() == right.rawPath.orEmpty()
+    }
+
+    private fun logicalIdentityOf(url: String): String {
+        val uri = runCatching { URI(url.trim()) }.getOrNull() ?: return url.trim()
+        return buildString {
+            append(uri.scheme?.lowercase().orEmpty())
+            append("://")
+            append(uri.host?.lowercase().orEmpty())
+            append(':')
+            append(effectivePort(uri))
+            append(uri.rawPath.orEmpty())
+        }
+    }
+
+    private fun effectivePort(uri: URI): Int {
+        val port = uri.port
+        if (port != -1) return port
+        return when (uri.scheme?.lowercase()) {
+            "http" -> 80
+            "https" -> 443
+            else -> -1
+        }
     }
 
     /**
@@ -303,37 +425,6 @@ internal object MediaAuthRefreshPolicy {
     }
 
     /**
-     * Batch layout for [requests]: one capture slot per page origin. A slot
-     * still holds its captures after adoption, which is what lets a second
-     * capture on the same page answer the slot's remaining tasks without
-     * repeating the load. A task already in [PlanProgress.assignments] is
-     * dropped, so one task is answered exactly once.
-     */
-    fun capturePlan(
-        requests: List<RefreshRequestIdentity>,
-        progress: PlanProgress? = null,
-    ): CapturePlan {
-        val assigned = progress?.assignments.orEmpty()
-        val captured = progress?.captured.orEmpty()
-        val settled = progress?.settledOrigins.orEmpty().map(::originOf)
-        val pending = requests.filter { it.taskId !in assigned }
-        val slots = ArrayList<CaptureSlot>()
-        for (group in groupByOrigin(pending)) {
-            val origin = originOf(group.first().pageUrl) ?: continue
-            // [PlanProgress.settledOrigins] accepts a page URL or an origin.
-            if (settled.contains(origin)) continue
-            slots.add(
-                CaptureSlot(
-                    origin = origin,
-                    requests = group,
-                    captured = captured.filter { item -> originOf(item.url) == origin },
-                ),
-            )
-        }
-        return CapturePlan(slots)
-    }
-
-    /**
      * Close out a batch that will capture nothing further.
      *
      * A capture goes only to the request whose logical identity matches; every
@@ -356,21 +447,6 @@ internal object MediaAuthRefreshPolicy {
                 RequestOutcome(STATE_REAUTHORIZE, PAGE_REQUIRED_REASON, null)
             }
         }
-    }
-
-    /**
-     * The identity one page load is asked with.
-     *
-     * A refresh load can only answer *this* origin, not one task's address, so
-     * the identity it records has to be recognisable and deliberately unable to
-     * match a task: [finishBatch] then decides which request, if any, the
-     * capture belongs to. Harmless for a single task, whose own load still
-     * answers through [classify].
-     */
-    fun captureProbeIdentity(requests: List<RefreshRequestIdentity>): String {
-        val origin = requests.firstNotNullOfOrNull { originOf(it.pageUrl) } ?: "origin-unknown"
-        val oldest = requests.minOfOrNull { it.taskId }.orEmpty()
-        return "probe:$origin:$oldest"
     }
 
     private fun originOf(raw: String): String? {

@@ -189,20 +189,23 @@ class MediaRetryOutcome {
 
   /// True when the message must carry the 打开来源页 action.
   bool get offersSourcePage => mediaRetryOffersSourcePage(kind);
-
-  /// True when the row must be left untouched: no progress, no state churn.
-  bool get leavesTaskUntouched => !resumed;
 }
 
 /// Internal signal: the refresh answered, but without a usable address.
 class _MediaRefreshFailure implements Exception {
-  const _MediaRefreshFailure(this.result, {this.message});
+  const _MediaRefreshFailure(this.result, {this.message, this.kind});
 
   /// The refresh answer, when there was one.
   final MediaAuthorizationRefreshResult? result;
 
   /// Overrides the wording derived from [result].
   final String? message;
+
+  /// Overrides the kind derived from [result]. An adopted address that fails a
+  /// gate is a page-required outcome, never "the authorization did not
+  /// change": the refresh did succeed, the page simply has to hand the media
+  /// over again.
+  final MediaRetryOutcomeKind? kind;
 }
 
 class AppController extends ChangeNotifier with WidgetsBindingObserver {
@@ -763,8 +766,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Media addresses this controller adopted from a completed authorization
   /// refresh, per task. Only these may authorize a transfer after the source
-  /// tab has closed; the map is bounded by the live task list.
-  final _adoptedMediaUrls = <String, Set<String>>{};
+  /// tab has closed.
+  ///
+  /// Bounded by construction: [adoptRefreshedMediaUrl] keeps a single address
+  /// per task (the latest adoption is the only one a retry can use), and
+  /// entries are dropped as soon as the task stops being retryable or is no
+  /// longer in the task list, so a long session cannot accumulate addresses.
+  final _adoptedMediaUrls = <String, String>{};
   late final NativeDownloadRuntime? nativeDownloads;
 
   /// Test seam for the native transfer; production gets it from the media
@@ -1547,6 +1555,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final stored = await db.mediaCandidate(task.candidateId);
     if (session != null && !session.disposed && stored != null) {
       for (final candidate in hosts.mediaCandidatesForHost(task.hostId)) {
+        if (candidate.id != task.candidateId) continue;
         if (!mediaCandidatesEquivalent(stored, candidate)) {
           continue;
         }
@@ -1562,13 +1571,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         );
         return authorized;
       }
-      throw StateError('当前页面尚未重新授权媒体，请保持播放页并重试');
+      throw StateError('当前页面尚未重新授权媒体，请保持来源页并重试');
     }
     if (task.state == MediaTaskState.reauthorize) {
-      throw StateError('下载地址已失效或被拒绝，请返回播放页刷新并重新选择媒体后下载');
+      throw StateError('下载地址已失效或被拒绝，请返回来源页刷新并重新选择媒体后下载');
     }
     if (stored == null) {
-      throw StateError('媒体候选已不存在，请返回播放页重新选择媒体');
+      throw StateError('媒体候选已不存在，请返回来源页重新选择媒体');
     }
     return stored;
   }
@@ -1593,15 +1602,38 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       return _authorizedWithoutLiveSession(task, candidate);
     }
     if (session.generation != task.generation) {
-      throw StateError('页面已更新，请返回播放页重新选择媒体');
+      throw StateError('页面已更新，请返回来源页重新选择媒体');
     }
     final current = hosts.authorizeMediaCandidate(task.hostId, candidate.id);
     if (current.generation != task.generation ||
         mediaDocumentIdentity(current.sourceUrl) !=
             mediaDocumentIdentity(task.sourceUrl)) {
-      throw StateError('媒体资源已变化，请返回播放页重新选择媒体');
+      throw StateError('媒体资源已变化，请返回来源页重新选择媒体');
     }
     return current;
+  }
+
+  /// Keeps [_adoptedMediaUrls] to tasks a retry can still use.
+  ///
+  /// The map holds one address per task, so it grows with the number of
+  /// adopted tasks, not with the number of retries. An entry is dropped as soon
+  /// as the task left the retryable states (a finished or playing task never
+  /// asks again) or is gone from the store (deleted or replaced by a new id).
+  /// Pruning before every write and before every read means a stale entry can
+  /// never authorize a transfer, and the map cannot outlive the task list.
+  void _pruneAdoptedMediaUrl(String taskId) {
+    final live = mediaTasks.task(taskId);
+    final retryable =
+        live != null &&
+        (live.state == MediaTaskState.reauthorize ||
+            live.errorCode == MediaErrorCode.authorizationRequired);
+    if (retryable) {
+      _adoptedMediaUrls.removeWhere(
+        (id, _) => id != taskId && mediaTasks.task(id) == null,
+      );
+      return;
+    }
+    _adoptedMediaUrls.remove(taskId);
   }
 
   /// Authorization for a task whose source tab has closed.
@@ -1617,13 +1649,14 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       throw StateError(MediaErrorCode.staleGeneration);
     }
     final adopted = _adoptedMediaUrls[task.id];
-    if (adopted == null || !adopted.contains(candidate.mediaUrl.toString())) {
-      throw StateError('下载地址已失效，请返回播放页重新选择媒体');
+    if (adopted == null || adopted != candidate.mediaUrl.toString()) {
+      _pruneAdoptedMediaUrl(task.id);
+      throw StateError('下载地址已失效，请返回来源页重新选择媒体');
     }
     if (candidate.generation != task.generation ||
         mediaDocumentIdentity(candidate.sourceUrl) !=
             mediaDocumentIdentity(task.sourceUrl)) {
-      throw StateError('媒体资源已变化，请返回播放页重新选择媒体');
+      throw StateError('媒体资源已变化，请返回来源页重新选择媒体');
     }
     return candidate;
   }
@@ -2085,11 +2118,19 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       );
     } on _MediaRefreshFailure catch (failure) {
       final result = failure.result;
-      if (result == null) {
+      final kind =
+          failure.kind ??
+          (result == null
+              ? MediaRetryOutcomeKind.unchanged
+              : mediaRefreshFailureKind(result));
+      if (result == null || kind != mediaRefreshFailureKind(result)) {
         return MediaRetryOutcome(
           taskId: task.id,
-          kind: MediaRetryOutcomeKind.unchanged,
-          message: '授权未变化：${failure.message ?? '请返回来源页重新选择媒体'}',
+          kind: kind,
+          message: _refreshFailureMessageFor(
+            kind,
+            failure.message ?? result?.reason,
+          ),
         );
       }
       return _refreshFailureOutcome(task, result);
@@ -2227,11 +2268,17 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           ),
         );
       } on StateError catch (error) {
+        // The refresh reported success, so the page did answer; an address
+        // that cannot be adopted is the page's own hand-over failing, which the
+        // glossary calls 需回播放页, not "授权未变化".
         outcomes.add(
           MediaRetryOutcome(
             taskId: task.id,
-            kind: MediaRetryOutcomeKind.unchanged,
-            message: '授权未变化：${error.message}',
+            kind: MediaRetryOutcomeKind.requiresPage,
+            message: _refreshFailureMessageFor(
+              MediaRetryOutcomeKind.requiresPage,
+              error.message,
+            ),
           ),
         );
       }
@@ -2244,7 +2291,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     if (task.state == MediaTaskState.paused) {
       final stored = await db.mediaCandidate(task.candidateId);
       if (stored == null) {
-        throw StateError('媒体候选已不存在，请返回播放页重新选择媒体');
+        throw StateError('媒体候选已不存在，请返回来源页重新选择媒体');
       }
       return mediaDownloads.resumeNative(task.id, stored);
     }
@@ -2254,7 +2301,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
     final stored = await db.mediaCandidate(task.candidateId);
     if (stored == null) {
-      throw StateError('媒体候选已不存在，请返回播放页重新选择媒体');
+      throw StateError('媒体候选已不存在，请返回来源页重新选择媒体');
     }
     final result = await refreshMediaAuthorization(task, stored);
     if (!result.refreshed) throw _MediaRefreshFailure(result);
@@ -2262,9 +2309,16 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     try {
       rebound = await adoptRefreshedMediaUrl(task, result);
     } on StateError catch (error) {
-      // A refresh that answered without a usable address is the same outcome
-      // as no refresh at all: report it, adopt nothing, touch no state.
-      return Future.error(_MediaRefreshFailure(null, message: error.message));
+      // The refresh did report success; only the adoption failed. Nothing is
+      // adopted and no state is touched, and the outcome degrades to
+      // 需回播放页 because retrying the same refresh cannot help.
+      return Future.error(
+        _MediaRefreshFailure(
+          null,
+          message: error.message,
+          kind: MediaRetryOutcomeKind.requiresPage,
+        ),
+      );
     }
     return mediaDownloads.resumeNative(task.id, rebound);
   }
@@ -2298,27 +2352,28 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   );
 
   /// Message for a refresh that produced no usable address.
-  String _refreshFailureMessage(MediaAuthorizationRefreshResult result) {
-    final reason = (result.reason ?? '').trim();
-    if (result.waitingExecution) {
-      return reason.isNotEmpty ? reason : '等待系统允许后台授权刷新';
-    }
-    if (result.requiresPage) {
-      return reason.isNotEmpty ? reason : '需回来源页重新授权媒体';
-    }
-    // `unchanged` and anything unrecognised land here: the authorization did
-    // not change, so the page has to hand over the media again.
-    return '授权未变化：${reason.isNotEmpty ? reason : '请返回来源页重新选择媒体'}';
-  }
+  String _refreshFailureMessage(MediaAuthorizationRefreshResult result) =>
+      _refreshFailureMessageFor(mediaRefreshFailureKind(result), result.reason);
 
   static bool _mediaTaskNeedsAuthorizationRefresh(MediaTask task) =>
       task.state == MediaTaskState.reauthorize ||
       task.errorCode == MediaErrorCode.authorizationRequired;
 
   /// User-facing wording for an authorization refresh that produced no usable
-  /// address. The three-state vocabulary lives in GLOSSARY.md.
-  String _refreshOutcomeReason(MediaAuthorizationRefreshResult result) =>
-      _refreshFailureMessage(result);
+  /// address, keyed by the outcome the user has to act on.
+  String _refreshFailureMessageFor(MediaRetryOutcomeKind kind, String? reason) {
+    final text = (reason ?? '').trim();
+    switch (kind) {
+      case MediaRetryOutcomeKind.waiting:
+        return text.isNotEmpty ? text : '等待系统允许后台授权刷新';
+      case MediaRetryOutcomeKind.requiresPage:
+        return text.isNotEmpty ? text : '需回来源页重新授权媒体';
+      case MediaRetryOutcomeKind.unchanged:
+        return '授权未变化：${text.isNotEmpty ? text : '请返回来源页重新选择媒体'}';
+      case MediaRetryOutcomeKind.resumed:
+        return text.isNotEmpty ? text : mediaRetryResumedMessage;
+    }
+  }
 
   /// Copies [candidate] with only its address replaced.
   ///
@@ -2365,7 +2420,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     MediaTask task,
     MediaAuthorizationRefreshResult result,
   ) async {
-    if (!result.refreshed) throw StateError(_refreshOutcomeReason(result));
+    if (!result.refreshed) throw StateError(_refreshFailureMessage(result));
     final raw = result.mediaUrl?.trim() ?? '';
     if (raw.isEmpty) throw StateError('授权刷新未提供媒体地址，需回来源页重新授权');
     final mediaUrl = Uri.tryParse(raw);
@@ -2406,8 +2461,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         throw StateError('授权刷新提供的媒体地址未通过校验，需回来源页重新授权');
       }
     }
-    final adopted = _adoptedMediaUrls.putIfAbsent(task.id, () => <String>{});
-    adopted.add(next.mediaUrl.toString());
+    _adoptedMediaUrls[task.id] = next.mediaUrl.toString();
+    _pruneAdoptedMediaUrl(task.id);
     await mediaTasks.rebindCandidate(
       task.id,
       next,

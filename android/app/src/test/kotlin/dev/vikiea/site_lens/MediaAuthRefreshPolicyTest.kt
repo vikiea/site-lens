@@ -2,6 +2,7 @@ package dev.vikiea.site_lens
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -107,9 +108,108 @@ class MediaAuthRefreshPolicyTest {
                 "https://third-party-cdn.example/playlist.m3u8",
             ),
         )
+        assertFalse(
+            MediaAuthRefreshPolicy.isSameSessionOrigin(
+                "https://site.example",
+                "https://notsite.example/playlist.m3u8",
+            ),
+        )
     }
 
-    @Test fun originComparisonIgnoresSchemeCaseHostCaseDefaultPortAndPath() {
+    @Test fun aCdnHostOfTheSameSiteIsTheSessionsDomain() {
+        // Real pages serve their manifest from another host of their own site;
+        // requiring an identical origin would make those playlists
+        // uncapturable.
+        assertTrue(
+            MediaAuthRefreshPolicy.isSameSessionOrigin(
+                "https://www.site.example/watch/1",
+                "https://cdn.site.example/show/master.m3u8",
+            ),
+        )
+        assertTrue(
+            MediaAuthRefreshPolicy.isSameSessionOrigin(
+                "https://site.example/watch/1",
+                "https://cdn.site.example/show/master.m3u8",
+            ),
+        )
+        assertTrue(
+            MediaAuthRefreshPolicy.isSameSessionOrigin(
+                "https://my.example.co.uk/watch/1",
+                "https://cdn.example.co.uk/show/master.m3u8",
+            ),
+        )
+        assertTrue(
+            MediaAuthRefreshPolicy.isSameSessionOrigin(
+                "https://cdn.site.example:8443/a",
+                "https://site.example/b.m3u8",
+            ),
+        )
+    }
+
+    @Test fun aSiblingHostOfABareTwoLabelDomainIsNotTheSameSite() {
+        // `site.example` has two labels, so `cdn.example` is a *different*
+        // registrable site; only the host itself may match.
+        assertFalse(
+            MediaAuthRefreshPolicy.isSameSessionOrigin(
+                "https://site.example/watch/1",
+                "https://cdn.example/show/master.m3u8",
+            ),
+        )
+        assertTrue(
+            MediaAuthRefreshPolicy.isSameSessionOrigin(
+                "https://site.example/watch/1",
+                "https://site.example/show/master.m3u8",
+            ),
+        )
+    }
+
+    @Test fun bareIntranetHostsOnlyMatchThemselves() {
+        assertFalse(
+            MediaAuthRefreshPolicy.isSameSessionOrigin(
+                "http://media-box:8080/watch",
+                "http://other-box:8080/show.m3u8",
+            ),
+        )
+        assertTrue(
+            MediaAuthRefreshPolicy.isSameSessionOrigin(
+                "http://media-box:8080/watch",
+                "http://media-box:9000/show.m3u8",
+            ),
+        )
+        assertFalse(
+            MediaAuthRefreshPolicy.isSameSessionOrigin(
+                "http://localhost:8080/watch",
+                "http://localhost.example/show.m3u8",
+            ),
+        )
+    }
+
+    @Test fun aPublicSuffixIsNeverItsOwnSite() {
+        // `one.co.uk` and `two.co.uk` are unrelated sites whose last two labels
+        // coincide: the suffix is not the site.
+        assertFalse(
+            MediaAuthRefreshPolicy.isSameSessionOrigin(
+                "https://one.co.uk/a",
+                "https://two.co.uk/b.m3u8",
+            ),
+        )
+        // `shop.example.co.uk` and `other.example.co.uk` *are* one site —
+        // `example.co.uk` — which is the point of not stopping at two labels.
+        assertTrue(
+            MediaAuthRefreshPolicy.isSameSessionOrigin(
+                "https://shop.example.co.uk/a",
+                "https://other.example.co.uk/b.m3u8",
+            ),
+        )
+        assertFalse(
+            MediaAuthRefreshPolicy.isSameSessionOrigin(
+                "https://example.co.uk/a",
+                "https://other.co.uk/b.m3u8",
+            ),
+        )
+    }
+
+    @Test fun siteComparisonIgnoresHostCaseSchemePortPathAndQuery() {
         assertTrue(
             MediaAuthRefreshPolicy.isSameSessionOrigin(
                 "https://Site.Example",
@@ -128,16 +228,18 @@ class MediaAuthRefreshPolicyTest {
                 "http://site.example/playlist.m3u8",
             ),
         )
-        assertFalse(
+        // The site is the host; a different scheme or port on that host is the
+        // same site, and a different host is not.
+        assertTrue(
             MediaAuthRefreshPolicy.isSameSessionOrigin(
                 "https://site.example",
-                "http://site.example/playlist.m3u8",
+                "http://site.example:8443/playlist.m3u8",
             ),
         )
         assertFalse(
             MediaAuthRefreshPolicy.isSameSessionOrigin(
                 "https://site.example:8443",
-                "https://site.example/playlist.m3u8",
+                "https://site.example.evil/playlist.m3u8",
             ),
         )
     }
@@ -238,8 +340,8 @@ class MediaAuthRefreshPolicyTest {
     private fun request(
         id: String,
         logicalIdentity: String,
-        pageUrl: String = "https://site.example/watch?episode=$id",
-        mediaUrl: String = "https://site.example/ep$id.m3u8",
+        pageUrl: String = "https://site.example/watch?episode=" + id,
+        mediaUrl: String = "https://site.example/" + id + ".m3u8",
     ) = MediaAuthRefreshPolicy.RefreshRequestIdentity(
         taskId = id,
         logicalIdentity = logicalIdentity,
@@ -247,26 +349,26 @@ class MediaAuthRefreshPolicyTest {
         mediaUrl = mediaUrl,
     )
 
-    @Test fun captureGoesOnlyToTheRequestWhoseLogicalIdentityMatches() {
+    @Test fun captureGoesToTheRequestWhoseMediaAddressItReplaces() {
         val requests = listOf(
             request("ep1", "show/episode-1"),
             request("ep2", "show/episode-2"),
         )
         val captured = listOf(
             MediaAuthRefreshPolicy.CapturedPlaylist(
-                url = "https://site.example/episode-2/master.m3u8",
-                logicalIdentity = "show/episode-2",
+                url = "https://site.example/ep2.m3u8",
+                pageUrl = "https://site.example/watch?episode=ep2",
             ),
             MediaAuthRefreshPolicy.CapturedPlaylist(
-                url = "https://site.example/episode-1/master.m3u8",
-                logicalIdentity = "show/episode-1",
+                url = "https://site.example/ep1.m3u8",
+                pageUrl = "https://site.example/watch?episode=ep1",
             ),
         )
 
         val assigned = MediaAuthRefreshPolicy.assignCapture(captured, requests)
 
-        assertEquals("https://site.example/episode-1/master.m3u8", assigned["ep1"])
-        assertEquals("https://site.example/episode-2/master.m3u8", assigned["ep2"])
+        assertEquals("https://site.example/ep1.m3u8", assigned["ep1"])
+        assertEquals("https://site.example/ep2.m3u8", assigned["ep2"])
         assertEquals(2, assigned.size)
     }
 
@@ -277,63 +379,199 @@ class MediaAuthRefreshPolicyTest {
         )
         val captured = listOf(
             MediaAuthRefreshPolicy.CapturedPlaylist(
-                url = "https://site.example/episode-1/master.m3u8",
-                logicalIdentity = "show/episode-1",
+                url = "https://site.example/ep1.m3u8",
+                pageUrl = "https://site.example/watch?episode=ep1",
             ),
         )
 
         val assigned = MediaAuthRefreshPolicy.assignCapture(captured, requests)
 
-        assertEquals(mapOf("ep1" to "https://site.example/episode-1/master.m3u8"), assigned)
+        assertEquals(mapOf("ep1" to "https://site.example/ep1.m3u8"), assigned)
         assertFalse(assigned.containsKey("ep9"))
     }
 
-    @Test fun oneCaptureIsNeverHandedToTwoTasksAndCapturesAreCaseInsensitive() {
+    @Test fun oneCaptureIsNeverHandedToTwoTasks() {
         val requests = listOf(
             request("a", "show/episode-1"),
             request("b", "show/episode-1"),
         )
         val captured = listOf(
             MediaAuthRefreshPolicy.CapturedPlaylist(
-                url = "https://site.example/episode-1/master.m3u8",
-                logicalIdentity = "Show/Episode-1",
-            ),
-            MediaAuthRefreshPolicy.CapturedPlaylist(
-                url = "https://site.example/episode-1/backup.m3u8",
-                logicalIdentity = "show/episode-1",
+                url = "https://site.example/ep1.m3u8",
+                pageUrl = "https://site.example/watch?episode=ep1",
             ),
         )
 
         val assigned = MediaAuthRefreshPolicy.assignCapture(captured, requests)
 
-        assertEquals("https://site.example/episode-1/master.m3u8", assigned["a"])
-        assertEquals("https://site.example/episode-1/backup.m3u8", assigned["b"])
+        // Two tasks claim the same address and no identity distinguishes them,
+        // so neither gets it: a guess here would bind one task to the other's
+        // media.
+        assertTrue(assigned.isEmpty())
     }
 
-    @Test fun captureFromAnotherOriginNeverSatisfiesARequest() {
+    @Test fun captureFromAnotherSiteNeverSatisfiesARequest() {
         val requests = listOf(
             request("ep1", "show/episode-1", pageUrl = "https://site.example/watch?episode=1"),
         )
         val captured = listOf(
             MediaAuthRefreshPolicy.CapturedPlaylist(
-                url = "https://third-party-cdn.example/episode-1/master.m3u8",
-                logicalIdentity = "show/episode-1",
+                url = "https://third-party-cdn.example/ep1.m3u8",
+                pageUrl = "https://site.example/watch?episode=1",
             ),
         )
 
         assertTrue(MediaAuthRefreshPolicy.assignCapture(captured, requests).isEmpty())
     }
 
-    @Test fun blankLogicalIdentityNeverMatches() {
-        val requests = listOf(request("legacy", ""))
+    @Test fun aCaptureMustAlsoAgreeWithThePageThatAskedForIt() {
+        val requests = listOf(request("ep1", "show/episode-1"))
         val captured = listOf(
             MediaAuthRefreshPolicy.CapturedPlaylist(
-                url = "https://site.example/any.m3u8",
-                logicalIdentity = "",
+                url = "https://site.example/ep1.m3u8",
+                pageUrl = "https://other.example/watch?episode=1",
             ),
         )
 
         assertTrue(MediaAuthRefreshPolicy.assignCapture(captured, requests).isEmpty())
+    }
+
+    @Test fun blankLogicalIdentityDoesNotStopTheAddressFromOwningTheCapture() {
+        val requests = listOf(
+            request("ep1", "show/episode-1"),
+            request("legacy", ""),
+        )
+        val captured = listOf(
+            MediaAuthRefreshPolicy.CapturedPlaylist(
+                url = "https://site.example/ep1.m3u8",
+                pageUrl = "https://site.example/watch?episode=ep1",
+            ),
+        )
+
+        val assigned = MediaAuthRefreshPolicy.assignCapture(captured, requests)
+
+        assertEquals(mapOf("ep1" to "https://site.example/ep1.m3u8"), assigned)
+    }
+
+    @Test fun aTransportArtefactIsNeverAssignedEvenWhenItIsThePagesOwnRequest() {
+        val requests = listOf(request("ep1", "show/episode-1"))
+        val captured = listOf(
+            MediaAuthRefreshPolicy.CapturedPlaylist(
+                url = "https://site.example/seg-0001.ts",
+                pageUrl = "https://site.example/watch?episode=ep1",
+            ),
+        )
+
+        assertTrue(MediaAuthRefreshPolicy.assignCapture(captured, requests).isEmpty())
+    }
+
+    @Test fun aSignatureRefreshKeepsTheOwnersTaskAndDropsTheStaleQuery() {
+        val requests = listOf(
+            request(
+                id = "ep1",
+                logicalIdentity = "show/episode-1",
+                mediaUrl = "https://site.example/ep1.m3u8?token=STALE",
+            ),
+        )
+        val captured = listOf(
+            MediaAuthRefreshPolicy.CapturedPlaylist(
+                url = "https://site.example/ep1.m3u8?token=FRESH",
+                pageUrl = "https://site.example/watch?episode=ep1",
+            ),
+        )
+
+        val assigned = MediaAuthRefreshPolicy.assignCapture(captured, requests)
+
+        assertEquals(
+            "https://site.example/ep1.m3u8?token=FRESH",
+            assigned["ep1"],
+        )
+    }
+
+    @Test fun aPlaylistOnAnotherPathIsNeverTheRequestsOwnAddress() {
+        val requests = listOf(
+            request("ep1", "show/episode-1", mediaUrl = "https://site.example/ep1.m3u8"),
+        )
+        val captured = listOf(
+            MediaAuthRefreshPolicy.CapturedPlaylist(
+                url = "https://site.example/ep2.m3u8",
+                pageUrl = "https://site.example/watch?episode=ep1",
+            ),
+        )
+
+        assertTrue(MediaAuthRefreshPolicy.assignCapture(captured, requests).isEmpty())
+    }
+
+    /**
+     * The batch path, exactly as the service runs it.
+     *
+     * `refreshBatch` asks each page origin once under its own probe identity
+     * (`refresh:<pageUrl>`), records the capture against that page, and hands
+     * everything to [MediaAuthRefreshPolicy.finishBatch]. The capture must
+     * still reach the task whose resource it is — the defect this test exists
+     * for was a capture that matched no task at all, because the only identity
+     * it carried was the probe.
+     */
+    @Test fun aBatchCaptureReachesItsOwnerThroughTheServicesOwnProbeIdentity() {
+        val page = "https://site.example/watch"
+        val requests = listOf(
+            request("ep1", "show/episode-1", pageUrl = page, mediaUrl = "https://site.example/ep1.m3u8"),
+            request("ep2", "show/episode-2", pageUrl = page, mediaUrl = "https://site.example/ep2.m3u8"),
+        )
+        val probe = NativeMediaAuthRefreshService.probeIdentity(page)
+
+        // The probe names no task, which is the whole point of it.
+        assertFalse(probe == "show/episode-1")
+        assertFalse(probe == "show/episode-2")
+
+        val finished = MediaAuthRefreshPolicy.finishBatch(
+            requests = requests,
+            captured = listOf(
+                MediaAuthRefreshPolicy.CapturedPlaylist(
+                    url = "https://site.example/ep2.m3u8?token=FRESH",
+                    pageUrl = page,
+                ),
+            ),
+            cookieChanged = false,
+        )
+
+        assertEquals("refreshed", finished.getValue("ep2").state)
+        assertEquals(
+            "https://site.example/ep2.m3u8?token=FRESH",
+            finished.getValue("ep2").mediaUrl,
+        )
+        // The other member of the same page load is answered, not guessed at.
+        assertEquals("reauthorize", finished.getValue("ep1").state)
+        assertNull(finished.getValue("ep1").mediaUrl)
+    }
+
+    @Test fun aBatchCaptureOnACdnHostStillReachesItsOwner() {
+        val page = "https://site.example/series"
+        val requests = listOf(
+            request(
+                "ep1",
+                "show/episode-1",
+                pageUrl = page,
+                mediaUrl = "https://cdn.site.example/ep1/master.m3u8?token=STALE",
+            ),
+        )
+
+        val finished = MediaAuthRefreshPolicy.finishBatch(
+            requests = requests,
+            captured = listOf(
+                MediaAuthRefreshPolicy.CapturedPlaylist(
+                    url = "https://cdn.site.example/ep1/master.m3u8?token=FRESH",
+                    pageUrl = page,
+                ),
+            ),
+            cookieChanged = false,
+        )
+
+        assertEquals("refreshed", finished.getValue("ep1").state)
+        assertEquals(
+            "https://cdn.site.example/ep1/master.m3u8?token=FRESH",
+            finished.getValue("ep1").mediaUrl,
+        )
     }
 
     // ---- same-origin batching -------------------------------------------
@@ -443,98 +681,7 @@ class MediaAuthRefreshPolicyTest {
         )
     }
 
-    // ---- batch plan: one capture slot per page-load origin ----------------
-
-    @Test fun onePageLoadServesEveryTaskSharingItsPageOrigin() {
-        val requests = listOf(
-            request("ep1", "show/episode-1", pageUrl = "https://site.example/series"),
-            request("ep2", "show/episode-2", pageUrl = "https://site.example/watch?e=2"),
-            request("other", "show/episode-3", pageUrl = "https://other.example/series"),
-        )
-
-        val plan = MediaAuthRefreshPolicy.capturePlan(requests)
-
-        // Two page origins -> two capture slots; the same-origin tasks share
-        // slot 0, so one load can answer both.
-        assertEquals(2, plan.slots.size)
-        assertEquals(listOf("ep1", "ep2"), plan.slots[0].requests.map { it.taskId })
-        assertEquals(listOf("other"), plan.slots[1].requests.map { it.taskId })
-        assertEquals(2, plan.freeSlots)
-    }
-
-    @Test fun anAdoptedTaskLeavesTheSlotSoOneTaskIsAnsweredOnce() {
-        val requests = listOf(
-            request("ep1", "show/episode-1"),
-            request("ep2", "show/episode-2"),
-            request("ep3", "show/episode-3"),
-        )
-
-        val answered = MediaAuthRefreshPolicy.capturePlan(
-            requests,
-            MediaAuthRefreshPolicy.PlanProgress(
-                assignments = mapOf("ep1" to "https://site.example/ep1.m3u8"),
-            ),
-        )
-
-        assertEquals(listOf("ep2", "ep3"), answered.slots.single().requests.map { it.taskId })
-    }
-
-    @Test fun aSecondCaptureOnTheSameLoadAnswersTheRemainingTasks() {
-        val requests = listOf(
-            request("ep1", "show/episode-1"),
-            request("ep2", "show/episode-2"),
-        )
-        val firstCapture = listOf(
-            MediaAuthRefreshPolicy.CapturedPlaylist(
-                url = "https://site.example/episode-1/master.m3u8",
-                logicalIdentity = "show/episode-1",
-            ),
-        )
-
-        val plan = MediaAuthRefreshPolicy.capturePlan(
-            requests,
-            MediaAuthRefreshPolicy.PlanProgress(
-                assignments = mapOf("ep1" to firstCapture.single().url),
-                captured = firstCapture,
-            ),
-        )
-
-        // The slot is still open for ep2 and already holds ep1's capture.
-        assertEquals(listOf("ep2"), plan.slots.single().requests.map { it.taskId })
-        assertEquals(firstCapture, plan.slots.single().captured)
-        assertEquals(1, plan.freeSlots)
-    }
-
-    @Test fun capturelandsOnlyInTheSlotOfItsOwnOrigin() {
-        val requests = listOf(
-            request("a", "show/a", pageUrl = "https://site.example/watch"),
-            request("b", "show/b", pageUrl = "https://other.example/watch"),
-        )
-        val plan = MediaAuthRefreshPolicy.capturePlan(requests)
-
-        val slot = plan.slotFor("https://other.example/master.m3u8")
-
-        assertEquals(1, slot)
-        assertEquals(null, plan.slotFor("https://third.example/master.m3u8"))
-    }
-
-    @Test fun anOriginWhoseLoadEndedNoLongerAcceptsCaptures() {
-        val requests = listOf(
-            request("a", "show/a", pageUrl = "https://site.example/watch"),
-            request("b", "show/b", pageUrl = "https://other.example/watch"),
-        )
-        val plan = MediaAuthRefreshPolicy.capturePlan(
-            requests,
-            MediaAuthRefreshPolicy.PlanProgress(
-                assignments = emptyMap(),
-                settledOrigins = setOf("https://other.example/watch"),
-            ),
-        )
-
-        assertEquals(1, plan.freeSlots)
-        assertEquals(null, plan.slotFor("https://other.example/master.m3u8"))
-        assertEquals(0, plan.slotFor("https://site.example/master.m3u8"))
-    }
+    // ---- batch close-out --------------------------------------------------
 
     @Test fun anUnansweredOriginSettlesAsPageRequiredInsteadOfBorrowingAnotherUrl() {
         val requests = listOf(
@@ -545,62 +692,18 @@ class MediaAuthRefreshPolicyTest {
             requests = requests,
             captured = listOf(
                 MediaAuthRefreshPolicy.CapturedPlaylist(
-                    url = "https://site.example/episode-1/master.m3u8",
-                    logicalIdentity = "show/episode-1",
+                    url = "https://site.example/ep1.m3u8",
+                    pageUrl = "https://site.example/watch?episode=ep1",
                 ),
             ),
             cookieChanged = true,
         )
 
         assertEquals("refreshed", finished.getValue("ep1").state)
-        assertEquals("https://site.example/episode-1/master.m3u8", finished.getValue("ep1").mediaUrl)
+        assertEquals("https://site.example/ep1.m3u8", finished.getValue("ep1").mediaUrl)
         assertEquals("unchanged", finished.getValue("ep9").state)
         assertEquals(null, finished.getValue("ep9").mediaUrl)
         assertEquals("unchanged", finished.getValue("ep9").reason)
-    }
-
-    @Test fun aBatchCaptureAsksTheOriginRatherThanOneTaskAndStillReachesItsOwner() {
-        val requests = listOf(
-            request("ep1", "show/episode-1"),
-            request("ep2", "show/episode-2"),
-        )
-        val probe = MediaAuthRefreshPolicy.captureProbeIdentity(requests)
-
-        // The load's own identity must not be able to steal the capture from
-        // the task that actually owns it.
-        assertFalse(probe == "show/episode-1")
-        assertFalse(probe == "show/episode-2")
-        assertEquals(
-            emptyMap<String, String>(),
-            MediaAuthRefreshPolicy.assignCapture(
-                listOf(
-                    MediaAuthRefreshPolicy.CapturedPlaylist(
-                        "https://site.example/episode-2/master.m3u8",
-                        probe,
-                    ),
-                ),
-                requests,
-            ),
-        )
-
-        val finished = MediaAuthRefreshPolicy.finishBatch(
-            requests = requests,
-            captured = listOf(
-                MediaAuthRefreshPolicy.CapturedPlaylist(
-                    url = "https://site.example/episode-2/master.m3u8",
-                    logicalIdentity = "show/episode-2",
-                ),
-            ),
-            cookieChanged = false,
-        )
-
-        assertEquals("refreshed", finished.getValue("ep2").state)
-        assertEquals(
-            "https://site.example/episode-2/master.m3u8",
-            finished.getValue("ep2").mediaUrl,
-        )
-        assertEquals("reauthorize", finished.getValue("ep1").state)
-        assertEquals(null, finished.getValue("ep1").mediaUrl)
     }
 
     @Test fun aSettledBatchWithoutCookieChangeRequiresThePageForUnansweredTasks() {
@@ -627,6 +730,60 @@ class MediaAuthRefreshPolicyTest {
         val distinct = MediaAuthRefreshPolicy.captureDigest("https://cdn.example/a/show.m3u8")
         assertFalse(
             distinct == MediaAuthRefreshPolicy.captureDigest("https://cdn.example/b/show.m3u8"),
+        )
+    }
+
+    // ---- narrowed refresh cache ------------------------------------------
+
+    @Test fun theRefreshCacheIsKeyedByTheTaskAndItsPage() {
+        // A second retry may only see the answer for the task that asked: the
+        // key separates tasks on one page and separates pages of one task.
+        val first = NativeMediaAuthRefreshService.Request(
+            taskId = "ep1",
+            pageUrl = "https://site.example/watch?episode=1",
+            mediaUrl = "https://site.example/ep1.m3u8",
+            resourceKey = "",
+            logicalIdentity = "show/episode-1",
+            callback = { _ -> },
+        )
+        val second = first.copy(taskId = "ep2", logicalIdentity = "show/episode-2")
+        val otherPage = first.copy(
+            pageUrl = "https://site.example/watch?episode=2",
+        )
+
+        assertNotEquals(
+            NativeMediaAuthRefreshService.recentRefreshKey(first),
+            NativeMediaAuthRefreshService.recentRefreshKey(second),
+        )
+        assertNotEquals(
+            NativeMediaAuthRefreshService.recentRefreshKey(first),
+            NativeMediaAuthRefreshService.recentRefreshKey(otherPage),
+        )
+        val reloaded = first.copy(
+            taskId = "ep1-reload",
+            mediaUrl = "https://site.example/other.m3u8",
+        )
+        assertEquals(
+            "the key is the logical identity and the page, not the task row or the address",
+            NativeMediaAuthRefreshService.recentRefreshKey(first),
+            NativeMediaAuthRefreshService.recentRefreshKey(reloaded),
+        )
+    }
+
+    @Test fun aBatchProbeIdentityIsNeverAReplayableCapture() {
+        // The batch asks the page under a probe identity; a probe has no task to
+        // hand anything to, so its cached answer can never become a task's
+        // `unchanged` or `refreshed` without looking again.
+        assertEquals(
+            "refresh:https://site.example/watch",
+            NativeMediaAuthRefreshService.probeIdentity(" https://site.example/watch "),
+        )
+        assertTrue(
+            NativeMediaAuthRefreshService.probeIdentity("https://site.example/watch")
+                .startsWith(NativeMediaAuthRefreshService.PROBE_IDENTITY_PREFIX),
+        )
+        assertFalse(
+            "show/episode-1".startsWith(NativeMediaAuthRefreshService.PROBE_IDENTITY_PREFIX),
         )
     }
 }

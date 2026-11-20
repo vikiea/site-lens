@@ -8,7 +8,7 @@ Use behavior as the primary signal. Use these paths as conservative fallbacks wh
 | --- | --- | --- |
 | L0 | Documentation, agent guidance, focused tests, local tooling tests, isolated userscript or contract fixture changes | Targeted `flutter analyze`, selected `flutter test`, Node/Python contract, or userscript validation |
 | L1 | Ordinary Dart, UI, network, discovery, script service, database service, dependency, or Makefile changes | `./tool/check.sh` / `make check` |
-| L2 | WebView, browser navigation, scripts executing in a page, Pigeon, native host, media bridge, or cross-layer integration | `make check` plus `make check-native` (Android JVM unit tests for native policy objects), then a targeted host contract or protected integration flow when the behavior needs a device |
+| L2 | WebView, browser navigation, scripts executing in a page, Pigeon, native host, media bridge, or cross-layer integration | `make check` plus `make check-native` (Android JVM unit tests for native policy objects), then a targeted host contract or protected integration flow when the behavior needs a device. `./tool/verify_level.py --level L2` runs the JVM stage itself and skips it only under `--no-native`, which must be stated in the evidence. `make check` never contains the JVM stage. |
 | L3 | Android lifecycle, database backup/restore, full acceptance, media/system controls, device tooling, or end-to-end user flow | `make acceptance DEVICE=...` on an available emulator or physical device; record target type |
 | L4 | Release package identity, signing/certificate, formal build configuration, CI build gate, or release/version behavior | Formal APK verification plus L3 evidence when a device is required |
 

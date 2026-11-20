@@ -48,13 +48,10 @@ class NativeMediaAuthRefresh {
     MediaTask task,
     MediaCandidate candidate,
   ) async {
-    final raw = await _channel.invokeMapMethod<String, Object?>('refresh', {
-      'taskId': task.id,
-      'pageUrl': task.sourceUrl.toString(),
-      'mediaUrl': candidate.mediaUrl.toString(),
-      'resourceKey': task.resourceKey,
-      'logicalIdentity': mediaCandidateLogicalIdentity(candidate),
-    });
+    final raw = await _channel.invokeMapMethod<String, Object?>(
+      'refresh',
+      MediaAuthorizationRefreshRequest.fromCandidate(task, candidate).toMap(),
+    );
     return _result(raw);
   }
 
@@ -68,16 +65,7 @@ class NativeMediaAuthRefresh {
   ) async {
     if (batch.isEmpty) return <MediaAuthorizationRefreshResult>[];
     final raw = await _channel.invokeMethod<Object?>('refreshBatch', {
-      'requests': [
-        for (final request in batch)
-          {
-            'taskId': request.taskId,
-            'pageUrl': request.pageUrl.toString(),
-            'mediaUrl': request.mediaUrl.toString(),
-            'resourceKey': request.resourceKey,
-            'logicalIdentity': request.logicalIdentity,
-          },
-      ],
+      'requests': [for (final request in batch) request.toMap()],
     });
     final results = raw is Map ? raw['results'] : null;
     if (results is! List) return <MediaAuthorizationRefreshResult>[];
@@ -149,4 +137,14 @@ class MediaAuthorizationRefreshRequest {
   final Uri mediaUrl;
   final String logicalIdentity;
   final String resourceKey;
+
+  /// The channel fields, in the one spelling both `refresh` and `refreshBatch`
+  /// send: a field added later cannot reach only one of them.
+  Map<String, Object?> toMap() => {
+    'taskId': taskId,
+    'pageUrl': pageUrl.toString(),
+    'mediaUrl': mediaUrl.toString(),
+    'resourceKey': resourceKey,
+    'logicalIdentity': logicalIdentity,
+  };
 }

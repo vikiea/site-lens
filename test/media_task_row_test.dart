@@ -332,15 +332,15 @@ void main() {
       );
       bridge.answer = (value) => const MediaAuthorizationRefreshResult(
         state: 'reauthorize',
-        reason: '授权状态未更新，请返回播放页重新授权',
+        reason: '授权状态未更新，请返回来源页重新授权',
       );
       await pumpScreen(tester);
 
       await tester.tap(find.text('点击重试').first);
       await tester.pumpAndSettle();
 
-      expect(find.text('授权状态未更新，请返回播放页重新授权'), findsOneWidget);
-      expect(find.widgetWithText(SnackBarAction, '打开来源页'), findsOneWidget);
+      expect(find.text('授权状态未更新，请返回来源页重新授权'), findsOneWidget);
+      expect(find.widgetWithText(TextButton, '打开来源页'), findsOneWidget);
       expect(
         app.mediaTasks.task(task.id)!.state,
         MediaTaskState.reauthorize,
@@ -367,7 +367,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('授权未变化：页面未重新请求主清单'), findsOneWidget);
-      expect(find.widgetWithText(SnackBarAction, '打开来源页'), findsOneWidget);
+      expect(find.widgetWithText(TextButton, '打开来源页'), findsOneWidget);
       expect(app.mediaTasks.task(task.id)!.state, MediaTaskState.reauthorize);
     });
   });

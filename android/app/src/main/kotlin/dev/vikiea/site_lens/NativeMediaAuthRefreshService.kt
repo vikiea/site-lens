@@ -53,7 +53,6 @@ class NativeMediaAuthRefreshService : Service() {
     private val postedRequests = AtomicInteger(0)
 
     /** The page origin this service lifetime is bound to. One origin per run. */
-    private var sessionPageOrigin: String? = null
     private var sessionCookieBaseline = ""
     private val sessionCaptures = mutableListOf<MediaAuthRefreshPolicy.CapturedPlaylist>()
 
@@ -171,22 +170,26 @@ class NativeMediaAuthRefreshService : Service() {
             refreshRequest.resourceKey.matches(Regex("[0-9a-f]{64}"))) {
             "媒体资源身份无效"
         }
-        sessionPageOrigin = pageOrigin
         sessionCaptures.clear()
 
         // A load of this page that already updated the cookie is only evidence
         // that the cookie is current; it says nothing about the media address,
-        // so it can never stand in for a capture.
+        // so it can never stand in for a capture. Only a replay of this exact
+        // task's own capture may answer without loading the page.
         val currentCookie = CookieManager.getInstance().getCookie(request.pageUrl).orEmpty()
-        if (recentRefresh(pageOrigin, currentCookie)) {
-            main.post {
-                finish(
-                    token,
-                    refreshRequest.callback,
-                    result("unchanged", "授权状态在当前页面仍然有效"),
-                )
+        when (val cached = recentRefresh(recentRefreshKey(refreshRequest), currentCookie)) {
+            is RecentRefresh.Captured -> {
+                main.post {
+                    finish(token, refreshRequest.callback, capturedReplay(refreshRequest, cached))
+                }
+                return
             }
-            return
+            is RecentRefresh.CookieOnly -> {
+                // The task never saw an address, so a recent cookie change must
+                // not turn its retry into `unchanged` without looking again.
+                forgetRefresh(recentRefreshKey(refreshRequest))
+            }
+            null -> Unit
         }
 
         val view = WebView(applicationContext)
@@ -328,7 +331,7 @@ class NativeMediaAuthRefreshService : Service() {
         sessionCaptures.add(
             MediaAuthRefreshPolicy.CapturedPlaylist(
                 url = outcome.mediaUrl,
-                logicalIdentity = request.logicalIdentity,
+                pageUrl = request.pageUrl,
             ),
         )
         Log.i(
@@ -338,7 +341,9 @@ class NativeMediaAuthRefreshService : Service() {
         )
         val cookie = CookieManager.getInstance().getCookie(request.pageUrl).orEmpty()
         val cookieChanged = cookie != sessionCookieBaseline
-        if (cookieChanged) rememberRefresh(pageOrigin, cookie)
+        if (cookieChanged || !captureReplayAllowed(request)) {
+            rememberRefresh(recentRefreshKey(request), cookie, outcome.mediaUrl.takeIf { captureReplayAllowed(request) })
+        }
         finish(
             token,
             request.callback,
@@ -367,7 +372,7 @@ class NativeMediaAuthRefreshService : Service() {
             runCatching { CookieManager.getInstance().flush() }
             val cookie = CookieManager.getInstance().getCookie(request.pageUrl).orEmpty()
             val cookieChanged = cookie != initialCookie
-            if (cookieChanged) rememberRefresh(pageOrigin, cookie)
+            if (cookieChanged) rememberRefresh(recentRefreshKey(request), cookie, null)
             // The page settled without asking for a playlist: hand the verdict
             // to the policy, which reports unchanged or page-required. A cookie
             // change alone is never a refreshed address.
@@ -567,10 +572,46 @@ class NativeMediaAuthRefreshService : Service() {
         /** Diagnostic reported with an adopted address that carries a signature. */
         const val DIAGNOSTIC_SIGNED_ADDRESS = "media_url_has_unknown_query"
 
+        /**
+         * Prefix of the identity a batch page load is asked under.
+         *
+         * The load is shared by every task on the page, so it cannot name one:
+         * the prefix keeps a probe out of the task cache, and the policy hands
+         * the capture to its real owner by address.
+         */
+        internal const val PROBE_IDENTITY_PREFIX = "refresh:"
+
+        internal fun probeIdentity(pageUrl: String): String = PROBE_IDENTITY_PREFIX + pageUrl.trim()
+
         private var instance: NativeMediaAuthRefreshService? = null
         private val pendingLock = Any()
         private val pending = ArrayDeque<Request>()
-        private data class RecentRefresh(val cookie: String, val expiresAt: Long)
+        /**
+         * What a recent load by one task may replay.
+         *
+         * [Captured] carries the address that task's own load adopted, so a
+         * repeat of the same task can be answered immediately. [CookieOnly]
+         * records that the load changed cookies without producing an address;
+         * it can never answer a retry, because a task that never saw an address
+         * must not be told its authorization is unchanged.
+         */
+        private sealed class RecentRefresh {
+            abstract val cookie: String
+            abstract val expiresAt: Long
+
+            data class Captured(
+                override val cookie: String,
+                override val expiresAt: Long,
+                val mediaUrl: String,
+            ) : RecentRefresh()
+
+            data class CookieOnly(
+                override val cookie: String,
+                override val expiresAt: Long,
+            ) : RecentRefresh()
+        }
+
+        /** Recent loads, keyed by the task that asked for them. */
         private val recentRefreshes = mutableMapOf<String, RecentRefresh>()
         private val refreshLock = Any()
 
@@ -683,23 +724,20 @@ class NativeMediaAuthRefreshService : Service() {
                     members.firstOrNull { it.taskId == identity.taskId } ?: lead
                 }
                 // One question per origin: did the page hand over a main
-                // playlist? It is asked once, under a probe identity that no
-                // task can match, so finishBatch() may hand the capture to
-                // whichever member it actually belongs to and answer the others
-                // from the same load.
-                val probe = pageRequests.first()
+                // playlist? The load is shared by every task on the page, so it
+                // is asked under the page's own probe identity and the capture
+                // records the page it came from; finishBatch() then hands it to
+                // the one member whose address it replaces.
                 refresh(
                     context,
                     Request(
-                        taskId = probe.taskId,
+                        taskId = lead.taskId,
                         pageUrl = pageUrl,
-                        mediaUrl = probe.mediaUrl,
-                        resourceKey = probe.resourceKey,
-                        logicalIdentity = MediaAuthRefreshPolicy.captureProbeIdentity(
-                            pageRequests.map { it.identity() },
-                        ),
+                        mediaUrl = lead.mediaUrl,
+                        resourceKey = lead.resourceKey,
+                        logicalIdentity = probeIdentity(pageUrl),
                     ) { value ->
-                        val captured = captureOf(value, probe)
+                        val captured = captureOf(value, pageUrl)
                         val cookieChanged = !pageRequires(value)
                         val outcomes = MediaAuthRefreshPolicy.finishBatch(
                             requests = pageRequests.map { it.identity() },
@@ -724,14 +762,22 @@ class NativeMediaAuthRefreshService : Service() {
             }
         }
 
+        /**
+         * The capture a batch load produced, attributed to the page it came
+         * from.
+         *
+         * The load is shared, so the capture cannot be attributed to the task
+         * that happened to carry the load; [pageUrl] is the only fact the service
+         * knows for certain, and the policy derives the owner from the address.
+         */
         private fun captureOf(
             value: Map<String, Any?>,
-            request: Request,
+            pageUrl: String,
         ): MediaAuthRefreshPolicy.CapturedPlaylist? {
             if (value["state"] != MediaAuthRefreshPolicy.STATE_REFRESHED) return null
             val url = value["mediaUrl"] as? String ?: return null
             if (url.isBlank()) return null
-            return MediaAuthRefreshPolicy.CapturedPlaylist(url, request.logicalIdentity)
+            return MediaAuthRefreshPolicy.CapturedPlaylist(url, pageUrl)
         }
 
         private fun batchResult(
@@ -769,25 +815,67 @@ class NativeMediaAuthRefreshService : Service() {
             queued.forEach(service::postRequest)
         }
 
-        private fun recentRefresh(origin: String, cookie: String): Boolean {
+        /**
+         * The cache key: one task, on one page.
+         *
+         * A refresh is only ever answerable for the task that asked for it, so
+         * the key is the task's own identity together with its page. A batch
+         * member inherits the load's key, which is why the batch marks its
+         * synthesized probe identity as one that may carry a capture.
+         */
+        internal fun recentRefreshKey(request: Request): String =
+            request.logicalIdentity.trim() + "|" + request.pageUrl.trim()
+
+        private fun captureReplayAllowed(request: Request): Boolean =
+            !request.logicalIdentity.startsWith(PROBE_IDENTITY_PREFIX)
+
+        /**
+         * A cached capture, replayed for the same task that adopted it.
+         *
+         * The address is this task's own adopted address, so the retry adopts
+         * exactly what the earlier load produced; nothing new is learned and
+         * nothing is re-authorized on another task's behalf.
+         */
+        private fun capturedReplay(
+            request: Request,
+            cached: RecentRefresh.Captured,
+        ): Map<String, Any?> = result(
+            MediaAuthRefreshPolicy.STATE_REFRESHED,
+            null,
+            buildMap {
+                put("taskId", request.taskId)
+                put("logicalIdentity", request.logicalIdentity)
+                put("resourceKey", request.resourceKey)
+                put("mediaUrl", cached.mediaUrl)
+                put("replayedCapture", true)
+            },
+        )
+
+        private fun recentRefresh(key: String, cookie: String): RecentRefresh? {
             val now = SystemClock.uptimeMillis()
             synchronized(refreshLock) {
-                val cached = recentRefreshes[origin]
+                val cached = recentRefreshes[key]
                 if (cached == null || cached.expiresAt <= now) {
-                    recentRefreshes.remove(origin)
-                    return false
+                    recentRefreshes.remove(key)
+                    return null
                 }
-                return cached.cookie == cookie
+                return cached.takeIf { it.cookie == cookie }
             }
         }
 
-        private fun rememberRefresh(origin: String, cookie: String) {
+        private fun rememberRefresh(key: String, cookie: String, mediaUrl: String?) {
             synchronized(refreshLock) {
-                recentRefreshes[origin] = RecentRefresh(
-                    cookie,
-                    SystemClock.uptimeMillis() + RECENT_REFRESH_TTL_MS,
-                )
+                val expiresAt = SystemClock.uptimeMillis() + RECENT_REFRESH_TTL_MS
+                recentRefreshes[key] = if (mediaUrl.isNullOrBlank()) {
+                    RecentRefresh.CookieOnly(cookie, expiresAt)
+                } else {
+                    RecentRefresh.Captured(cookie, expiresAt, mediaUrl)
+                }
             }
+        }
+
+        private fun forgetRefresh(key: String) {
+            synchronized(refreshLock) { recentRefreshes.remove(key) }
         }
 
         private fun parseHttp(raw: String): Uri? = runCatching {

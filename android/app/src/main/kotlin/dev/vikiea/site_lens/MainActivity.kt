@@ -349,29 +349,32 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun authRefreshRequest(call: MethodCall): NativeMediaAuthRefreshService.Request? {
-        val taskId = call.argument<String>("taskId")?.trim().orEmpty()
+    /**
+     * The one place a single refresh argument map is read.
+     *
+     * Both channel shapes (a method-call map and one entry of a batch list)
+     * carry exactly the same fields, so they share this reader: a field added
+     * later cannot be understood by one path and silently dropped by the other.
+     */
+    private fun authRefreshRequest(call: MethodCall): NativeMediaAuthRefreshService.Request? =
+        authRefreshRequest(call.arguments as? Map<*, *>)
+
+    private fun authRefreshRequest(args: Map<*, *>?): NativeMediaAuthRefreshService.Request? {
+        if (args == null) return null
+        val taskId = args.authRefreshField("taskId").orEmpty()
         return authRefreshRequest(
             taskId = taskId,
-            pageUrl = call.argument<String>("pageUrl")?.trim().orEmpty(),
-            mediaUrl = call.argument<String>("mediaUrl")?.trim().orEmpty(),
-            resourceKey = call.argument<String>("resourceKey")?.trim().orEmpty(),
-            logicalIdentity = call.argument<String>("logicalIdentity")?.trim()
+            pageUrl = args.authRefreshField("pageUrl").orEmpty(),
+            mediaUrl = args.authRefreshField("mediaUrl").orEmpty(),
+            resourceKey = args.authRefreshField("resourceKey").orEmpty(),
+            logicalIdentity = args.authRefreshField("logicalIdentity")
                 ?: zeroWidthLogicalIdentity(taskId),
         )
     }
 
-    private fun authRefreshRequest(args: Map<String, Any?>): NativeMediaAuthRefreshService.Request? {
-        val taskId = (args["taskId"] as? String)?.trim().orEmpty()
-        return authRefreshRequest(
-            taskId = taskId,
-            pageUrl = (args["pageUrl"] as? String)?.trim().orEmpty(),
-            mediaUrl = (args["mediaUrl"] as? String)?.trim().orEmpty(),
-            resourceKey = (args["resourceKey"] as? String)?.trim().orEmpty(),
-            logicalIdentity = (args["logicalIdentity"] as? String)?.trim()
-                ?: zeroWidthLogicalIdentity(taskId),
-        )
-    }
+    /** One trimmed string field, or `null` when it is absent or not a string. */
+    private fun Map<*, *>.authRefreshField(key: String): String? =
+        (this[key] as? String)?.trim()
 
     private fun authRefreshRequest(
         taskId: String,

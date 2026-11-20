@@ -415,7 +415,7 @@ void main() {
       expect(outcome.kind, MediaRetryOutcomeKind.resumed);
       expect(outcome.message, '已开始续传');
       expect(outcome.offersSourcePage, isFalse);
-      expect(outcome.leavesTaskUntouched, isFalse);
+      expect(outcome.resumed, isTrue);
       expect(outcome.taskId, h.task.id);
       expect(outcome.task, isNotNull);
     });
@@ -433,7 +433,7 @@ void main() {
       expect(outcome.kind, MediaRetryOutcomeKind.unchanged);
       expect(outcome.message, '授权未变化：页面未重新请求主清单');
       expect(outcome.offersSourcePage, isTrue);
-      expect(outcome.leavesTaskUntouched, isTrue);
+      expect(outcome.task, isNull);
       expect(outcome.task, isNull);
     });
 
@@ -475,7 +475,7 @@ void main() {
       expect(outcome.message, '系统暂不允许后台授权刷新');
     });
 
-    test('a swallowed address still reports 授权未变化', () async {
+    test('a refresh without an address degrades to 需回播放页', () async {
       final h = await pageRequired(
         (task, candidate) =>
             const MediaAuthorizationRefreshResult(state: 'refreshed'),
@@ -483,9 +483,22 @@ void main() {
 
       final outcome = await h.app.retryMediaTaskResult(h.task);
 
-      expect(outcome.kind, MediaRetryOutcomeKind.unchanged);
-      expect(outcome.message, startsWith('授权未变化：'));
+      // The refresh reported success, so the page did answer; an address that
+      // cannot be adopted is the page's hand-over failing, not 授权未变化.
+      expect(outcome.kind, MediaRetryOutcomeKind.requiresPage);
+      expect(outcome.message, contains('来源页'));
+      expect(outcome.message, isNot(startsWith('授权未变化：')));
       expect(outcome.offersSourcePage, isTrue);
+      expect(outcome.task, isNull);
+      expect(
+        (await db.mediaCandidate(h.stored.id))!.mediaUrl,
+        h.stored.mediaUrl,
+        reason: 'nothing is adopted when the address does not pass the gates',
+      );
+      expect(
+        h.app.mediaTasks.task(h.task.id)!.state,
+        MediaTaskState.reauthorize,
+      );
     });
 
     test('the throwing entry point keeps its message', () async {

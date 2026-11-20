@@ -3881,6 +3881,12 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
   }
 
   String? _startupError;
+
+  /// The last retry outcome that still needs the 来源页, kept on the page
+  /// instead of in a snack bar: 需回播放页 and 授权未变化 are states the user
+  /// has to act on later, and a transient bar disappears before they can.
+  MediaRetryOutcome? _retryNotice;
+  final _retryNoticeKey = GlobalKey();
   Future<void> _syncOrganization() async {
     try {
       await widget.app.mediaTasks.ready;
@@ -4219,37 +4225,102 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
     return outcome;
   }
 
-  /// [outcome] as a transient message, with the source-page action only when
-  /// the wording says the page has to hand the media over again.
+  /// Reports [outcome] on the surface that matches its lifetime.
+  ///
+  /// A resumed transfer is a confirmation and stays a short toast. The states
+  /// that need the source page are persistent feedback: they go to the shared
+  /// notice surface with the 打开来源页 action, where they stay readable until
+  /// the user acts on them or dismisses them.
   void _showRetryOutcome(MediaRetryOutcome outcome, {MediaTask? task}) {
-    final sourceUrl = webSourcePageUrl(
-      (task ?? widget.app.mediaTasks.task(outcome.taskId))?.sourceUrl,
-    );
-    final messenger = ScaffoldMessenger.maybeOf(context);
-    final canOfferSourcePage =
-        outcome.offersSourcePage && sourceUrl != null && messenger != null;
-    if (!canOfferSourcePage) {
+    if (!outcome.offersSourcePage) {
+      if (mounted) setState(() => _retryNotice = null);
       showShortToast(context, outcome.message);
       return;
     }
-    messenger
-      ..clearSnackBars()
-      ..showSnackBar(
-        SnackBar(
-          content: Text(outcome.message),
-          action: SnackBarAction(
-            label: mediaTaskSourcePageActionLabel,
-            onPressed: () => unawaited(
-              openMediaTaskSourcePage(
-                context,
-                widget.app,
-                taskId: outcome.taskId,
-                sourceUrl: sourceUrl,
-              ),
-            ),
-          ),
-        ),
+    if (mounted) {
+      setState(() => _retryNotice = outcome);
+      _scrollToRetryNotice();
+    }
+  }
+
+  /// Brings the persistent retry notice into view.
+  ///
+  /// The notice sits above the list, so a retry started from a row far down the
+  /// page would otherwise leave the user reading a row that did not change.
+  void _scrollToRetryNotice() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final context = _retryNoticeKey.currentContext;
+      if (context == null || !mounted) return;
+      Scrollable.ensureVisible(
+        context,
+        duration: const Duration(milliseconds: 200),
+        alignment: 0.1,
       );
+    });
+  }
+
+  /// The kept retry notice, if any, as the shared notice surface.
+  Widget _retryNoticeBanner() {
+    final outcome = _retryNotice;
+    if (outcome == null) return const SizedBox.shrink();
+    final sourceUrl = webSourcePageUrl(
+      widget.app.mediaTasks.task(outcome.taskId)?.sourceUrl,
+    );
+    return Padding(
+      key: _retryNoticeKey,
+      padding: const EdgeInsets.fromLTRB(
+        SiteLensMetrics.pagePadding,
+        12,
+        SiteLensMetrics.pagePadding,
+        0,
+      ),
+      child: SiteLensErrorBanner(
+        text: outcome.message,
+        onDismiss: () => setState(() => _retryNotice = null),
+        action: sourceUrl == null
+            ? null
+            : TextButton(
+                onPressed: () => unawaited(
+                  openMediaTaskSourcePage(
+                    context,
+                    widget.app,
+                    taskId: outcome.taskId,
+                    sourceUrl: sourceUrl,
+                  ),
+                ),
+                child: const Text(mediaTaskSourcePageActionLabel),
+              ),
+      ),
+    );
+  }
+
+  /// Reports every batch retry outcome the same way a single retry is
+  /// reported: one success confirmation for the batch, and one persistent
+  /// notice per task that still needs its 来源页, in task order.
+  ///
+  /// The old code discarded the per-task outcomes and only spoke when *all* of
+  /// them failed, so a mixed batch said nothing about the rows that need the
+  /// page. Only the first notice is kept on the page; the toast names the rest
+  /// so the user knows how many tasks are waiting.
+  void _reportBatchRetry(List<MediaRetryOutcome> outcomes) {
+    if (outcomes.isEmpty) return;
+    final resumed = outcomes.where((outcome) => outcome.resumed).length;
+    final needingPage = [
+      for (final outcome in outcomes)
+        if (outcome.offersSourcePage) outcome,
+    ];
+    if (needingPage.isEmpty) {
+      if (resumed > 0) showShortToast(context, mediaRetryResumedMessage);
+      setState(() => _retryNotice = null);
+      return;
+    }
+    setState(() => _retryNotice = needingPage.first);
+    _scrollToRetryNotice();
+    if (needingPage.length > 1) {
+      showShortToast(context, '${needingPage.length} 个任务需回来源页重新授权媒体');
+    } else if (resumed > 0) {
+      showShortToast(context, mediaRetryResumedMessage);
+    }
   }
 
   /// Opens the task's 来源页 in the app's own browser tab.
@@ -4394,13 +4465,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
             failedIds.add(outcome.taskId);
           }
         }
-        if (mounted && outcomes.isNotEmpty) {
-          final needingPage = outcomes.where((item) => item.offersSourcePage);
-          if (needingPage.length == outcomes.length &&
-              outcomes.every((item) => !item.resumed)) {
-            showShortToast(context, needingPage.first.message);
-          }
-        }
+        if (mounted) _reportBatchRetry(outcomes);
       } else if (eligibleIds.isNotEmpty) {
         final operation = await widget.app.mediaOperations.run(
           kind: 'media_tasks',
@@ -4669,6 +4734,7 @@ class _MediaTasksScreenState extends State<MediaTasksScreen> {
               text: '这里管理媒体任务的下载、播放和导出，可批量暂停、继续、重试、刷新、删除或导出。',
             ),
           ),
+          _retryNoticeBanner(),
           Expanded(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(

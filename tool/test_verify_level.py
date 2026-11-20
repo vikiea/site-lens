@@ -96,7 +96,9 @@ class ValidationPlannerTests(unittest.TestCase):
 
         self.assertEqual(report.exit_code, 2)
         self.assertEqual(report.results[0].status, "passed")
-        self.assertEqual(report.results[1].status, "blocked")
+        self.assertEqual(report.results[1].name, "Android JVM unit tests")
+        self.assertEqual(report.results[1].status, "passed")
+        self.assertEqual(report.results[2].status, "blocked")
 
     def test_passed_manual_evidence_replaces_required_device_stage(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -123,8 +125,9 @@ class ValidationPlannerTests(unittest.TestCase):
         self.assertEqual(report.exit_code, 0)
         self.assertEqual(report.results[0].status, "passed")
         self.assertEqual(report.results[1].status, "passed")
-        self.assertIn("manual evidence", report.results[1].detail)
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(report.results[2].status, "passed")
+        self.assertIn("manual evidence", report.results[2].detail)
+        self.assertEqual(len(calls), 2)
 
     def test_device_preflight_failure_runs_no_stage(self):
         plan = build_plan(["pigeons/web_host.dart"], requested_level="L2", device="emulator-5554")
@@ -138,8 +141,10 @@ class ValidationPlannerTests(unittest.TestCase):
                 report = execute_plan(plan, Path(directory), runner=runner)
         self.assertEqual(report.exit_code, 2)
         self.assertEqual(report.results[0].status, "passed")
-        self.assertEqual(report.results[1].status, "blocked")
-        runner.assert_called_once()
+        self.assertEqual(report.results[-1].status, "blocked")
+        # `make check` and the JVM policy tests still run; only the device
+        # stage is blocked.
+        self.assertEqual(runner.call_count, 2)
 
     def test_missing_adb_is_an_environment_failure(self):
         with patch.object(runner_module.shutil, "which", return_value=None):
@@ -150,6 +155,40 @@ class ValidationPlannerTests(unittest.TestCase):
         plan = build_plan(["pigeons/web_host.dart"], requested_level="L2", device="emulator-5554")
         device_stage = next(stage for stage in plan.stages if stage.requires_device)
         self.assertFalse(device_stage.cacheable)
+
+    def test_l2_runs_the_android_jvm_policy_tests(self):
+        plan = build_plan(["pigeons/web_host.dart"], requested_level="L2")
+        names = [stage.name for stage in plan.stages]
+        self.assertEqual(names[0], "full local check")
+        self.assertIn("Android JVM unit tests", names)
+        jvm = next(stage for stage in plan.stages if stage.name == "Android JVM unit tests")
+        self.assertEqual(jvm.command, ("make", "check-native"))
+        self.assertFalse(jvm.requires_device)
+        self.assertTrue(jvm.critical)
+        # The device stage is still last: local JVM evidence is never a
+        # substitute for the device flow.
+        self.assertTrue(plan.stages[-1].requires_device)
+
+    def test_l2_native_stage_is_skippable_and_never_cached(self):
+        skipped = build_plan(
+            ["pigeons/web_host.dart"],
+            requested_level="L2",
+            native=False,
+        )
+        self.assertNotIn(
+            "Android JVM unit tests",
+            [stage.name for stage in skipped.stages],
+        )
+        jvm = next(
+            stage
+            for stage in build_plan(["pigeons/web_host.dart"], requested_level="L2").stages
+            if stage.name == "Android JVM unit tests"
+        )
+        self.assertFalse(jvm.cacheable)
+
+    def test_l1_never_runs_the_native_check(self):
+        plan = build_plan(["lib/media/media_service.dart"], requested_level="L1")
+        self.assertEqual([stage.name for stage in plan.stages], ["full local check"])
 
     def test_l3_and_l4_without_device_keep_lower_stages(self):
         l3 = build_plan(["integration_test/acceptance_suite_test.dart"], requested_level="L3")
