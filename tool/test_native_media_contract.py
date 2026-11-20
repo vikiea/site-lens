@@ -2,6 +2,7 @@
 """Read-only source contracts for WebView media ownership and frame control."""
 
 from pathlib import Path
+import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +18,8 @@ NATIVE_MEDIA = (ANDROID / "NativeMediaRuntime.kt").read_text()
 NATIVE_SESSION = (ANDROID / "NativeMediaSessionService.kt").read_text()
 NATIVE_DART = (ROOT / "lib/media/native_media_runtime.dart").read_text()
 AUTH_REFRESH = (ANDROID / "NativeMediaAuthRefreshService.kt").read_text()
+MAIN_ACTIVITY = (ANDROID / "MainActivity.kt").read_text()
+POLICY = (ANDROID / "MediaAuthRefreshPolicy.kt").read_text()
 NATIVE_EXPORT = (ANDROID / "NativeExportRuntime.kt").read_text()
 NATIVE_LEASES = (ANDROID / "NativeMediaFileLeases.kt").read_text()
 
@@ -199,7 +202,7 @@ class NativeMediaContractTests(unittest.TestCase):
             '"waiting_execution"',
             '"reauthorize"',
             'CookieManager.getInstance().getCookie',
-            '"cookieDigest" to digest',
+            'put("cookieDigest", digest)',
             'startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)',
             'requests',
             'activeRequest',
@@ -215,6 +218,67 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertNotIn('evaluateJavascript', AUTH_REFRESH)
         self.assertNotIn('addJavascriptInterface', AUTH_REFRESH)
         self.assertIn('NativeMediaAuthRefreshService.refreshBlocking', (ANDROID / 'NativeMediaDownloadWorker.kt').read_text())
+
+    def test_background_authorization_refresh_captures_the_pages_own_playlist(self):
+        # The refresh adopts the address the page itself requests, and the
+        # decision logic lives in the pure policy object.
+        self.assertIn('override fun shouldInterceptRequest', AUTH_REFRESH)
+        for token in (
+            'MediaAuthRefreshPolicy.isMainPlaylist',
+            'MediaAuthRefreshPolicy.isSameSessionOrigin',
+            'MediaAuthRefreshPolicy.classify',
+            'MediaAuthRefreshPolicy.finishBatch',
+            'MediaAuthRefreshPolicy.groupByOrigin',
+            'MediaAuthRefreshPolicy.distinctPageUrls',
+            'MediaAuthRefreshPolicy.captureDigest',
+            'MediaAuthRefreshPolicy.hasUnknownQuery',
+        ):
+            self.assertIn(token, AUTH_REFRESH)
+        # A capture lands on the main handler; the shared list is not touched
+        # from the WebView background thread.
+        capture = AUTH_REFRESH.split('override fun shouldInterceptRequest', 1)[1].split(
+            'override fun shouldOverrideUrlLoading', 1)[0]
+        self.assertIn('main.post {', capture)
+        self.assertIn('sessionCaptures', AUTH_REFRESH)
+        # The address is returned to the caller under its own key.
+        self.assertIn('put("mediaUrl", mediaUrl)', AUTH_REFRESH)
+        self.assertIn('put("logicalIdentity", request.logicalIdentity)', AUTH_REFRESH)
+        # The query allowlist moved into the policy object and is never a gate.
+        self.assertIn('fun hasUnknownQuery(url: String): Boolean', POLICY)
+        self.assertNotIn('NON_AUTH_MEDIA_QUERY_KEYS', AUTH_REFRESH)
+        # The old pre-flight that blocked the page load is gone.
+        self.assertNotIn('requiresUrlReauthorization', AUTH_REFRESH)
+        self.assertNotIn('result("reauthorize", "媒体地址需要播放页重新授权")', AUTH_REFRESH)
+        # A cookie change is no longer a success on its own.
+        self.assertIn('pageSettled = true', AUTH_REFRESH)
+        self.assertNotIn('refreshedResult(request, pageOrigin, mediaOrigin, cookie, digest)', AUTH_REFRESH)
+        # A capture ends the wait; a blocked wait is bounded at 8 s.
+        self.assertIn('BLOCKING_WAIT_MS = 8_000L', AUTH_REFRESH)
+        self.assertIn('latch.await(BLOCKING_WAIT_MS, TimeUnit.MILLISECONDS)', AUTH_REFRESH)
+        self.assertNotIn('TIMEOUT_MS + 2_000L', AUTH_REFRESH)
+        # One service lifetime per page origin, one navigation per page URL.
+        self.assertIn('fun refreshBatch(', AUTH_REFRESH)
+
+    def test_background_authorization_refresh_never_logs_a_media_address(self):
+        # No Log. call site may interpolate a URL-bearing variable; log lines
+        # carry the policy digest instead.
+        log_lines = [line.strip() for line in AUTH_REFRESH.splitlines() if 'Log.' in line]
+        self.assertTrue(log_lines, 'expected at least one log line to guard')
+        forbidden = re.compile(r'\$\{?(mediaUrl|url|capturedUrl|pageUrl|raw|next)\b')
+        for line in log_lines:
+            self.assertIsNone(
+                forbidden.search(line),
+                'log line interpolates a URL: ' + line,
+            )
+
+    def test_batch_channel_answers_every_request_once(self):
+        for token in (
+            '"refreshBatch"',
+            'NativeMediaAuthRefreshService.refreshBatch',
+            '"invalid_auth_refresh"',
+            'logicalIdentity',
+        ):
+            self.assertIn(token, MAIN_ACTIVITY)
 
     def test_media_transfer_diagnostics_expose_only_cookie_presence(self):
         self.assertIn('val cookiePresent: Boolean', TRANSFER)

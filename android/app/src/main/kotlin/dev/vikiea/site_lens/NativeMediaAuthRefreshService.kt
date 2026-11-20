@@ -14,6 +14,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -30,9 +31,13 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.TimeUnit
 
 /**
- * Bounded, invisible same-origin refresh session used only to renew cookies
- * for an already identified media task. It never injects user scripts, opens
- * an Activity, follows a cross-origin redirect, or returns cookie bytes.
+ * Bounded, invisible same-origin refresh session.
+ *
+ * The page is reloaded so it can re-issue its own main playlist request; that
+ * request is the only thing this service adopts. It never injects user scripts,
+ * opens an Activity, follows a cross-origin redirect, or returns cookie bytes.
+ * The captured address is returned to the caller but is never logged: log lines
+ * carry [MediaAuthRefreshPolicy.captureDigest] instead of the address.
  */
 class NativeMediaAuthRefreshService : Service() {
     private val main = Handler(Looper.getMainLooper())
@@ -46,6 +51,11 @@ class NativeMediaAuthRefreshService : Service() {
     private var nextToken = 0L
     private var activeToken = 0L
     private val postedRequests = AtomicInteger(0)
+
+    /** The page origin this service lifetime is bound to. One origin per run. */
+    private var sessionPageOrigin: String? = null
+    private var sessionCookieBaseline = ""
+    private val sessionCaptures = mutableListOf<MediaAuthRefreshPolicy.CapturedPlaylist>()
 
     override fun onCreate() {
         super.onCreate()
@@ -129,7 +139,7 @@ class NativeMediaAuthRefreshService : Service() {
             finish(
                 activeToken,
                 request.callback,
-                result("failed", error.message ?: "授权刷新失败"),
+                result("failed", safeErrorText(error)),
             )
         }
     }
@@ -156,31 +166,29 @@ class NativeMediaAuthRefreshService : Service() {
         val media = parseHttp(request.mediaUrl)
         require(page != null && media != null) { "媒体授权刷新地址无效" }
         val pageOrigin = origin(page)
-        val allowedMediaOrigin = origin(media)
         val refreshRequest = request
         require(refreshRequest.resourceKey.isEmpty() ||
             refreshRequest.resourceKey.matches(Regex("[0-9a-f]{64}"))) {
             "媒体资源身份无效"
         }
+        sessionPageOrigin = pageOrigin
+        sessionCaptures.clear()
+
+        // A load of this page that already updated the cookie is only evidence
+        // that the cookie is current; it says nothing about the media address,
+        // so it can never stand in for a capture.
         val currentCookie = CookieManager.getInstance().getCookie(request.pageUrl).orEmpty()
-        val cachedRefresh = recentRefresh(pageOrigin, currentCookie)
-        if (cachedRefresh) {
-            finish(token,
-                refreshRequest.callback,
-                refreshedResult(refreshRequest, pageOrigin, allowedMediaOrigin, currentCookie),
-            )
+        if (recentRefresh(pageOrigin, currentCookie)) {
+            main.post {
+                finish(
+                    token,
+                    refreshRequest.callback,
+                    result("unchanged", "授权状态在当前页面仍然有效"),
+                )
+            }
             return
         }
-        // This service only refreshes same-origin cookies. It cannot discover
-        // or replace a signed media URL, so retrying a URL with query
-        // credentials would repeat the expired authorization unchanged.
-        if (requiresUrlReauthorization(media)) {
-            finish(token,
-                refreshRequest.callback,
-                result("reauthorize", "媒体地址需要播放页重新授权"),
-            )
-            return
-        }
+
         val view = WebView(applicationContext)
         webView = view
         view.settings.javaScriptEnabled = true
@@ -196,6 +204,7 @@ class NativeMediaAuthRefreshService : Service() {
                 resultMsg: android.os.Message?,
             ): Boolean = false
         }
+        val requestsByIdentity = listOf(refreshRequest.identity())
         view.webViewClient = object : WebViewClient() {
             override fun onPageStarted(
                 view: WebView,
@@ -209,12 +218,17 @@ class NativeMediaAuthRefreshService : Service() {
                 }
             }
 
+            /**
+             * Runs on a WebView background thread: every state change is posted
+             * to the main handler, which owns [sessionCaptures].
+             */
             override fun shouldInterceptRequest(
                 view: WebView,
                 request: WebResourceRequest,
             ): WebResourceResponse? {
+                val raw = request.url.toString()
                 if (request.isForMainFrame) {
-                    val next = parseHttp(request.url.toString())
+                    val next = parseHttp(raw)
                     if (next == null || origin(next) != pageOrigin) {
                         main.post {
                             finish(token, refreshRequest.callback, result("reauthorize", "页面尝试跨站跳转"))
@@ -225,6 +239,15 @@ class NativeMediaAuthRefreshService : Service() {
                             ByteArrayInputStream(ByteArray(0)),
                         )
                     }
+                    return super.shouldInterceptRequest(view, request)
+                }
+                val accept = runCatching { request.requestHeaders?.get("Accept") }.getOrNull()
+                val isCandidate = MediaAuthRefreshPolicy.isMainPlaylist(raw, accept) &&
+                    MediaAuthRefreshPolicy.isSameSessionOrigin(pageOrigin, raw)
+                if (!isCandidate) return super.shouldInterceptRequest(view, request)
+                val diagnostic = MediaAuthRefreshPolicy.hasUnknownQuery(raw)
+                main.post {
+                    adoptCapture(token, refreshRequest, pageOrigin, raw, accept, diagnostic)
                 }
                 return super.shouldInterceptRequest(view, request)
             }
@@ -252,12 +275,7 @@ class NativeMediaAuthRefreshService : Service() {
                     finish(token, refreshRequest.callback, result("reauthorize", "页面需要人工验证或登录"))
                     return
                 }
-                scheduleCookieSettlement(
-                    token,
-                    refreshRequest,
-                    pageOrigin,
-                    allowedMediaOrigin,
-                )
+                scheduleCookieSettlement(token, refreshRequest, pageOrigin, requestsByIdentity)
             }
 
             override fun onReceivedError(
@@ -271,6 +289,7 @@ class NativeMediaAuthRefreshService : Service() {
             }
         }
         initialCookie = CookieManager.getInstance().getCookie(request.pageUrl).orEmpty()
+        sessionCookieBaseline = initialCookie
         view.loadUrl(request.pageUrl)
         timeoutRunnable = Runnable {
             if (token == activeToken && !finished) {
@@ -280,32 +299,94 @@ class NativeMediaAuthRefreshService : Service() {
         main.postDelayed(timeoutRunnable!!, TIMEOUT_MS)
     }
 
+    /**
+     * Records the page's own main playlist and answers immediately.
+     *
+     * Only the first qualifying request of a page load is adopted; a capture is
+     * a completed refresh, so waiting for the rest of the page would only add
+     * latency. Runs on the main thread.
+     */
+    private fun adoptCapture(
+        token: Long,
+        request: Request,
+        pageOrigin: String,
+        capturedUrl: String,
+        acceptHeader: String?,
+        diagnostic: Boolean,
+    ) {
+        if (token != activeToken || finished) return
+        if (sessionCaptures.isNotEmpty()) return
+        if (request.logicalIdentity.isBlank()) return
+        val outcome = MediaAuthRefreshPolicy.classify(
+            capturedUrl = capturedUrl,
+            acceptHeader = acceptHeader,
+            pageOrigin = pageOrigin,
+            cookieChanged = false,
+            pageSettled = false,
+        )
+        if (outcome !is MediaAuthRefreshPolicy.RefreshOutcome.Refreshed) return
+        sessionCaptures.add(
+            MediaAuthRefreshPolicy.CapturedPlaylist(
+                url = outcome.mediaUrl,
+                logicalIdentity = request.logicalIdentity,
+            ),
+        )
+        Log.i(
+            TAG,
+            "captured main playlist " + (MediaAuthRefreshPolicy.captureDigest(outcome.mediaUrl) ?: "digest-unavailable") +
+                " signed=" + diagnostic,
+        )
+        val cookie = CookieManager.getInstance().getCookie(request.pageUrl).orEmpty()
+        val cookieChanged = cookie != sessionCookieBaseline
+        if (cookieChanged) rememberRefresh(pageOrigin, cookie)
+        finish(
+            token,
+            request.callback,
+            refreshedResult(
+                request = request,
+                pageOrigin = pageOrigin,
+                mediaOrigin = pageOrigin,
+                cookie = cookie,
+                mediaUrl = outcome.mediaUrl,
+                diagnostic = diagnostic.takeIf { it },
+            ),
+        )
+    }
+
     private fun scheduleCookieSettlement(
         token: Long,
         request: Request,
         pageOrigin: String,
-        mediaOrigin: String,
+        requestsByIdentity: List<MediaAuthRefreshPolicy.RefreshRequestIdentity>,
     ) {
         cookieSettleRunnable?.let(main::removeCallbacks)
         val deadline = SystemClock.uptimeMillis() + COOKIE_SETTLE_TIMEOUT_MS
+
+        fun settle() {
+            if (token != activeToken || finished) return
+            runCatching { CookieManager.getInstance().flush() }
+            val cookie = CookieManager.getInstance().getCookie(request.pageUrl).orEmpty()
+            val cookieChanged = cookie != initialCookie
+            if (cookieChanged) rememberRefresh(pageOrigin, cookie)
+            // The page settled without asking for a playlist: hand the verdict
+            // to the policy, which reports unchanged or page-required. A cookie
+            // change alone is never a refreshed address.
+            val outcome = MediaAuthRefreshPolicy.classify(
+                capturedUrl = null,
+                acceptHeader = null,
+                pageOrigin = pageOrigin,
+                cookieChanged = cookieChanged,
+                pageSettled = true,
+            )
+            finish(token, request.callback, outcomeResult(request, pageOrigin, cookie, outcome))
+        }
 
         fun poll() {
             if (token != activeToken || finished) return
             runCatching { CookieManager.getInstance().flush() }
             val cookie = CookieManager.getInstance().getCookie(request.pageUrl).orEmpty()
-            if (cookie != initialCookie) {
-                rememberRefresh(pageOrigin, cookie)
-                val digest = MessageDigest.getInstance("SHA-256")
-                    .digest(cookie.toByteArray(Charsets.UTF_8))
-                    .joinToString("") { byte -> "%02x".format(byte) }
-                finish(token, request.callback, refreshedResult(request, pageOrigin, mediaOrigin, cookie, digest))
-                return
-            }
-            if (SystemClock.uptimeMillis() >= deadline) {
-                finish(token,
-                    request.callback,
-                    result("reauthorize", "授权状态未更新，请返回播放页重新授权"),
-                )
+            if (cookie != initialCookie || SystemClock.uptimeMillis() >= deadline) {
+                settle()
                 return
             }
             cookieSettleRunnable = Runnable { poll() }
@@ -357,76 +438,135 @@ class NativeMediaAuthRefreshService : Service() {
         putAll(extra)
     }
 
+    /**
+     * The single refreshed answer. [mediaUrl] is the address the page itself
+     * requested; it leaves through the platform channel and is never logged.
+     */
     private fun refreshedResult(
         request: Request,
         pageOrigin: String,
         mediaOrigin: String,
         cookie: String,
-        digestOverride: String? = null,
+        mediaUrl: String,
+        diagnostic: Boolean? = null,
     ): Map<String, Any?> {
-        val digest = digestOverride ?: MessageDigest.getInstance("SHA-256")
+        val digest = MessageDigest.getInstance("SHA-256")
             .digest(cookie.toByteArray(Charsets.UTF_8))
             .joinToString("") { byte -> "%02x".format(byte) }
         return result(
             "refreshed",
             null,
-            mapOf(
-                "taskId" to request.taskId,
-                "pageOrigin" to pageOrigin,
-                "mediaOrigin" to mediaOrigin,
-                "resourceKey" to request.resourceKey,
-                "cookieDigest" to digest,
-            ),
+            buildMap {
+                put("taskId", request.taskId)
+                put("logicalIdentity", request.logicalIdentity)
+                put("pageOrigin", pageOrigin)
+                put("mediaOrigin", mediaOrigin)
+                put("resourceKey", request.resourceKey)
+                put("cookieDigest", digest)
+                put("mediaUrl", mediaUrl)
+                if (diagnostic == true) put("diagnostic", DIAGNOSTIC_SIGNED_ADDRESS)
+            },
         )
     }
 
-    private fun requiresUrlReauthorization(uri: Uri): Boolean =
-        uri.queryParameterNames.any { it.lowercase() !in NON_AUTH_MEDIA_QUERY_KEYS }
+    /** The answer for a page that settled without a usable capture. */
+    private fun outcomeResult(
+        request: Request,
+        pageOrigin: String,
+        cookie: String,
+        outcome: MediaAuthRefreshPolicy.RefreshOutcome?,
+    ): Map<String, Any?> {
+        val mediaOrigin = recentMediaOrigin(request) ?: pageOrigin
+        return when (outcome) {
+            is MediaAuthRefreshPolicy.RefreshOutcome.Refreshed -> refreshedResult(
+                request = request,
+                pageOrigin = pageOrigin,
+                mediaOrigin = mediaOrigin,
+                cookie = cookie,
+                mediaUrl = outcome.mediaUrl,
+            )
+            is MediaAuthRefreshPolicy.RefreshOutcome.Unchanged -> result(
+                "unchanged",
+                "授权状态已更新但没有捕获到主清单地址",
+                baseExtra(request, pageOrigin),
+            )
+            is MediaAuthRefreshPolicy.RefreshOutcome.PageRequired -> result(
+                "reauthorize",
+                outcome.reason,
+                baseExtra(request, pageOrigin),
+            )
+            null -> result(
+                "reauthorize",
+                MediaAuthRefreshPolicy.PAGE_REQUIRED_REASON,
+                baseExtra(request, pageOrigin),
+            )
+        }
+    }
+
+    private fun baseExtra(
+        request: Request,
+        pageOrigin: String,
+    ): Map<String, Any?> = mapOf(
+        "taskId" to request.taskId,
+        "logicalIdentity" to request.logicalIdentity,
+        "pageOrigin" to pageOrigin,
+        "mediaOrigin" to (recentMediaOrigin(request) ?: pageOrigin),
+        "resourceKey" to request.resourceKey,
+    )
+
+    private fun recentMediaOrigin(request: Request): String? =
+        parseHttp(request.mediaUrl)?.let(::origin)
+
+    /**
+     * A failure message that cannot carry an address.
+     *
+     * An exception thrown while parsing a media or page URL quotes that URL in
+     * its message, so the text is not forwarded at all: only the exception type
+     * and the log-safe hash of any URL-looking fragment survives.
+     */
+    private fun safeErrorText(error: Exception): String {
+        val digest = error.message
+            .orEmpty()
+            .split(' ')
+            .mapNotNull { part -> MediaAuthRefreshPolicy.captureDigest(part.trim()) }
+            .firstOrNull()
+        return buildString {
+            append("媒体授权刷新失败")
+            append(" (").append(error.javaClass.simpleName).append(')')
+            if (digest != null) append(" at ").append(digest)
+        }
+    }
 
     data class Request(
         val taskId: String,
         val pageUrl: String,
         val mediaUrl: String,
         val resourceKey: String = "",
+        val logicalIdentity: String = "",
         val callback: (Map<String, Any?>) -> Unit,
-    )
+    ) {
+        internal fun identity(): MediaAuthRefreshPolicy.RefreshRequestIdentity =
+            MediaAuthRefreshPolicy.RefreshRequestIdentity(
+                taskId = taskId,
+                logicalIdentity = logicalIdentity,
+                pageUrl = pageUrl,
+                mediaUrl = mediaUrl,
+            )
+    }
 
     companion object {
+        private const val TAG = "MediaAuthRefresh"
         private const val CHANNEL = "site-lens-media-auth"
         private const val ID = 24003
         private const val TIMEOUT_MS = 15_000L
+        private const val BLOCKING_WAIT_MS = 8_000L
         private const val COOKIE_SETTLE_INTERVAL_MS = 250L
         private const val COOKIE_SETTLE_TIMEOUT_MS = 3_000L
         private const val RECENT_REFRESH_TTL_MS = 15_000L
-        private val NON_AUTH_MEDIA_QUERY_KEYS = setOf(
-            "quality",
-            "audio",
-            "format",
-            "type",
-            "profile",
-            "resolution",
-            "codec",
-            "lang",
-            "language",
-            "track",
-            "channel",
-            "bitrate",
-            "width",
-            "height",
-            "fps",
-            "variant",
-            "version",
-            "v",
-            "source",
-            "episode",
-            "season",
-            "start",
-            "offset",
-            "range",
-            "download",
-            "filename",
-            "container",
-        )
+
+        /** Diagnostic reported with an adopted address that carries a signature. */
+        const val DIAGNOSTIC_SIGNED_ADDRESS = "media_url_has_unknown_query"
+
         private var instance: NativeMediaAuthRefreshService? = null
         private val pendingLock = Any()
         private val pending = ArrayDeque<Request>()
@@ -456,21 +596,167 @@ class NativeMediaAuthRefreshService : Service() {
             }
         }
 
+        /**
+         * Runs one refresh and returns as soon as the page hands over its main
+         * playlist, or after [BLOCKING_WAIT_MS]. A capture is a completed
+         * refresh, so the wait never extends to the end of the page load.
+         */
         fun refreshBlocking(
             context: Context,
             taskId: String,
             pageUrl: String,
             mediaUrl: String,
             resourceKey: String = "",
+            logicalIdentity: String = "",
         ): Map<String, Any?> {
             val latch = CountDownLatch(1)
             var value: Map<String, Any?> = mapOf("state" to "waiting_execution", "reason" to "授权刷新未执行")
-            refresh(context, Request(taskId, pageUrl, mediaUrl, resourceKey) {
-                value = it
-                latch.countDown()
-            })
-            latch.await(TIMEOUT_MS + 2_000L, TimeUnit.MILLISECONDS)
+            refresh(
+                context,
+                Request(taskId, pageUrl, mediaUrl, resourceKey, logicalIdentity) {
+                    value = it
+                    latch.countDown()
+                },
+            )
+            latch.await(BLOCKING_WAIT_MS, TimeUnit.MILLISECONDS)
             return value
+        }
+
+        /**
+         * Refreshes a group of requests that share one page origin with a
+         * single page load, then reports one result per request.
+         *
+         * The group's first page URL is the navigation; every other URL in the
+         * group rides on the captures from that load. A capture reaches only
+         * the request whose logical identity matches. A request without a
+         * capture settles on `unchanged` or `reauthorize` — never on another
+         * task's address.
+         */
+        fun refreshBatch(
+            context: Context,
+            requests: List<Request>,
+            callback: (List<Map<String, Any?>>) -> Unit,
+        ) {
+            if (requests.isEmpty()) {
+                callback(emptyList())
+                return
+            }
+            val groups = MediaAuthRefreshPolicy.groupByOrigin(requests.map { it.identity() })
+            val results = java.util.Collections.synchronizedMap(LinkedHashMap<String, Map<String, Any?>>())
+            val remaining = AtomicInteger(groups.size)
+            if (groups.isEmpty()) {
+                callback(requests.map { result("reauthorize", MediaAuthRefreshPolicy.PAGE_REQUIRED_REASON, mapOf("taskId" to it.taskId)) })
+                return
+            }
+
+            fun collect() {
+                if (remaining.decrementAndGet() > 0) return
+                val ordered = requests.map { request ->
+                    results[request.taskId]
+                        ?: result(
+                            "waiting_execution",
+                            "授权刷新未执行",
+                            mapOf("taskId" to request.taskId),
+                        )
+                }
+                callback(ordered)
+            }
+
+            for (group in groups) {
+                val pageUrl = MediaAuthRefreshPolicy.distinctPageUrls(group).firstOrNull()
+                val members = requests.filter { request ->
+                    group.any { identity -> identity.taskId == request.taskId }
+                }
+                if (pageUrl == null || members.isEmpty()) {
+                    members.forEach { request ->
+                        results[request.taskId] = result(
+                            "reauthorize",
+                            MediaAuthRefreshPolicy.PAGE_REQUIRED_REASON,
+                            mapOf("taskId" to request.taskId),
+                        )
+                    }
+                    collect()
+                    continue
+                }
+                val lead = members.first()
+                val pageRequests = group.map { identity ->
+                    members.firstOrNull { it.taskId == identity.taskId } ?: lead
+                }
+                // One question per origin: did the page hand over a main
+                // playlist? It is asked once, under a probe identity that no
+                // task can match, so finishBatch() may hand the capture to
+                // whichever member it actually belongs to and answer the others
+                // from the same load.
+                val probe = pageRequests.first()
+                refresh(
+                    context,
+                    Request(
+                        taskId = probe.taskId,
+                        pageUrl = pageUrl,
+                        mediaUrl = probe.mediaUrl,
+                        resourceKey = probe.resourceKey,
+                        logicalIdentity = MediaAuthRefreshPolicy.captureProbeIdentity(
+                            pageRequests.map { it.identity() },
+                        ),
+                    ) { value ->
+                        val captured = captureOf(value, probe)
+                        val cookieChanged = !pageRequires(value)
+                        val outcomes = MediaAuthRefreshPolicy.finishBatch(
+                            requests = pageRequests.map { it.identity() },
+                            captured = listOfNotNull(captured),
+                            cookieChanged = cookieChanged,
+                        )
+                        for (request in pageRequests) {
+                            val outcome = outcomes[request.taskId]
+                            results[request.taskId] = if (outcome == null) {
+                                result(
+                                    "reauthorize",
+                                    MediaAuthRefreshPolicy.PAGE_REQUIRED_REASON,
+                                    mapOf("taskId" to request.taskId),
+                                )
+                            } else {
+                                batchResult(request, outcome)
+                            }
+                        }
+                        collect()
+                    },
+                )
+            }
+        }
+
+        private fun captureOf(
+            value: Map<String, Any?>,
+            request: Request,
+        ): MediaAuthRefreshPolicy.CapturedPlaylist? {
+            if (value["state"] != MediaAuthRefreshPolicy.STATE_REFRESHED) return null
+            val url = value["mediaUrl"] as? String ?: return null
+            if (url.isBlank()) return null
+            return MediaAuthRefreshPolicy.CapturedPlaylist(url, request.logicalIdentity)
+        }
+
+        private fun batchResult(
+            request: Request,
+            outcome: MediaAuthRefreshPolicy.RequestOutcome,
+        ): Map<String, Any?> = buildMap {
+            put("taskId", request.taskId)
+            put("state", outcome.state)
+            put("logicalIdentity", request.logicalIdentity)
+            put("resourceKey", request.resourceKey)
+            outcome.reason?.let { put("reason", it) }
+            outcome.mediaUrl?.let { put("mediaUrl", it) }
+        }
+
+        private fun pageRequires(value: Map<String, Any?>): Boolean =
+            value["state"] == MediaAuthRefreshPolicy.STATE_REAUTHORIZE
+
+        private fun result(
+            state: String,
+            reason: String?,
+            extra: Map<String, Any?> = emptyMap(),
+        ): Map<String, Any?> = buildMap {
+            put("state", state)
+            if (reason != null) put("reason", reason)
+            putAll(extra)
         }
 
         private fun drainPending() {
