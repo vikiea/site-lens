@@ -32,6 +32,7 @@ import '../device/device_conditions.dart';
 import '../discovery/health_checker.dart';
 import '../discovery/probe_coordinator.dart';
 import '../domain/models.dart';
+import '../domain/web_page_origin.dart';
 import '../network/transport.dart';
 import '../network/native_system_http.dart';
 import '../network/secure_dns_resolver.dart';
@@ -126,6 +127,83 @@ final appControllerProvider = Provider<AppController>((ref) {
 });
 
 const _filterSourceSeedSetting = 'filterSourceSeedVersion';
+
+/// What a retry attempt produced, in the vocabulary of GLOSSARY.md.
+///
+/// The three refresh states lead to different next steps, so the UI needs the
+/// kind and not only a sentence: retrying again is pointless for [unchanged]
+/// and [requiresPage], which are the two outcomes that offer the source page.
+enum MediaRetryOutcomeKind {
+  /// The transfer was accepted and is running again.
+  resumed,
+
+  /// The source page answered, but the authorization did not change.
+  unchanged,
+
+  /// Only a fresh visit to the source page can recover authorization.
+  requiresPage,
+
+  /// The platform is waiting for its own window to allow the refresh.
+  waiting,
+}
+
+/// The kind carried by [MediaAuthorizationRefreshResult].
+MediaRetryOutcomeKind mediaRefreshFailureKind(
+  MediaAuthorizationRefreshResult result,
+) {
+  if (result.waitingExecution) return MediaRetryOutcomeKind.waiting;
+  if (result.requiresPage) return MediaRetryOutcomeKind.requiresPage;
+  return MediaRetryOutcomeKind.unchanged;
+}
+
+/// Confirmation shown when a retry was accepted, single or batch.
+const mediaRetryResumedMessage = '已开始续传';
+
+/// Convenience: the command word for every outcome that cannot continue
+/// without the source page.
+bool mediaRetryOffersSourcePage(MediaRetryOutcomeKind kind) =>
+    kind == MediaRetryOutcomeKind.unchanged ||
+    kind == MediaRetryOutcomeKind.requiresPage;
+
+/// Result of [AppController.retryMediaTaskResult] and of one member of
+/// [AppController.retryMediaTasks].
+class MediaRetryOutcome {
+  const MediaRetryOutcome({
+    required this.taskId,
+    required this.kind,
+    required this.message,
+    this.task,
+  });
+
+  final String taskId;
+  final MediaRetryOutcomeKind kind;
+
+  /// Copy ready for the transient message, in the glossary's wording.
+  final String message;
+
+  /// The task after a successful resume; `null` for every other kind, which is
+  /// also the guarantee that the task was left exactly as it was.
+  final MediaTask? task;
+
+  bool get resumed => kind == MediaRetryOutcomeKind.resumed;
+
+  /// True when the message must carry the 打开来源页 action.
+  bool get offersSourcePage => mediaRetryOffersSourcePage(kind);
+
+  /// True when the row must be left untouched: no progress, no state churn.
+  bool get leavesTaskUntouched => !resumed;
+}
+
+/// Internal signal: the refresh answered, but without a usable address.
+class _MediaRefreshFailure implements Exception {
+  const _MediaRefreshFailure(this.result, {this.message});
+
+  /// The refresh answer, when there was one.
+  final MediaAuthorizationRefreshResult? result;
+
+  /// Overrides the wording derived from [result].
+  final String? message;
+}
 
 class AppController extends ChangeNotifier with WidgetsBindingObserver {
   /// [api] is the platform seam: production leaves it null (the generated Pigeon
@@ -1975,10 +2053,194 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   /// [adoptRefreshedMediaUrl]; when it fails the task keeps its page-required
   /// state so the row can offer the source page again.
   ///
+  /// Throwing variant kept for callers that only care whether the retry was
+  /// accepted. UI code that has to tell the three refresh states apart calls
+  /// [retryMediaTaskResult], which never throws for a refresh outcome.
+  ///
   /// The confirmation toast stays in the screen, which owns progress reporting
   /// for batch and single retries alike.
   Future<MediaTask> retryMediaTask(MediaTask task) async {
+    final outcome = await retryMediaTaskResult(task);
+    final retried = outcome.task;
+    if (retried != null) return retried;
+    throw StateError(outcome.message);
+  }
+
+  /// [retryMediaTask] that returns the outcome instead of throwing.
+  ///
+  /// The three refresh states carry different next steps (see GLOSSARY.md), so
+  /// a single thrown [StateError] lost the one thing the message must do: tell
+  /// the user whether retrying again can help, whether the page has to be
+  /// re-picked, or whether the platform is waiting for its own window. Only a
+  /// genuine local failure (a missing observation) still throws.
+  Future<MediaRetryOutcome> retryMediaTaskResult(MediaTask task) async {
     mediaDownloads.resetRetryBudget(task.id);
+    try {
+      final retried = await _retryMediaTaskOnce(task);
+      return MediaRetryOutcome(
+        taskId: retried.id,
+        kind: MediaRetryOutcomeKind.resumed,
+        message: mediaRetryResumedMessage,
+        task: retried,
+      );
+    } on _MediaRefreshFailure catch (failure) {
+      final result = failure.result;
+      if (result == null) {
+        return MediaRetryOutcome(
+          taskId: task.id,
+          kind: MediaRetryOutcomeKind.unchanged,
+          message: '授权未变化：${failure.message ?? '请返回来源页重新选择媒体'}',
+        );
+      }
+      return _refreshFailureOutcome(task, result);
+    }
+  }
+
+  /// Retries [tasks] as a batch, refreshing once per source page.
+  ///
+  /// Page-required tasks are grouped by the origin of their source page and
+  /// each group costs exactly one page load: the page is loaded once and every
+  /// task in the group asks for its own playlist address in that single load.
+  /// A task that comes back `unchanged` or `reauthorize` is reported as such
+  /// and is never resumed, and never receives another task's address.
+  ///
+  /// Outcomes come back in the order of [tasks]. Groups run one after another
+  /// so a batch never starts two page loads for the same site at once.
+  Future<List<MediaRetryOutcome>> retryMediaTasks(List<MediaTask> tasks) async {
+    final outcomes = List<MediaRetryOutcome?>.filled(tasks.length, null);
+    final groups = <String, List<(int, MediaTask)>>{};
+    final singles = <(int, MediaTask)>[];
+    for (final (index, task) in tasks.indexed) {
+      final page = task.sourceUrl;
+      final origin = _mediaTaskNeedsAuthorizationRefresh(task)
+          ? webOriginKey(page)
+          : null;
+      if (origin == null) {
+        singles.add((index, task));
+      } else {
+        groups.putIfAbsent(origin, () => []).add((index, task));
+      }
+    }
+    for (final entry in groups.values) {
+      for (final (index, outcome) in (await _refreshMediaTasksBatch([
+        for (final (_, task) in entry) task,
+      ])).indexed) {
+        outcomes[entry[index].$1] = outcome;
+      }
+    }
+    for (final (index, task) in singles) {
+      outcomes[index] = await retryMediaTaskResult(task);
+    }
+    return [for (final outcome in outcomes) outcome!];
+  }
+
+  /// One refresh for every task in [group], which shares one source page.
+  Future<List<MediaRetryOutcome>> _refreshMediaTasksBatch(
+    List<MediaTask> group,
+  ) async {
+    final bridge = nativeMediaAuthRefresh;
+    if (bridge == null) {
+      const unsupported = MediaAuthorizationRefreshResult(
+        state: 'waiting_execution',
+        reason: '当前平台不支持后台授权刷新',
+      );
+      return [
+        for (final task in group) _refreshFailureOutcome(task, unsupported),
+      ];
+    }
+    final prepared = <(MediaTask, MediaCandidate)>[];
+    for (final task in group) {
+      mediaDownloads.resetRetryBudget(task.id);
+      if (!_mediaTaskNeedsAuthorizationRefresh(task)) {
+        prepared.add((task, await mediaCandidateForRetry(task)));
+        continue;
+      }
+      final stored = await db.mediaCandidate(task.candidateId);
+      if (stored == null) {
+        throw StateError('媒体候选已不存在，请返回来源页重新选择媒体');
+      }
+      prepared.add((task, stored));
+    }
+    final pageRequired = [
+      for (final (task, stored) in prepared)
+        if (_mediaTaskNeedsAuthorizationRefresh(task)) (task, stored),
+    ];
+    if (pageRequired.isEmpty) {
+      return [
+        for (final (task, stored) in prepared)
+          MediaRetryOutcome(
+            taskId: task.id,
+            kind: MediaRetryOutcomeKind.resumed,
+            message: mediaRetryResumedMessage,
+            task: await _resumePrepared(task, stored),
+          ),
+      ];
+    }
+    final requests = [
+      for (final (task, stored) in pageRequired)
+        MediaAuthorizationRefreshRequest.fromCandidate(task, stored),
+    ];
+    List<MediaAuthorizationRefreshResult> results;
+    try {
+      results = await bridge.refreshBatch(requests);
+    } on Object {
+      results = const [];
+    }
+    final outcomes = <MediaRetryOutcome>[];
+    for (var index = 0; index < prepared.length; index++) {
+      final (task, stored) = prepared[index];
+      final requestIndex = pageRequired.indexWhere(
+        (entry) => entry.$1.id == task.id,
+      );
+      if (requestIndex < 0) {
+        outcomes.add(
+          MediaRetryOutcome(
+            taskId: task.id,
+            kind: MediaRetryOutcomeKind.resumed,
+            message: mediaRetryResumedMessage,
+            task: await _resumePrepared(task, stored),
+          ),
+        );
+        continue;
+      }
+      // An answer that never arrived is the same dead end as an unanswered
+      // single refresh: nothing is adopted and the row keeps its state.
+      final result = requestIndex < results.length
+          ? results[requestIndex]
+          : const MediaAuthorizationRefreshResult(
+              state: 'waiting_execution',
+              reason: '授权刷新无响应',
+            );
+      if (!result.refreshed) {
+        outcomes.add(_refreshFailureOutcome(task, result));
+        continue;
+      }
+      try {
+        final rebound = await adoptRefreshedMediaUrl(task, result);
+        final resumed = await _resumePrepared(task, rebound);
+        outcomes.add(
+          MediaRetryOutcome(
+            taskId: task.id,
+            kind: MediaRetryOutcomeKind.resumed,
+            message: mediaRetryResumedMessage,
+            task: resumed,
+          ),
+        );
+      } on StateError catch (error) {
+        outcomes.add(
+          MediaRetryOutcome(
+            taskId: task.id,
+            kind: MediaRetryOutcomeKind.unchanged,
+            message: '授权未变化：${error.message}',
+          ),
+        );
+      }
+    }
+    return outcomes;
+  }
+
+  /// The single-task retry body, before its refresh outcome is classified.
+  Future<MediaTask> _retryMediaTaskOnce(MediaTask task) async {
     if (task.state == MediaTaskState.paused) {
       final stored = await db.mediaCandidate(task.candidateId);
       if (stored == null) {
@@ -1988,26 +2250,65 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
     if (!_mediaTaskNeedsAuthorizationRefresh(task)) {
       final resolved = await mediaCandidateForRetry(task);
-      final current = mediaTasks.task(task.id) ?? task;
-      if (task.errorCode == MediaErrorCode.cacheMissing) {
-        await mediaDownloads.delete(task.id, deleteTask: false);
-        return mediaDownloads.startNative(current, resolved);
-      }
-      if (task.state == MediaTaskState.failed &&
-          nativeDownloads != null &&
-          !resolved.isHls) {
-        return mediaDownloads.resumeNative(task.id, resolved);
-      }
-      return mediaDownloads.startNative(current, resolved);
+      return _resumePrepared(task, resolved);
     }
     final stored = await db.mediaCandidate(task.candidateId);
     if (stored == null) {
       throw StateError('媒体候选已不存在，请返回播放页重新选择媒体');
     }
     final result = await refreshMediaAuthorization(task, stored);
-    if (!result.refreshed) throw StateError(_refreshOutcomeReason(result));
-    final rebound = await adoptRefreshedMediaUrl(task, result);
+    if (!result.refreshed) throw _MediaRefreshFailure(result);
+    final MediaCandidate rebound;
+    try {
+      rebound = await adoptRefreshedMediaUrl(task, result);
+    } on StateError catch (error) {
+      // A refresh that answered without a usable address is the same outcome
+      // as no refresh at all: report it, adopt nothing, touch no state.
+      return Future.error(_MediaRefreshFailure(null, message: error.message));
+    }
     return mediaDownloads.resumeNative(task.id, rebound);
+  }
+
+  /// Resumes a task whose address is already resolved and authorized.
+  Future<MediaTask> _resumePrepared(MediaTask task, MediaCandidate resolved) {
+    final current = mediaTasks.task(task.id) ?? task;
+    if (task.errorCode == MediaErrorCode.cacheMissing) {
+      return () async {
+        await mediaDownloads.delete(task.id, deleteTask: false);
+        return mediaDownloads.startNative(current, resolved);
+      }();
+    }
+    if (task.state == MediaTaskState.failed &&
+        nativeDownloads != null &&
+        !resolved.isHls) {
+      return mediaDownloads.resumeNative(task.id, resolved);
+    }
+    return mediaDownloads.startNative(current, resolved);
+  }
+
+  /// Reports a refresh that produced no usable address without touching the
+  /// task: no progress, no state churn, nothing to roll back.
+  MediaRetryOutcome _refreshFailureOutcome(
+    MediaTask task,
+    MediaAuthorizationRefreshResult result,
+  ) => MediaRetryOutcome(
+    taskId: task.id,
+    kind: mediaRefreshFailureKind(result),
+    message: _refreshFailureMessage(result),
+  );
+
+  /// Message for a refresh that produced no usable address.
+  String _refreshFailureMessage(MediaAuthorizationRefreshResult result) {
+    final reason = (result.reason ?? '').trim();
+    if (result.waitingExecution) {
+      return reason.isNotEmpty ? reason : '等待系统允许后台授权刷新';
+    }
+    if (result.requiresPage) {
+      return reason.isNotEmpty ? reason : '需回来源页重新授权媒体';
+    }
+    // `unchanged` and anything unrecognised land here: the authorization did
+    // not change, so the page has to hand over the media again.
+    return '授权未变化：${reason.isNotEmpty ? reason : '请返回来源页重新选择媒体'}';
   }
 
   static bool _mediaTaskNeedsAuthorizationRefresh(MediaTask task) =>
@@ -2015,18 +2316,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       task.errorCode == MediaErrorCode.authorizationRequired;
 
   /// User-facing wording for an authorization refresh that produced no usable
-  /// address. The three-state vocabulary lives in GLOSSARY.md; #10 turns these
-  /// into the task-row messages and the source-page action.
-  String _refreshOutcomeReason(MediaAuthorizationRefreshResult result) {
-    final reason = result.reason?.trim() ?? '';
-    if (result.requiresPage) {
-      return reason.isNotEmpty ? reason : '需回来源页重新授权媒体';
-    }
-    if (result.waitingExecution) {
-      return reason.isNotEmpty ? reason : '等待系统允许后台授权刷新';
-    }
-    return reason.isNotEmpty ? reason : '授权状态未变化，请返回来源页重新授权';
-  }
+  /// address. The three-state vocabulary lives in GLOSSARY.md.
+  String _refreshOutcomeReason(MediaAuthorizationRefreshResult result) =>
+      _refreshFailureMessage(result);
 
   /// Copies [candidate] with only its address replaced.
   ///

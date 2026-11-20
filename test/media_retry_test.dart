@@ -359,4 +359,153 @@ void main() {
       expect(h.app.mediaTasks.task(h.task.id)!.candidateId, h.stored.id);
     });
   });
+
+  group('typed retry outcome', () {
+    late Directory cache;
+    late AppDatabase db;
+
+    Future<({AppController app, MediaTask task, MediaCandidate stored})>
+    pageRequired(
+      MediaAuthorizationRefreshResult Function(
+        MediaTask task,
+        MediaCandidate candidate,
+      )
+      answer,
+    ) async {
+      cache = await Directory.systemTemp.createTemp('site-lens-retry-outcome-');
+      db = AppDatabase(NativeDatabase.memory());
+      final native = FakeNativeDownloads();
+      final bridge = FakeAuthRefreshBridge(answer);
+      final transfers = <String>[];
+      final app = AppController(
+        db,
+        nativeDownloads: native,
+        nativeMediaAuthRefresh: bridge,
+        mediaDirectoryProvider: () async => cache,
+        mediaPolicyTransfer: offlineTransfer(transfers),
+      );
+      addTearDown(() async {
+        await app.shutdown();
+        await db.close();
+        if (cache.existsSync()) await cache.delete(recursive: true);
+      });
+      await app.load();
+      final stored = baseCandidate();
+      await db.saveMediaCandidate(stored);
+      final created = await app.mediaTasks.create(stored);
+      app.mediaTasks.transition(created.id, MediaTaskState.downloading);
+      final failed = app.mediaTasks.transition(
+        created.id,
+        MediaTaskState.reauthorize,
+        errorCode: MediaErrorCode.authorizationRequired,
+      );
+      return (app: app, task: failed, stored: stored);
+    }
+
+    test('refreshed answers with the existing resume wording', () async {
+      final h = await pageRequired(
+        (task, candidate) => const MediaAuthorizationRefreshResult(
+          state: 'refreshed',
+          mediaUrl: 'https://cdn.example/index.m3u8?token=fresh',
+        ),
+      );
+
+      final outcome = await h.app.retryMediaTaskResult(h.task);
+
+      expect(outcome.kind, MediaRetryOutcomeKind.resumed);
+      expect(outcome.message, '已开始续传');
+      expect(outcome.offersSourcePage, isFalse);
+      expect(outcome.leavesTaskUntouched, isFalse);
+      expect(outcome.taskId, h.task.id);
+      expect(outcome.task, isNotNull);
+    });
+
+    test('unchanged says the authorization did not change', () async {
+      final h = await pageRequired(
+        (task, candidate) => const MediaAuthorizationRefreshResult(
+          state: 'unchanged',
+          reason: '页面未重新请求主清单',
+        ),
+      );
+
+      final outcome = await h.app.retryMediaTaskResult(h.task);
+
+      expect(outcome.kind, MediaRetryOutcomeKind.unchanged);
+      expect(outcome.message, '授权未变化：页面未重新请求主清单');
+      expect(outcome.offersSourcePage, isTrue);
+      expect(outcome.leavesTaskUntouched, isTrue);
+      expect(outcome.task, isNull);
+    });
+
+    test('reauthorize asks the user back to the source page', () async {
+      final h = await pageRequired(
+        (task, candidate) => const MediaAuthorizationRefreshResult(
+          state: 'reauthorize',
+          reason: '需回播放页重新授权媒体',
+        ),
+      );
+
+      final outcome = await h.app.retryMediaTaskResult(h.task);
+
+      expect(outcome.kind, MediaRetryOutcomeKind.requiresPage);
+      expect(outcome.message, '需回播放页重新授权媒体');
+      expect(outcome.offersSourcePage, isTrue);
+      expect(
+        h.app.mediaTasks.task(h.task.id)!.state,
+        MediaTaskState.reauthorize,
+      );
+      expect(
+        (await db.mediaCandidate(h.stored.id))!.mediaUrl,
+        h.stored.mediaUrl,
+      );
+    });
+
+    test('waiting_execution is a plain message with no action', () async {
+      final h = await pageRequired(
+        (task, candidate) => const MediaAuthorizationRefreshResult(
+          state: 'waiting_execution',
+          reason: '系统暂不允许后台授权刷新',
+        ),
+      );
+
+      final outcome = await h.app.retryMediaTaskResult(h.task);
+
+      expect(outcome.kind, MediaRetryOutcomeKind.waiting);
+      expect(outcome.offersSourcePage, isFalse);
+      expect(outcome.message, '系统暂不允许后台授权刷新');
+    });
+
+    test('a swallowed address still reports 授权未变化', () async {
+      final h = await pageRequired(
+        (task, candidate) =>
+            const MediaAuthorizationRefreshResult(state: 'refreshed'),
+      );
+
+      final outcome = await h.app.retryMediaTaskResult(h.task);
+
+      expect(outcome.kind, MediaRetryOutcomeKind.unchanged);
+      expect(outcome.message, startsWith('授权未变化：'));
+      expect(outcome.offersSourcePage, isTrue);
+    });
+
+    test('the throwing entry point keeps its message', () async {
+      final h = await pageRequired(
+        (task, candidate) => const MediaAuthorizationRefreshResult(
+          state: 'unchanged',
+          reason: '页面未重新请求主清单',
+        ),
+      );
+
+      await expectLater(
+        h.app.retryMediaTask(h.task),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            '授权未变化：页面未重新请求主清单',
+          ),
+        ),
+      );
+    });
+  });
 }
