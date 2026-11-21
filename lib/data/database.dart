@@ -624,15 +624,16 @@ class AppDatabase extends GeneratedDatabase {
         profileId,
         sourceId,
       ]);
+      // v2 阶段还没有 route 列（v26 才加）：这里只写 v2 的形状，出口由
+      // v26 的回填统一写成浏览出口。
       await customStatement(
-        'INSERT INTO profile_pages(profile_id,url,region_selector,enabled,route,refreshed_at,error) VALUES(?,?,?,?,?,?,?) '
+        'INSERT INTO profile_pages(profile_id,url,region_selector,enabled,refreshed_at,error) VALUES(?,?,?,?,?,?) '
         'ON CONFLICT(profile_id,url) DO NOTHING',
         [
           profileId,
           url,
           row.read<String>('region_selector'),
           row.read<int>('enabled'),
-          SiteRoute.browse.storageName,
           row.readNullable<String>('refreshed_at'),
           row.readNullable<String>('error'),
         ],
