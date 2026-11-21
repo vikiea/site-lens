@@ -35,6 +35,7 @@ import '../domain/models.dart';
 import '../domain/route_health.dart';
 import '../domain/site_adapter.dart';
 import '../media/native_credential_push.dart';
+import '../media/remote_playback_failure.dart';
 import '../media/site_credential_handoff.dart';
 import '../site_credentials/site_credential_store.dart';
 import '../testing/fake_site_adapter.dart';
@@ -326,8 +327,27 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       if (session.state == NativePlaybackState.stopped ||
           session.state == NativePlaybackState.restorable) {
         deviceDiagnostics.clearObservation('media.playback.session');
+        // 会话结束：这一段的重试预算可以回收了。
+        _remoteFailures.forget(session.id);
+        _handledRemoteFailures.removeWhere(
+          (key) => key.startsWith('${session.id}|'),
+        );
         return;
       }
+      // 远程失败归因（T8）。只认远程错误码：本地会话的失败码不在这条线上，
+      // 两套归因不共用错误码，也不会互相覆盖。同一段会话的同一份结论只处置一
+      // 次——快照会反复下发，重试预算不能因此被反复扣。
+      if (session.state == NativePlaybackState.failed) {
+        final key = '${session.id}|${session.errorCode}';
+        if (_handledRemoteFailures.add(key)) {
+          observeRemoteFailure(session);
+        }
+        return;
+      }
+      // 这段会话重新开始播了：它的失败结论与去重标记都可以收掉。
+      _handledRemoteFailures.removeWhere(
+        (key) => key.startsWith('${session.id}|'),
+      );
       deviceDiagnostics.recordObservation(
         id: 'media.playback.session',
         observed: session.state.name,
@@ -842,6 +862,119 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     int? profileId,
   })?
   _lastRemoteOpen;
+
+  /// 用户最后看到的远程失败结论（T8）。它不是媒体任务状态：远程播放可以不建
+  /// 任务，结局只能挂在这里。null 表示没有待处理的远程失败。
+  RemoteFailureNotice? _remoteFailureNotice;
+
+  /// 四类远程失败的重试预算。按「会话 + 种类」记，会话结束由链自己回收。
+  final RemoteFailureRetryChain _remoteFailures = RemoteFailureRetryChain();
+
+  /// 已经处置过的远程失败（会话 + 错误码）。同一份快照反复下发时不再重复处置。
+  final _handledRemoteFailures = <String>{};
+
+  /// 最近四类远程失败各自怎么判定、要不要重开、给用户看什么。
+  RemoteFailureNotice? get remoteFailureNotice => _remoteFailureNotice;
+
+  /// 远程失败的重试策略；次数与间隔可配，同一段会话每一类最多一次。
+  RemoteRetryPolicy get remoteRetryPolicy => _remoteFailures.policy;
+
+  set remoteRetryPolicy(RemoteRetryPolicy next) =>
+      _remoteFailures.policy = next;
+
+  /// 从原生会话快照里认一次远程失败并处置；不是远程失败就返回 null。
+  ///
+  /// 这是界面与桥接层唯一需要的入口：判定在 [RemotePlaybackFailure.classify]
+  /// 里，重试预算在 [_remoteFailures] 里，两者都不读媒体任务。
+  RemoteFailurePlan? observeRemoteFailure(NativePlaybackSession session) {
+    final failure = RemotePlaybackFailure.classify(session);
+    if (failure == null) return null;
+    return reportRemoteFailure(failure);
+  }
+
+  /// 主动处置一次远程失败。原生把失败写进会话快照之后，由界面或桥接层调用。
+  ///
+  /// 四类结局各走各的路：凭证失效续期后重开、清单失效重取清单再开一次、分片
+  /// 失败建议下载、网络失败沿用既有文案。分片与网络不重开整集，凭证与清单也
+  /// 各自只重开一次；耗尽之后只给建议，不静默重试。
+  RemoteFailurePlan reportRemoteFailure(RemotePlaybackFailure failure) {
+    void Function()? retry = switch (failure.kind) {
+      RemoteFailureKind.credentialRejected => () {
+        unawaited(reopenAfterCredentialRefresh());
+      },
+      RemoteFailureKind.manifestUnavailable => () {
+        unawaited(reopenAfterManifestRefresh());
+      },
+      // 分片失败与网络失败不重开整集：它们连重试动作都不该有。
+      RemoteFailureKind.segmentFailed || RemoteFailureKind.network => null,
+    };
+    final plan = _remoteFailures.plan(failure: failure, retry: retry);
+    _remoteFailureNotice = RemoteFailureNotice(plan: plan);
+    notifyListeners();
+    if (plan.retries) {
+      final action = plan.retry!;
+      final delay = plan.delay;
+      if (delay == Duration.zero) {
+        action();
+      } else {
+        unawaited(
+          Future<void>.delayed(delay).then((_) {
+            if (_remoteFailureNotice?.plan.failure.sessionId !=
+                failure.sessionId) {
+              // 这段会话已经有了新的结论：过期的重试不再执行。
+              return;
+            }
+            action();
+          }),
+        );
+      }
+    }
+    return plan;
+  }
+
+  /// 分片失败之后「下载该集」（T8）。
+  ///
+  /// 建议本身是这一类的动作：远程流取不到的片段，下载任务手里那份清单通常还能
+  /// 取到，取不到也只是任务自己的失败。这里只把「该下载哪一集」交出去——
+  /// 建任务是下载自己的动作，不让远程失败去写任务状态。
+  Future<MediaCandidate?> downloadEpisodeAfterSegmentFailure() async {
+    final last = _lastRemoteOpen;
+    if (last == null) return null;
+    dismissRemoteFailure();
+    return last.candidate;
+  }
+
+  /// 用户点掉远程失败的提示。
+  void dismissRemoteFailure() {
+    if (_remoteFailureNotice == null) return;
+    _remoteFailureNotice = null;
+    notifyListeners();
+  }
+
+  /// 清单失效之后的那一次重开：重取清单再开同一集。
+  ///
+  /// 直连出口没有来源页（GLOSSARY: 来源页），能重取的是适配器给出的候选；因此
+  /// 这里与凭证续期共用同一个重开动作，区别只在预算与文案——两者各记各的。
+  Future<void> reopenAfterManifestRefresh() async {
+    final last = _lastRemoteOpen;
+    if (last == null) return;
+    try {
+      await openRemoteCandidate(
+        last.candidate,
+        hostId: last.hostId,
+        generation: last.generation,
+        sourceUrl: last.sourceUrl,
+        profileId: last.profileId,
+      );
+    } on Object catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.remote_failure',
+        context: 'retry=manifest',
+        stack: stack,
+      );
+    }
+  }
 
   /// 凭证续期成功后重开本集（T6）。没有可重开的远程播放就什么都不做。
   ///
@@ -4238,4 +4371,24 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     credentialHandoff = null;
     await nativeMedia.dispose();
   }
+}
+
+/// 用户看到的远程失败结论（T8）。它不落到任何 `MediaTaskState` 上：远程播放
+/// 可以不建任务，结局只能由这份提示、而不是任务状态来表达。
+class RemoteFailureNotice {
+  const RemoteFailureNotice({required this.plan});
+
+  final RemoteFailurePlan plan;
+
+  RemoteFailureKind get kind => plan.failure.kind;
+  RemoteFailureAction get action => plan.action;
+
+  /// 用户看得到的那句话。四类各不相同。
+  String get message => plan.message;
+
+  /// 这一次是不是已经自动重试过了。
+  bool get retried => plan.retries;
+
+  /// 这一次没有自动重试（预算用完、或这一类根本不重开）：只剩建议。
+  bool get exhausted => !plan.retries;
 }
