@@ -180,6 +180,18 @@ const _v23NativePlaybackTables = <String>[
       'playlist_key TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at TEXT NOT NULL)',
 ];
 
+/// Statements that materialise the v25 "which routes does this profile offer"
+/// shape. They are shared by fresh installs (`onCreate`) and the v24 -> v25
+/// migration (`onUpgrade`) so the two paths can never drift apart.
+///
+/// One profile can hold the direct route and the browse route at the same
+/// time (ADR-0002), so the routes are rows and never a single-valued column.
+const _v25RouteTables = <String>[
+  'CREATE TABLE IF NOT EXISTS site_profile_routes('
+      'profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE, '
+      'route TEXT NOT NULL, PRIMARY KEY(profile_id, route))',
+];
+
 /// The candidate row, always created with every column the current code reads.
 ///
 /// A v1-v15 fixture has no media_candidates table at all, so the v24 step
@@ -263,7 +275,7 @@ class AppDatabase extends GeneratedDatabase {
   @visibleForTesting
   static void Function(String step)? migrationDebugHook;
 
-  static const currentSchemaVersion = 24;
+  static const currentSchemaVersion = 25;
 
   @override
   int get schemaVersion => currentSchemaVersion;
@@ -298,6 +310,7 @@ class AppDatabase extends GeneratedDatabase {
         _v21MediaExportJobsTable,
         ..._v22HealthColumns,
         ..._v23NativePlaybackTables,
+        ..._v25RouteTables,
       ]) {
         await customStatement(sql);
       }
@@ -429,6 +442,7 @@ class AppDatabase extends GeneratedDatabase {
           );
         }
       }
+      if (from < 25) await _migrateV24toV25();
     },
     beforeOpen: (_) async {
       await customStatement('PRAGMA foreign_keys = ON');
@@ -606,6 +620,27 @@ class AppDatabase extends GeneratedDatabase {
     migrationDebugHook?.call('done');
   });
 
+  /// v24 -> v25: 站点档案开始记录自己具备哪些出口。
+  ///
+  /// Every profile that exists before this step was reached through the page,
+  /// so all of them land on the browse route. The backfill runs inside the
+  /// same transaction as the table, and only inserts rows that are missing:
+  /// a retry after a committed migration must never wipe a route recorded
+  /// afterwards. A hook names each step so a failure is attributable.
+  Future<void> _migrateV24toV25() => transaction(() async {
+    migrationDebugHook?.call('v24-to-v25');
+    for (final sql in _v25RouteTables) {
+      await customStatement(sql);
+    }
+    migrationDebugHook?.call('v25-after-table');
+    await customStatement(
+      'INSERT OR IGNORE INTO site_profile_routes(profile_id,route) '
+      'SELECT id,? FROM profiles',
+      [SiteRoute.browse.name],
+    );
+    migrationDebugHook?.call('v25-after-backfill');
+  });
+
   /// v2 -> v3: adds the pinned `@resource` snapshot table. Idempotent.
   Future<void> _migrateV2toV3() => transaction(() async {
     for (final sql in _v3Tables) {
@@ -765,24 +800,42 @@ class AppDatabase extends GeneratedDatabase {
     );
   }
 
-  Future<List<SiteProfile>> profiles() async =>
-      (await customSelect('SELECT * FROM profiles ORDER BY id').get())
-          .map(
-            (r) => SiteProfile(
-              id: r.read<int>('id'),
-              name: r.read<String>('name'),
-              enabled: r.read<int>('enabled') == 1,
-              readySelector: r.read<String>('ready_selector'),
-              lastLanding: r.readNullable<String>('last_landing') == null
-                  ? null
-                  : Uri.parse(r.read<String>('last_landing')),
-              lastLandingAt: r.readNullable<String>('last_landing_at') == null
-                  ? null
-                  : DateTime.parse(r.read<String>('last_landing_at')),
-              createdAt: DateTime.parse(r.read<String>('created_at')),
-            ),
-          )
-          .toList();
+  Future<List<SiteProfile>> profiles() async {
+    final routes = await _routesByProfile();
+    return (await customSelect('SELECT * FROM profiles ORDER BY id').get())
+        .map(
+          (r) => SiteProfile(
+            id: r.read<int>('id'),
+            name: r.read<String>('name'),
+            enabled: r.read<int>('enabled') == 1,
+            readySelector: r.read<String>('ready_selector'),
+            lastLanding: r.readNullable<String>('last_landing') == null
+                ? null
+                : Uri.parse(r.read<String>('last_landing')),
+            lastLandingAt: r.readNullable<String>('last_landing_at') == null
+                ? null
+                : DateTime.parse(r.read<String>('last_landing_at')),
+            createdAt: DateTime.parse(r.read<String>('created_at')),
+            routes: routes[r.read<int>('id')] ?? {SiteRoute.browse},
+          ),
+        )
+        .toList();
+  }
+
+  /// Reads every recorded 出口 in one query. Values this build does not know
+  /// are skipped rather than guessed at.
+  Future<Map<int, Set<SiteRoute>>> _routesByProfile() async {
+    final routes = <int, Set<SiteRoute>>{};
+    for (final row in await customSelect(
+      'SELECT profile_id,route FROM site_profile_routes',
+    ).get()) {
+      final route = SiteRoute.fromStorage(row.read<String>('route'));
+      if (route == null) continue;
+      (routes[row.read<int>('profile_id')] ??= <SiteRoute>{}).add(route);
+    }
+    return routes;
+  }
+
   Future<int> createProfile(String name, {String readySelector = 'main'}) =>
       transaction(() async {
         final id = await _insertProfile(name, readySelector);
