@@ -31,7 +31,9 @@ import 'ui_util.dart';
 /// batch never changes what is playing (ADR-0005), and it never writes into the
 /// playback cache (ADR-0010).
 ///
-/// Playback (T11) and credentials (T4) stay other tickets.
+/// Scope stops at the hand-off. Tapping 播放 or an 选集 hands one 媒体候选 to
+/// [onRequestPlay]; what happens next belongs to the player (T11), downloads
+/// (T14) and credentials (T4), and none of it lives here.
 class SeriesDetailScreen extends StatefulWidget {
   const SeriesDetailScreen({
     super.key,
@@ -58,8 +60,8 @@ class SeriesDetailScreen extends StatefulWidget {
   /// choice to survive leaving the page pass a longer-lived one.
   final SeriesLineMemory? lineMemory;
 
-  /// Playback belongs to T11. Supplying this makes the play entry call out;
-  /// leaving it null keeps the entry, showing that playback is not wired yet.
+  /// 播放入口。给了它就「点开就播」：播放按钮进入选中的那一集，选集行直接
+  /// 进入那一集。回调拿到的永远是一个**媒体候选**，而不是线路。
   final void Function(MediaCandidate candidate)? onRequestPlay;
 
   /// The application the batch download store enqueues through. A page without
@@ -277,6 +279,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
         _candidates = candidates;
         _candidateId = candidates.isEmpty ? null : candidates.first.id;
       });
+      _deliverPendingPlay();
     } on SiteAdapterError catch (error) {
       if (!mounted || ticket != _request) return;
       setState(() {
@@ -308,6 +311,43 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     if (episodeNumber == _episodeNumber) return;
     setState(() => _episodeNumber = episodeNumber);
     unawaited(_loadLines(episodeNumber));
+  }
+
+  /// 点一集就播这一集：先让线路区跟上，再把这一集的候选交出去。
+  ///
+  /// 已经有选中的候选就立刻播；还没有（正在取线路）就等它落地再播，期间
+  /// 只播一次——重复点同一集不会开两个会话。
+  Future<void> _playEpisode(int episodeNumber) async {
+    final onRequestPlay = widget.onRequestPlay;
+    if (onRequestPlay == null) {
+      _selectEpisode(episodeNumber);
+      return;
+    }
+    final pending = _pendingPlay;
+    if (pending == episodeNumber) return;
+    if (episodeNumber == _episodeNumber) {
+      final current = _selectedCandidate;
+      if (current != null) {
+        onRequestPlay(current);
+        return;
+      }
+      _pendingPlay = episodeNumber;
+      return;
+    }
+    _pendingPlay = episodeNumber;
+    _selectEpisode(episodeNumber);
+  }
+
+  /// 这一集还没取到候选时记下「落地就要播」，候选一到就兑现。
+  int? _pendingPlay;
+
+  void _deliverPendingPlay() {
+    final pending = _pendingPlay;
+    if (pending == null || pending != _episodeNumber) return;
+    final candidate = _selectedCandidate;
+    if (candidate == null) return;
+    _pendingPlay = null;
+    widget.onRequestPlay?.call(candidate);
   }
 
   /// Enters or leaves the 选集 multi-select. Entering does not touch the line
@@ -479,27 +519,42 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     );
   }
 
-  /// Playback is T11. Until it lands, the entry says so instead of pretending
-  /// a line or a candidate is a player.
+  /// 播放入口。候选已经就绪时直接播；还在取候选时说清楚在等什么，而不是
+  /// 假装已经可以播。
   Widget _playEntry() {
     final candidate = _selectedCandidate;
     final onRequestPlay = widget.onRequestPlay;
     final ready = candidate != null && onRequestPlay != null;
+    final episode = _episodeNumber;
+    final waiting =
+        onRequestPlay != null &&
+        !ready &&
+        episode != null &&
+        _episodesFailure == null &&
+        _linesFailure == null &&
+        _candidatesFailure == null &&
+        (_loadingLines || _loadingCandidates);
     return Row(
       children: [
         FilledButton.icon(
           onPressed: ready
               ? () => onRequestPlay(candidate)
-              : () => ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('本步还不播放：播放功能在后续工单里接入。')),
-                ),
+              : waiting
+              ? () => unawaited(_playEpisode(episode))
+              : () => ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(const SnackBar(content: Text('这一集还没有可播放的候选'))),
           icon: const Icon(Icons.play_arrow),
           label: const Text('播放'),
         ),
         const SizedBox(width: SiteLensMetrics.formGap),
         Flexible(
           child: Text(
-            onRequestPlay == null ? '播放尚未接入' : '播放器拿的是候选',
+            onRequestPlay == null
+                ? '播放尚未接入'
+                : ready
+                ? '播放器拿的是候选'
+                : '正在取这一集的候选',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ),
@@ -597,7 +652,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
                       color: Theme.of(context).colorScheme.primary,
                     )
                   : null,
-              onTap: () => _selectEpisode(episode.episodeNumber),
+              onTap: () => unawaited(_playEpisode(episode.episodeNumber)),
             ),
           );
         },

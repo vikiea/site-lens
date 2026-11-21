@@ -35,6 +35,8 @@ import '../domain/models.dart';
 import '../domain/route_health.dart';
 import '../domain/site_adapter.dart';
 import '../media/native_credential_push.dart';
+import '../media/remote_episode_source.dart';
+import '../media/remote_playback_controller.dart';
 import '../media/remote_playback_failure.dart';
 import '../media/site_credential_handoff.dart';
 import '../site_credentials/site_credential_store.dart';
@@ -853,6 +855,64 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
+  /// 从剧集详情点选集进入远程播放（T11）。
+  ///
+  /// 详情页只交出它手上的那份**媒体候选**和一个选中线路的 id；应用侧在这里把
+  /// 播放需要的四样东西补齐：原生宿主（站点档案对应的 host 与代次）、来源页、
+  /// 以及「下一集从哪来」的目录来源。播放页本身不认识适配器，也不认识凭证。
+  ///
+  /// 不建任务、不写追剧记录：远程播放可以不建任务（ADR-0005），追剧位置是
+  /// T12 的事。
+  Future<RemotePlayerLaunch> openRemoteEpisode(
+    MediaCandidate candidate, {
+    required SiteAdapter adapter,
+    required String seriesKey,
+    String? lineId,
+    int? profileId,
+    int continueWatchingMs = 0,
+    String? episodeTitle,
+  }) async {
+    final target = profileId ?? adapter.profileId;
+    // 打开走的就是既有的那个入口：凭证注入、缓存、凭证租约、失败归因都在它
+    // 里面，这里不重复任何一步。
+    await openRemoteCandidate(
+      candidate,
+      hostId: candidate.hostId,
+      generation: candidate.generation,
+      sourceUrl: candidate.sourceUrl,
+      profileId: target,
+    );
+    rememberCredentialProfile(target);
+    final source = AdapterEpisodeSource(
+      adapter: adapter,
+      seriesKey: seriesKey,
+      preferredLineId: lineId,
+      preferredQuality: candidate.qualityLabel,
+      preferredAudio: candidate.audioLabel,
+    );
+    return RemotePlayerLaunch(
+      candidate: candidate,
+      title: _seriesTitleOf(candidate),
+      episodeNumber: episodeTitle ?? _episodeLabelOf(candidate),
+      source: source,
+      lineId: lineId,
+      continueWatchingMs: continueWatchingMs,
+    );
+  }
+
+  /// 播放页标题上的剧名：页面自己声明的剧名优先，其次是候选标题。
+  static String _seriesTitleOf(MediaCandidate candidate) {
+    final series = candidate.seriesTitle?.trim();
+    if (series != null && series.isNotEmpty) return series;
+    final title = candidate.title.trim();
+    return title.isEmpty ? '当前选集' : title;
+  }
+
+  static String _episodeLabelOf(MediaCandidate candidate) {
+    final number = candidate.episodeNumber;
+    return number == null ? '当前选集' : '第 $number 集';
+  }
+
   /// 最近一次远程播放的请求参数。自动重开用它把**同一集**再打开一次。
   ({
     MediaCandidate candidate,
@@ -886,10 +946,15 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   ///
   /// 这是界面与桥接层唯一需要的入口：判定在 [RemotePlaybackFailure.classify]
   /// 里，重试预算在 [_remoteFailures] 里，两者都不读媒体任务。
-  RemoteFailurePlan? observeRemoteFailure(NativePlaybackSession session) {
+  /// [retry] 让调用方换掉默认的重开动作（播放页用它重开**播放页正在放的那
+  /// 一集**，而不是 `_lastRemoteOpen` 记住的那一份）。传了就由它决定是否重开。
+  RemoteFailurePlan? observeRemoteFailure(
+    NativePlaybackSession session, {
+    void Function()? retry,
+  }) {
     final failure = RemotePlaybackFailure.classify(session);
     if (failure == null) return null;
-    return reportRemoteFailure(failure);
+    return reportRemoteFailure(failure, retry: retry);
   }
 
   /// 主动处置一次远程失败。原生把失败写进会话快照之后，由界面或桥接层调用。
@@ -897,8 +962,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   /// 四类结局各走各的路：凭证失效续期后重开、清单失效重取清单再开一次、分片
   /// 失败建议下载、网络失败沿用既有文案。分片与网络不重开整集，凭证与清单也
   /// 各自只重开一次；耗尽之后只给建议，不静默重试。
-  RemoteFailurePlan reportRemoteFailure(RemotePlaybackFailure failure) {
-    void Function()? retry = switch (failure.kind) {
+  RemoteFailurePlan reportRemoteFailure(
+    RemotePlaybackFailure failure, {
+    void Function()? retry,
+  }) {
+    retry ??= switch (failure.kind) {
       RemoteFailureKind.credentialRejected => () {
         unawaited(reopenAfterCredentialRefresh());
       },
@@ -4391,4 +4459,85 @@ class RemoteFailureNotice {
 
   /// 这一次没有自动重试（预算用完、或这一类根本不重开）：只剩建议。
   bool get exhausted => !plan.retries;
+}
+
+/// 一次「从详情页点选集进入远程播放」要交给播放页的全部参数（T11）。
+///
+/// 它只携带**播放**需要的东西：一集候选、剧名、集号、下一集从哪里来，以及
+/// 调用方手里已有的观看位置。没有任务、没有下载、没有追剧记录的落库。
+class RemotePlayerLaunch {
+  const RemotePlayerLaunch({
+    required this.candidate,
+    required this.title,
+    required this.episodeNumber,
+    required this.source,
+    this.lineId,
+    this.continueWatchingMs = 0,
+  });
+
+  final MediaCandidate candidate;
+  final String title;
+  final String episodeNumber;
+  final RemoteEpisodeSource source;
+  final String? lineId;
+  final int continueWatchingMs;
+}
+
+/// 把 `AppController` 的远程播放能力交给播放页（[RemotePlaybackHost]）。
+///
+/// 这是播放页与原生/凭证/失败归因之间唯一的缝：播放页不持有 `AppController`，
+/// 也就不会顺手去碰下载任务或追剧记录。远程失败一律经过控制器既有的归因链，
+/// 播放页只执行它给出的下一步。
+class AppRemotePlaybackHost implements RemotePlaybackHost {
+  AppRemotePlaybackHost(this.app);
+
+  final AppController app;
+
+  /// 候选所属的站点档案就是它的 `hostId` 指向的那个宿主；`openRemoteCandidate`
+  /// 在没有档案时按公开内容照播（ADR-0009），所以这里把宿主 id 也当作档案 id
+  /// 传下去，与详情页交出来的候选保持一致。
+  @override
+  Future<NativePlaybackSession> openRemote(MediaCandidate candidate) =>
+      app.openRemoteCandidate(
+        candidate,
+        hostId: candidate.hostId,
+        generation: candidate.generation,
+        sourceUrl: candidate.sourceUrl,
+        profileId: candidate.hostId,
+      );
+
+  @override
+  Stream<NativePlaybackSession> get nativeStates => app.nativeMedia.states;
+
+  @override
+  Future<NativePlaybackSession> play(String sessionId) =>
+      app.nativeMedia.play(sessionId: sessionId);
+
+  @override
+  Future<NativePlaybackSession> pause(String sessionId) =>
+      app.nativeMedia.pause(sessionId: sessionId);
+
+  @override
+  Future<NativePlaybackSession> seek(Duration position, String sessionId) =>
+      app.nativeMedia.seek(position, sessionId: sessionId);
+
+  @override
+  Future<NativePlaybackSession> setSpeed(double speed, String sessionId) =>
+      app.nativeMedia.setSpeed(speed, sessionId: sessionId);
+
+  @override
+  Future<NativePlaybackSession> close(String sessionId) =>
+      app.nativeMedia.close(sessionId: sessionId);
+
+  @override
+  RemoteFailurePlan? observeRemoteFailure(
+    NativePlaybackSession session, {
+    void Function()? retry,
+  }) => app.observeRemoteFailure(session, retry: retry);
+
+  @override
+  void dismissRemoteFailure() {
+    // 播放页有自己的失败提示；全局那一条同源，一并清掉，免得用户要关两次。
+    app.dismissRemoteFailure();
+  }
 }
