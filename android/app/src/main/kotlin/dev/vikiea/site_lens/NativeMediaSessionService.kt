@@ -20,6 +20,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -529,6 +530,7 @@ class NativeMediaSessionService : MediaSessionService() {
                 userPaused = userPaused,
                 backgroundPolicyPaused = backgroundPolicyPaused,
                 state = state,
+                restorable = sessionAllowsRestorable(),
             )
         ) {
             NativeMediaSessionPolicy.TaskRemovalAction.KEEP_RUNNING ->
@@ -675,6 +677,11 @@ class NativeMediaSessionService : MediaSessionService() {
     private fun readRestorable(): RestorableState? {
         if (!statePrefs.getBoolean("known", false)) return null
         val uri = statePrefs.getString("uri", null)?.takeIf { it.isNotBlank() } ?: return null
+        // 远程地址不是可恢复状态；读到就丢掉这份记录，别让它挡住正常运行。
+        if (!NativeMediaSessionRoute.shouldRestore(uri)) {
+            clearRestorable()
+            return null
+        }
         return RestorableState(
             taskId = statePrefs.getString("taskId", null),
             candidateId = statePrefs.getString("candidateId", null),
@@ -723,8 +730,12 @@ class NativeMediaSessionService : MediaSessionService() {
         applicationForeground = request.applicationForeground
         allowNativeBackgroundPlayback = request.allowNativeBackgroundPlayback
         val uri = Uri.parse(request.uri)
-        require(uri.scheme == "file" || uri.scheme == "content") { "本地媒体地址无效" }
-        if (uri.scheme == "file") {
+        // 远程会话与本地会话的差异全部交给判定对象；这条分支只按它的结论执行。
+        val route = NativeMediaSessionRoute.classify(
+            request.uri,
+            remoteSourceAllowed = request.remoteSourceAllowed,
+        )
+        if (route.scheme == NativeMediaSessionRoute.Scheme.FILE) {
             val file = File(uri.path ?: error("媒体路径无效")).canonicalFile
             val roots = listOfNotNull(
                 applicationContext.filesDir.canonicalFile,
@@ -743,13 +754,8 @@ class NativeMediaSessionService : MediaSessionService() {
                 "本地媒体路径越界"
             }
         }
-        val leaseScope = MediaFileLeaseRegistry.Scope.task(request.taskId) +
-            if (uri.scheme == "file" && request.hls) {
-                MediaFileLeaseRegistry.Scope.file(File(uri.path!!).parentFile!!)
-            } else {
-                MediaFileLeaseRegistry.Scope.source(request.uri)
-            }
-        val nextLease = NativeMediaFileLeases.registry.acquireRead(leaseScope)
+        val leaseScope = route.leaseForOpening(request.taskId, request.uri, request.hls)
+        val nextLease = leaseScope?.let { NativeMediaFileLeases.registry.acquireRead(it) }
         var installedLease = false
         try {
             if (ownerGeneration == null) {
@@ -775,7 +781,7 @@ class NativeMediaSessionService : MediaSessionService() {
             sourceRetryCount = 0
             userPaused = false
             backgroundPolicyPaused = false
-            clearRestorable()
+            if (route.isRestorable) clearRestorable()
             val item = MediaItem.Builder()
                 .setMediaId(sessionId ?: "")
                 .setUri(uri)
@@ -784,13 +790,18 @@ class NativeMediaSessionService : MediaSessionService() {
                 .build()
             val hls = request.mime.contains("mpegurl", ignoreCase = true) ||
                 uri.path?.lowercase()?.let { it.endsWith(".m3u8") || it.endsWith(".m3u") } == true
-            if (hls) {
-                val dataSource = GrowingFileDataSource.Factory()
-                player.setMediaSource(
-                    HlsMediaSource.Factory(dataSource).createMediaSource(item),
+            when (route.sourceOf(hls)) {
+                NativeMediaSessionRoute.SourceKind.LOCAL_GROWING_FILE -> player.setMediaSource(
+                    HlsMediaSource.Factory(GrowingFileDataSource.Factory())
+                        .createMediaSource(item),
                 )
-            } else {
-                player.setMediaItem(item)
+                // 远程 HLS 与远程渐进式都交给默认数据源（站点凭证是后续票）。
+                NativeMediaSessionRoute.SourceKind.REMOTE_HTTP -> player.setMediaSource(
+                    HlsMediaSource.Factory(DefaultDataSource.Factory(applicationContext))
+                        .createMediaSource(item),
+                )
+                NativeMediaSessionRoute.SourceKind.REMOTE_HTTP_PROGRESSIVE,
+                NativeMediaSessionRoute.SourceKind.LOCAL_DEFAULT -> player.setMediaItem(item)
             }
             val shouldAutoPlay = request.autoPlay &&
                 NativeMediaSessionPolicy.canStartPlayback(
@@ -810,7 +821,7 @@ class NativeMediaSessionService : MediaSessionService() {
             publish()
             return snapshot()
         } catch (error: Exception) {
-            if (!installedLease) runCatching { nextLease.close() }
+            if (!installedLease) runCatching { nextLease?.close() }
             runCatching { stopAndRelease() }
             throw error
         }
@@ -911,6 +922,11 @@ class NativeMediaSessionService : MediaSessionService() {
 
     private fun stopAndPreserveRestorable() {
         if (engineReleased || stopping) return
+        // 只有本地会话可以被保留成可恢复记录；远程会话退回到停止，不写记录。
+        if (!sessionAllowsRestorable()) {
+            stopAndRelease()
+            return
+        }
         markExplicitStop()
         stopping = true
         lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.STOPPING
@@ -1039,6 +1055,11 @@ class NativeMediaSessionService : MediaSessionService() {
         positionHandler.removeCallbacks(positionPersistence)
     }
 
+    private fun sessionAllowsRestorable(): Boolean {
+        val raw = mediaUri ?: return false
+        return NativeMediaSessionRoute.shouldPreserveRestorable(raw)
+    }
+
     data class OpenRequest(
         val sessionId: String,
         val taskId: String,
@@ -1047,6 +1068,7 @@ class NativeMediaSessionService : MediaSessionService() {
         val mime: String,
         val title: String,
         val hls: Boolean,
+        val remoteSourceAllowed: Boolean = false,
         val autoPlay: Boolean = true,
         val applicationForeground: Boolean = true,
         val allowNativeBackgroundPlayback: Boolean = false,

@@ -29,8 +29,11 @@ internal object NativeMediaSessionPolicy {
         userPaused: Boolean,
         backgroundPolicyPaused: Boolean,
         state: String,
+        restorable: Boolean = true,
     ): TaskRemovalAction = when {
         state in TERMINAL_STATES -> TaskRemovalAction.RELEASE
+        // 当前会话写不出可恢复记录（远程会话）时，保留它就是空操作。
+        !restorable -> TaskRemovalAction.RELEASE
         !allowNativeBackgroundPlayback || userPaused || backgroundPolicyPaused ->
             TaskRemovalAction.PRESERVE_RESTORABLE
         else -> TaskRemovalAction.KEEP_RUNNING
