@@ -32,6 +32,7 @@ import '../device/device_conditions.dart';
 import '../discovery/health_checker.dart';
 import '../discovery/probe_coordinator.dart';
 import '../domain/models.dart';
+import '../domain/route_health.dart';
 import '../domain/site_adapter.dart';
 import '../media/native_credential_push.dart';
 import '../media/site_credential_handoff.dart';
@@ -2798,8 +2799,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final epoch = ++_healthRefreshEpoch;
     try {
       final health = await db.profileHealthAll();
+      final byRoute = await db.routeHealthRows();
       if (_disposed || epoch != _healthRefreshEpoch) return;
       profileHealth = health;
+      routeHealthRecords = byRoute;
       notifyListeners();
     } catch (error, stack) {
       AppErrorLogger.capture(
@@ -2840,6 +2843,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       }
       profilePages = await read(db.profilePages, profilePages);
       profileHealth = await read(db.profileHealthAll, profileHealth);
+      routeHealthRecords = await read(db.routeHealthRows, routeHealthRecords);
       profileScriptLinks = await read(db.profileScripts, profileScriptLinks);
     });
     await trace.measure(StartupPhase.preferencesRead, () async {
@@ -2974,6 +2978,25 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   ProfileHealth healthFor(int profileId) =>
       profileHealth.where((h) => h.profileId == profileId).firstOrNull ??
       ProfileHealth(profileId: profileId);
+
+  /// Per-出口 health, as stored (ADR-0006). Read for the detail screen only:
+  /// nothing sorts or recommends from it.
+  List<({int profileId, SiteRoute route, ProfileHealth health})>
+  routeHealthRecords = [];
+
+  /// The 出口-level record for [profileId]. Its aggregate is the badge.
+  RouteHealthRecord routeHealthFor(int profileId) {
+    final profile = profiles.where((p) => p.id == profileId).firstOrNull;
+    return routeHealthFromStored(
+      profileId: profileId,
+      routes: profile?.routes ?? const {SiteRoute.browse},
+      pages: profilePages.where((page) => page.profileId == profileId).toList(),
+      verdicts: {
+        for (final row in routeHealthRecords)
+          if (row.profileId == profileId) row.route: row.health,
+      },
+    );
+  }
 
   /// This round's probe results for [profileId], cheapest landing first.
   List<ProbeResult> currentResultsFor(int profileId) {

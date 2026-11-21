@@ -4,6 +4,7 @@ import 'package:drift/drift.dart';
 
 import '../data/database.dart';
 import '../domain/models.dart';
+import '../domain/route_health.dart';
 import '../network/transport.dart';
 
 /// Snapshot of the two "should we run at all" conditions. Background survival
@@ -157,14 +158,39 @@ class ProfileHealthChecker {
             )
             .getSingleOrNull();
         if (renewed == null) throw const Cancelled();
+        // The probe above reached the profile through its publishing pages,
+        // i.e. the browse route. Measuring that result is the browse route's
+        // record; the direct route keeps its own (ADR-0006), so a failing
+        // mirror can never mark a working interface as down.
         final previous = await db.profileHealth(profile.id);
         final at = now();
+        final failingRoute = SiteRoute.browse;
+        final routeVerdict = reachable
+            ? ProfileHealth(
+                profileId: profile.id,
+                state: ProfileHealthState.ok,
+                lastCheckedAt: at,
+                lastOkAt: at,
+              )
+            : ProfileHealth(
+                profileId: profile.id,
+                state: ProfileHealthState.failing,
+                lastCheckedAt: at,
+                lastFailureCategory: observation.failureCategory ?? 'unknown',
+              );
+        await db.saveRouteHealth(
+          profile.id,
+          failingRoute,
+          routeVerdict,
+          failureDetail: reachable ? null : (observation.failureCategory ?? ''),
+        );
+        final badge = await _badgeFor(profile);
         if (reachable) {
           await db.saveProfileHealth(
             ProfileHealth(
               profileId: profile.id,
               consecutiveFailures: 0,
-              state: ProfileHealthState.ok,
+              state: badge.state,
               lastCheckedAt: at,
               lastOkAt: at,
             ),
@@ -173,24 +199,32 @@ class ProfileHealthChecker {
           final failures = previous.consecutiveFailures + 1;
           final alert =
               failures >= failuresBeforeAlert &&
-              previous.state != ProfileHealthState.failing;
+              previous.state != ProfileHealthState.failing &&
+              badge.state == ProfileHealthState.failing;
           await db.saveProfileHealth(
             ProfileHealth(
               profileId: profile.id,
               consecutiveFailures: failures,
+              // A failed round only downgrades the badge once every route is
+              // down: one route still usable keeps the profile usable.
               state: failures >= failuresBeforeAlert
-                  ? ProfileHealthState.failing
-                  : previous.state,
+                  ? badge.state
+                  : _undowngraded(badge.state, previous.state),
               lastCheckedAt: at,
               lastOkAt: previous.lastOkAt,
               lastFailureCategory: observation.failureCategory ?? 'unknown',
+              lastFailureRoute: failingRoute.storageName,
             ),
           );
-          if (failures >= failuresBeforeAlert) failing++;
           if (alert) {
             notifications.add(profile.name);
-            await notify('站点可能不可达', '${profile.name} 连续 $failures 轮不可达');
+            await notify(
+              '两条出口都不可用',
+              '${profile.name} 连续 $failures 轮不可达：'
+                  '${routeLabel(failingRoute)}探测失败',
+            );
           }
+          if (badge.state == ProfileHealthState.failing) failing++;
         }
         checked++;
       }
@@ -205,6 +239,33 @@ class ProfileHealthChecker {
         owner,
       ]);
     }
+  }
+
+  /// The badge state for a round that has not yet crossed the failure
+  /// threshold: a usable route keeps it usable, otherwise the old state.
+  static ProfileHealthState _undowngraded(
+    ProfileHealthState aggregate,
+    ProfileHealthState previous,
+  ) => aggregate == ProfileHealthState.ok ? ProfileHealthState.ok : previous;
+
+  /// The badge after the browse route's verdict was just written: any route
+  /// still usable keeps the profile usable (ADR-0006).
+  Future<ProfileHealth> _badgeFor(SiteProfile profile) async {
+    final routes = profile.routes.isEmpty ? {SiteRoute.browse} : profile.routes;
+    final record = routeHealthFromStored(
+      profileId: profile.id,
+      routes: routes,
+      pages: await db.profilePages(profileId: profile.id),
+      verdicts: {
+        for (final row in await db.routeHealthRows())
+          if (row.profileId == profile.id) row.route: row.health,
+      },
+    );
+    return ProfileHealth(
+      profileId: profile.id,
+      state: record.state,
+      lastCheckedAt: record.checkedAt,
+    );
   }
 
   /// Prefer the most recent ready landing; fall back to the newest candidate,
