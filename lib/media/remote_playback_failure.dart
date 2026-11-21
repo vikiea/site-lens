@@ -70,7 +70,7 @@ class RemoteFailureCode {
   static const segmentFailed = 'segmentFailed';
 
   /// 网络失败。
-  static const network = 'network';
+  static const network = 'remoteNetwork';
 
   /// 这条错误码是不是远程失败归因。
   static bool isRemote(String? code) =>

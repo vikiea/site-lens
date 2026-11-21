@@ -205,34 +205,28 @@ void main() {
     test('a manifest failure has its own single retry', () {
       final chain = RemoteFailureRetryChain();
       var retries = 0;
-      expect(
-        chain
-            .plan(
-              failure: failure(RemoteFailureKind.manifestUnavailable),
-              retry: () => retries++,
-            )
-            .retries,
-        isTrue,
+      // plan() 只给出下一步，真正重开由调用方执行（这样才支持 delay）。
+      final manifest = chain.plan(
+        failure: failure(RemoteFailureKind.manifestUnavailable),
+        retry: () => retries++,
       );
+      expect(manifest.retries, isTrue);
+      manifest.retry!();
+
       // 凭证失效占用的是它自己的预算：清单那一次仍然有效。
-      expect(
-        chain
-            .plan(
-              failure: failure(RemoteFailureKind.credentialRejected),
-              retry: () => retries++,
-            )
-            .retries,
-        isTrue,
+      final credential = chain.plan(
+        failure: failure(RemoteFailureKind.credentialRejected),
+        retry: () => retries++,
       );
-      expect(
-        chain
-            .plan(
-              failure: failure(RemoteFailureKind.manifestUnavailable),
-              retry: () => retries++,
-            )
-            .retries,
-        isFalse,
+      expect(credential.retries, isTrue);
+      credential.retry!();
+
+      // 同一段会话的清单预算已经用掉：不再自动重开。
+      final again = chain.plan(
+        failure: failure(RemoteFailureKind.manifestUnavailable),
+        retry: () => retries++,
       );
+      expect(again.retries, isFalse);
       expect(retries, 2);
     });
 
@@ -272,10 +266,12 @@ void main() {
       expect(chain.policy.budgetFor(RemoteFailureKind.credentialRejected), 1);
       expect(chain.policy.budgetFor(RemoteFailureKind.segmentFailed), 0);
       var retries = 0;
-      chain.plan(
-        failure: failure(RemoteFailureKind.credentialRejected),
-        retry: () => retries++,
-      );
+      chain
+          .plan(
+            failure: failure(RemoteFailureKind.credentialRejected),
+            retry: () => retries++,
+          )
+          .retry!();
       final second = chain.plan(
         failure: failure(RemoteFailureKind.credentialRejected),
         retry: () => retries++,
