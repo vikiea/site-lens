@@ -322,6 +322,7 @@ void main() {
           'failure_category',
           'failure_detail',
           'station_key',
+          'last_failure_route',
         ],
       );
     });
