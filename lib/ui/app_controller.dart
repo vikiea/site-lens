@@ -37,6 +37,7 @@ import '../media/native_credential_push.dart';
 import '../media/site_credential_handoff.dart';
 import '../site_credentials/site_credential_store.dart';
 import '../testing/fake_site_adapter.dart';
+import '../theater/series_line_memory.dart';
 import '../domain/web_page_origin.dart';
 import '../network/transport.dart';
 import '../network/native_system_http.dart';
@@ -872,6 +873,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   /// has none. Passing an adapter in is the test seam; production composes a
   /// fake one until a site ships its own protocol.
   final Map<int, SiteAdapter> _theaterAdapters = {};
+
+  /// Which 线路 the user picked for an 选集, for the app's lifetime.
+  ///
+  /// Scoped to adapter + series + episode inside the store; it survives
+  /// leaving the detail page, while playing, and switching candidates. It is
+  /// deliberately not persisted: durable 追剧记录 is a different concern.
+  final SeriesLineMemory seriesLineMemory = SeriesLineMemory();
 
   /// Composes (once per profile) the adapter 剧场 reads its catalog from.
   void installTheaterAdapter(int profileId, SiteAdapter adapter) {
