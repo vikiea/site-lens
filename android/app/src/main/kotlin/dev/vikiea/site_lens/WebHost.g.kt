@@ -198,7 +198,8 @@ class FlutterError (
 enum class HostPurpose(val raw: Int) {
   BROWSING(0),
   DISCOVERY(1),
-  VERIFICATION(2);
+  VERIFICATION(2),
+  LOGIN(3);
 
   companion object {
     fun ofRaw(raw: Int): HostPurpose? {
