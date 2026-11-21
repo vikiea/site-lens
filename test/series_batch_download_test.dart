@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -15,6 +17,39 @@ import 'package:site_lens/ui/series_detail_screen.dart';
 import 'package:site_lens/ui/ui_primitives.dart';
 
 import 'fake_web_host_api.dart';
+
+/// 统计适配器往返次数的替身：真实适配器每次调用都要取一次页面，一集读两次
+/// 就是整批的页面读取翻倍。
+class CountingFakeSiteAdapter extends FakeSiteAdapter {
+  CountingFakeSiteAdapter()
+    : super(
+        id: 'fake-count',
+        profileId: 1,
+        addresses: [Uri.parse('https://fake-count.example/')],
+      );
+
+  int linesCalls = 0;
+  int candidateCalls = 0;
+
+  @override
+  Future<List<Line>> lines(
+    String seriesKey,
+    int episodeNumber,
+    CancellationSignal cancel,
+  ) {
+    linesCalls++;
+    return super.lines(seriesKey, episodeNumber, cancel);
+  }
+
+  @override
+  Future<List<MediaCandidate>> candidates(
+    Line line,
+    CancellationSignal cancel,
+  ) {
+    candidateCalls++;
+    return super.candidates(line, cancel);
+  }
+}
 
 /// T14 批量下载: selection model, batch executor, sheet and per-episode delete.
 ///
@@ -98,16 +133,33 @@ void main() {
 
   late AppDatabase db;
   late AppController app;
+  late Directory mediaRoot;
+  var mediaRootSeq = 0;
 
   setUp(() async {
     db = AppDatabase(NativeDatabase.memory());
-    app = AppController(db, api: FakeWebHostApi());
+    // 删除走 MediaDownloadService.delete：它要读缓存根来判断任务自己拥有的
+    // 文件。widget 测试不注册 path_provider，这里给一个真实的临时根，让删除
+    // 的缓存计划拿到文件系统而不是在插件通道上炸掉。
+    //
+    // 临时目录用同步 API 创建：`testWidgets` 的假时钟只推进 fake timer，
+    // 区内直接 await 的异步文件 IO 永远不会完成，测试就会挂到超时。
+    mediaRoot = Directory(
+      '${Directory.systemTemp.path}/site-lens-media-$pid-$mediaRootSeq',
+    )..createSync(recursive: true);
+    mediaRootSeq++;
+    app = AppController(
+      db,
+      api: FakeWebHostApi(),
+      mediaDirectoryProvider: () async => mediaRoot,
+    );
     await app.load();
   });
 
   tearDown(() async {
     await app.shutdown();
     await db.close();
+    if (mediaRoot.existsSync()) mediaRoot.deleteSync(recursive: true);
   });
 
   /// The store enqueues through `startNativeBatch`, which ends in the native
@@ -169,6 +221,25 @@ void main() {
   });
 
   group('batch executor', () {
+    test('一集只向适配器解析一次，命名与入队共用同一批候选', () async {
+      final adapter = CountingFakeSiteAdapter()
+        ..configureCatalog([
+          seriesOf(episodes: [1, 2, 3]),
+        ]);
+      final store = storeFor(app, adapter);
+      stubBatchStart(store);
+      store.setEpisodes(episodesOf(3));
+      store.selectAll();
+
+      final started = await store.startSelection();
+
+      expect(started.notice, isNull);
+      expect(store.job?.total, 3);
+      // 三集各一次：命名时取到的那份候选直接用于入队。
+      expect(adapter.linesCalls, 3, reason: '每集只应读一次线路');
+      expect(adapter.candidateCalls, 3, reason: '每集只应解析一次候选');
+    });
+
     test('每集建一个独立任务并共享同一批次目录', () async {
       final adapter = adapterWith([seriesOf()]);
       final store = storeFor(app, adapter);
@@ -364,6 +435,13 @@ void main() {
       store.select(store.episodes[0]);
       store.select(store.episodes[1]);
 
+      // 面板的「批量下载」按钮会调 startSelection；那一串 future 由真实
+      // 数据库、真实适配器和 400ms 轮询定时器组成，假时钟推不动，等多久都
+      // 不会完成。这里把同一套流程先跑完，只把「点了之后面板如何呈现批次」
+      // 留给 widget：入队语义另有 batch executor 组覆盖。
+      await tester.runAsync(() => store.startSelection());
+      expect(store.job?.total, 2, reason: '两次选集的批次应当真的入队');
+
       final played = <MediaCandidate>[];
       await tester.pumpWidget(
         MaterialApp(
@@ -378,15 +456,6 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('已选 2 / 3 集'), findsWidgets);
-
-      // startSelection 会走真实数据库与适配器；widget 测试的假时钟不会推进
-      // 这些异步，直接 pumpAndSettle 会挂到超时，所以放进 runAsync 里跑完。
-      await tester.tap(find.byKey(const Key('batch-start')));
-      // 按钮自己会调 startSelection；假时钟推不动它里面的真实异步，
-      // 用 runAsync 让那串 future 跑完，再回到假时钟断言。
-      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
-      await tester.pumpAndSettle();
-
       expect(find.byKey(const Key('batch-progress')), findsOneWidget);
       expect(find.byKey(const Key('batch-summary')), findsOneWidget);
       expect(store.job?.total, 2);
@@ -513,7 +582,12 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.textContaining('目录共有 2 集'), findsOneWidget);
-      expect(find.text('批量下载'), findsNothing);
+      // 没有 app 就没有任务表，批量入队不可能成立：入口照常出现，但必须
+      // 是禁用的按钮，而不是能点进去、点完才发现没有 store 的按钮。
+      final batchEntry = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, '批量下载'),
+      );
+      expect(batchEntry.onPressed, isNull, reason: '没有 app 时批量入队入口不可用');
       expect(find.byType(SiteLensCompactRow), findsWidgets);
     });
   });

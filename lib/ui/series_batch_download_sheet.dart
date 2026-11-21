@@ -313,7 +313,22 @@ class _SeriesBatchDownloadSheetState extends State<SeriesBatchDownloadSheet> {
     if (confirmed != true || !mounted) return;
     final removed = await _store.deleteEpisode(item.episodeNumber);
     if (!mounted) return;
-    showShortToast(context, removed > 0 ? '已删除这一集的下载' : '这一集没有可删除的下载');
+    // 删不掉时要说出这一行自己的原因，不能吞成"没有可删除的下载"。
+    final reason = _store.job?.items
+        .firstWhere(
+          (row) => row.episodeNumber == item.episodeNumber,
+          orElse: () => item,
+        )
+        .message
+        ?.trim();
+    showShortToast(
+      context,
+      removed > 0
+          ? '已删除这一集的下载'
+          : (reason?.isNotEmpty ?? false)
+          ? reason!
+          : '这一集没有可删除的下载',
+    );
   }
 
   Widget _footer(SeriesBatchDownloadJob? job) {

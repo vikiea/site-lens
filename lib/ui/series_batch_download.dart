@@ -333,7 +333,9 @@ class SeriesBatchDownloadStore extends ChangeNotifier {
     final cancel = CancellationSignal();
     try {
       for (final episode in selection) {
-        final candidate = await _resolve(resolver, episode, cancel);
+        // 命名时已经解析过一次，这里直接用那一份：一次批量不该为同一集
+        // 向适配器往返两次（三十集就是六十次页面读取）。
+        final candidate = named.candidates[episode.position];
         if (candidate == null) {
           _fail(episode.position, '这条线路没有给出可下载的清晰度');
           continue;
@@ -427,14 +429,22 @@ class SeriesBatchDownloadStore extends ChangeNotifier {
       final task = app.mediaTasks.task(id);
       if (task == null) continue;
       if (!app.mediaTasks.canDelete(id)) {
-        _fail(positions.firstOrNull ?? 0, '这一集正在播放、导出或投屏，先停止再删除');
+        // 只有确实有引用或排他操作时才是"正在播放、导出或投屏"。
+        _fail(
+          _positionForTask(id) ?? positions.firstOrNull ?? 0,
+          '这一集正在播放、导出或投屏，先停止再删除',
+        );
         continue;
       }
       try {
         await app.deleteMediaTask(id);
         removed++;
       } catch (error) {
-        _fail(positions.firstOrNull ?? 0, '删除失败：${friendlyError(error)}');
+        // 失败要落到这一集自己的行上；原因原样保留，方便用户与日志定位。
+        _fail(
+          _positionForTask(id) ?? positions.firstOrNull ?? 0,
+          friendlyError(error),
+        );
       }
     }
     if (removed > 0) {
@@ -502,21 +512,37 @@ class SeriesBatchDownloadStore extends ChangeNotifier {
     MediaTaskState.paused => SeriesBatchItemPhase.running,
   };
 
-  Future<({String? batchDirectory, bool fallback})> _nameBatch(
+  Future<
+    ({
+      String? batchDirectory,
+      bool fallback,
+      Map<int, MediaCandidate> candidates,
+    })
+  >
+  _nameBatch(
     List<SeriesBatchEpisode> selection,
     SeriesBatchDownloadResolver resolver,
   ) async {
     final known = <MediaCandidate>[];
+    final resolved = <int, MediaCandidate>{};
     final cancel = CancellationSignal();
     try {
       for (final episode in selection) {
         final candidate = await _resolve(resolver, episode, cancel);
-        if (candidate != null) known.add(candidate);
+        if (candidate == null) continue;
+        known.add(candidate);
+        // 按目录位置记账，和选集模型一致；一集解析失败只影响它自己那行。
+        resolved[episode.position] = candidate;
       }
     } finally {
       cancel.cancel();
     }
-    return resolver.batchDirectoryFor(selection, known);
+    final named = await resolver.batchDirectoryFor(selection, known);
+    return (
+      batchDirectory: named.batchDirectory,
+      fallback: named.fallback,
+      candidates: resolved,
+    );
   }
 
   Future<MediaCandidate?> _resolve(
