@@ -1165,13 +1165,15 @@ class AppDatabase extends GeneratedDatabase {
     String? stationKey,
   }) => customStatement(
     'INSERT INTO site_profile_health(profile_id,route,state,consecutive_failures,'
-    'last_checked_at,last_ok_at,failure_category,failure_detail,station_key) '
-    'VALUES(?,?,?,?,?,?,?,?,?) '
+    'last_checked_at,last_ok_at,failure_category,failure_detail,station_key,'
+    'last_failure_route) '
+    'VALUES(?,?,?,?,?,?,?,?,?,?) '
     'ON CONFLICT(profile_id,route) DO UPDATE SET state=excluded.state, '
     'consecutive_failures=excluded.consecutive_failures, '
     'last_checked_at=excluded.last_checked_at, last_ok_at=excluded.last_ok_at, '
     'failure_category=excluded.failure_category, '
-    'failure_detail=excluded.failure_detail, station_key=excluded.station_key',
+    'failure_detail=excluded.failure_detail, station_key=excluded.station_key, '
+    'last_failure_route=excluded.last_failure_route',
     [
       profileId,
       route.storageName,
@@ -1182,6 +1184,8 @@ class AppDatabase extends GeneratedDatabase {
       health.lastFailureCategory,
       failureDetail,
       stationKey,
+      // 只有失败的出口才记「哪条出口失败」；可用时清空，免得旧失败串到新判定上。
+      health.state == ProfileHealthState.failing ? route.storageName : null,
     ],
   );
 

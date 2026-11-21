@@ -36,8 +36,9 @@ void main() {
           event: _event(sessionId: 'native_7'),
           reopen: () {},
         );
+        // 同一段会话再来一次非终止的失效：预算已经用完，不再重开。
         final second = planner.plan(
-          event: _event(sessionId: 'native_7', terminal: true),
+          event: _event(sessionId: 'native_7'),
           reopen: () {},
         );
         expect(second.status, ReopenStatus.exhausted);

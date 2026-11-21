@@ -80,8 +80,9 @@ void main() {
     expect(_inRow('直连出口'), findsOneWidget);
     expect(_inRow('浏览出口'), findsOneWidget);
     // The failure names the route and its reason, not a generic site fault.
+    // 失败原因同时出现在失败句与出口行里，所以按数量断言而不是唯一。
     expect(find.textContaining('直连出口不可用'), findsOneWidget);
-    expect(find.textContaining('TLS 握手失败'), findsOneWidget);
+    expect(find.textContaining('TLS 握手失败'), findsWidgets);
   });
 
   testWidgets('两条出口都失败时徽章报故障', (tester) async {

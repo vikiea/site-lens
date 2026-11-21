@@ -453,7 +453,14 @@ void main() {
 
     expect(fallback, matches(RegExp(r'^媒体-[0-9a-f]{8}$')));
     expect(corrected!.batchDirectory, fallback);
-    expect(find.textContaining('未获取到标题，使用临时任务组 $fallback'), findsOneWidget);
+    // SnackBar 是在 runAsync 里弹出来的，而 runAsync 不推进测试时钟：先把
+    // 队列走完，再断言提示已经挂到 messenger 上。
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(
+      find.textContaining('未获取到标题，使用临时任务组 $fallback'),
+      findsOneWidget,
+    );
   });
 
   testWidgets(
