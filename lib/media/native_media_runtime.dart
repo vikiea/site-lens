@@ -104,6 +104,10 @@ class NativeMediaRuntime {
     required int generation,
     required Uri sourceUrl,
     String? sessionId,
+
+    /// 这个候选属于哪个站点档案。原生按它取站点凭证；没有凭证时公开内容照播，
+    /// 只是请求不带注入头（ADR-0009）。
+    int? profileId,
   }) async {
     const MediaCandidateValidator().validate(
       candidate,
@@ -119,6 +123,7 @@ class NativeMediaRuntime {
       'mime': candidate.effectiveMime,
       'sourceUrl': sourceUrl.toString(),
       'title': candidate.title,
+      if (profileId != null && profileId >= 0) 'profileId': profileId,
       ..._lifecycleArguments(),
     });
     _ensureOpenCurrent(requestGeneration);

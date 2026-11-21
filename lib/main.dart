@@ -12,6 +12,7 @@ import 'diagnostics/error_log.dart';
 import 'diagnostics/startup_trace.dart';
 import 'ui/app_controller.dart';
 import 'ui/browser_dock.dart';
+import 'ui/credential_notice.dart';
 import 'ui/app_theme.dart';
 import 'ui/glass_surface.dart';
 import 'ui/navigation_observer.dart';
@@ -153,9 +154,13 @@ class SiteLensApp extends ConsumerWidget {
                   child: SiteLensBackdrop(
                     background: app.background,
                     child: SiteLensUpdateNoticeLayer(
-                      child: BrowserDock(
-                        app: app,
-                        child: child ?? const SizedBox(),
+                      // 凭证失效（需要重新登录）与更新提示同一层：用户在哪一页
+                      // 都看得到，不埋在播放页的失败文案里。
+                      child: SiteLensCredentialNoticeLayer(
+                        child: BrowserDock(
+                          app: app,
+                          child: child ?? const SizedBox(),
+                        ),
                       ),
                     ),
                   ),

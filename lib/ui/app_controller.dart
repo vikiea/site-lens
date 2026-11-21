@@ -33,6 +33,9 @@ import '../discovery/health_checker.dart';
 import '../discovery/probe_coordinator.dart';
 import '../domain/models.dart';
 import '../domain/site_adapter.dart';
+import '../media/native_credential_push.dart';
+import '../media/site_credential_handoff.dart';
+import '../site_credentials/site_credential_store.dart';
 import '../testing/fake_site_adapter.dart';
 import '../theater/series_line_memory.dart';
 import '../domain/web_page_origin.dart';
@@ -304,6 +307,18 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       );
     }
     nativeMedia = NativeMediaRuntime();
+    // T4：原生回传「凭证失效」之后，应用续期一次并重推；续期失败落到用户可见的
+    // 「需要重新登录」。推送走单向通道 `site_lens/credentials`。
+    credentialHandoff = SiteCredentialHandoff(
+      adapterRegistry: _liveAdapterRegistry,
+      pusher: NativeCredentialPush(),
+      credentialSink: StoreCredentialSink(siteCredentialStore),
+      media: nativeMedia,
+    );
+    _credentialOutcomes = credentialHandoff!.recoveries.listen(
+      _onCredentialRecovery,
+    );
+    credentialHandoff!.attach();
     _diagnosticPlaybackEvents = nativeMedia.states.listen((session) {
       if (session.state == NativePlaybackState.stopped ||
           session.state == NativePlaybackState.restorable) {
@@ -762,6 +777,73 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   late final DlnaCastController mediaCast;
   late final NativePlaybackController mediaPlayback;
   late final NativeMediaRuntime nativeMedia;
+
+  /// 应用侧持有的站点凭证（ADR-0007 的生产端）；推送与续期都只写这一份。
+  final SiteCredentialStore siteCredentialStore = SiteCredentialStore();
+
+  /// T4 的失效处置链：原生回传失效 → 续期一次 → 重推 → 原生重试一次。
+  SiteCredentialHandoff? credentialHandoff;
+
+  StreamSubscription<CredentialRecovery>? _credentialOutcomes;
+
+  /// 最近一次续期后的站点档案。「需要重新登录」的提示就是给它的。
+  int? _activeCredentialProfileId;
+  String? _credentialPromptText;
+
+  /// 用户看得到的那句话；为 null 表示没有待处理提示。
+  String? get credentialPromptText => _credentialPromptText;
+
+  /// 这条提示属于哪个档案；没有提示时为 null。
+  int? get credentialNeedsLoginProfileId =>
+      _credentialPromptText == null ? null : _activeCredentialProfileId;
+
+  /// 这次播放属于哪个站点档案；失效处置按它定位适配器。
+  void rememberCredentialProfile(int profileId) {
+    _activeCredentialProfileId = profileId;
+  }
+
+  /// 直接播放一个站点候选（远程地址）。档案 id 随打开请求一起交给原生，由它
+  /// 按站点凭证注入请求头；没有凭证时公开内容照播（ADR-0009）。
+  Future<NativePlaybackSession> openRemoteCandidate(
+    MediaCandidate candidate, {
+    required int hostId,
+    required int generation,
+    required Uri sourceUrl,
+    int? profileId,
+  }) async {
+    final target = profileId ?? _activeCredentialProfileId;
+    if (target != null) rememberCredentialProfile(target);
+    return nativeMedia.open(
+      candidate,
+      hostId: hostId,
+      generation: generation,
+      sourceUrl: sourceUrl,
+      profileId: target,
+    );
+  }
+
+  /// 用户点掉提示。
+  void dismissCredentialPrompt() {
+    if (_credentialPromptText == null) return;
+    _credentialPromptText = null;
+    _activeCredentialProfileId = null;
+    notifyListeners();
+  }
+
+  void _onCredentialRecovery(CredentialRecovery outcome) {
+    // 成功与失败是两种结局，绝不合并成同一句文案（ADR-0007 Consequences）。
+    switch (outcome) {
+      case CredentialRecovered():
+        _credentialPromptText = null;
+      case CredentialNeedsLogin():
+        _credentialPromptText = '登录已失效，请重新登录后继续播放';
+    }
+    notifyListeners();
+  }
+
+  /// 把所有能续期的适配器组成一个注册表，供失效处置解析档案。
+  SiteAdapterRegistry get _liveAdapterRegistry =>
+      SiteAdapterRegistry(_theaterAdapters.values);
 
   /// Android authorization-refresh bridge. Injectable so the adoption path can
   /// be exercised without a device; production keeps the real bridge.
@@ -4039,6 +4121,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _clearAndDisposeNativeMedia() async {
     await nativeMedia.clearForAppShutdown();
+    await _credentialOutcomes?.cancel();
+    _credentialOutcomes = null;
+    await credentialHandoff?.dispose();
+    credentialHandoff = null;
     await nativeMedia.dispose();
   }
 }

@@ -7,10 +7,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 
-private fun assertFlag(expected: Boolean, raw: String?) {
-    assertEquals(expected, NativeMediaSessionRoute.preferenceAllowsRemoteSource(raw))
-}
-
 class NativeMediaSessionRouteTest {
     @Test fun localPlaybackRoutesKeepTheFileBranches() {
         assertEquals(
@@ -26,7 +22,7 @@ class NativeMediaSessionRouteTest {
             NativeMediaSessionRoute.of(
                 NativeMediaSessionRoute.Scheme.FILE,
                 playableLocalFile = true,
-                remoteSourceAllowed = true,
+                hasCredential = true,
             ).family,
         )
         assertEquals(
@@ -34,7 +30,7 @@ class NativeMediaSessionRouteTest {
             NativeMediaSessionRoute.of(
                 NativeMediaSessionRoute.Scheme.CONTENT,
                 playableLocalFile = true,
-                remoteSourceAllowed = true,
+                hasCredential = true,
             ).family,
         )
     }
@@ -78,7 +74,7 @@ class NativeMediaSessionRouteTest {
         val remote = NativeMediaSessionRoute.of(
             NativeMediaSessionRoute.Scheme.HTTPS,
             playableLocalFile = false,
-            remoteSourceAllowed = true,
+            hasCredential = true,
         )
         assertEquals(NativeMediaSessionRoute.Family.REMOTE, remote.family)
         assertNull(remote.leaseForOpening("play_7_1", "https://cdn.example.test/a.m3u8", hls = true))
@@ -114,22 +110,19 @@ class NativeMediaSessionRouteTest {
         )
     }
 
-    @Test fun remoteRoutesWithoutCredentialsAreDeniedByThePreference() {
-        try {
-            NativeMediaSessionRoute.of(
-                NativeMediaSessionRoute.Scheme.HTTPS,
-                playableLocalFile = false,
-                remoteSourceAllowed = false,
-            )
-            fail("未开启远程来源时不得放行远程地址")
-        } catch (expected: IllegalArgumentException) {
-            assertTrue(expected.message!!.contains("远程"))
-        }
-        assertEquals("remoteSourceAllowed", NativeMediaSessionRoute.PREF_REMOTE_SOURCE_ALLOWED)
-        assertFlag(false, null)
-        assertFlag(false, "")
-        assertFlag(true, "true")
-        assertFlag(false, "false")
+    @Test fun publicContentIsAdmittedWithoutACredential() {
+        // ADR-0009：准入门槛是站点凭证，不是设置开关。没有凭证的公开内容照播；
+        // 凭证只决定请求要不要注入请求头（见 SiteCredentialRemoteAdmissionTest）。
+        val publicContent = NativeMediaSessionRoute.of(
+            NativeMediaSessionRoute.Scheme.HTTPS,
+            playableLocalFile = false,
+            hasCredential = false,
+        )
+        assertEquals(NativeMediaSessionRoute.Family.REMOTE, publicContent.family)
+        assertEquals(
+            NativeMediaSessionRoute.Family.REMOTE,
+            NativeMediaSessionRoute.classify("https://cdn.example.test/a.m3u8", hasCredential = false).family,
+        )
     }
 
     @Test fun restorableRecordsAreReadBackOnlyForLocalRoutes() {
@@ -156,7 +149,7 @@ class NativeMediaSessionRouteTest {
             NativeMediaSessionRoute.of(
                 NativeMediaSessionRoute.Scheme.HTTPS,
                 playableLocalFile = false,
-                remoteSourceAllowed = true,
+                hasCredential = true,
             ).sourceOf(isHls = true),
         )
         assertEquals(
@@ -164,7 +157,7 @@ class NativeMediaSessionRouteTest {
             NativeMediaSessionRoute.of(
                 NativeMediaSessionRoute.Scheme.HTTP,
                 playableLocalFile = false,
-                remoteSourceAllowed = true,
+                hasCredential = true,
             ).sourceOf(isHls = false),
         )
         assertEquals(
@@ -172,7 +165,7 @@ class NativeMediaSessionRouteTest {
             NativeMediaSessionRoute.of(
                 NativeMediaSessionRoute.Scheme.FILE,
                 playableLocalFile = true,
-                remoteSourceAllowed = true,
+                hasCredential = true,
             ).sourceOf(isHls = true),
         )
         assertEquals(
@@ -180,7 +173,7 @@ class NativeMediaSessionRouteTest {
             NativeMediaSessionRoute.of(
                 NativeMediaSessionRoute.Scheme.CONTENT,
                 playableLocalFile = true,
-                remoteSourceAllowed = true,
+                hasCredential = true,
             ).sourceOf(isHls = true),
         )
     }
@@ -191,7 +184,7 @@ class NativeMediaSessionRouteTest {
             NativeMediaSessionRoute.of(
                 NativeMediaSessionRoute.Scheme.HTTPS,
                 playableLocalFile = true,
-                remoteSourceAllowed = true,
+                hasCredential = true,
             ).family,
         )
         // 远程地址在已有可播放本地文件时按本地会话处理；数据源类别由**请求地址**
@@ -201,7 +194,7 @@ class NativeMediaSessionRouteTest {
             NativeMediaSessionRoute.of(
                 NativeMediaSessionRoute.Scheme.HTTPS,
                 playableLocalFile = true,
-                remoteSourceAllowed = true,
+                hasCredential = true,
             ).sourceOf(isHls = true),
         )
         assertEquals(

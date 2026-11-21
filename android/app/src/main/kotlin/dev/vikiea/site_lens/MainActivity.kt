@@ -35,6 +35,7 @@ class MainActivity : FlutterActivity() {
     private var pendingNotification: Pair<String, String>? = null
     private var notificationPermissionAsked = false
     private var nativeMedia: NativeMediaRuntime? = null
+    private var siteCredentials: SiteCredentialChannel? = null
     private var appRuntime: NativeAppRuntime? = null
     private var nativeDownloads: NativeDownloadRuntime? = null
     private var mediaNetworkRuntime: MediaNetworkRuntime? = null
@@ -113,6 +114,7 @@ class MainActivity : FlutterActivity() {
         registerDiagnosticsChannel(flutterEngine)
         registerDeviceChannel(flutterEngine)
         registerUpdateChannel(flutterEngine)
+        registerSiteCredentialChannel(flutterEngine)
         registerNativeMediaChannel(flutterEngine)
         registerMediaAuthChannel(flutterEngine)
         registerNativeDownloadChannel(flutterEngine)
@@ -267,9 +269,70 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /**
+     * 站点凭证通道（ADR-0007）：`push` / `clear` 写，`has` 只回答有没有。没有
+     * `get`：凭证值不回传给应用侧。
+     */
+    private fun registerSiteCredentialChannel(flutterEngine: FlutterEngine) {
+        val store = SiteCredentialPreferencesStore(this)
+        val credentials = SiteCredentialChannel(
+            shelf = SiteCredentialRecord.Shelf(),
+            clock = { System.currentTimeMillis() },
+            loader = { reader ->
+                for (profileId in store.profileIds()) {
+                    store.read(profileId)?.let { reader.accept(profileId, it) }
+                }
+            },
+        ).also { it.restore() }
+        siteCredentials = credentials
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/credentials")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "push" -> {
+                        val profileId = call.argument<Number>("profileId")?.toInt()
+                        val record = call.argument<String>("credential")
+                        if (profileId == null || profileId < 0 || record == null) {
+                            result.error("invalid_credential", "站点凭证参数不完整", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            val receipt = credentials.push(profileId, record)
+                            store.write(profileId, record)
+                            result.success(receipt)
+                        } catch (error: IllegalArgumentException) {
+                            // 拒绝不覆盖：应用侧那一份不动，原生侧也保持原样。
+                            result.error("invalid_credential", error.message, null)
+                        }
+                    }
+                    "clear" -> {
+                        val profileId = call.argument<Number>("profileId")?.toInt()
+                        if (profileId == null || profileId < 0) {
+                            result.error("invalid_credential", "站点档案无效", null)
+                            return@setMethodCallHandler
+                        }
+                        store.delete(profileId)
+                        result.success(credentials.clear(profileId))
+                    }
+                    "has" -> {
+                        val profileId = call.argument<Number>("profileId")?.toInt() ?: -1
+                        result.success(
+                            mapOf("profileId" to profileId, "has" to credentials.has(profileId)),
+                        )
+                    }
+                    "epoch" -> result.success(mapOf("epoch" to credentials.epoch))
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
     private fun registerNativeMediaChannel(flutterEngine: FlutterEngine) {
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "site_lens/native_media")
-        nativeMedia = NativeMediaRuntime(this, flutterEngine.renderer).also { it.attach(channel) }
+        val credentials = siteCredentials ?: SiteCredentialChannel(
+            shelf = SiteCredentialRecord.Shelf(),
+            clock = { System.currentTimeMillis() },
+        )
+        nativeMedia = NativeMediaRuntime(this, flutterEngine.renderer, credentials)
+            .also { it.attach(channel) }
     }
 
     private fun registerMediaAuthChannel(flutterEngine: FlutterEngine) {

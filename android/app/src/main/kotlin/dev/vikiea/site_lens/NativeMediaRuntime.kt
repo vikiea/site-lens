@@ -24,6 +24,20 @@ import kotlin.math.roundToInt
 class NativeMediaRuntime(
     private val context: Context,
     private val textures: TextureRegistry,
+    /**
+     * 站点凭证入口。原生侧只读：推送由 `site_lens/credentials` 负责，这里只按
+     * 档案取请求头，取不到就是公开内容（ADR-0007 / ADR-0009）。
+     */
+    private val credentials: SiteCredentialChannel = SiteCredentialChannel(
+        shelf = SiteCredentialRecord.Shelf(),
+        clock = { System.currentTimeMillis() },
+        loader = { reader ->
+            val store = SiteCredentialPreferencesStore(context)
+            for (profileId in store.profileIds()) {
+                store.read(profileId)?.let { reader.accept(profileId, it) }
+            }
+        },
+    ).also { it.restore() },
 ) : MethodChannel.MethodCallHandler {
     private var sessionId: String? = null
     private var candidateId: String? = null
@@ -251,9 +265,12 @@ class NativeMediaRuntime(
 
     private fun open(call: MethodCall, result: MethodChannel.Result) {
         val raw = call.argument<String>("url")?.trim() ?: error("缺少媒体地址")
+        val profileId = call.argument<Number>("profileId")?.toInt() ?: -1
+        // 远程来源的准入门槛是站点凭证（ADR-0009），不再是设置开关；没有凭证的
+        // 公开内容照播，只是这次请求不带凭证。
         val route = NativeMediaSessionRoute.classify(
             raw,
-            remoteSourceAllowed = remoteSourceEnabled(context),
+            hasCredential = credentials.remoteSourceEnabled(profileId, raw),
         )
         require(route.family == NativeMediaSessionRoute.Family.REMOTE) { "媒体地址无效" }
         val mime = call.argument<String>("mime")?.trim().orEmpty()
@@ -263,14 +280,6 @@ class NativeMediaRuntime(
         // 进程内播放器不再是任何界面的主路径（ADR-0005）：远程地址一律交给媒体
         // 会话，由它统一提供锁屏、通知栏、媒体键与后台策略。
         openInService(call, result, taskId = "", uri = raw, mime = mime, hls = hls)
-    }
-
-    private fun remoteSourceEnabled(context: Context): Boolean {
-        // 站点凭证是后续票；凭证接入前媒体会话只放行经开关授权的远程地址。
-        return NativeMediaSessionRoute.preferenceAllowsRemoteSource(
-            context.getSharedPreferences("media_access", Context.MODE_PRIVATE)
-                .getString(NativeMediaSessionRoute.PREF_REMOTE_SOURCE_ALLOWED, null),
-        )
     }
 
     private fun openLocal(call: MethodCall, result: MethodChannel.Result) {
@@ -358,6 +367,10 @@ class NativeMediaRuntime(
                 mime = mime,
                 title = call.argument<String>("title").orEmpty(),
                 hls = hls,
+                profileId = call.argument<Number>("profileId")?.toInt() ?: -1,
+                credentials = { profile, url ->
+                    SiteCredentialSources.headers(credentials, profile, url)
+                },
                 autoPlay = call.argument<Boolean>("autoPlay") ?: true,
                     applicationForeground = applicationForeground,
                     allowNativeBackgroundPlayback = allowNativeBackgroundPlayback,
