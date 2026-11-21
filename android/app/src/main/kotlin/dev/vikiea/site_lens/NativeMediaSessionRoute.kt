@@ -15,7 +15,11 @@ import java.util.Locale
  *   任务被移除时保留可恢复记录；远程地址是短期凭证，不写可恢复记录。
  * - 冷恢复：只有本地记录会被读回并重新开播。
  *
- * 判定对象不依赖 Android 类，唯一的外部输入是站点凭证是否允许远程来源（后续票）。
+ * 判定对象不依赖 Android 类，唯一的外部输入是「这次请求有没有站点凭证」。
+ *
+ * 远程来源的准入门槛是站点凭证（ADR-0009）：有凭证就带上注入请求头，没有凭证
+ * 就按公开内容放行——两者都允许远程会话，区别只在请求头。ADR-0008 那个默认关闭
+ * 的配置开关已经退休，判定对象不再读任何配置。
  */
 internal data class NativeMediaSessionRoute(
     val scheme: Scheme,
@@ -72,6 +76,17 @@ internal data class NativeMediaSessionRoute(
         return scope + resource
     }
 
+    /**
+     * 这次请求要注入的凭证：只有远程会话、且这份凭证确实服务这条地址时才有。
+     * 公开内容（没有凭证）得到的是 [SiteCredentialRecord.NONE]，不是错误。
+     */
+    data class Admission(
+        val route: NativeMediaSessionRoute,
+        val credential: SiteCredentialRecord?,
+    ) {
+        val headers: Map<String, String> get() = credential?.headers() ?: emptyMap()
+    }
+
     /** 本次会话使用的数据源类别。 */
     fun sourceOf(isHls: Boolean): SourceKind = when {
         holdsFileLease && scheme == Scheme.FILE && isHls -> SourceKind.LOCAL_GROWING_FILE
@@ -81,9 +96,6 @@ internal data class NativeMediaSessionRoute(
     }
 
     companion object {
-        /** 应用设置：允许媒体会话打开远程地址。凭证接入前默认关闭。 */
-        const val PREF_REMOTE_SOURCE_ALLOWED = "remoteSourceAllowed"
-
         private val SCHEMES = mapOf(
             "file" to Scheme.FILE,
             "content" to Scheme.CONTENT,
@@ -91,18 +103,15 @@ internal data class NativeMediaSessionRoute(
             "https" to Scheme.HTTPS,
         )
 
-        fun preferenceAllowsRemoteSource(raw: String?): Boolean = raw?.trim() == "true"
-
         fun isPlayable(raw: String): Boolean = runCatching { classify(raw) }.isSuccess
 
         /**
          * 按 request uri 判定会话类型。
          *
          * 与既有本地规则一致：`file` 与 `content` 始终放行（路径越界由服务另行校验），
-         * `http(s)` 必须有主机、没有 userinfo，且受 [remoteSourceAllowed] 约束。
-         * 其余 scheme 保持原有的拒绝。
+         * `http(s)` 必须有主机、没有 userinfo。其余 scheme 保持原有的拒绝。
          */
-        fun classify(raw: String, remoteSourceAllowed: Boolean = true): NativeMediaSessionRoute {
+        fun classify(raw: String, hasCredential: Boolean = false): NativeMediaSessionRoute {
             if (raw.isBlank()) throw IllegalArgumentException("媒体地址无效")
             val uri = try {
                 URI(raw)
@@ -112,7 +121,7 @@ internal data class NativeMediaSessionRoute(
             val scheme = SCHEMES[uri.scheme?.lowercase(Locale.ROOT) ?: ""]
                 ?: throw IllegalArgumentException("媒体地址仅支持本地文件或远程地址")
             return when (scheme) {
-                Scheme.FILE, Scheme.CONTENT -> of(scheme, true, remoteSourceAllowed)
+                Scheme.FILE, Scheme.CONTENT -> of(scheme, true, hasCredential)
                 Scheme.HTTP, Scheme.HTTPS -> {
                     if (uri.host.isNullOrBlank() || uri.userInfo != null) {
                         throw IllegalArgumentException("远程媒体地址无效")
@@ -120,7 +129,7 @@ internal data class NativeMediaSessionRoute(
                     of(
                         scheme,
                         playableLocalFile = false,
-                        remoteSourceAllowed = remoteSourceAllowed,
+                        hasCredential = hasCredential,
                     )
                 }
             }
@@ -132,19 +141,34 @@ internal data class NativeMediaSessionRoute(
          * - [playableLocalFile]：候选是否已有可播放本地文件。为真时即使 request uri
          *   是远程地址，也按本地会话处理（ADR-0002「远程路径按候选是否已有可播放
          *   本地文件分流」）。
-         * - [remoteSourceAllowed]：站点凭证/设置是否允许远程来源。为假时远程地址
-         *   保持既有拒绝，本地地址不受影响。
+         * - [hasCredential]：这次请求是否带着站点凭证。它只决定请求要不要注入凭证，
+         *   不再决定远程来源能否放行：公开内容没有凭证也必须能播（ADR-0009）。
          */
         fun of(
             scheme: Scheme,
             playableLocalFile: Boolean,
-            remoteSourceAllowed: Boolean,
+            hasCredential: Boolean,
         ): NativeMediaSessionRoute {
             val local = scheme == Scheme.FILE || scheme == Scheme.CONTENT || playableLocalFile
-            if (!local && !remoteSourceAllowed) {
-                throw IllegalArgumentException("远程媒体来源未开启")
-            }
             return NativeMediaSessionRoute(scheme, if (local) Family.LOCAL else Family.REMOTE)
+        }
+
+        /**
+         * 一次播放入口的完整判定：会话类型 + 这条地址该带的凭证。
+         *
+         * 取不到凭证不是失败：`credential` 为 null，`headers` 为空，按公开内容播。
+         * 取到的凭证只服务于它自己那个站点，别的站点拿不到。
+         */
+        fun admit(
+            raw: String,
+            shelf: SiteCredentialRecord.Shelf,
+            profileId: Int,
+        ): Admission {
+            val credential = shelf.get(profileId, raw)
+            return Admission(
+                route = classify(raw, hasCredential = credential != null),
+                credential = credential,
+            )
         }
 
         /** 任务被移除时是否可以保留可恢复记录。 */

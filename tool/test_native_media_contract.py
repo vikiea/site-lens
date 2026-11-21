@@ -133,18 +133,100 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn("NativeMediaSessionRoute.shouldPreserveRestorable(raw)", NATIVE_SESSION)
         self.assertNotIn('require(uri.scheme == "file" || uri.scheme == "content")', NATIVE_SESSION)
 
-    def test_remote_scheme_arrives_through_an_explicit_source_preference(self):
-        self.assertIn(
-            'const val PREF_REMOTE_SOURCE_ALLOWED = "remoteSourceAllowed"',
-            (ANDROID / "NativeMediaSessionRoute.kt").read_text(),
-        )
-        self.assertIn("val remoteSourceAllowed: Boolean = false,", NATIVE_SESSION)
-        for token in (
-            "remoteSourceAllowed = request.remoteSourceAllowed",
-            "NativeMediaSessionRoute.preferenceAllowsRemoteSource(",
-            "remoteSourceAllowed = remoteSourceEnabled(context)",
+    def test_remote_admission_is_a_site_credential_not_a_preference(self):
+        # ADR-0009: `media_access/remoteSourceAllowed` 已退休；远程来源的准入门槛
+        # 是站点凭证，公开内容没有凭证也照播。
+        for name in (
+            "PREF_REMOTE_SOURCE_ALLOWED",
+            "remoteSourceAllowed",
+            "preferenceAllowsRemoteSource",
         ):
-            self.assertTrue(token in NATIVE_SESSION or token in NATIVE_MEDIA, token)
+            self.assertNotIn(name, NATIVE_MEDIA)
+            self.assertNotIn(name, (ANDROID / "NativeMediaSessionRoute.kt").read_text())
+            self.assertNotIn(name, NATIVE_SESSION)
+        self.assertIn("hasCredential = credentials.remoteSourceEnabled(profileId, raw)", NATIVE_MEDIA)
+        self.assertIn("hasCredential = headersFor(request).isNotEmpty()", NATIVE_SESSION)
+        self.assertIn("fun admit(", (ANDROID / "NativeMediaSessionRoute.kt").read_text())
+
+    def test_credentials_cross_into_native_through_a_one_way_channel(self):
+        channel = (ANDROID / "SiteCredentialChannel.kt").read_text()
+        activity = (ANDROID / "MainActivity.kt").read_text()
+        for token in (
+            'site_lens/credentials',
+            '"push" ->',
+            '"clear" ->',
+            '"has" ->',
+            '"epoch" ->',
+            "credentials.push(profileId, record)",
+            "store.write(profileId, record)",
+        ):
+            self.assertIn(token, activity)
+        for forbidden in ('"get"', '"read" ->', '"credential" ->', "fun dump"):
+            self.assertNotIn(forbidden, activity.split("registerSiteCredentialChannel", 1)[1].split(
+                "private fun registerNativeMediaChannel", 1
+            )[0])
+        # 原生侧没有把凭证值打回去的入口：读取面只有「有没有」。
+        self.assertNotIn("fun get(", channel)
+        self.assertNotIn("fun credential(", channel)
+        self.assertNotIn("fun value(", channel)
+        self.assertIn("fun push(", channel)
+        self.assertIn("fun clear(", channel)
+        self.assertIn("fun has(", channel)
+
+    def test_remote_requests_carry_the_token_and_the_cookie_jar(self):
+        source = (ANDROID / "SiteCredentialDataSource.kt").read_text()
+        session = NATIVE_SESSION
+        for token in (
+            "class SiteCredentialDataSource",
+            "withCredentialHeaders(",
+            "HEADER_AUTHORIZATION",
+            "HEADER_COOKIE",
+        ):
+            self.assertIn(token, source)
+        for token in (
+            "HlsMediaSource.Factory(",
+            "ProgressiveMediaSource.Factory(",
+            "SiteCredentialDataSource.factory { url -> headersFor(request, url) }",
+        ):
+            self.assertIn(token, session)
+        # 凭证只进请求：会话快照、事件与日志里都不能出现令牌或 cookie 值。
+        snapshot = session.split("private fun snapshot()", 1)[1].split("private fun persistCurrentState", 1)[0]
+        for forbidden in ("accessToken", "cookies", "Authorization", "Cookie"):
+            self.assertNotIn(forbidden, snapshot)
+
+    def test_401_and_403_are_credential_rejections_with_a_bounded_retry(self):
+        policy = (ANDROID / "SiteCredentialFailurePolicy.kt").read_text()
+        for token in (
+            "401, 403 -> Disposition(Kind.CREDENTIAL_REJECTED)",
+            "const val MAX_RETRIES = 1",
+            "fun mayRetry(attempt: Int): Boolean = attempt in 1..MAX_RETRIES",
+            "EVENT_CREDENTIAL_REJECTED",
+        ):
+            self.assertIn(token, policy)
+        # 网络失败与内容不可用各是各的结论，不并进凭证失效。
+        self.assertIn("fun networkFailure()", policy)
+        self.assertIn("else -> Disposition(Kind.CONTENT_UNAVAILABLE)", policy)
+        for token in (
+            "ERROR_CODE_IO_BAD_HTTP_STATUS",
+            "HttpDataSource.InvalidResponseCodeException",
+            "SiteCredentialFailurePolicy.EVENT_CREDENTIAL_REJECTED",
+            "awaitCredentialThenRetry(",
+            "onCredentialPushed(",
+        ):
+            self.assertIn(token, NATIVE_SESSION)
+
+    def test_credential_files_never_log_a_value(self):
+        for name in (
+            "SiteCredentialRecord.kt",
+            "SiteCredentialChannel.kt",
+            "SiteCredentialDataSource.kt",
+            "SiteCredentialStore.kt",
+            "SiteCredentialFailurePolicy.kt",
+        ):
+            source = (ANDROID / name).read_text()
+            self.assertNotIn("Log.", source)
+            self.assertNotIn("println(", source)
+            self.assertNotIn("printStackTrace", source)
 
     def test_process_local_remote_player_is_no_longer_a_path(self):
         for token in (

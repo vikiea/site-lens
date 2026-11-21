@@ -1,6 +1,9 @@
 # 远程播放默认关闭：凭证到位前，远程地址必须显式放行
 
-**Status**: accepted
+**Status**: superseded by [ADR-0009](0009-remote-playback-is-admitted-by-site-credentials.md)
+
+> 凭证已到位（T4）。远程来源的准入门槛改成了站点凭证，`media_access/remoteSourceAllowed`
+> 已被删除；本文只作为当时的过渡决定保留。
 
 ## Context
 
