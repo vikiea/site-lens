@@ -27,6 +27,9 @@ CREDENTIAL_RECORD = (ANDROID / "SiteCredentialRecord.kt").read_text()
 AUTHORED_HTTP = (ANDROID / "AuthoredHttpRequest.kt").read_text()
 CREDENTIAL_REOPEN = (ROOT / "lib/media/credential_reopen.dart").read_text()
 CREDENTIAL_HANDOFF = (ROOT / "lib/media/site_credential_handoff.dart").read_text()
+REMOTE_FAILURE = (ROOT / "lib/media/remote_playback_failure.dart").read_text()
+REMOTE_FAILURE_POLICY = (ANDROID / "RemoteFailurePolicy.kt").read_text()
+REMOTE_FAILURE_NOTICE = (ROOT / "lib/ui/remote_failure_notice.dart").read_text()
 APP_CONTROLLER = (ROOT / "lib/ui/app_controller.dart").read_text()
 
 # REGRESSION CONTRACT: MEDIA-HLS-001
@@ -286,6 +289,91 @@ class NativeMediaContractTests(unittest.TestCase):
             "Future<void> reopenAfterCredentialRefresh()",
             "reopen: () => unawaited(reopenAfterCredentialRefresh()),",
             "MediaCandidate candidate,\n    int hostId,\n    int generation,\n    Uri sourceUrl,\n    int? profileId,",
+        ):
+            self.assertIn(token, APP_CONTROLLER)
+
+    def test_four_remote_failures_have_their_own_attribution_and_retry_budget(self):
+        # T8：凭证失效、清单失效、分片失败、网络失败各有各的判定、文案与动作。
+        dart = REMOTE_FAILURE
+        for token in (
+            "enum RemoteFailureKind",
+            "credentialRejected,",
+            "manifestUnavailable,",
+            "segmentFailed,",
+            "network,",
+            "enum RemoteFailureAction",
+            "refreshCredentialAndReopen,",
+            "reloadManifestAndReopen,",
+            "suggestDownload,",
+            "keepNetworkMessage,",
+            "static RemotePlaybackFailure? classify(NativePlaybackSession session)",
+            "RemoteFailureKind remoteFailureKindFor(",
+        ):
+            self.assertIn(token, dart)
+        # 四类各自只重开一次的有界预算：同一段会话按「会话 + 种类」记。
+        for token in (
+            "class RemoteFailureRetryChain",
+            "static const perSession = 1",
+            "int budgetFor(RemoteFailureKind kind)",
+            "int attemptsFor(String sessionId, RemoteFailureKind kind)",
+            "void forget(String sessionId)",
+            "RemoteFailureKind.segmentFailed => 0",
+            "RemoteFailureKind.network => 0",
+        ):
+            self.assertIn(token, dart)
+        # 不静默：每一次重试都要带着一个显式动作，耗尽后只剩建议。
+        self.assertIn("final void Function()? retry;", dart)
+        self.assertIn("if (failure.exhausted || retry == null || used >= budget)", dart)
+        # 与本地播放失败归因不共用错误码：远程码有自己的命名空间。
+        self.assertIn("class RemoteFailureCode", dart)
+        self.assertIn("static const prefix = 'remoteFailure'", dart)
+        self.assertNotIn("MediaErrorCode.network =", dart)
+        self.assertNotIn("override", dart)
+        # 远程失败不落进媒体任务状态：代码里不出现任何 MediaTask 引用（只有
+        # 文件头说明为什么不用它）。
+        code = "\n".join(
+            line for line in dart.splitlines() if not line.lstrip().startswith("///")
+        )
+        self.assertNotIn("MediaTask", code)
+        # 凭证失效仍然复用既有的同会话一次重开判定，不另起一套。
+        self.assertIn("import 'credential_reopen.dart';", dart)
+        self.assertIn("CredentialReopenPlanner", dart)
+
+        # 原生侧同一套分类；凭证失效由既有的 SiteCredentialFailurePolicy 判定。
+        for token in (
+            "internal object RemoteFailurePolicy",
+            "eventFor(",
+            "attemptsFor(",
+            "fun forget(sessionId: String)",
+            "MAX_AUTO_RETRIES = 1",
+        ):
+            self.assertIn(token, REMOTE_FAILURE_POLICY)
+        session = NATIVE_SESSION
+        self.assertIn("RemoteFailurePolicy.classify(", session)
+        self.assertIn("remoteFailure.mayReopen(", session)
+        self.assertIn("remoteFailure.forget(", session)
+        # 事件里不带凭证值、地址或分片内容。
+        event = REMOTE_FAILURE_POLICY.split("fun eventFor(", 1)[1].split("fun nameOf(", 1)[0]
+        for forbidden in ("accessToken", "cookies", "Authorization", "Cookie", "uri"):
+            self.assertNotIn(forbidden, event)
+
+        # 界面层四类各有一个动作；网络失败不提供额外按钮。
+        notice = REMOTE_FAILURE_NOTICE
+        for token in (
+            "class SiteLensRemoteFailureNoticeLayer",
+            "RemoteFailureAction.suggestDownload",
+            "RemoteFailureAction.reloadManifestAndReopen",
+            "RemoteFailureAction.refreshCredentialAndReopen",
+            "case RemoteFailureAction.keepNetworkMessage:",
+        ):
+            self.assertIn(token, notice)
+        # 应用侧把四类接到同一处，并且不经过媒体任务状态。
+        for token in (
+            "RemoteFailurePlan reportRemoteFailure(RemotePlaybackFailure failure)",
+            "RemoteFailurePlan? observeRemoteFailure(NativePlaybackSession session)",
+            "RemoteFailureNotice? get remoteFailureNotice",
+            "Future<MediaCandidate?> downloadEpisodeAfterSegmentFailure()",
+            "Future<void> reopenAfterManifestRefresh()",
         ):
             self.assertIn(token, APP_CONTROLLER)
 

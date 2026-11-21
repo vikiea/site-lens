@@ -59,6 +59,9 @@ class NativeMediaSessionService : MediaSessionService() {
     private var state = "stopped"
     private var lastError: String? = null
     private var sourceRetryCount = 0
+
+    /** 四类远程失败（T8）各自的重试预算，按会话记。 */
+    private val remoteFailure = RemoteFailurePolicy.State()
     private var mediaProfileId: Int = -1
     private var credentialWaiters = 0
     private val credentialFailure = SiteCredentialFailurePolicy.State()
@@ -367,6 +370,51 @@ class NativeMediaSessionService : MediaSessionService() {
                     return
                 }
                 val recoverable = isRecoverableSourceError(error)
+                // 四类远程失败（T8）：清单失效与网络失败各走各的预算；分片失败
+                // 与网络失败不重开整集。凭证失效在上面已经由 401/403 判定。
+                val manifest = manifestUnavailable(error)
+                val kind = RemoteFailurePolicy.classify(
+                    recoverable = recoverable,
+                    manifestFailed = manifest,
+                )
+                val active = sessionId
+                if (kind == RemoteFailurePolicy.Kind.MANIFEST_UNAVAILABLE) {
+                    // 清单失效：重取清单（重新 prepare）一次；不占用网络失败预算。
+                    val budget = RemoteFailurePolicy.budgetFor(kind)
+                    val used = if (active == null) {
+                        budget
+                    } else {
+                        remoteFailure.attemptsFor(active, kind)
+                    }
+                    val retried = active != null && remoteFailure.mayReopen(active, kind)
+                    lastError = RemoteFailurePolicy.eventFor(
+                        kind = kind,
+                        sessionId = active ?: "unknown",
+                        profileId = mediaProfileId,
+                        attempt = used + 1,
+                    )
+                    if (retried) {
+                        state = "preparing"
+                        publish()
+                        retrySourcePlayback(generation)
+                    } else {
+                        state = "failed"
+                        publish()
+                    }
+                    return
+                }
+                if (kind == RemoteFailurePolicy.Kind.SEGMENT_FAILED) {
+                    // 分片失败：不重开整集，直接把「可以下载该集」交给应用。
+                    lastError = RemoteFailurePolicy.eventFor(
+                        kind = kind,
+                        sessionId = active ?: "unknown",
+                        profileId = mediaProfileId,
+                        attempt = 1,
+                    )
+                    state = "failed"
+                    publish()
+                    return
+                }
                 if (recoverable && sourceRetryCount == 0 && sessionId != null) {
                     sourceRetryCount++
                     state = "preparing"
@@ -398,6 +446,27 @@ class NativeMediaSessionService : MediaSessionService() {
         }
         playerListener = listener
         player.addListener(listener)
+    }
+
+    /**
+     * 这次失败是不是主清单取不到（T8 清单失效）。
+     *
+     * 清单失效与分片失败在 ExoPlayer 里是同一个错误码，区别只在坏的是哪一段
+     * 地址：当前媒体项就是清单本身，且响应是 4xx/5xx 时算清单失效。401/403 在
+     * 调用之前已经被判成凭证失效，走不到这里。
+     */
+    private fun manifestUnavailable(error: PlaybackException): Boolean {
+        val uri = player.currentMediaItem?.localConfiguration?.uri?.toString() ?: return false
+        val isPlaylist = uri.substringBefore('?').lowercase().let {
+            it.endsWith(".m3u8") || it.endsWith(".m3u")
+        }
+        if (!isPlaylist) return false
+        var cause: Throwable? = error.cause
+        while (cause != null) {
+            if (cause is HttpDataSource.InvalidResponseCodeException) return true
+            cause = cause.cause
+        }
+        return false
     }
 
     /** 这次失败是不是站点对凭证的明确拒绝；是就返回那个 HTTP 状态。 */
@@ -869,6 +938,8 @@ class NativeMediaSessionService : MediaSessionService() {
             mediaMime = request.mime
             mediaIsHls = request.hls
             mediaOpenedAtElapsedMs = SystemClock.elapsedRealtime()
+            // 上一条会话到此结束：四类远程失败的预算可以回收了。
+            sessionId?.let { remoteFailure.forget(it) }
             playerGeneration++
             lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.OPENING
             installPlayerListener(playerGeneration)
