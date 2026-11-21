@@ -264,9 +264,35 @@ const unassignedProfileName = '未归类';
 /// survival check. Never feeds ranking or recommendations.
 enum ProfileHealthState { unknown, ok, failing }
 
+/// 出口 (route): a way a site profile offers content to the app. There are
+/// exactly two, and one profile can hold both at once — they are peers, not
+/// alternatives (ADR-0002), and nothing downstream may treat them as a single
+/// value.
+enum SiteRoute {
+  /// 直连出口: the app fetches content from the site's own interface; the
+  /// page is only used to obtain credentials.
+  direct('direct'),
+
+  /// 浏览出口: the user finds content in the page and the app takes over
+  /// the media it observes.
+  browse('browse');
+
+  const SiteRoute(this.storageName);
+
+  /// The value persisted in `site_profile_routes.route`.
+  final String storageName;
+
+  static SiteRoute? fromStorage(String value) {
+    for (final route in values) {
+      if (route.storageName == value) return route;
+    }
+    return null;
+  }
+}
+
 /// A curated "site profile" — the first-class object of the product. One
 /// profile groups a brand's publishing pages, its candidate landings, its
-/// bound scripts and its health badge.
+/// bound scripts, its health badge and the routes it offers.
 class SiteProfile {
   const SiteProfile({
     required this.id,
@@ -276,6 +302,7 @@ class SiteProfile {
     this.readySelector = 'main',
     this.lastLanding,
     this.lastLandingAt,
+    this.routes = const {SiteRoute.browse},
   });
   final int id;
   final String name;
@@ -284,6 +311,10 @@ class SiteProfile {
   final Uri? lastLanding;
   final DateTime? lastLandingAt;
   final DateTime createdAt;
+
+  /// Every 出口 this profile offers. A profile that offers nothing cannot be
+  /// discovered through, so readers treat an empty set as [SiteRoute.browse].
+  final Set<SiteRoute> routes;
 }
 
 /// A publishing page (primary or backup) that a profile discovers candidates
