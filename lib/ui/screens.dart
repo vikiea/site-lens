@@ -14,6 +14,7 @@ import 'package:re_highlight/styles/atom-one-light.dart';
 
 import '../cache/transient_cache_service.dart';
 import '../domain/models.dart';
+import '../domain/site_adapter.dart';
 import '../network/transport.dart';
 import '../network/secure_dns_resolver.dart';
 import '../media/media_service.dart';
@@ -47,6 +48,7 @@ import 'device_diagnostics_screen.dart';
 import 'double_back_exit.dart';
 import 'filter_diagnostics_panel.dart';
 import 'ui_util.dart';
+import 'series_detail_screen.dart';
 import 'site_browse_panel.dart';
 import 'theater_screen.dart';
 import 'ui_primitives.dart';
@@ -342,7 +344,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                         resolveAdapter: app.theaterAdapterFor,
                       ),
                       onOpenSeries: (station, series) =>
-                          _openProfile(app, station.profile),
+                          _openSeries(app, station, series),
                       onAddSite: () =>
                           setState(() => page = AppDestination.browse.index),
                     ),
@@ -448,6 +450,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       MaterialPageRoute<void>(
         settings: const RouteSettings(name: siteLensBrowserRouteName),
         builder: (_) => BrowserScreen(app: app, site: session.site),
+      ),
+    );
+  }
+
+  /// 剧场 → 剧集: the row hands over its station and series, and the detail
+  /// page reads the catalog, episodes and lines from that station's adapter.
+  void _openSeries(
+    AppController app,
+    TheaterStation station,
+    SeriesSummary series,
+  ) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SeriesDetailScreen(
+          adapter: station.adapter,
+          profile: station.profile,
+          series: series,
+          lineMemory: app.seriesLineMemory,
+        ),
       ),
     );
   }
