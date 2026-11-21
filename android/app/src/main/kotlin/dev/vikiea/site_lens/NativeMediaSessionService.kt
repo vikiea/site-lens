@@ -20,10 +20,14 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -57,6 +61,12 @@ class NativeMediaSessionService : MediaSessionService() {
     private var state = "stopped"
     private var lastError: String? = null
     private var sourceRetryCount = 0
+
+    /** 四类远程失败（T8）各自的重试预算，按会话记。 */
+    private val remoteFailure = RemoteFailurePolicy.State()
+    private var mediaProfileId: Int = -1
+    private var credentialWaiters = 0
+    private val credentialFailure = SiteCredentialFailurePolicy.State()
     private var userPaused = false
     private var backgroundPolicyPaused = false
     private var applicationForeground = true
@@ -326,6 +336,12 @@ class NativeMediaSessionService : MediaSessionService() {
                     scheduleControllerCommandsRefresh()
                 }
             }
+            // 画面比例只有在解码器知道尺寸之后才存在。播放页按它把纹理装进
+            // 可用区域（竖屏短剧与横屏都靠它），所以尺寸一到就推一次快照。
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                if (!acceptsCallback(generation)) return
+                publish()
+            }
             override fun onPlayerError(error: PlaybackException) {
                 if (!acceptsCallback(generation)) return
                 // ExoPlayer reports elapsed-realtime timestamps. An error
@@ -335,7 +351,78 @@ class NativeMediaSessionService : MediaSessionService() {
                     syncState()
                     return
                 }
+                // 站点明确拒绝（401/403）是凭证失效，不是网络失败，也不是内容
+                // 不可用：它走自己的有界处置，不占用网络失败的重试预算。
+                val rejection = credentialRejection(error)
+                if (rejection != null && sessionId != null) {
+                    credentialFailure.bindProfile(mediaProfileId)
+                    val attempt = credentialFailure.nextAttempt(sessionId!!)
+                    val event = SiteCredentialFailurePolicy.eventFor(
+                        status = rejection,
+                        sessionId = sessionId!!,
+                        profileId = mediaProfileId,
+                        attempt = attempt,
+                    )
+                    // 事件只进会话快照里的 errorCode：带 `credentialRejected` 与档案
+                    // id，不带任何凭证值，也不写进崩溃诊断。
+                    lastError = rejectionEvent(event)
+                    if (SiteCredentialFailurePolicy.mayRetry(attempt)) {
+                        // 等应用续期后重推；推来就重试一次，超时也重试一次。
+                        state = "preparing"
+                        publish()
+                        awaitCredentialThenRetry(generation, sessionId!!)
+                    } else {
+                        state = "failed"
+                        publish()
+                    }
+                    return
+                }
                 val recoverable = isRecoverableSourceError(error)
+                // 四类远程失败（T8）：清单失效与网络失败各走各的预算；分片失败
+                // 与网络失败不重开整集。凭证失效在上面已经由 401/403 判定。
+                val manifest = manifestUnavailable(error)
+                val kind = RemoteFailurePolicy.classify(
+                    recoverable = recoverable,
+                    manifestFailed = manifest,
+                )
+                val active = sessionId
+                if (kind == RemoteFailurePolicy.Kind.MANIFEST_UNAVAILABLE) {
+                    // 清单失效：重取清单（重新 prepare）一次；不占用网络失败预算。
+                    val budget = RemoteFailurePolicy.budgetFor(kind)
+                    val used = if (active == null) {
+                        budget
+                    } else {
+                        remoteFailure.attemptsFor(active, kind)
+                    }
+                    val retried = active != null && remoteFailure.mayReopen(active, kind)
+                    lastError = RemoteFailurePolicy.eventFor(
+                        kind = kind,
+                        sessionId = active ?: "unknown",
+                        profileId = mediaProfileId,
+                        attempt = used + 1,
+                    )
+                    if (retried) {
+                        state = "preparing"
+                        publish()
+                        retrySourcePlayback(generation)
+                    } else {
+                        state = "failed"
+                        publish()
+                    }
+                    return
+                }
+                if (kind == RemoteFailurePolicy.Kind.SEGMENT_FAILED) {
+                    // 分片失败：不重开整集，直接把「可以下载该集」交给应用。
+                    lastError = RemoteFailurePolicy.eventFor(
+                        kind = kind,
+                        sessionId = active ?: "unknown",
+                        profileId = mediaProfileId,
+                        attempt = 1,
+                    )
+                    state = "failed"
+                    publish()
+                    return
+                }
                 if (recoverable && sourceRetryCount == 0 && sessionId != null) {
                     sourceRetryCount++
                     state = "preparing"
@@ -368,6 +455,113 @@ class NativeMediaSessionService : MediaSessionService() {
         playerListener = listener
         player.addListener(listener)
     }
+
+    /**
+     * 这次失败是不是主清单取不到（T8 清单失效）。
+     *
+     * 清单失效与分片失败在 ExoPlayer 里是同一个错误码，区别只在坏的是哪一段
+     * 地址：当前媒体项就是清单本身，且响应是 4xx/5xx 时算清单失效。401/403 在
+     * 调用之前已经被判成凭证失效，走不到这里。
+     */
+    private fun manifestUnavailable(error: PlaybackException): Boolean {
+        val uri = player.currentMediaItem?.localConfiguration?.uri?.toString() ?: return false
+        val isPlaylist = uri.substringBefore('?').lowercase().let {
+            it.endsWith(".m3u8") || it.endsWith(".m3u")
+        }
+        if (!isPlaylist) return false
+        var cause: Throwable? = error.cause
+        while (cause != null) {
+            if (cause is HttpDataSource.InvalidResponseCodeException) return true
+            cause = cause.cause
+        }
+        return false
+    }
+
+    /** 这次失败是不是站点对凭证的明确拒绝；是就返回那个 HTTP 状态。 */
+    private fun credentialRejection(error: PlaybackException): Int? {
+        if (error.errorCode != PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS) return null
+        var cause: Throwable? = error.cause
+        while (cause != null) {
+            if (cause is HttpDataSource.InvalidResponseCodeException) {
+                val disposition = SiteCredentialFailurePolicy.forHttpStatus(cause.responseCode)
+                return if (disposition.isCredentialRejection) cause.responseCode else null
+            }
+            cause = cause.cause
+        }
+        return null
+    }
+
+    /**
+     * 一次失效事件的对外形状：会话里带 `credentialRejected` 与档案 id，应用侧据此
+     * 找到适配器续期。事件里没有任何凭证值。
+     */
+    private fun rejectionEvent(event: Map<String, Any?>): String = buildString {
+        append(SiteCredentialFailurePolicy.EVENT_CREDENTIAL_REJECTED)
+        append("; status=").append(event["status"])
+        append("; profile=").append(event["profileId"])
+        append("; attempt=").append(event["attempt"])
+        append("; terminal=").append(event["terminal"])
+    }
+
+    /**
+     * 推送只清空配额、不买一次重试：被 401/403 卡住的会话先等凭证，推来就重试
+     * 一次；等不到也在 [CREDENTIAL_RESUME_DELAY_MS] 后重试一次——两者合计仍然是
+     * 「原生只重试一次」。
+     */
+    private fun awaitCredentialThenRetry(generation: Long, waitingSession: String) {
+        if (credentialWaiters > 0) return
+        credentialWaiters = 1
+        operationHandler.postDelayed(
+            {
+                if (!acceptsCallback(generation) || sessionId != waitingSession) return@postDelayed
+                if (credentialWaiters != 1) return@postDelayed
+                credentialWaiters = 0
+                retrySourcePlayback(generation)
+            },
+            CREDENTIAL_RESUME_DELAY_MS,
+        )
+    }
+
+    /**
+     * 应用推来一份新凭证：只重新开始一段新会话的配额，并让被 401/403 卡住的会话
+     * 立刻重试——这一次就是「原生只重试一次」的那一次。
+     */
+    private fun onCredentialPushed(profileId: Int?) {
+        if (profileId != null && mediaProfileId >= 0 && profileId != mediaProfileId) return
+        credentialFailure.onCredentialPushed(sessionId)
+        if (credentialWaiters == 1 && sessionId != null) {
+            credentialWaiters = 0
+            retrySourcePlayback(playerGeneration)
+        }
+    }
+
+    /**
+     * 远程播放的数据来源（T7）。凭证来源在最里层、每次请求现取；缓存包在它
+     * 外面，因此缓存命中的分片连凭证都不需要再取一次。
+     *
+     * 返回空实现时等于不缓存：会话只按默认值走凭证来源，不改任何失败处置。
+     *
+     * 整集已经在下载里时 [OpenRequest.admitsPlaybackCache] 为假：这一次播放
+     * 只读远端，不写缓存，避免同一份字节同时归缓存与下载。
+     */
+    private fun remoteDataSources(request: OpenRequest): DataSource.Factory {
+        val credentialed = SiteCredentialDataSource.factory { url -> headersFor(request, url) }
+        if (!request.admitsPlaybackCache) return credentialed
+        // 目录相交说明缓存配置指到了下载上：宁可这次不缓存，也不让两份存储共用文件。
+        val downloadRoot = runCatching { NativeMediaDownloadWorker.root(applicationContext) }
+            .getOrNull()
+        val cacheRoot = NativeMediaPlaybackCachePolicy.root(applicationContext.cacheDir)
+        if (downloadRoot != null &&
+            NativeMediaPlaybackCachePolicy.overlapsDownloadRoot(cacheRoot, downloadRoot)
+        ) {
+            return credentialed
+        }
+        return NativeMediaPlaybackCache.dataSourceFactory(applicationContext, credentialed)
+    }
+
+    /** 这条地址此刻该带的请求头；取不到就是公开内容。 */
+    private fun headersFor(request: OpenRequest, url: String = request.uri): Map<String, String> =
+        runCatching { request.credentials(request.profileId, url) }.getOrDefault(emptyMap())
 
     private fun isRecoverableSourceError(error: PlaybackException): Boolean =
         error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
@@ -529,6 +723,7 @@ class NativeMediaSessionService : MediaSessionService() {
                 userPaused = userPaused,
                 backgroundPolicyPaused = backgroundPolicyPaused,
                 state = state,
+                restorable = sessionAllowsRestorable(),
             )
         ) {
             NativeMediaSessionPolicy.TaskRemovalAction.KEEP_RUNNING ->
@@ -675,6 +870,11 @@ class NativeMediaSessionService : MediaSessionService() {
     private fun readRestorable(): RestorableState? {
         if (!statePrefs.getBoolean("known", false)) return null
         val uri = statePrefs.getString("uri", null)?.takeIf { it.isNotBlank() } ?: return null
+        // 远程地址不是可恢复状态；读到就丢掉这份记录，别让它挡住正常运行。
+        if (!NativeMediaSessionRoute.shouldRestore(uri)) {
+            clearRestorable()
+            return null
+        }
         return RestorableState(
             taskId = statePrefs.getString("taskId", null),
             candidateId = statePrefs.getString("candidateId", null),
@@ -723,8 +923,17 @@ class NativeMediaSessionService : MediaSessionService() {
         applicationForeground = request.applicationForeground
         allowNativeBackgroundPlayback = request.allowNativeBackgroundPlayback
         val uri = Uri.parse(request.uri)
-        require(uri.scheme == "file" || uri.scheme == "content") { "本地媒体地址无效" }
-        if (uri.scheme == "file") {
+        // 远程会话与本地会话的差异全部交给判定对象；这条分支只按它的结论执行。
+        // 准入只看站点凭证（ADR-0009）：没有凭证的公开内容照播，只是不带请求头。
+        // 凭证本身不在方法参数里传，服务按档案向入口取。
+        val route = NativeMediaSessionRoute.classify(
+            request.uri,
+            hasCredential = headersFor(request).isNotEmpty(),
+        )
+        mediaProfileId = request.profileId
+        credentialWaiters = 0
+        credentialFailure.bindProfile(request.profileId)
+        if (route.scheme == NativeMediaSessionRoute.Scheme.FILE) {
             val file = File(uri.path ?: error("媒体路径无效")).canonicalFile
             val roots = listOfNotNull(
                 applicationContext.filesDir.canonicalFile,
@@ -743,13 +952,8 @@ class NativeMediaSessionService : MediaSessionService() {
                 "本地媒体路径越界"
             }
         }
-        val leaseScope = MediaFileLeaseRegistry.Scope.task(request.taskId) +
-            if (uri.scheme == "file" && request.hls) {
-                MediaFileLeaseRegistry.Scope.file(File(uri.path!!).parentFile!!)
-            } else {
-                MediaFileLeaseRegistry.Scope.source(request.uri)
-            }
-        val nextLease = NativeMediaFileLeases.registry.acquireRead(leaseScope)
+        val leaseScope = route.leaseForOpening(request.taskId, request.uri, request.hls)
+        val nextLease = leaseScope?.let { NativeMediaFileLeases.registry.acquireRead(it) }
         var installedLease = false
         try {
             if (ownerGeneration == null) {
@@ -766,6 +970,8 @@ class NativeMediaSessionService : MediaSessionService() {
             mediaMime = request.mime
             mediaIsHls = request.hls
             mediaOpenedAtElapsedMs = SystemClock.elapsedRealtime()
+            // 上一条会话到此结束：四类远程失败的预算可以回收了。
+            sessionId?.let { remoteFailure.forget(it) }
             playerGeneration++
             lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.OPENING
             installPlayerListener(playerGeneration)
@@ -775,7 +981,7 @@ class NativeMediaSessionService : MediaSessionService() {
             sourceRetryCount = 0
             userPaused = false
             backgroundPolicyPaused = false
-            clearRestorable()
+            if (route.isRestorable) clearRestorable()
             val item = MediaItem.Builder()
                 .setMediaId(sessionId ?: "")
                 .setUri(uri)
@@ -784,13 +990,26 @@ class NativeMediaSessionService : MediaSessionService() {
                 .build()
             val hls = request.mime.contains("mpegurl", ignoreCase = true) ||
                 uri.path?.lowercase()?.let { it.endsWith(".m3u8") || it.endsWith(".m3u") } == true
-            if (hls) {
-                val dataSource = GrowingFileDataSource.Factory()
-                player.setMediaSource(
-                    HlsMediaSource.Factory(dataSource).createMediaSource(item),
+            when (route.sourceOf(hls)) {
+                NativeMediaSessionRoute.SourceKind.LOCAL_GROWING_FILE -> player.setMediaSource(
+                    HlsMediaSource.Factory(GrowingFileDataSource.Factory())
+                        .createMediaSource(item),
                 )
-            } else {
-                player.setMediaItem(item)
+                // 远程 HLS 与远程渐进式共用带凭证的数据来源：主清单与分片都在
+                // 每次请求时取当前凭证。播放缓存挂在凭证来源的外面（T7）：
+                // 命中缓存的分片不再发网络请求，未命中的边读边写进缓存目录。
+                NativeMediaSessionRoute.SourceKind.REMOTE_HTTP -> player.setMediaSource(
+                    HlsMediaSource.Factory(
+                        remoteDataSources(request),
+                    ).createMediaSource(item),
+                )
+                // 远程渐进式同样是逐字节区间请求，凭证注入与 HLS 共用同一个数据来源。
+                NativeMediaSessionRoute.SourceKind.REMOTE_HTTP_PROGRESSIVE -> player.setMediaSource(
+                    ProgressiveMediaSource.Factory(
+                        remoteDataSources(request),
+                    ).createMediaSource(item),
+                )
+                NativeMediaSessionRoute.SourceKind.LOCAL_DEFAULT -> player.setMediaItem(item)
             }
             val shouldAutoPlay = request.autoPlay &&
                 NativeMediaSessionPolicy.canStartPlayback(
@@ -810,7 +1029,7 @@ class NativeMediaSessionService : MediaSessionService() {
             publish()
             return snapshot()
         } catch (error: Exception) {
-            if (!installedLease) runCatching { nextLease.close() }
+            if (!installedLease) runCatching { nextLease?.close() }
             runCatching { stopAndRelease() }
             throw error
         }
@@ -911,6 +1130,11 @@ class NativeMediaSessionService : MediaSessionService() {
 
     private fun stopAndPreserveRestorable() {
         if (engineReleased || stopping) return
+        // 只有本地会话可以被保留成可恢复记录；远程会话退回到停止，不写记录。
+        if (!sessionAllowsRestorable()) {
+            stopAndRelease()
+            return
+        }
         markExplicitStop()
         stopping = true
         lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.STOPPING
@@ -947,6 +1171,7 @@ class NativeMediaSessionService : MediaSessionService() {
         lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.STOPPING
         playerGeneration++
         var firstFailure: Throwable? = null
+        // 播放器持有远程数据来源，它要先松开缓存句柄；之后才能关闭缓存。
         if (::player.isInitialized && !playerReleased) {
             runCatching {
                 player.stop()
@@ -965,6 +1190,12 @@ class NativeMediaSessionService : MediaSessionService() {
                 player.release()
                 playerReleased = true
             }.onFailure { firstFailure = firstFailure ?: it }
+        }
+        // 播放缓存的范围止于本次会话：播放器与媒体会话都放开之后才关缓存，
+        // 并在关闭时按最近使用时间把总量压回上限（T7）。
+        if (playerReleased && mediaSessionReleased) {
+            runCatching { NativeMediaPlaybackCache.release(applicationContext) }
+                .onFailure { firstFailure = firstFailure ?: it }
         }
         engineReleased = mediaSessionReleased && playerReleased
         if (engineReleased) lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.RELEASED
@@ -1039,6 +1270,11 @@ class NativeMediaSessionService : MediaSessionService() {
         positionHandler.removeCallbacks(positionPersistence)
     }
 
+    private fun sessionAllowsRestorable(): Boolean {
+        val raw = mediaUri ?: return false
+        return NativeMediaSessionRoute.shouldPreserveRestorable(raw)
+    }
+
     data class OpenRequest(
         val sessionId: String,
         val taskId: String,
@@ -1047,12 +1283,20 @@ class NativeMediaSessionService : MediaSessionService() {
         val mime: String,
         val title: String,
         val hls: Boolean,
+        val profileId: Int = -1,
+        /** 按档案与地址取当前凭证的请求头；取不到返回空，表示公开内容。 */
+        val credentials: (profileId: Int, url: String) -> Map<String, String> = { _, _ -> emptyMap() },
         val autoPlay: Boolean = true,
         val applicationForeground: Boolean = true,
         val allowNativeBackgroundPlayback: Boolean = false,
         val surface: Surface?,
         val surfaceBindingId: String? = null,
         val surfaceOwnerId: String? = null,
+        /**
+         * 这次远程播放能不能经过播放缓存（T7）。整集已在下载时不进缓存：
+         * 一次播放只读一次字节来源，不跟下载抢同一份。
+         */
+        val admitsPlaybackCache: Boolean = true,
         val isCurrent: () -> Boolean = { true },
         val callback: (Result<Map<String, Any?>>) -> Unit,
     )
@@ -1076,6 +1320,9 @@ class NativeMediaSessionService : MediaSessionService() {
         private const val CHANNEL = "site-lens-native-media"
         private const val ID = 24002
         private const val POSITION_PERSISTENCE_MS = 2_000L
+
+        /** 等应用重推凭证的窗口；超时再试一次，仍然失败就以终局结论停下。 */
+        private const val CREDENTIAL_RESUME_DELAY_MS = 3_000L
         private const val PREF_ALLOW_NATIVE_BACKGROUND_PLAYBACK =
             "allowNativeBackgroundPlayback"
         private const val PREF_APPLICATION_FOREGROUND = "applicationForeground"

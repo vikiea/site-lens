@@ -12,6 +12,8 @@ import 'diagnostics/error_log.dart';
 import 'diagnostics/startup_trace.dart';
 import 'ui/app_controller.dart';
 import 'ui/browser_dock.dart';
+import 'ui/credential_notice.dart';
+import 'ui/remote_failure_notice.dart';
 import 'ui/app_theme.dart';
 import 'ui/glass_surface.dart';
 import 'ui/navigation_observer.dart';
@@ -153,9 +155,28 @@ class SiteLensApp extends ConsumerWidget {
                   child: SiteLensBackdrop(
                     background: app.background,
                     child: SiteLensUpdateNoticeLayer(
-                      child: BrowserDock(
-                        app: app,
-                        child: child ?? const SizedBox(),
+                      // 凭证失效（需要重新登录）与更新提示同一层：用户在哪一页
+                      // 都看得到，不埋在播放页的失败文案里。
+                      child: SiteLensCredentialNoticeLayer(
+                        // 远程播放失败的四类结局（T8）与凭证提示同一层：
+                        // 凭证失效、清单失效、分片失败、网络失败各有各的话，
+                        // 不埋进播放页，也不落进媒体任务状态。
+                        child: SiteLensRemoteFailureNoticeLayer(
+                          notice: app.remoteFailureNotice,
+                          onDismiss: app.dismissRemoteFailure,
+                          onRetry: () {
+                            final last = app.remoteFailureNotice;
+                            if (last == null) return;
+                            unawaited(app.reopenAfterManifestRefresh());
+                          },
+                          onDownload: () {
+                            unawaited(app.downloadEpisodeAfterSegmentFailure());
+                          },
+                          child: BrowserDock(
+                            app: app,
+                            child: child ?? const SizedBox(),
+                          ),
+                        ),
                       ),
                     ),
                   ),

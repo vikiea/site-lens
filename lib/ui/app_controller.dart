@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../adapters/direct_route.dart';
 import '../backup/backup_service.dart';
 import '../background/background_asset_store.dart';
 import '../background/background_snapshot.dart';
@@ -32,6 +33,15 @@ import '../device/device_conditions.dart';
 import '../discovery/health_checker.dart';
 import '../discovery/probe_coordinator.dart';
 import '../domain/models.dart';
+import '../domain/route_health.dart';
+import '../domain/site_adapter.dart';
+import '../media/native_credential_push.dart';
+import '../media/remote_episode_source.dart';
+import '../media/remote_playback_controller.dart';
+import '../media/remote_playback_failure.dart';
+import '../media/site_credential_handoff.dart';
+import '../site_credentials/site_credential_store.dart';
+import '../theater/series_line_memory.dart';
 import '../domain/web_page_origin.dart';
 import '../network/transport.dart';
 import '../network/native_system_http.dart';
@@ -225,7 +235,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     NativeMediaAuthRefresh? nativeMediaAuthRefresh,
     NativeDownloadRuntime? nativeDownloads,
     NativeTlsTransferWithPolicy? mediaPolicyTransfer,
+    NativeSystemHttpTransport? systemHttpTransport,
+    Uint8List? directRouteSecret,
   }) : startupTrace = startupTrace ?? StartupTrace() {
+    _directRouteSecret = directRouteSecret;
     this.mediaPolicyTransfer = mediaPolicyTransfer;
     this.nativeMediaAuthRefresh =
         nativeMediaAuthRefresh ??
@@ -250,9 +263,12 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     settingsRepository = SettingsRepository(db);
     backgroundAssets = BackgroundAssetStore();
     secureDnsResolver = SecureDnsResolver();
-    final nativeSystemTransport = Platform.isAndroid
-        ? NativeSystemHttpTransport()
-        : null;
+    final nativeSystemTransport =
+        systemHttpTransport ??
+        (Platform.isAndroid ? NativeSystemHttpTransport() : null);
+    // 直连出口的适配器走同一条系统网络通道：媒体、脚本、探测与目录不应该
+    // 各自解释一套代理/DNS/TLS。
+    _nativeSystemTransport = nativeSystemTransport;
     final mediaNetwork = Platform.isAndroid ? MediaNetwork() : null;
     if (bootstrap != null) _applySettings();
     transientCache = TransientCacheService(runtime: AppRuntimeApi());
@@ -301,12 +317,45 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       );
     }
     nativeMedia = NativeMediaRuntime();
+    // T4：原生回传「凭证失效」之后，应用续期一次并重推；续期失败落到用户可见的
+    // 「需要重新登录」。推送走单向通道 `site_lens/credentials`。
+    credentialHandoff = SiteCredentialHandoff(
+      adapterRegistry: _liveAdapterRegistry,
+      pusher: NativeCredentialPush(),
+      credentialSink: StoreCredentialSink(siteCredentialStore),
+      media: nativeMedia,
+      // 续期成功之后把这一集重开一次：用户不需要手动重试。
+      reopen: () => unawaited(reopenAfterCredentialRefresh()),
+    );
+    _credentialOutcomes = credentialHandoff!.recoveries.listen(
+      _onCredentialRecovery,
+    );
+    credentialHandoff!.attach();
     _diagnosticPlaybackEvents = nativeMedia.states.listen((session) {
       if (session.state == NativePlaybackState.stopped ||
           session.state == NativePlaybackState.restorable) {
         deviceDiagnostics.clearObservation('media.playback.session');
+        // 会话结束：这一段的重试预算可以回收了。
+        _remoteFailures.forget(session.id);
+        _handledRemoteFailures.removeWhere(
+          (key) => key.startsWith('${session.id}|'),
+        );
         return;
       }
+      // 远程失败归因（T8）。只认远程错误码：本地会话的失败码不在这条线上，
+      // 两套归因不共用错误码，也不会互相覆盖。同一段会话的同一份结论只处置一
+      // 次——快照会反复下发，重试预算不能因此被反复扣。
+      if (session.state == NativePlaybackState.failed) {
+        final key = '${session.id}|${session.errorCode}';
+        if (_handledRemoteFailures.add(key)) {
+          observeRemoteFailure(session);
+        }
+        return;
+      }
+      // 这段会话重新开始播了：它的失败结论与去重标记都可以收掉。
+      _handledRemoteFailures.removeWhere(
+        (key) => key.startsWith('${session.id}|'),
+      );
       deviceDiagnostics.recordObservation(
         id: 'media.playback.session',
         observed: session.state.name,
@@ -760,6 +809,297 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   late final NativePlaybackController mediaPlayback;
   late final NativeMediaRuntime nativeMedia;
 
+  /// 应用侧持有的站点凭证（ADR-0007 的生产端）；推送与续期都只写这一份。
+  final SiteCredentialStore siteCredentialStore = SiteCredentialStore();
+
+  /// T4 的失效处置链：原生回传失效 → 续期一次 → 重推 → 原生重试一次。
+  SiteCredentialHandoff? credentialHandoff;
+
+  StreamSubscription<CredentialRecovery>? _credentialOutcomes;
+
+  /// 最近一次续期后的站点档案。「需要重新登录」的提示就是给它的。
+  int? _activeCredentialProfileId;
+  String? _credentialPromptText;
+
+  /// 用户看得到的那句话；为 null 表示没有待处理提示。
+  String? get credentialPromptText => _credentialPromptText;
+
+  /// 这条提示属于哪个档案；没有提示时为 null。
+  int? get credentialNeedsLoginProfileId =>
+      _credentialPromptText == null ? null : _activeCredentialProfileId;
+
+  /// 这次播放属于哪个站点档案；失效处置按它定位适配器。
+  void rememberCredentialProfile(int profileId) {
+    _activeCredentialProfileId = profileId;
+  }
+
+  /// 直接播放一个站点候选（远程地址）。档案 id 随打开请求一起交给原生，由它
+  /// 按站点凭证注入请求头；没有凭证时公开内容照播（ADR-0009）。
+  Future<NativePlaybackSession> openRemoteCandidate(
+    MediaCandidate candidate, {
+    required int hostId,
+    required int generation,
+    required Uri sourceUrl,
+    int? profileId,
+  }) async {
+    final target = profileId ?? _activeCredentialProfileId;
+    if (target != null) rememberCredentialProfile(target);
+    // 记住这一次打开用的四样东西：凭证续期后要原样再开一次本集。
+    _lastRemoteOpen = (
+      candidate: candidate,
+      hostId: hostId,
+      generation: generation,
+      sourceUrl: sourceUrl,
+      profileId: target,
+    );
+    return nativeMedia.open(
+      candidate,
+      hostId: hostId,
+      generation: generation,
+      sourceUrl: sourceUrl,
+      profileId: target,
+    );
+  }
+
+  /// 从剧集详情点选集进入远程播放（T11）。
+  ///
+  /// 详情页只交出它手上的那份**媒体候选**和一个选中线路的 id；应用侧在这里把
+  /// 播放需要的四样东西补齐：原生宿主（站点档案对应的 host 与代次）、来源页、
+  /// 以及「下一集从哪来」的目录来源。播放页本身不认识适配器，也不认识凭证。
+  ///
+  /// 不建任务、不写追剧记录：远程播放可以不建任务（ADR-0005），追剧位置是
+  /// T12 的事。
+  Future<RemotePlayerLaunch> openRemoteEpisode(
+    MediaCandidate candidate, {
+    required SiteAdapter adapter,
+    required String seriesKey,
+    String? lineId,
+    int? profileId,
+    int continueWatchingMs = 0,
+    String? episodeTitle,
+  }) async {
+    final target = profileId ?? adapter.profileId;
+    // 打开走的就是既有的那个入口：凭证注入、缓存、凭证租约、失败归因都在它
+    // 里面，这里不重复任何一步。
+    await openRemoteCandidate(
+      candidate,
+      hostId: candidate.hostId,
+      generation: candidate.generation,
+      sourceUrl: candidate.sourceUrl,
+      profileId: target,
+    );
+    rememberCredentialProfile(target);
+    final source = AdapterEpisodeSource(
+      adapter: adapter,
+      seriesKey: seriesKey,
+      preferredLineId: lineId,
+      preferredQuality: candidate.qualityLabel,
+      preferredAudio: candidate.audioLabel,
+    );
+    return RemotePlayerLaunch(
+      candidate: candidate,
+      title: _seriesTitleOf(candidate),
+      episodeNumber: episodeTitle ?? _episodeLabelOf(candidate),
+      source: source,
+      lineId: lineId,
+      continueWatchingMs: continueWatchingMs,
+      profileId: target,
+    );
+  }
+
+  /// 播放页标题上的剧名：页面自己声明的剧名优先，其次是候选标题。
+  static String _seriesTitleOf(MediaCandidate candidate) {
+    final series = candidate.seriesTitle?.trim();
+    if (series != null && series.isNotEmpty) return series;
+    final title = candidate.title.trim();
+    return title.isEmpty ? '当前选集' : title;
+  }
+
+  static String _episodeLabelOf(MediaCandidate candidate) {
+    final number = candidate.episodeNumber;
+    return number == null ? '当前选集' : '第 $number 集';
+  }
+
+  /// 最近一次远程播放的请求参数。自动重开用它把**同一集**再打开一次。
+  ({
+    MediaCandidate candidate,
+    int hostId,
+    int generation,
+    Uri sourceUrl,
+    int? profileId,
+  })?
+  _lastRemoteOpen;
+
+  /// 用户最后看到的远程失败结论（T8）。它不是媒体任务状态：远程播放可以不建
+  /// 任务，结局只能挂在这里。null 表示没有待处理的远程失败。
+  RemoteFailureNotice? _remoteFailureNotice;
+
+  /// 四类远程失败的重试预算。按「会话 + 种类」记，会话结束由链自己回收。
+  final RemoteFailureRetryChain _remoteFailures = RemoteFailureRetryChain();
+
+  /// 已经处置过的远程失败（会话 + 错误码）。同一份快照反复下发时不再重复处置。
+  final _handledRemoteFailures = <String>{};
+
+  /// 最近四类远程失败各自怎么判定、要不要重开、给用户看什么。
+  RemoteFailureNotice? get remoteFailureNotice => _remoteFailureNotice;
+
+  /// 远程失败的重试策略；次数与间隔可配，同一段会话每一类最多一次。
+  RemoteRetryPolicy get remoteRetryPolicy => _remoteFailures.policy;
+
+  set remoteRetryPolicy(RemoteRetryPolicy next) =>
+      _remoteFailures.policy = next;
+
+  /// 从原生会话快照里认一次远程失败并处置；不是远程失败就返回 null。
+  ///
+  /// 这是界面与桥接层唯一需要的入口：判定在 [RemotePlaybackFailure.classify]
+  /// 里，重试预算在 [_remoteFailures] 里，两者都不读媒体任务。
+  /// [retry] 让调用方换掉默认的重开动作（播放页用它重开**播放页正在放的那
+  /// 一集**，而不是 `_lastRemoteOpen` 记住的那一份）。传了就由它决定是否重开。
+  RemoteFailurePlan? observeRemoteFailure(
+    NativePlaybackSession session, {
+    void Function()? retry,
+  }) {
+    final failure = RemotePlaybackFailure.classify(session);
+    if (failure == null) return null;
+    return reportRemoteFailure(failure, retry: retry);
+  }
+
+  /// 主动处置一次远程失败。原生把失败写进会话快照之后，由界面或桥接层调用。
+  ///
+  /// 四类结局各走各的路：凭证失效续期后重开、清单失效重取清单再开一次、分片
+  /// 失败建议下载、网络失败沿用既有文案。分片与网络不重开整集，凭证与清单也
+  /// 各自只重开一次；耗尽之后只给建议，不静默重试。
+  RemoteFailurePlan reportRemoteFailure(
+    RemotePlaybackFailure failure, {
+    void Function()? retry,
+  }) {
+    retry ??= switch (failure.kind) {
+      RemoteFailureKind.credentialRejected => () {
+        unawaited(reopenAfterCredentialRefresh());
+      },
+      RemoteFailureKind.manifestUnavailable => () {
+        unawaited(reopenAfterManifestRefresh());
+      },
+      // 分片失败与网络失败不重开整集：它们连重试动作都不该有。
+      RemoteFailureKind.segmentFailed || RemoteFailureKind.network => null,
+    };
+    final plan = _remoteFailures.plan(failure: failure, retry: retry);
+    _remoteFailureNotice = RemoteFailureNotice(plan: plan);
+    notifyListeners();
+    if (plan.retries) {
+      final action = plan.retry!;
+      final delay = plan.delay;
+      if (delay == Duration.zero) {
+        action();
+      } else {
+        unawaited(
+          Future<void>.delayed(delay).then((_) {
+            if (_remoteFailureNotice?.plan.failure.sessionId !=
+                failure.sessionId) {
+              // 这段会话已经有了新的结论：过期的重试不再执行。
+              return;
+            }
+            action();
+          }),
+        );
+      }
+    }
+    return plan;
+  }
+
+  /// 分片失败之后「下载该集」（T8）。
+  ///
+  /// 建议本身是这一类的动作：远程流取不到的片段，下载任务手里那份清单通常还能
+  /// 取到，取不到也只是任务自己的失败。这里只把「该下载哪一集」交出去——
+  /// 建任务是下载自己的动作，不让远程失败去写任务状态。
+  Future<MediaCandidate?> downloadEpisodeAfterSegmentFailure() async {
+    final last = _lastRemoteOpen;
+    if (last == null) return null;
+    dismissRemoteFailure();
+    return last.candidate;
+  }
+
+  /// 用户点掉远程失败的提示。
+  void dismissRemoteFailure() {
+    if (_remoteFailureNotice == null) return;
+    _remoteFailureNotice = null;
+    notifyListeners();
+  }
+
+  /// 清单失效之后的那一次重开：重取清单再开同一集。
+  ///
+  /// 直连出口没有来源页（GLOSSARY: 来源页），能重取的是适配器给出的候选；因此
+  /// 这里与凭证续期共用同一个重开动作，区别只在预算与文案——两者各记各的。
+  Future<void> reopenAfterManifestRefresh() async {
+    final last = _lastRemoteOpen;
+    if (last == null) return;
+    try {
+      await openRemoteCandidate(
+        last.candidate,
+        hostId: last.hostId,
+        generation: last.generation,
+        sourceUrl: last.sourceUrl,
+        profileId: last.profileId,
+      );
+    } on Object catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.remote_failure',
+        context: 'retry=manifest',
+        stack: stack,
+      );
+    }
+  }
+
+  /// 凭证续期成功后重开本集（T6）。没有可重开的远程播放就什么都不做。
+  ///
+  /// 重开就是一次普通的 [openRemoteCandidate]：原生按当前凭证重新取头，用户看
+  /// 到的是一次短暂停顿，不是错误页。失败不转成新提示——下一次失效事件会按它
+  /// 自己的预算判定。
+  Future<void> reopenAfterCredentialRefresh() async {
+    final last = _lastRemoteOpen;
+    if (last == null) return;
+    try {
+      await openRemoteCandidate(
+        last.candidate,
+        hostId: last.hostId,
+        generation: last.generation,
+        sourceUrl: last.sourceUrl,
+        profileId: last.profileId,
+      );
+    } on Object catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.credential',
+        context: 'reopen=1',
+        stack: stack,
+      );
+    }
+  }
+
+  /// 用户点掉提示。
+  void dismissCredentialPrompt() {
+    if (_credentialPromptText == null) return;
+    _credentialPromptText = null;
+    _activeCredentialProfileId = null;
+    notifyListeners();
+  }
+
+  void _onCredentialRecovery(CredentialRecovery outcome) {
+    // 成功与失败是两种结局，绝不合并成同一句文案（ADR-0007 Consequences）。
+    switch (outcome) {
+      case CredentialRecovered():
+        _credentialPromptText = null;
+      case CredentialNeedsLogin():
+        _credentialPromptText = '登录已失效，请重新登录后继续播放';
+    }
+    notifyListeners();
+  }
+
+  /// 把所有能续期的适配器组成一个注册表，供失效处置解析档案。
+  SiteAdapterRegistry get _liveAdapterRegistry =>
+      SiteAdapterRegistry(_theaterAdapters.values);
+
   /// Android authorization-refresh bridge. Injectable so the adoption path can
   /// be exercised without a device; production keeps the real bridge.
   late final NativeMediaAuthRefresh? nativeMediaAuthRefresh;
@@ -783,6 +1123,97 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   List<Candidate> sites = [];
   List<PublishingSource> sources = [];
   List<SiteProfile> profiles = [];
+
+  /// The adapter that serves one profile's 直连出口, or null when that profile
+  /// has none. [installTheaterAdapter] is the test seam; production composes a
+  /// real one from the addresses the profile publishes.
+  final Map<int, SiteAdapter> _theaterAdapters = {};
+
+  /// Which 线路 the user picked for an 选集, for the app's lifetime.
+  ///
+  /// Scoped to adapter + series + episode inside the store; it survives
+  /// leaving the detail page, while playing, and switching candidates. It is
+  /// deliberately not persisted: durable 追剧记录 is a different concern.
+  final SeriesLineMemory seriesLineMemory = SeriesLineMemory();
+
+  /// Composes (once per profile) the adapter 剧场 reads its catalog from.
+  void installTheaterAdapter(int profileId, SiteAdapter adapter) {
+    _theaterAdapters[profileId] = adapter;
+  }
+
+  SiteAdapter? theaterAdapterFor(int profileId) {
+    final known = _theaterAdapters[profileId];
+    if (known != null) return known;
+    final profile = profiles.where((p) => p.id == profileId).firstOrNull;
+    if (profile == null) return null;
+    final routes = profile.routes.isEmpty ? {SiteRoute.browse} : profile.routes;
+    if (!routes.contains(SiteRoute.direct)) return null;
+    final addresses = _theaterAddressesFor(profile);
+    if (addresses.isEmpty) return null;
+    // 首屏由真适配器供数：只有认不出站点时才没有剧场（而不是拿假目录显示
+    // 空态）。建立适配器要读一次已存凭证，所以它是异步的；读完之后由
+    // [load] 收尾重建，在那之前 [theaterAdapterFor] 返回 null，界面显示的是
+    // 「还在准备」而不是「没有内容」。
+    final ready = _directRouteAdapters[profileId];
+    if (ready != null) return ready;
+    unawaited(_composeDirectRouteAdapter(profile, addresses));
+    return null;
+  }
+
+  /// 直连出口的适配器，按档案缓存。与 [_theaterAdapters] 分开，是因为后者是
+  /// 测试与界面注入的入口（[installTheaterAdapter]），而这里的实例由应用自
+  /// 己按已存凭证组装。
+  final Map<int, SiteAdapter> _directRouteAdapters = {};
+
+  /// The system-network transport the 直连出口 shares with scripts, hosts and
+  /// filter sources. Null off Android, where dart:io's stack is the system's.
+  NativeSystemHttpTransport? _nativeSystemTransport;
+
+  /// A published key already in hand. Production leaves this null so the
+  /// adapter fetches its own; a test fixture hands one in instead of letting a
+  /// fake interface answer with content the app cannot read.
+  Uint8List? _directRouteSecret;
+  final Set<int> _directRouteComposing = {};
+
+  Future<void> _composeDirectRouteAdapter(
+    SiteProfile profile,
+    List<Uri> addresses,
+  ) async {
+    final profileId = profile.id;
+    if (_directRouteComposing.contains(profileId)) return;
+    _directRouteComposing.add(profileId);
+    try {
+      final composed = await createDirectRouteAdapter(
+        profileId: profileId,
+        addresses: addresses,
+        http: ControlledHttp(nativeTransport: _nativeSystemTransport),
+        credentials: siteCredentialStore,
+        remoteSecret: _directRouteSecret,
+      );
+      if (composed == null || _directRouteAdapters.containsKey(profileId)) {
+        return;
+      }
+      _directRouteAdapters[profileId] = composed.adapter;
+      notifyListeners();
+    } catch (error) {
+      // 认不出站点或凭证读不出来：这个档案就没有直连出口。界面按「这个站点
+      // 还没有直连入口」处理，不把插件错误抛给用户。
+      unawaited(errorLogger.record(error, module: 'theater.adapter'));
+    } finally {
+      _directRouteComposing.remove(profileId);
+    }
+  }
+
+  List<Uri> _theaterAddressesFor(SiteProfile profile) {
+    final owned = <Uri>{};
+    final landing = profile.lastLanding;
+    if (landing != null) owned.add(landing);
+    for (final site in sites) {
+      if (site.profileId == profile.id) owned.add(site.url);
+    }
+    return List.unmodifiable(owned);
+  }
+
   bool _persistentStateLoaded = false;
 
   /// True after the first persistent-state read has completed. An empty list
@@ -1520,6 +1951,41 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final downloads = nativeDownloads;
     if (downloads != null) {
       await downloads.setConcurrency(mediaDownloadConcurrency);
+    }
+  }
+
+  /// Bytes held by the remote playback cache, or `null` when this platform
+  /// has no native cache. Reading it never touches a download.
+  Future<PlaybackCacheUsage?> playbackCacheUsage() async {
+    final downloads = nativeDownloads;
+    if (downloads == null) return null;
+    return _readPlaybackCache(downloads.playbackCacheUsage);
+  }
+
+  /// Clears the remote playback cache and returns what was removed.
+  ///
+  /// Only the cache directory is touched: completed downloads own another
+  /// directory, keep their files, and keep their task rows. Returns `null`
+  /// when this platform has no native cache to clear.
+  Future<PlaybackCacheClearResult?> clearPlaybackCache() async {
+    final downloads = nativeDownloads;
+    if (downloads == null) return null;
+    final result = await _readPlaybackCache(downloads.clearPlaybackCache);
+    if (result == null) return null;
+    // The tasks themselves did not change; only what a replay could reuse.
+    notifyListeners();
+    return result;
+  }
+
+  /// A native call that a desktop or test host may not implement. A missing
+  /// channel means "this platform has no cache", not a playback failure.
+  Future<T?> _readPlaybackCache<T>(Future<T> Function() call) async {
+    try {
+      return await call();
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
     }
   }
 
@@ -2663,8 +3129,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final epoch = ++_healthRefreshEpoch;
     try {
       final health = await db.profileHealthAll();
+      final byRoute = await db.routeHealthRows();
       if (_disposed || epoch != _healthRefreshEpoch) return;
       profileHealth = health;
+      routeHealthRecords = byRoute;
       notifyListeners();
     } catch (error, stack) {
       AppErrorLogger.capture(
@@ -2705,6 +3173,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       }
       profilePages = await read(db.profilePages, profilePages);
       profileHealth = await read(db.profileHealthAll, profileHealth);
+      routeHealthRecords = await read(db.routeHealthRows, routeHealthRecords);
       profileScriptLinks = await read(db.profileScripts, profileScriptLinks);
     });
     await trace.measure(StartupPhase.preferencesRead, () async {
@@ -2839,6 +3308,25 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   ProfileHealth healthFor(int profileId) =>
       profileHealth.where((h) => h.profileId == profileId).firstOrNull ??
       ProfileHealth(profileId: profileId);
+
+  /// Per-出口 health, as stored (ADR-0006). Read for the detail screen only:
+  /// nothing sorts or recommends from it.
+  List<({int profileId, SiteRoute route, ProfileHealth health})>
+  routeHealthRecords = [];
+
+  /// The 出口-level record for [profileId]. Its aggregate is the badge.
+  RouteHealthRecord routeHealthFor(int profileId) {
+    final profile = profiles.where((p) => p.id == profileId).firstOrNull;
+    return routeHealthFromStored(
+      profileId: profileId,
+      routes: profile?.routes ?? const {SiteRoute.browse},
+      pages: profilePages.where((page) => page.profileId == profileId).toList(),
+      verdicts: {
+        for (final row in routeHealthRecords)
+          if (row.profileId == profileId) row.route: row.health,
+      },
+    );
+  }
 
   /// This round's probe results for [profileId], cheapest landing first.
   List<ProbeResult> currentResultsFor(int profileId) {
@@ -3923,6 +4411,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     deviceDiagnostics.removeListener(_diagnosticsChanged);
     deviceDiagnostics.dispose();
     unawaited(_diagnosticPlaybackEvents?.cancel());
+    // 凭证握手订阅着原生会话流；不释放它，shutdown 之后仍有一个活的订阅，
+    // 测试里的 pumpAndSettle 就永远等不到静止。
+    unawaited(_credentialOutcomes?.cancel());
+    _credentialOutcomes = null;
+    final handoff = credentialHandoff;
+    credentialHandoff = null;
+    if (handoff != null) unawaited(handoff.dispose());
     mediaCast.removeListener(_observeCastForDiagnostics);
     hosts.changed.removeListener(_hostMetadataChanged);
     _network?.cancel();
@@ -3986,6 +4481,120 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _clearAndDisposeNativeMedia() async {
     await nativeMedia.clearForAppShutdown();
+    await _credentialOutcomes?.cancel();
+    _credentialOutcomes = null;
+    await credentialHandoff?.dispose();
+    credentialHandoff = null;
     await nativeMedia.dispose();
+  }
+}
+
+/// 用户看到的远程失败结论（T8）。它不落到任何 `MediaTaskState` 上：远程播放
+/// 可以不建任务，结局只能由这份提示、而不是任务状态来表达。
+class RemoteFailureNotice {
+  const RemoteFailureNotice({required this.plan});
+
+  final RemoteFailurePlan plan;
+
+  RemoteFailureKind get kind => plan.failure.kind;
+  RemoteFailureAction get action => plan.action;
+
+  /// 用户看得到的那句话。四类各不相同。
+  String get message => plan.message;
+
+  /// 这一次是不是已经自动重试过了。
+  bool get retried => plan.retries;
+
+  /// 这一次没有自动重试（预算用完、或这一类根本不重开）：只剩建议。
+  bool get exhausted => !plan.retries;
+}
+
+/// 一次「从详情页点选集进入远程播放」要交给播放页的全部参数（T11）。
+///
+/// 它只携带**播放**需要的东西：一集候选、剧名、集号、下一集从哪里来，以及
+/// 调用方手里已有的观看位置。没有任务、没有下载、没有追剧记录的落库。
+class RemotePlayerLaunch {
+  const RemotePlayerLaunch({
+    required this.candidate,
+    required this.title,
+    required this.episodeNumber,
+    required this.source,
+    this.lineId,
+    this.continueWatchingMs = 0,
+    this.profileId,
+  });
+
+  final MediaCandidate candidate;
+  final String title;
+  final String episodeNumber;
+  final RemoteEpisodeSource source;
+  final String? lineId;
+  final int continueWatchingMs;
+
+  /// 这一部剧所属的站点档案：播放页换集、失败重开时原样带回宿主，原生按它
+  /// 取凭证（ADR-0009）。
+  final int? profileId;
+}
+
+/// 把 `AppController` 的远程播放能力交给播放页（[RemotePlaybackHost]）。
+///
+/// 这是播放页与原生/凭证/失败归因之间唯一的缝：播放页不持有 `AppController`，
+/// 也就不会顺手去碰下载任务或追剧记录。远程失败一律经过控制器既有的归因链，
+/// 播放页只执行它给出的下一步。
+class AppRemotePlaybackHost implements RemotePlaybackHost {
+  AppRemotePlaybackHost(this.app);
+
+  final AppController app;
+
+  /// 档案 id 由调用方交进来，不从候选身上推。
+  ///
+  /// 候选的 `hostId` 是观察它的网页宿主，档案 id 是凭证与目录的归属者；两者
+  /// 只是碰巧都是小整数。把宿主 id 当档案 id 用，原生就会去一个不存在的档案
+  /// 名下找凭证，带凭证的站点在换集、失败重开时安静地退回匿名。
+  @override
+  Future<NativePlaybackSession> openRemote(
+    MediaCandidate candidate, {
+    int? profileId,
+  }) => app.openRemoteCandidate(
+    candidate,
+    hostId: candidate.hostId,
+    generation: candidate.generation,
+    sourceUrl: candidate.sourceUrl,
+    profileId: profileId,
+  );
+
+  @override
+  Stream<NativePlaybackSession> get nativeStates => app.nativeMedia.states;
+
+  @override
+  Future<NativePlaybackSession> play(String sessionId) =>
+      app.nativeMedia.play(sessionId: sessionId);
+
+  @override
+  Future<NativePlaybackSession> pause(String sessionId) =>
+      app.nativeMedia.pause(sessionId: sessionId);
+
+  @override
+  Future<NativePlaybackSession> seek(Duration position, String sessionId) =>
+      app.nativeMedia.seek(position, sessionId: sessionId);
+
+  @override
+  Future<NativePlaybackSession> setSpeed(double speed, String sessionId) =>
+      app.nativeMedia.setSpeed(speed, sessionId: sessionId);
+
+  @override
+  Future<NativePlaybackSession> close(String sessionId) =>
+      app.nativeMedia.close(sessionId: sessionId);
+
+  @override
+  RemoteFailurePlan? observeRemoteFailure(
+    NativePlaybackSession session, {
+    void Function()? retry,
+  }) => app.observeRemoteFailure(session, retry: retry);
+
+  @override
+  void dismissRemoteFailure() {
+    // 播放页有自己的失败提示；全局那一条同源，一并清掉，免得用户要关两次。
+    app.dismissRemoteFailure();
   }
 }

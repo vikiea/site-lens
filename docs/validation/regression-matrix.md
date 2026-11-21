@@ -18,6 +18,7 @@
 | `MEDIA-UPGRADE-001` | 生效 | 稳定版本升级后数据库、设置、媒体缓存、历史和浏览器会话仍可恢复。 | site-lens-quality | v0.5.0.alpha11 | L2 | 未登记 | `make check`<br>`test/profile_migration_test.dart`<br>`test/backup_service_test.dart`<br>`test/settings_repository_test.dart`<br>`test/media_download_resume_test.dart` | 是 | — |
 | `UPDATE-001` | 生效 | 更新渠道、GitHub Token、断点下载和安装状态在异步页面生命周期中保持一致。 | site-lens-quality | v0.5.0.alpha11 | L2 | 未登记 | `make check`<br>`test/software_update_screen_test.dart`<br>`integration_test/update_flow_test.dart`<br>`tool/test_release_pubspec.py` | 是 | — |
 | `RELEASE-001` | 生效 | 本地、设备、Verify、Release 使用同一提交、版本、APK 身份和验证证据。 | site-lens-quality | v0.5.0.alpha11 | L4 | 未登记 | `make check`<br>`tool/test_verify_level.py`<br>`tool/test_acceptance_evidence.py`<br>`tool/test_release_pubspec.py`<br>`tool/test_release_identity.py`<br>`tool/test_regression_contracts.py` | 是 | — |
+| `MEDIA-CACHE-002` | 生效 | 远程播放缓存与下载分账：缓存有上限、可清除，播放中不切换到本地文件。 | site-lens-quality | 0.6.0 | L2 | 未登记 | `python3 tool/test_native_media_contract.py` | 是 | — |
 
 生命周期规则：
 
@@ -43,3 +44,4 @@
 | `UI-DOCK-001` | 2 | updated | 2026-10-28 | 0.5.0-alpha13 | 记录稳定 Overlay 生命周期，防止 Navigator 和 OverlayEntry 重复挂载 | `4741c49d62ba` |
 | `UI-DOCK-001` | 3 | updated | 2026-10-28 | 0.5.0-alpha13 | 补充浏览标签菜单返回关闭回归与 OverlayEntry 生命周期约束 | `56b88d20d6e1` |
 | `UI-DOCK-001` | 4 | updated | 2026-10-28 | 0.5.0-alpha13 | 补充菜单无障碍展开状态并登记共享菜单实现路径 | `2f98590f1b7c` |
+| `MEDIA-CACHE-002` | 1 | introduced | 2026-11-21 | 0.6.0 | T7 引入远程播放缓存后补登缺失的 MEDIA-CACHE-002 契约，恢复标记与注册表的双向绑定 | `51b38de10429` |

@@ -72,6 +72,10 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
                         configureConcurrency(call)
                         null
                     }
+                    // 远程播放缓存（T7）。清缓存只动缓存目录，下载目录与已完成
+                    // 任务的文件都在另一处，不受影响。
+                    "playbackCacheStatus" -> playbackCacheStatus()
+                    "clearPlaybackCache" -> clearPlaybackCache()
                     "networkChanged" -> networkChanged()
                     "reserveMutation" -> reserveMutation(call)
                     "releaseMutation" -> {
@@ -105,6 +109,17 @@ class NativeDownloadRuntime(context: Context) : MethodChannel.MethodCallHandler 
                 )
             }
         }
+    }
+
+    private fun playbackCacheStatus(): Map<String, Any?> = mapOf(
+        "bytes" to NativeMediaPlaybackCache.sizeBytes(context),
+        "limitBytes" to NativeMediaPlaybackCachePolicy.MAX_BYTES,
+    )
+
+    private fun clearPlaybackCache(): Map<String, Any?> {
+        // 先让播放这一侧释放缓存句柄，再删文件；正在播的分片仍在内存与远端。
+        val (before, after) = NativeMediaPlaybackCache.clear(context)
+        return mapOf("bytesBefore" to before, "bytesAfter" to after)
     }
 
     private fun start(taskId: String, call: MethodCall): Map<String, Any?> {

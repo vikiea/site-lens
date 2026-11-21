@@ -45,6 +45,10 @@ class BackupService {
     'profile_pages',
     'profile_scripts',
     'profile_health',
+    // Per-出口 health (ADR-0006), written after its parents so the foreign
+    // keys resolve during a restore.
+    'site_profile_health',
+    'site_profile_routes',
     'watch_saves',
     'probes',
     'script_values',
@@ -152,7 +156,17 @@ class BackupService {
   static bool _portableSetting(Object? key) =>
       key == AppPolicy.settingsKey || key == AppPolicy.browserSessionsKey;
 
+  /// Whether [table] was absent from a backup written at [schema].
+  ///
+  /// A table that did not exist yet is not "missing data": the restore path
+  /// fills it with nothing rather than refusing the whole archive.
+  static bool _absentFromOlderBuilds(int schema, String table) =>
+      (table == 'watch_saves' && schema < 13) ||
+      (table == 'site_profile_routes' && schema < 25) ||
+      (table == 'site_profile_health' && schema < 26);
+
   static Map<String, Object?> _legacyDefaults(int schema, String table) {
+    if (_absentFromOlderBuilds(schema, table)) return const {};
     if (table == 'watch_saves' && schema < 14) {
       return const {
         'position_ms': 0,
@@ -226,7 +240,7 @@ class BackupService {
     final raw = data['tables'] as Map;
     final missingTables = tableNames
         .where((table) => !raw.containsKey(table))
-        .where((table) => !(table == 'watch_saves' && schema < 13))
+        .where((table) => !_absentFromOlderBuilds(schema, table))
         .toList();
     if (raw.keys.any((k) => !tableNames.contains(k)) ||
         missingTables.isNotEmpty) {

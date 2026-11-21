@@ -22,6 +22,20 @@ MAIN_ACTIVITY = (ANDROID / "MainActivity.kt").read_text()
 POLICY = (ANDROID / "MediaAuthRefreshPolicy.kt").read_text()
 NATIVE_EXPORT = (ANDROID / "NativeExportRuntime.kt").read_text()
 NATIVE_LEASES = (ANDROID / "NativeMediaFileLeases.kt").read_text()
+CREDENTIAL_DATA_SOURCE = (ANDROID / "SiteCredentialDataSource.kt").read_text()
+CREDENTIAL_RECORD = (ANDROID / "SiteCredentialRecord.kt").read_text()
+AUTHORED_HTTP = (ANDROID / "AuthoredHttpRequest.kt").read_text()
+CREDENTIAL_REOPEN = (ROOT / "lib/media/credential_reopen.dart").read_text()
+CREDENTIAL_HANDOFF = (ROOT / "lib/media/site_credential_handoff.dart").read_text()
+REMOTE_FAILURE = (ROOT / "lib/media/remote_playback_failure.dart").read_text()
+REMOTE_FAILURE_POLICY = (ANDROID / "RemoteFailurePolicy.kt").read_text()
+REMOTE_FAILURE_NOTICE = (ROOT / "lib/ui/remote_failure_notice.dart").read_text()
+APP_CONTROLLER = (ROOT / "lib/ui/app_controller.dart").read_text()
+NATIVE_CACHE = (ANDROID / "NativeMediaPlaybackCache.kt").read_text()
+CACHE_POLICY = (ANDROID / "NativeMediaPlaybackCachePolicy.kt").read_text()
+CACHE_ADR = (ROOT / "docs/adr/0010-remote-playback-cache-is-separate-from-downloads.md").read_text()
+DATA_MANAGEMENT = (ROOT / "lib/ui/data_management_screen.dart").read_text()
+NATIVE_LIBRARY = (ROOT / "lib/media/native_download_runtime.dart").read_text()
 
 # REGRESSION CONTRACT: MEDIA-HLS-001
 
@@ -31,15 +45,23 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn('class MediaFileLeaseRegistry', NATIVE_LEASES)
         for token in ('acquireRead', 'acquireMutation', 'overlaps', 'taskIds', 'documents'):
             self.assertIn(token, NATIVE_LEASES)
-        local = NATIVE_MEDIA.split('private fun openLocal(', 1)[1].split('private fun start(', 1)[0]
+        local = NATIVE_MEDIA.split('private fun openLocal(', 1)[1].split('private fun openInService(', 1)[0]
         self.assertIn('openInService(', local)
         self.assertLess(local.index('openFileDescriptor'), local.index('openInService'))
         self.assertIn('Uri.fromFile(file).toString()', local)
-        self.assertIn('MediaFileLeaseRegistry.Scope.file(File(uri.path!!).parentFile!!)', NATIVE_SESSION)
-        self.assertIn('NativeMediaFileLeases.registry.acquireRead(leaseScope)', NATIVE_SESSION)
-        self.assertLess(NATIVE_SESSION.index('acquireRead(leaseScope)'), NATIVE_SESSION.index('player.setMediaItem'))
-        stop = NATIVE_MEDIA.split('private fun stopLocalPlayer()', 1)[1].split('private fun ensureTexture(', 1)[0]
-        self.assertLess(stop.index('media.release()'), stop.index('fileLease?.close()'))
+        # 租约范围由判定对象给出；服务只负责拿与放。
+        route = (ANDROID / "NativeMediaSessionRoute.kt").read_text()
+        self.assertIn('MediaFileLeaseRegistry.Scope.file(parent)', route)
+        self.assertEqual(1, NATIVE_SESSION.count('NativeMediaFileLeases.registry.acquireRead('))
+        self.assertLess(
+            NATIVE_SESSION.index('acquireRead(it)'),
+            NATIVE_SESSION.index('player.setMediaItem'),
+        )
+        # 进程内播放器与它的文件租约都不存在了；租约只由服务持有与释放。
+        self.assertNotIn('fileLease', NATIVE_MEDIA)
+        self.assertNotIn('ExoPlayer.Builder', NATIVE_MEDIA)
+        self.assertIn('fileLease?.close()', NATIVE_SESSION)
+        self.assertIn('var fileLease: Closeable? = null', NATIVE_SESSION)
 
     def test_native_media_session_service_owns_background_player_and_media3_notification(self):
         self.assertIn('class NativeMediaSessionService : MediaSessionService()', NATIVE_SESSION)
@@ -93,10 +115,356 @@ class NativeMediaContractTests(unittest.TestCase):
         ):
             self.assertIn(token, NATIVE_SESSION)
 
+    def test_remote_sessions_are_decided_by_one_route_object(self):
+        route = (ANDROID / "NativeMediaSessionRoute.kt").read_text()
+        # 判定对象必须能独立单测：不引入 Android 类，也不碰 Media3。
+        for forbidden in ("android.", "androidx.", "Context", "Uri.parse"):
+            self.assertNotIn(forbidden, route)
+        for token in (
+            "internal data class NativeMediaSessionRoute",
+            "enum class Family",
+            "LOCAL",
+            "REMOTE",
+            "holdsFileLease",
+            "isRestorable",
+            "fun leaseForOpening(",
+            "fun sourceOf(",
+            "fun shouldPreserveRestorable(",
+            "fun shouldRestore(",
+            "Scheme.HTTP",
+            "Scheme.HTTPS",
+        ):
+            self.assertIn(token, route)
+        # 服务只按判定对象的结论执行：租约、可恢复记录、冷恢复、数据源四处。
+        self.assertIn("NativeMediaSessionRoute.classify(", NATIVE_SESSION)
+        self.assertIn("val leaseScope = route.leaseForOpening(", NATIVE_SESSION)
+        self.assertIn("val nextLease = leaseScope?.let { NativeMediaFileLeases.registry.acquireRead(it) }", NATIVE_SESSION)
+        self.assertIn("if (route.isRestorable) clearRestorable()", NATIVE_SESSION)
+        self.assertIn("when (route.sourceOf(hls))", NATIVE_SESSION)
+        self.assertIn("private fun sessionAllowsRestorable(): Boolean", NATIVE_SESSION)
+        self.assertIn("restorable = sessionAllowsRestorable()", NATIVE_SESSION)
+        self.assertIn("NativeMediaSessionRoute.shouldRestore(uri)", NATIVE_SESSION)
+        self.assertIn("NativeMediaSessionRoute.shouldPreserveRestorable(raw)", NATIVE_SESSION)
+        self.assertNotIn('require(uri.scheme == "file" || uri.scheme == "content")', NATIVE_SESSION)
+
+    def test_remote_admission_is_a_site_credential_not_a_preference(self):
+        # ADR-0009: `media_access/remoteSourceAllowed` 已退休；远程来源的准入门槛
+        # 是站点凭证，公开内容没有凭证也照播。
+        for name in (
+            "PREF_REMOTE_SOURCE_ALLOWED",
+            "remoteSourceAllowed",
+            "preferenceAllowsRemoteSource",
+        ):
+            self.assertNotIn(name, NATIVE_MEDIA)
+            self.assertNotIn(name, (ANDROID / "NativeMediaSessionRoute.kt").read_text())
+            self.assertNotIn(name, NATIVE_SESSION)
+        self.assertIn("hasCredential = credentials.remoteSourceEnabled(profileId, raw)", NATIVE_MEDIA)
+        self.assertIn("hasCredential = headersFor(request).isNotEmpty()", NATIVE_SESSION)
+        self.assertIn("fun admit(", (ANDROID / "NativeMediaSessionRoute.kt").read_text())
+
+    def test_fragments_and_cdn_requests_carry_the_credential_per_request(self):
+        # T6：分片与 CDN 请求也带凭证。判定按**每一次请求的地址**重新做，不是
+        # 一次性的会话头；头合并只在 AuthoredHttpRequest 一处发生。
+        for token in (
+            "fun withCredentialHeaders(",
+            "headersFor(dataSpec.uri.toString())",
+            "AuthoredHttpRequest.merge(",
+            "dataSpec.withAdditionalHeaders(merged)",
+        ):
+            self.assertIn(token, CREDENTIAL_DATA_SOURCE)
+        # 数据来源不缓存、不记忆上一次的头。
+        for forbidden in ("remember", "cached", "lastHeaders"):
+            self.assertNotIn(forbidden, CREDENTIAL_DATA_SOURCE)
+        for token in (
+            "fun merge(",
+            "SiteCredentialRecord.HEADER_AUTHORIZATION",
+            "SiteCredentialRecord.HEADER_COOKIE",
+            "ignoreCase = true",
+        ):
+            self.assertIn(token, AUTHORED_HTTP)
+        # 只有凭证那两个头会被改写；其余的头保持页面原样。
+        self.assertNotIn("putAll(", AUTHORED_HTTP)
+        # 主清单与分片走同一个数据来源：HLS 与渐进式各自挂同一个工厂。
+        self.assertEqual(
+            2,
+            NATIVE_SESSION.count("remoteDataSources(request)"),
+        )
+        self.assertEqual(
+            1,
+            NATIVE_SESSION.count("SiteCredentialDataSource.factory { url -> headersFor(request, url) }"),
+        )
+        self.assertIn("HlsMediaSource.Factory(", NATIVE_SESSION)
+        self.assertIn("ProgressiveMediaSource.Factory(", NATIVE_SESSION)
+        # 本地文件路径不经过这个数据来源。
+        local = NATIVE_SESSION.split("SourceKind.LOCAL_GROWING_FILE ->", 1)[1].split(
+            "SourceKind.REMOTE_HTTP ->", 1
+        )[0]
+        self.assertNotIn("SiteCredentialDataSource", local)
+        self.assertIn("GrowingFileDataSource.Factory()", local)
+
+    def test_credentials_cross_into_native_through_a_one_way_channel(self):
+        channel = (ANDROID / "SiteCredentialChannel.kt").read_text()
+        activity = (ANDROID / "MainActivity.kt").read_text()
+        for token in (
+            'site_lens/credentials',
+            '"push" ->',
+            '"clear" ->',
+            '"has" ->',
+            '"epoch" ->',
+            "credentials.push(profileId, record)",
+            "store.write(profileId, record)",
+        ):
+            self.assertIn(token, activity)
+        for forbidden in ('"get"', '"read" ->', '"credential" ->', "fun dump"):
+            self.assertNotIn(forbidden, activity.split("registerSiteCredentialChannel", 1)[1].split(
+                "private fun registerNativeMediaChannel", 1
+            )[0])
+        # 原生侧没有把凭证值打回去的入口：读取面只有「有没有」。
+        self.assertNotIn("fun get(", channel)
+        self.assertNotIn("fun credential(", channel)
+        self.assertNotIn("fun value(", channel)
+        self.assertIn("fun push(", channel)
+        self.assertIn("fun clear(", channel)
+        self.assertIn("fun has(", channel)
+
+    def test_remote_requests_carry_the_token_and_the_cookie_jar(self):
+        source = (ANDROID / "SiteCredentialDataSource.kt").read_text()
+        session = NATIVE_SESSION
+        for token in (
+            "class SiteCredentialDataSource",
+            "withCredentialHeaders(",
+            "HEADER_AUTHORIZATION",
+            "HEADER_COOKIE",
+        ):
+            self.assertIn(token, source)
+        for token in (
+            "HlsMediaSource.Factory(",
+            "ProgressiveMediaSource.Factory(",
+            "SiteCredentialDataSource.factory { url -> headersFor(request, url) }",
+        ):
+            self.assertIn(token, session)
+        # 凭证只进请求：会话快照、事件与日志里都不能出现令牌或 cookie 值。
+        snapshot = session.split("private fun snapshot()", 1)[1].split("private fun persistCurrentState", 1)[0]
+        for forbidden in ("accessToken", "cookies", "Authorization", "Cookie"):
+            self.assertNotIn(forbidden, snapshot)
+
+    def test_401_and_403_are_credential_rejections_with_a_bounded_retry(self):
+        policy = (ANDROID / "SiteCredentialFailurePolicy.kt").read_text()
+        for token in (
+            "401, 403 -> Disposition(Kind.CREDENTIAL_REJECTED)",
+            "const val MAX_RETRIES = 1",
+            "fun mayRetry(attempt: Int): Boolean = attempt in 1..MAX_RETRIES",
+            "EVENT_CREDENTIAL_REJECTED",
+        ):
+            self.assertIn(token, policy)
+        # 网络失败与内容不可用各是各的结论，不并进凭证失效。
+        self.assertIn("fun networkFailure()", policy)
+        self.assertIn("else -> Disposition(Kind.CONTENT_UNAVAILABLE)", policy)
+        for token in (
+            "ERROR_CODE_IO_BAD_HTTP_STATUS",
+            "HttpDataSource.InvalidResponseCodeException",
+            "SiteCredentialFailurePolicy.EVENT_CREDENTIAL_REJECTED",
+            "awaitCredentialThenRetry(",
+            "onCredentialPushed(",
+        ):
+            self.assertIn(token, NATIVE_SESSION)
+
+    def test_a_recovered_credential_reopens_the_episode_once(self):
+        # T6：续期成功后播放器自动重开本集，用户不需要手动重试。
+        for token in (
+            "class CredentialReopenPlanner",
+            "enum ReopenStatus",
+            "ReopenStatus.needsLogin",
+            "ReopenStatus.exhausted",
+            "int reopensFor(String sessionId)",
+            "void forget(String sessionId)",
+        ):
+            self.assertIn(token, CREDENTIAL_REOPEN)
+        # 去重按会话：同一段会话只重开一次，终止性拒绝不重开。
+        self.assertIn("if (event.terminal)", CREDENTIAL_REOPEN)
+        self.assertIn("if (used > 0)", CREDENTIAL_REOPEN)
+        # 续期链把重开接进来，但「需要重新登录」的结论不受影响。
+        for token in (
+            "final void Function()? reopen;",
+            "final reopenPlanner = CredentialReopenPlanner();",
+            "void _planReopen(NativeCredentialEvent event)",
+            "reopenPlanner.plan(event: event, reopen: reopen)",
+        ):
+            self.assertIn(token, CREDENTIAL_HANDOFF)
+        # 重开失败不改写续期成功的结论。
+        self.assertIn("reopenPlanner.forget(event.sessionId)", CREDENTIAL_HANDOFF)
+        # 应用侧记住这一次远程打开用的参数，重开的是同一集。
+        for token in (
+            "Future<void> reopenAfterCredentialRefresh()",
+            "reopen: () => unawaited(reopenAfterCredentialRefresh()),",
+            "MediaCandidate candidate,\n    int hostId,\n    int generation,\n    Uri sourceUrl,\n    int? profileId,",
+        ):
+            self.assertIn(token, APP_CONTROLLER)
+
+    def test_four_remote_failures_have_their_own_attribution_and_retry_budget(self):
+        # T8：凭证失效、清单失效、分片失败、网络失败各有各的判定、文案与动作。
+        dart = REMOTE_FAILURE
+        for token in (
+            "enum RemoteFailureKind",
+            "credentialRejected,",
+            "manifestUnavailable,",
+            "segmentFailed,",
+            "network,",
+            "enum RemoteFailureAction",
+            "refreshCredentialAndReopen,",
+            "reloadManifestAndReopen,",
+            "suggestDownload,",
+            "keepNetworkMessage,",
+            "static RemotePlaybackFailure? classify(NativePlaybackSession session)",
+            "RemoteFailureKind remoteFailureKindFor(",
+        ):
+            self.assertIn(token, dart)
+        # 四类各自只重开一次的有界预算：同一段会话按「会话 + 种类」记。
+        for token in (
+            "class RemoteFailureRetryChain",
+            "static const perSession = 1",
+            "int budgetFor(RemoteFailureKind kind)",
+            "int attemptsFor(String sessionId, RemoteFailureKind kind)",
+            "void forget(String sessionId)",
+            "RemoteFailureKind.segmentFailed => 0",
+            "RemoteFailureKind.network => 0",
+        ):
+            self.assertIn(token, dart)
+        # 不静默：每一次重试都要带着一个显式动作，耗尽后只剩建议。
+        self.assertIn("final void Function()? retry;", dart)
+        self.assertIn("if (failure.exhausted || retry == null || used >= budget)", dart)
+        # 与本地播放失败归因不共用错误码：远程码有自己的命名空间。
+        self.assertIn("class RemoteFailureCode", dart)
+        self.assertIn("static const prefix = 'remoteFailure'", dart)
+        self.assertNotIn("MediaErrorCode.network =", dart)
+        self.assertNotIn("override", dart)
+        # 远程失败不落进媒体任务状态：代码里不出现任何 MediaTask 引用（只有
+        # 文件头说明为什么不用它）。
+        code = "\n".join(
+            line for line in dart.splitlines() if not line.lstrip().startswith("///")
+        )
+        self.assertNotIn("MediaTask", code)
+        # 凭证失效仍然复用既有的同会话一次重开判定，不另起一套。
+        self.assertIn("import 'credential_reopen.dart';", dart)
+        self.assertIn("CredentialReopenPlanner", dart)
+
+        # 原生侧同一套分类；凭证失效由既有的 SiteCredentialFailurePolicy 判定。
+        for token in (
+            "internal object RemoteFailurePolicy",
+            "eventFor(",
+            "attemptsFor(",
+            "fun forget(sessionId: String)",
+            "MAX_AUTO_RETRIES = 1",
+        ):
+            self.assertIn(token, REMOTE_FAILURE_POLICY)
+        session = NATIVE_SESSION
+        self.assertIn("RemoteFailurePolicy.classify(", session)
+        self.assertIn("remoteFailure.mayReopen(", session)
+        self.assertIn("remoteFailure.forget(", session)
+        # 事件里不带凭证值、地址或分片内容。
+        event = REMOTE_FAILURE_POLICY.split("fun eventFor(", 1)[1].split("fun nameOf(", 1)[0]
+        for forbidden in ("accessToken", "cookies", "Authorization", "Cookie", "uri"):
+            self.assertNotIn(forbidden, event)
+
+        # 界面层四类各有一个动作；网络失败不提供额外按钮。
+        notice = REMOTE_FAILURE_NOTICE
+        for token in (
+            "class SiteLensRemoteFailureNoticeLayer",
+            "RemoteFailureAction.suggestDownload",
+            "RemoteFailureAction.reloadManifestAndReopen",
+            "RemoteFailureAction.refreshCredentialAndReopen",
+            "case RemoteFailureAction.keepNetworkMessage:",
+        ):
+            self.assertIn(token, notice)
+        # 应用侧把四类接到同一处，并且不经过媒体任务状态。
+        for token in (
+            "RemoteFailurePlan reportRemoteFailure(",
+            "RemoteFailurePlan? observeRemoteFailure(",
+            "RemoteFailureNotice? get remoteFailureNotice",
+            "Future<MediaCandidate?> downloadEpisodeAfterSegmentFailure()",
+            "Future<void> reopenAfterManifestRefresh()",
+        ):
+            self.assertIn(token, APP_CONTROLLER)
+
+    def test_series_detail_hands_a_candidate_straight_to_remote_playback(self):
+        # T11：从详情页点选集直接进入远程播放，播放页不认识适配器、凭证或任务。
+        detail = (ROOT / "lib/ui/series_detail_screen.dart").read_text()
+        player = (ROOT / "lib/ui/remote_player_screen.dart").read_text()
+        controller = (ROOT / "lib/media/remote_playback_controller.dart").read_text()
+        source = (ROOT / "lib/media/remote_episode_source.dart").read_text()
+        # 详情页只交出候选；它自己不开会话、不建任务。
+        self.assertIn("final void Function(MediaCandidate candidate)? onRequestPlay;", detail)
+        self.assertIn("_deliverPendingPlay()", detail)
+        self.assertNotIn("openRemoteCandidate", detail)
+        self.assertNotIn("MediaTask", detail)
+        # 应用侧把打开、目录来源与播放页接起来。
+        for token in (
+            "Future<RemotePlayerLaunch> openRemoteEpisode(",
+            "await openRemoteCandidate(",
+            "class AppRemotePlaybackHost implements RemotePlaybackHost",
+        ):
+            self.assertIn(token, APP_CONTROLLER)
+        # 播放页只依赖宿主接口；换集是「先开新的、再关旧的」。
+        self.assertIn("abstract interface class RemotePlaybackHost", controller)
+        self.assertIn("Stream<NativePlaybackSession> get nativeStates;", controller)
+        open_next = controller.split("Future<void> _switchToOffset(", 1)[1].split(
+            "Future<void> _onCompleted()", 1
+        )[0]
+        self.assertLess(
+            open_next.index("await _open(candidate"),
+            open_next.index("await _closeQuietly(previous)"),
+        )
+        # 倍速跟着播放器走，不跟着会话走。
+        self.assertIn("if (_speed != 1 && next.id.isNotEmpty)", controller)
+        self.assertIn("await _host.setSpeed(_speed, next.id);", controller)
+        # 下一集只能由适配器产出；播放页不自己拼地址。
+        self.assertIn("abstract interface class RemoteEpisodeSource", source)
+        self.assertIn("await adapter.lines(seriesKey, episodeNumber, cancel);", source)
+        self.assertNotIn("http://", player)
+        self.assertNotIn("https://", player)
+        # 失败归因：播放页执行 plan 给出的动作，自己不判定种类。
+        self.assertIn("RemoteFailureAction.suggestDownload", player)
+        self.assertIn("RemoteFailureAction.keepNetworkMessage", player)
+        self.assertIn("abstract interface class RemotePlaybackHost", player + controller)
+        # 取景只缩放、不改比例：两种方向都走同一个算式。
+        self.assertIn("static Size fittedSize({", player)
+
+    def test_credential_files_never_log_a_value(self):
+        for name in (
+            "SiteCredentialRecord.kt",
+            "SiteCredentialChannel.kt",
+            "SiteCredentialDataSource.kt",
+            "SiteCredentialStore.kt",
+            "SiteCredentialFailurePolicy.kt",
+        ):
+            source = (ANDROID / name).read_text()
+            self.assertNotIn("Log.", source)
+            self.assertNotIn("println(", source)
+            self.assertNotIn("printStackTrace", source)
+
+    def test_process_local_remote_player_is_no_longer_a_path(self):
+        for token in (
+            "private fun start(",
+            "startAfterStop",
+            "referer",
+            "SystemMediaNetwork.buildOkHttpClient(",
+            "AndroidCookieReader.get(",
+        ):
+            self.assertNotIn(token, NATIVE_MEDIA)
+        # 远程地址唯一出口是媒体会话，进程内不再自建 ExoPlayer 播放它。
+        # T7 之后这一次调用额外带缓存准入，调用形态由花括号参数列表给出。
+        self.assertIn("openInService(", NATIVE_MEDIA)
+        remote_open = NATIVE_MEDIA.split("private fun open(call: MethodCall", 1)[1].split(
+            "private fun playbackCacheAdmission", 1
+        )[0]
+        self.assertIn('taskId = ""', remote_open)
+        self.assertIn("admitsPlaybackCache = admitted", remote_open)
+        self.assertNotIn("ExoPlayer.Builder", remote_open)
+
     def test_local_service_replacement_does_not_stop_the_service(self):
         self.assertIn('stopLocalPlayer()', NATIVE_MEDIA)
         replacement = NATIVE_MEDIA.split('private fun openInService(', 1)[1].split(
-            'private fun start(', 1
+            'private fun openInServiceAfterStop(', 1
         )[0]
         self.assertNotIn('NativeMediaSessionService.stop(context)', replacement)
         self.assertIn('openRequestId++', replacement)
@@ -504,9 +872,10 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn('if (offset > 0 && total == offset) return offset', TRANSFER)
 
     def test_native_playback_claims_media_audio_focus(self):
-        self.assertIn("setAudioAttributes", NATIVE_MEDIA)
-        self.assertIn("C.USAGE_MEDIA", NATIVE_MEDIA)
-        self.assertIn("setHandleAudioBecomingNoisy(true)", NATIVE_MEDIA)
+        # 进程内播放器不再是播放路径，音频焦点只由媒体会话持有。
+        self.assertIn("setAudioAttributes", NATIVE_SESSION)
+        self.assertIn("C.USAGE_MEDIA", NATIVE_SESSION)
+        self.assertIn("setHandleAudioBecomingNoisy(true)", NATIVE_SESSION)
 
     def test_hls_transformer_preflight_and_output_contract(self):
         body = NATIVE_EXPORT.split("private fun muxHls(", 1)[1].split("private fun validateSampleParity(", 1)[0]
@@ -615,6 +984,102 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertLess(cleanup.index("cancelUniqueWork"), cleanup.index("withFileLock"))
         self.assertLess(cleanup.index("withFileLock"), cleanup.index("if (cleaned &&"))
         self.assertIn("if (cleaned && mutationReservations.remove(id, reservation))", cleanup)
+
+
+# REGRESSION CONTRACT: MEDIA-CACHE-002
+
+
+class RemotePlaybackCacheContractTests(unittest.TestCase):
+    """T7：远程播放缓存与下载分账，缓存有上限、可清除，且不切本地文件。"""
+
+    def test_remote_sources_pass_through_the_cache_outside_credentials(self):
+        section = NATIVE_SESSION.split("private fun remoteDataSources(", 1)[1]
+        section = section.split("private fun headersFor", 1)[0]
+        self.assertIn("SiteCredentialDataSource.factory", section)
+        self.assertIn("NativeMediaPlaybackCache.dataSourceFactory(applicationContext, credentialed)", section)
+        # 缓存包在凭证来源外面：命中缓存的分片不再取凭证、不再发请求。
+        self.assertLess(
+            section.index("SiteCredentialDataSource.factory"),
+            section.index("NativeMediaPlaybackCache.dataSourceFactory"),
+        )
+        # 同一候选正在下载时不进缓存，只读远端。
+        self.assertIn("if (!request.admitsPlaybackCache) return credentialed", section)
+        for kind in ("SourceKind.REMOTE_HTTP ->", "SourceKind.REMOTE_HTTP_PROGRESSIVE ->"):
+            branch = NATIVE_SESSION.split(kind, 1)[1].split("NativeMediaSessionRoute.SourceKind.", 1)[0]
+            self.assertIn("remoteDataSources(request)", branch)
+        # 本地会话不经过缓存：边下边播仍由 GrowingFileDataSource 提供。
+        local = NATIVE_SESSION.split("SourceKind.LOCAL_GROWING_FILE ->", 1)[1].split(
+            "SourceKind.REMOTE_HTTP ->", 1
+        )[0]
+        self.assertIn("GrowingFileDataSource.Factory()", local)
+        self.assertNotIn("NativeMediaPlaybackCache", local)
+
+    def test_cache_uses_media3_simple_cache_with_an_explicit_limit(self):
+        self.assertIn("SimpleCache(root, NoOpCacheEvictor(), provider)", NATIVE_CACHE)
+        self.assertIn("CacheDataSource.Factory()", NATIVE_CACHE)
+        self.assertIn(".setUpstreamDataSourceFactory(upstream)", NATIVE_CACHE)
+        self.assertIn("FLAG_IGNORE_CACHE_ON_ERROR", NATIVE_CACHE)
+        self.assertIn("MAX_BYTES = 512L * 1024L * 1024L", CACHE_POLICY)
+        self.assertIn("TARGET_BYTES = 384L * 1024L * 1024L", CACHE_POLICY)
+        self.assertIn("fun evict(", CACHE_POLICY)
+        # 回收发生在播放引擎释放之后，且只删媒体3 写下的条目。
+        release = NATIVE_SESSION.split("private fun releaseMediaEngine()", 1)[1].split(
+            "private fun detachSurfaceFromPlayer", 1
+        )[0]
+        self.assertIn("NativeMediaPlaybackCache.release(applicationContext)", release)
+        self.assertLess(release.index("playerReleased = true"), release.index("NativeMediaPlaybackCache.release"))
+        clear = NATIVE_CACHE.split("fun clear(context: Context)", 1)[1].split("fun sizeBytes", 1)[0]
+        self.assertIn("cacheInstance?.release()", clear)
+        self.assertIn("purgePlan(root)", clear)
+
+    def test_cache_lives_in_its_own_directory_and_carries_the_station_identity(self):
+        self.assertIn('DIRECTORY = "media_playback_cache"', CACHE_POLICY)
+        self.assertIn("fun root(cacheDir: File): File = File(cacheDir, DIRECTORY)", CACHE_POLICY)
+        self.assertIn('"profile=$profileId|host=$host"', CACHE_POLICY)
+        self.assertIn("fun overlapsDownloadRoot(", CACHE_POLICY)
+        bound = NATIVE_SESSION.split("private fun remoteDataSources(", 1)[1].split(
+            "private fun headersFor", 1
+        )[0]
+        self.assertIn("overlapsDownloadRoot(cacheRoot, downloadRoot)", bound)
+        # 下载目录与缓存目录是两个不同的根。
+        self.assertIn("NativeMediaDownloadWorker.root(context)", DOWNLOAD_WORKER + DOWNLOAD_RUNTIME)
+        self.assertIn("Environment.DIRECTORY_DOWNLOADS", DOWNLOAD_WORKER)
+        self.assertNotIn("media_playback_cache", DOWNLOAD_WORKER)
+
+    def test_playback_cache_is_clearable_without_touching_downloads(self):
+        dispatch = DOWNLOAD_RUNTIME.split("override fun onMethodCall", 1)[1].split("private fun start", 1)[0]
+        self.assertIn('"playbackCacheStatus" ->', dispatch)
+        self.assertIn('"clearPlaybackCache" ->', dispatch)
+        clear = DOWNLOAD_RUNTIME.split("private fun clearPlaybackCache()", 1)[1].split(
+            "private fun start", 1
+        )[0]
+        self.assertIn("NativeMediaPlaybackCache.clear(context)", clear)
+        self.assertNotIn("delete(", clear)
+        self.assertNotIn("repository", clear)
+        self.assertIn("clearPlaybackCache", NATIVE_LIBRARY)
+        self.assertIn("Future<PlaybackCacheClearResult?> clearPlaybackCache()", APP_CONTROLLER)
+        self.assertIn("clearPlaybackCache", DATA_MANAGEMENT)
+
+    def test_download_ownership_decides_whether_one_fragment_is_cached(self):
+        self.assertIn("fun admitPlayback(raw: String, downloadPaths: List<String>): Boolean", CACHE_POLICY)
+        self.assertIn("fun ownedByDownload(raw: String, downloadPaths: List<String>): Boolean", CACHE_POLICY)
+        admission = (ANDROID / "NativeMediaRuntime.kt").read_text()
+        admit = admission.split("private fun playbackCacheAdmission", 1)[1].split(
+            "private fun openLocal", 1
+        )[0]
+        self.assertIn("NativeMediaPlaybackCachePolicy.admitPlayback(", admit)
+        self.assertIn("getOrDefault(true)", admit)
+        self.assertIn("admitsPlaybackCache = admitted", admission)
+        self.assertIn("val admitsPlaybackCache: Boolean = true", NATIVE_SESSION)
+        self.assertIn("admitsPlaybackCache = admitsPlaybackCache", admission)
+        # 缓存只决定取值范围，不改失败处置：远程重试仍由既有策略决定。
+        self.assertIn("sourceRetryCount", NATIVE_SESSION)
+        self.assertIn("CREDENTIAL_RESUME_DELAY_MS", NATIVE_SESSION)
+
+    def test_cache_layer_is_documented_as_separate_from_downloads(self):
+        self.assertIn("cacheDir/media_playback_cache", CACHE_ADR)
+        self.assertIn("Download/site-lens", CACHE_ADR)
+        self.assertIn("NoOpCacheEvictor", CACHE_ADR)
 
 
 if __name__ == "__main__":

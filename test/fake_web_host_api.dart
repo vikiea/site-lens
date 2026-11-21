@@ -18,6 +18,10 @@ class FakeWebHostApi extends WebHostApi {
   final String playbackSnapshotUrl;
   final bool playbackReady;
   final created = <int>[];
+
+  /// Purpose each host was created with, so a test can tell a login container
+  /// from a browsing tab or a probe.
+  final createdPurposes = <int, HostPurpose>{};
   final destroyed = <int>[];
   final navigated = <int, List<String>>{};
   final reloaded = <int>[];
@@ -47,6 +51,7 @@ class FakeWebHostApi extends WebHostApi {
     HostPreferences preferences,
   ) async {
     created.add(hostId);
+    createdPurposes[hostId] = purpose;
     createdWith[hostId] = preferences;
     return HostCapabilities(
       platform: 'Android WebView test',

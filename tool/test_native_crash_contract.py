@@ -239,10 +239,15 @@ class NativeCrashContractTests(unittest.TestCase):
         self.assertIn("Looper.myLooper() == Looper.getMainLooper()", cookie_reader)
         self.assertIn("main.post", cookie_reader)
         self.assertIn("CountDownLatch", cookie_reader)
-        for name in ("MediaNetworkRuntime.kt", "NativeMediaDownloadWorker.kt", "NativeMediaRuntime.kt"):
+        # 进程内播放器已删除，网络侧只剩这两个直接读 cookie 的调用方。
+        for name in ("MediaNetworkRuntime.kt", "NativeMediaDownloadWorker.kt"):
             body = (SOURCE / name).read_text()
             self.assertNotIn("CookieManager.getInstance().getCookie", body)
             self.assertIn("AndroidCookieReader.get", body)
+        # 媒体会话不再读 cookie：凭证由后续票注入（ADR-0007 / ADR-0008）。
+        session = (SOURCE / "NativeMediaSessionService.kt").read_text()
+        self.assertNotIn("CookieManager", session)
+        self.assertNotIn("AndroidCookieReader", session)
 
     def test_renderer_compatibility_is_explicit_and_not_device_inferred(self):
         policy = (SOURCE / "FlutterRendererPolicy.kt").read_text()

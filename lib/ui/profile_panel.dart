@@ -2,11 +2,14 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../domain/models.dart';
+import '../domain/route_health.dart';
+import '../domain/site_adapter.dart';
 import '../diagnostics/startup_trace.dart';
 import 'app_controller.dart';
 import 'app_theme.dart';
 import 'glass_surface.dart';
 import 'help_notice.dart';
+import 'route_health_panel.dart';
 import 'ui_util.dart';
 import 'ui_primitives.dart';
 
@@ -339,21 +342,11 @@ bool healthIsStale(ProfileHealth health, {DateTime? now}) {
 }
 
 String healthSummary(ProfileHealth health) {
-  final failure = switch (health.lastFailureCategory) {
-    'dns' => 'DNS 解析失败',
-    'proxy_connect' || 'proxy_connect_status' => '代理连接失败',
-    'tls_handshake' => 'TLS 握手失败',
-    'tls_protocol' => 'TLS 协议或加密套件被拒',
-    'tls_reset' => 'TLS 握手期间连接被重置',
-    'certificate' || 'hostname' => '证书验证失败',
-    'timeout' => '探测超时',
-    'http_401' || 'http_403' => '站点要求授权',
-    'http_5xx' => '站点服务异常',
-    null => null,
-    _ => '网络请求失败',
-  };
+  final failure = routeFailureCategoryLabel(health.lastFailureCategory);
+  final route = SiteRoute.fromStorage(health.lastFailureRoute ?? '');
   return '后台存活检查：${healthLabel(health.state)} · ${clock(health.lastCheckedAt)}'
       '${healthIsStale(health) ? ' · 结果已过期' : ''}'
+      '${route == null ? '' : ' · ${routeLabel(route)}'}'
       '${failure == null ? '' : ' · $failure'}';
 }
 
@@ -383,7 +376,7 @@ Widget healthBadge(BuildContext context, ProfileHealth health) {
 
 /// Detail view for one profile: this round's ranking, candidates, history and
 /// a collapsed advanced area for publishing pages / selectors.
-class ProfileDetailScreen extends StatelessWidget {
+class ProfileDetailScreen extends StatefulWidget {
   const ProfileDetailScreen({
     super.key,
     required this.app,
@@ -401,6 +394,58 @@ class ProfileDetailScreen extends StatelessWidget {
 
   /// Returns to an already-open browsing session, if any.
   final VoidCallback onResume;
+
+  @override
+  State<ProfileDetailScreen> createState() => _ProfileDetailScreenState();
+}
+
+class _ProfileDetailScreenState extends State<ProfileDetailScreen> {
+  AppController get app => widget.app;
+  SiteProfile get profile => widget.profile;
+  void Function(Candidate) get onEnter => widget.onEnter;
+  Future<void> Function(SiteProfile) get onEnterProfile =>
+      widget.onEnterProfile;
+  VoidCallback get onResume => widget.onResume;
+
+  /// The stations the adapter last reported for this profile's 直连出口.
+  ///
+  /// Loaded once per adapter identity and dropped on dispose, so leaving the
+  /// screen never leaves a request behind. Empty when the profile has no
+  /// 直连出口 — the panel then says so instead of guessing.
+  List<BaseStation> _stations = const [];
+  SiteAdapter? _stationsAdapter;
+  CancellationSignal? _stationsCancel;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStations();
+  }
+
+  @override
+  void dispose() {
+    _stationsCancel?.cancel();
+    _stationsCancel = null;
+    super.dispose();
+  }
+
+  /// Asks the adapter for its base stations. A failure is not surfaced here:
+  /// the 出口 record already says the route is unusable, and inventing a
+  /// second error for the same fact would read as two problems.
+  Future<void> _loadStations() async {
+    final adapter = app.theaterAdapterFor(profile.id);
+    if (adapter == null || identical(adapter, _stationsAdapter)) return;
+    _stationsAdapter = adapter;
+    final cancel = _stationsCancel = CancellationSignal();
+    try {
+      final stations = await adapter.liveStations(cancel);
+      if (!mounted || cancel.isCancelled) return;
+      setState(() => _stations = stations);
+    } catch (_) {
+      if (!mounted || cancel.isCancelled) return;
+      setState(() => _stations = const []);
+    }
+  }
 
   Future<void> _confirmDelete(
     BuildContext context,
@@ -623,6 +668,13 @@ class ProfileDetailScreen extends StatelessWidget {
                     ),
                   ),
                 ],
+              ),
+            ),
+            const SizedBox(height: SiteLensMetrics.itemGap),
+            RouteHealthPanel(
+              view: RouteDetailView(
+                record: app.routeHealthFor(live.id),
+                liveStations: _stations,
               ),
             ),
             const SizedBox(height: SiteLensMetrics.itemGap),
@@ -999,6 +1051,27 @@ class _AdvancedArea extends StatelessWidget {
             ),
           ),
           const Divider(),
+          SwitchListTile(
+            key: const ValueKey('profile-direct-route'),
+            contentPadding: EdgeInsets.zero,
+            title: const Text('直连出口'),
+            subtitle: Text(
+              _directRouteSubtitle,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            value: _offersDirect,
+            onChanged: (value) => safely(context, () async {
+              final routes = <SiteRoute>{
+                for (final route in profile.routes)
+                  if (route != SiteRoute.direct) route,
+                if (value) SiteRoute.direct,
+              };
+              if (routes.isEmpty) routes.add(SiteRoute.browse);
+              await app.db.setProfileRoutes(profile.id, routes);
+              await app.load();
+            }),
+          ),
+          const Divider(),
           Wrap(
             spacing: 8,
             runSpacing: 8,
@@ -1029,6 +1102,17 @@ class _AdvancedArea extends StatelessWidget {
       ),
     ),
   );
+
+  /// 直连出口 = 「应用按站点自己的接口取内容」。它不是一个开关式的降级策略：
+  /// 打开之后剧场才会把这份档案当成一个站点，关掉之后它只保留浏览出口。
+  bool get _offersDirect => profile.routes.contains(SiteRoute.direct);
+
+  String get _directRouteSubtitle {
+    if (!_offersDirect) return '关：只在网页里浏览，剧场不列出这个站点';
+    final adapter = app.theaterAdapterFor(profile.id);
+    if (adapter == null) return '开：正在按这份档案的地址认站点接口';
+    return '开：剧场用它自己的接口取目录（${adapter.id}）';
+  }
 
   Future<void> _editReadySelector(BuildContext context) async {
     final value = await promptText(

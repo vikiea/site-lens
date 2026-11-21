@@ -14,6 +14,7 @@ import 'package:re_highlight/styles/atom-one-light.dart';
 
 import '../cache/transient_cache_service.dart';
 import '../domain/models.dart';
+import '../domain/site_adapter.dart';
 import '../network/transport.dart';
 import '../network/secure_dns_resolver.dart';
 import '../media/media_service.dart';
@@ -47,11 +48,15 @@ import 'device_diagnostics_screen.dart';
 import 'double_back_exit.dart';
 import 'filter_diagnostics_panel.dart';
 import 'ui_util.dart';
+import 'series_detail_screen.dart';
+import 'remote_player_screen.dart';
+import 'site_browse_panel.dart';
+import 'theater_screen.dart';
 import 'ui_primitives.dart';
 
 part 'settings_pages.dart';
 
-enum AppDestination { sites, browser, media, settings }
+enum AppDestination { theater, browse, media, settings }
 
 class SiteLensBottomNavigationItem {
   const SiteLensBottomNavigationItem({
@@ -212,13 +217,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       listenable: app,
       builder: (context, _) {
         final destinations = <AppDestination>[
-          AppDestination.sites,
-          AppDestination.browser,
+          AppDestination.theater,
+          AppDestination.browse,
           AppDestination.media,
           AppDestination.settings,
         ];
-        final destination =
-            destinations[page.clamp(0, destinations.length - 1)];
+        // Read and write through the same field: the theater is index 0, so a
+        // stale page number must land on 剧场 rather than on a tab whose
+        // meaning changed under it.
+        final selected = page.clamp(0, destinations.length - 1);
+        if (page != selected) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && page != selected) setState(() => page = selected);
+          });
+        }
+        final destination = destinations[selected];
         return PopScope(
           canPop: false,
           onPopInvokedWithResult: (didPop, _) {
@@ -241,11 +254,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       destination == AppDestination.settings
                   ? null
                   : AppBar(
-                      title: destination == AppDestination.sites
-                          ? const Text('Site Lens')
-                          : null,
+                      // The theater names its own station; the sites list is a
+                      // second-level surface now, so the bar carries actions
+                      // only.
                       actions: siteLensTopBarActions(switch (destination) {
-                        AppDestination.sites => [
+                        AppDestination.theater => [
+                          IconButton(
+                            tooltip: '站点档案',
+                            icon: const Icon(Icons.travel_explore_outlined),
+                            onPressed: () => setState(
+                              () => page = AppDestination.browse.index,
+                            ),
+                          ),
+                        ],
+                        AppDestination.browse => [
                           IconButton(
                             tooltip: '添加站点',
                             icon: const Icon(Icons.add_link),
@@ -276,8 +298,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                                   })
                                 : null,
                           ),
-                        ],
-                        AppDestination.browser => [
                           IconButton(
                             tooltip: '新建标签页',
                             icon: const Icon(Icons.add),
@@ -299,9 +319,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                             ],
                             onSelected: (_) => safely(context, () async {
                               await app.closeAllTabs();
-                              if (!mounted || page != 1) return;
+                              if (!mounted ||
+                                  page != AppDestination.browse.index) {
+                                return;
+                              }
                               if (app.browserTabs.isEmpty) {
-                                setState(() => page = 0);
+                                setState(
+                                  () => page = AppDestination.theater.index,
+                                );
                               }
                             }),
                           ),
@@ -314,15 +339,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 child: KeyedSubtree(
                   key: ValueKey(destination),
                   child: switch (destination) {
-                    AppDestination.sites => ProfilesPanel(
+                    AppDestination.theater => TheaterScreen(
+                      stations: directTheaterStations(
+                        profiles: app.profiles,
+                        resolveAdapter: app.theaterAdapterFor,
+                      ),
+                      onOpenSeries: (station, series) =>
+                          _openSeries(app, station, series),
+                      onAddSite: () =>
+                          setState(() => page = AppDestination.browse.index),
+                    ),
+                    AppDestination.browse => SiteBrowsePanel(
                       app: app,
                       onOpen: (profile) => _openProfile(app, profile),
                       onEnterProfile: (profile) => _enterProfile(app, profile),
                       onResume: () => _resume(app),
-                    ),
-                    AppDestination.browser => BrowserTabsPage(
-                      app: app,
-                      onResume: (tab) => _resumeTab(app, tab),
+                      onResumeTab: (tab) => _resumeTab(app, tab),
                       onNewTab: () =>
                           safely(context, () => promptNewTab(context, app)),
                     ),
@@ -355,24 +387,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       },
                       items: [
                         const SiteLensBottomNavigationItem(
-                          icon: Icons.travel_explore_outlined,
-                          selectedIcon: Icons.travel_explore,
-                          label: '站点',
+                          icon: Icons.theaters_outlined,
+                          selectedIcon: Icons.theaters,
+                          label: '剧场',
                         ),
                         SiteLensBottomNavigationItem(
                           icon: app.browserTabs.isEmpty
-                              ? Icons.tab_unselected
+                              ? Icons.travel_explore_outlined
                               : Icons.tab_outlined,
-                          selectedIcon: Icons.tab,
-                          label: '浏览',
+                          selectedIcon: app.browserTabs.isEmpty
+                              ? Icons.travel_explore
+                              : Icons.tab,
+                          label: '站外浏览',
                           semanticLabel: app.browserTabs.isEmpty
-                              ? '浏览'
-                              : '浏览，${app.browserTabs.length} 个标签',
+                              ? '站外浏览'
+                              : '站外浏览，${app.browserTabs.length} 个标签',
                         ),
                         const SiteLensBottomNavigationItem(
                           icon: Icons.video_library_outlined,
                           selectedIcon: Icons.video_library,
-                          label: '媒体',
+                          label: '媒体库',
                         ),
                         const SiteLensBottomNavigationItem(
                           icon: Icons.tune_outlined,
@@ -419,6 +453,70 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         builder: (_) => BrowserScreen(app: app, site: session.site),
       ),
     );
+  }
+
+  /// 剧场 → 剧集: the row hands over its station and series, and the detail
+  /// page reads the catalog, episodes and lines from that station's adapter.
+  void _openSeries(
+    AppController app,
+    TheaterStation station,
+    SeriesSummary series,
+  ) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SeriesDetailScreen(
+          adapter: station.adapter,
+          profile: station.profile,
+          series: series,
+          lineMemory: app.seriesLineMemory,
+          app: app,
+          // 点一集就播：详情页只交出候选，应用侧负责凭证、原生会话与失败
+          // 归因，播放页负责画面与跳集（T11）。
+          onRequestPlay: (candidate) =>
+              unawaited(_playRemote(app, station, candidate)),
+        ),
+      ),
+    );
+  }
+
+  /// 从详情页进入远程播放。
+  ///
+  /// 打开失败在这里就地说明：此时还没有播放页，也没有可归因的原生会话。
+  /// 打开成功之后，播放页自己持有会话，失败由远程归因链处置。
+  Future<void> _playRemote(
+    AppController app,
+    TheaterStation station,
+    MediaCandidate candidate,
+  ) async {
+    if (!mounted) return;
+    final episodeNumber = candidate.episodeNumber == null
+        ? null
+        : '第 ${candidate.episodeNumber} 集';
+    await safely(context, () async {
+      final launch = await app.openRemoteEpisode(
+        candidate,
+        adapter: station.adapter,
+        seriesKey: candidate.seriesKey ?? '',
+        episodeTitle: episodeNumber,
+      );
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => RemotePlayerScreen(
+            host: AppRemotePlaybackHost(app),
+            candidate: launch.candidate,
+            title: launch.title,
+            episodeNumber: launch.episodeNumber,
+            source: launch.source,
+            lineId: launch.lineId,
+            qualityLabel: launch.candidate.qualityLabel,
+            audioLabel: launch.candidate.audioLabel,
+            continueWatchingMs: launch.continueWatchingMs,
+            profileId: launch.profileId,
+          ),
+        ),
+      );
+    });
   }
 
   void _openProfile(AppController app, SiteProfile profile) {

@@ -34,7 +34,7 @@ class _ReconTestApp extends AppController {
 }
 
 void main() {
-  testWidgets('home exposes import and detection actions in the app bar', (
+  testWidgets('the browse tab exposes import and detection actions', (
     tester,
   ) async {
     final db = AppDatabase(NativeDatabase.memory());
@@ -51,23 +51,38 @@ void main() {
     );
     await tester.pump();
 
+    // 剧场 is the first screen; the site list (and its actions) moved one tab
+    // over, so the import and detection actions are not on the home screen.
+    expect(find.byTooltip('导入档案包'), findsNothing);
+    expect(find.byTooltip('全部检测'), findsNothing);
+
+    await tester.tap(find.text('站外浏览'));
+    await tester.pump();
     expect(find.byTooltip('导入档案包'), findsOneWidget);
     expect(find.byTooltip('全部检测'), findsOneWidget);
     expect(find.byTooltip('站点操作'), findsNothing);
 
-    await tester.tap(find.text('浏览'));
+    await tester.tap(find.text('站外浏览'));
     await tester.pump();
     expect(find.byType(AppBar), findsOneWidget);
-    expect(find.byTooltip('新建标签页'), findsOneWidget);
-    await tester.tap(find.text('媒体'));
+    // Both the session panel and the app bar offer a new-tab action, so the
+    // app bar's own copy is what this asserts on.
+    expect(
+      find.descendant(
+        of: find.byType(AppBar),
+        matching: find.byTooltip('新建标签页'),
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('媒体库'));
     await tester.pump();
     expect(tester.widget<Scaffold>(find.byType(Scaffold).first).appBar, isNull);
     await tester.tap(find.text('设置'));
     await tester.pump();
     expect(find.byType(AppBar), findsNothing);
-    await tester.tap(find.text('站点'));
+    await tester.tap(find.text('剧场'));
     await tester.pump();
-    expect(find.text('Site Lens'), findsOneWidget);
+    expect(find.text('还没有可直连的站点'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
     await tester.runAsync(() async {
@@ -104,7 +119,7 @@ void main() {
       ),
     );
     await tester.pump();
-    await tester.tap(find.text('浏览'));
+    await tester.tap(find.text('站外浏览'));
     await tester.pumpAndSettle();
     final context = tester.element(find.byType(HomeScreen));
     final route = ModalRoute.of(context)!;
@@ -128,7 +143,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(route.willHandlePopInternally, isFalse);
     expect(app.browserTabs, isEmpty);
-    expect(find.text('Site Lens'), findsOneWidget);
+    // Closing the last tab returns to 剧场, the first screen.
+    expect(find.text('全部关闭'), findsNothing);
     await tester.pumpWidget(const SizedBox());
     await tester.runAsync(() async {
       await app.shutdown();

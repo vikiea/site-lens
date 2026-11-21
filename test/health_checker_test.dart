@@ -105,7 +105,8 @@ void main() {
       final failed = await db.profileHealth(profileId);
       expect(failed.state, ProfileHealthState.failing);
       expect(failed.lastFailureCategory, 'tls_handshake');
-      expect(failed.lastFailureRoute, isNull);
+      // The verdict names the 出口 it belongs to (ADR-0006).
+      expect(failed.lastFailureRoute, SiteRoute.browse.storageName);
       expect(failed.lastCheckedAt, at);
       probe.ok = true;
       await check();
@@ -116,6 +117,36 @@ void main() {
       expect(recovered.lastOkAt, at);
     },
   );
+
+  test('浏览器出口失败但直连出口可用时，档案徽章不被压成故障', () async {
+    // ADR-0006: the badge is the aggregate, so a broken mirror must not
+    // declare a working interface down.
+    await db.customStatement(
+      "INSERT OR REPLACE INTO site_profile_health(profile_id,route,state,"
+      "last_checked_at) VALUES(?, 'direct', 'ok', '2026-11-21T12:00:00.000')",
+      [profileId],
+    );
+    await db.customStatement(
+      "INSERT OR REPLACE INTO site_profile_routes(profile_id,route) "
+      "VALUES(?, 'direct')",
+      [profileId],
+    );
+    final notes = <String>[];
+    await run(reachable: false, charging: true, wifi: true, notes: notes);
+    await run(reachable: false, charging: true, wifi: true, notes: notes);
+
+    final health = await db.profileHealth(profileId);
+    expect(health.state, ProfileHealthState.ok);
+    expect(health.lastFailureRoute, SiteRoute.browse.storageName);
+    expect(notes, isEmpty);
+
+    // The browse route's own record still says it is down.
+    final rows = {
+      for (final row in await db.routeHealthRows()) row.route: row.health,
+    };
+    expect(rows[SiteRoute.browse]!.state, ProfileHealthState.failing);
+    expect(rows[SiteRoute.direct]!.state, ProfileHealthState.ok);
+  });
 
   test('skips when not charging', () async {
     final notes = <String>[];
@@ -172,6 +203,7 @@ void main() {
     expect(r.failing, 1);
     expect(notes, hasLength(1));
     expect(notes.single, contains('站'));
+    expect(notes.single, contains('浏览出口'));
     expect(
       (await db.profileHealth(profileId)).state,
       ProfileHealthState.failing,
