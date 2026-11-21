@@ -292,6 +292,9 @@ void main() {
 
     await tester.tap(find.byTooltip('返回'));
     await tester.pumpAndSettle();
+    // 关会话是异步的（页面销毁时不能 await），让它跑完再断言。
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pumpAndSettle();
 
     expect(host.closed, ['native_1']);
     // 页面已经销毁：之后原生再推快照不会引起任何异常。

@@ -98,8 +98,9 @@ class _RemotePlayerScreenState extends State<RemotePlayerScreen> {
   void dispose() {
     _hideTimer?.cancel();
     _hintTimer?.cancel();
+    // stopAndDispose 会关掉原生会话并释放订阅；再调一次 dispose 会把它的
+    // 收尾切成两半（关会话的 future 还没跑完就先被销毁）。
     unawaited(_controller.stopAndDispose());
-    _controller.dispose();
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     // 旋转锁定交还给系统：离开播放页之后，读文章不该还锁在横屏。
     unawaited(SystemChrome.setPreferredOrientations(const []));

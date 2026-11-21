@@ -128,7 +128,9 @@ class RemotePlaybackFailure {
     if (kind == null) return null;
     return RemotePlaybackFailure(
       kind: kind,
-      sessionId: session.id,
+      // 预算按「这一集这一轮」记，不按会话 id：重开之后是新会话，若用 id
+      // 作键，每次重开都会拿到一份新预算，重试就没有上限了。
+      sessionId: session.candidateId.isEmpty ? session.id : session.candidateId,
       profileId: fields.profileId,
       httpStatus: fields.status,
       attempt: fields.attempt ?? 1,

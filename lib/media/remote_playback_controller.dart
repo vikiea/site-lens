@@ -392,36 +392,37 @@ class RemotePlaybackController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 页面离开：先关会话，再放掉所有订阅。
+  /// 页面离开：关会话、取消订阅、释放 notifier。
   ///
-  /// 页面可能已经被 Flutter 先 dispose 掉（`super.dispose()` 之后就不允许再
-  /// 通知监听者），所以这里先把会话交出去关掉，再决定要不要通知收尾。
+  /// 顺序是刻意的：先让监听者看到「已停止」，再释放 notifier，最后去关原生
+  /// 会话。关会话是异步的，若放在 [super.dispose] 之前，就会在页面已经拆掉
+  /// 之后才回头碰控制器。会话一旦交出去就一定会被关，与页面是否还活着无关。
   Future<void> stopAndDispose() async {
-    final wasDisposed = _disposed;
-    _disposed = true;
-    final current = _session;
-    _session = null;
-    if (!wasDisposed) {
-      await _states.cancel();
-      _position.dispose();
-    }
-    await _closeQuietly(current);
-    if (!wasDisposed) notifyListeners();
-  }
-
-  @override
-  void dispose() {
     if (_disposed) {
-      super.dispose();
+      await _closeQuietly(_session);
+      _session = null;
       return;
     }
     _disposed = true;
     final current = _session;
     _session = null;
+    await _states.cancel();
+    _position.dispose();
+    notifyListeners();
+    super.dispose();
+    await _closeQuietly(current);
+  }
+
+  @override
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    final current = _session;
+    _session = null;
     unawaited(_states.cancel());
     _position.dispose();
-    unawaited(_closeQuietly(current));
     super.dispose();
+    unawaited(_closeQuietly(current));
   }
 }
 

@@ -414,6 +414,13 @@ class SeriesBatchDownloadStore extends ChangeNotifier {
     final targets = <String>{
       for (final position in positions) ?_job?.itemAt(position)?.taskId,
       for (final position in positions) ?_rows[position]?.taskId,
+      // 行与 job 都还没来得及回填 taskId 时（例如启动批次还没回来），
+      // 按「批次目录 + 集号」直接找那一集自己的任务，邻居不受影响。
+      for (final task in app.mediaTasks.tasks)
+        if (_job != null &&
+            task.batchDirectory == _job!.batchDirectory &&
+            task.episodeNumber == episodeNumber)
+          task.id,
     };
     var removed = 0;
     for (final id in targets) {
