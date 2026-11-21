@@ -113,6 +113,13 @@ void main() {
     return store;
   }
 
+  /// 线路名在线路行里出现两次（行标题与选择器触发器都会渲染它），断言要看
+  /// 「线路区里写着哪条线路」，而不是页面上这个词出现了几次。
+  Finder lineText(String label) => find.descendant(
+    of: find.byIcon(Icons.alt_route),
+    matching: find.text(label),
+  );
+
   testWidgets('详情页显示剧名、简介、总集数与已更新的集数', (tester) async {
     final owner = profile(1, '甲站');
     await pumpDetail(tester, adapter: adapterWith(), owner: owner);
@@ -170,27 +177,27 @@ void main() {
     );
 
     await pumpDetail(tester, adapter: adapter, owner: owner);
-    expect(find.text('甲线路'), findsOneWidget);
+    expect(lineText('甲线路'), findsWidgets);
 
     await tester.tap(find.text('第2集'));
     await tester.pumpAndSettle();
 
-    expect(find.text('丙线路'), findsOneWidget);
-    expect(find.text('甲线路'), findsNothing);
+    expect(lineText('丙线路'), findsWidgets);
+    expect(lineText('甲线路'), findsNothing);
   });
 
   testWidgets('切换线路后立即生效，并出现在线路区', (tester) async {
     final owner = profile(1, '甲站');
     await pumpDetail(tester, adapter: adapterWith(), owner: owner);
 
-    expect(find.text('甲线路'), findsOneWidget);
+    expect(lineText('甲线路'), findsWidgets);
     await tester.tap(find.byTooltip('切换线路'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('乙线路').last);
     await tester.pumpAndSettle();
 
-    expect(find.text('乙线路'), findsOneWidget);
-    expect(find.text('甲线路'), findsNothing);
+    expect(lineText('乙线路'), findsWidgets);
+    expect(lineText('甲线路'), findsNothing);
   });
 
   testWidgets('一条线路下的清晰度与音轨作为候选呈现', (tester) async {
@@ -210,7 +217,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('乙线路').last);
     await tester.pumpAndSettle();
-    expect(find.text('乙线路'), findsOneWidget);
+    expect(lineText('乙线路'), findsWidgets);
 
     // 候选是线路产出的清晰度/音轨；换候选不影响「我选的是哪条线路」。
     await tester.tap(find.byTooltip('切换清晰度'));
@@ -218,8 +225,8 @@ void main() {
     await tester.tap(find.text('粤语音轨').last);
     await tester.pumpAndSettle();
 
-    expect(find.text('乙线路'), findsOneWidget);
-    expect(find.text('甲线路'), findsNothing);
+    expect(lineText('乙线路'), findsWidgets);
+    expect(lineText('甲线路'), findsNothing);
     expect(find.textContaining('粤语音轨'), findsWidgets);
   });
 
@@ -232,14 +239,14 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('乙线路').last);
     await tester.pumpAndSettle();
-    expect(find.text('乙线路'), findsOneWidget);
+    expect(lineText('乙线路'), findsWidgets);
 
     // 退出再进来（新的详情页实例，同一份记忆）。
     await tester.pumpWidget(const MaterialApp(home: SizedBox()));
     await pumpDetail(tester, adapter: adapter, owner: owner, memory: memory);
 
-    expect(find.text('乙线路'), findsOneWidget);
-    expect(find.text('甲线路'), findsNothing);
+    expect(lineText('乙线路'), findsWidgets);
+    expect(lineText('甲线路'), findsNothing);
   });
 
   testWidgets('换集不继承上一集的线路选择：新集回到目录给出的第一条', (tester) async {
@@ -250,12 +257,12 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('乙线路').last);
     await tester.pumpAndSettle();
-    expect(find.text('乙线路'), findsOneWidget);
+    expect(lineText('乙线路'), findsWidgets);
 
     await tester.tap(find.text('第2集'));
     await tester.pumpAndSettle();
-    expect(find.text('甲线路'), findsOneWidget);
-    expect(find.text('乙线路'), findsNothing);
+    expect(lineText('甲线路'), findsWidgets);
+    expect(lineText('乙线路'), findsNothing);
   });
 
   testWidgets('线路本身不可用时说清是这条线路的问题，而不是笼统的播放失败', (tester) async {
@@ -321,7 +328,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(SeriesDetailScreen), findsOneWidget);
-    expect(find.text('甲线路'), findsOneWidget);
+    expect(lineText('甲线路'), findsWidgets);
   });
 
   testWidgets('线路不可用时，线路区给出重试而不是空区域', (tester) async {
