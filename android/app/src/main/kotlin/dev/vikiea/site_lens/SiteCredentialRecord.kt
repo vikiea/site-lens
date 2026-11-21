@@ -204,29 +204,53 @@ data class SiteCredentialRecord(
      * 这里是**消费端副本**：应用侧每次推送都整份替换，原生从不修改、也从不回写。
      * 读到不认识或过期的记录时原生不自行修补——它不刷新凭证（凭证刷新属于应用
      * 侧），只把这件事报给应用，由应用决定重推、续期还是要求重新登录。
+     *
+     * 播放入口读凭证的唯一接口：只读，没有写入面。
+     *
+     * 远程会话每次请求都按这条地址问一次，所以凡是「按档案 + 地址取凭证」的
+     * 东西都可以摆在这里——生产实现是 [Shelf]，测试可以直接给出一条记录，不必
+     * 经过 `org.json` 解析。
      */
-    class Shelf {
+    interface ShelfLookup {
+        val isEmpty: Boolean
+        val size: Int
+
+        /** 这条地址该带的那一份；不存在或不是它的站点都返回 null。 */
+        fun get(profileId: Int, raw: String): SiteCredentialRecord?
+
+        /** 这个档案此刻持有的那一份；不按地址过滤。 */
+        fun held(profileId: Int): SiteCredentialRecord?
+    }
+
+    /** 消费端副本的完整面：读（[ShelfLookup]）加写入。写入只由推送使用。 */
+    interface ShelfContainer : ShelfLookup {
+        fun store(credential: SiteCredentialRecord)
+
+        fun clear(profileId: Int)
+    }
+
+    class Shelf : ShelfContainer {
         private val held = LinkedHashMap<Int, SiteCredentialRecord>()
 
         @get:Synchronized
-        val isEmpty: Boolean get() = held.isEmpty()
+        override val isEmpty: Boolean get() = held.isEmpty()
 
         @get:Synchronized
-        val size: Int get() = held.size
+        override val size: Int get() = held.size
 
         @Synchronized
-        fun store(credential: SiteCredentialRecord) {
+        override fun store(credential: SiteCredentialRecord) {
             // 整份替换：新记录里没有的字段（比如刷新令牌）不会从旧记录残留下来。
             held[credential.profileId] = credential
         }
 
         @Synchronized
-        fun clear(profileId: Int) {
+        override fun clear(profileId: Int) {
             held.remove(profileId)
         }
 
         @Synchronized
-        fun get(profileId: Int, raw: String): SiteCredentialRecord? =
+        override fun get(profileId: Int, raw: String): SiteCredentialRecord? =
             held[profileId]?.takeIf { it.appliesAt(raw) }
 
         @get:Synchronized
@@ -234,7 +258,7 @@ data class SiteCredentialRecord(
 
         /** 这个档案此刻持有的那一份；不按地址过滤。 */
         @Synchronized
-        fun held(profileId: Int): SiteCredentialRecord? = held[profileId]
+        override fun held(profileId: Int): SiteCredentialRecord? = held[profileId]
 
         override fun toString(): String = "SiteCredentialRecord.Shelf(profiles=${held.size})"
     }

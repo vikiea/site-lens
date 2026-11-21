@@ -9,7 +9,7 @@ package dev.vikiea.site_lens
  * 回写这份副本：应用侧推什么，它就拿着什么。
  */
 class SiteCredentialChannel(
-    private val shelf: SiteCredentialRecord.Shelf,
+    private val shelf: SiteCredentialRecord.ShelfContainer,
     private val clock: () -> Long,
     private val loader: ((Loader) -> Unit)? = null,
 ) {

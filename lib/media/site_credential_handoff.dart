@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'credential_reopen.dart';
 import '../domain/site_adapter.dart';
 import '../domain/models.dart';
 import '../media/native_credential_push.dart';
@@ -83,6 +84,7 @@ class SiteCredentialHandoff {
     required this.pusher,
     required this.credentialSink,
     this.media,
+    this.reopen,
     this.settleWindow = const Duration(milliseconds: 40),
   });
 
@@ -90,6 +92,17 @@ class SiteCredentialHandoff {
   final NativeCredentialPush pusher;
   final SiteCredentialSink credentialSink;
   final NativeMediaRuntime? media;
+
+  /// 把当前这一集重新打开一次（T6）。原生收到新凭证后自己会重试一次；这里再
+  /// 主动重开一次，是为了让「换凭证」这件事在最坏情况下只表现为一次短暂停顿。
+  ///
+  /// 为 null 时不重开：调用方还没准备好重开的动作，此时续期成功也只是让原生
+  /// 自己重试一次。
+  final void Function()? reopen;
+
+  /// 一段会话只重开一次的去重与预算。
+  final reopenPlanner = CredentialReopenPlanner();
+
   final Duration settleWindow;
   final _recoveries = StreamController<CredentialRecovery>.broadcast();
   final _inFlight = <String>{};
@@ -116,7 +129,11 @@ class SiteCredentialHandoff {
   Future<CredentialRecovery> handle(NativeCredentialEvent event) async {
     // 终止性拒绝（原生已经重试过、仍然被拒）不再续期：上一份凭证就是最终
     // 结论，直接落到「需要重新登录」。续期只会把一个已经确定的结局再拖一轮。
-    if (event.terminal) return _needsLogin();
+    if (event.terminal) {
+      // 这一段会话到此为止：它的重开预算可以回收了。
+      reopenPlanner.forget(event.sessionId);
+      return _needsLogin();
+    }
     // 同一段会话只续期一次：原生只重试一次，应用也只为它续期一次。
     if (!_inFlight.add(event.sessionId)) {
       return const CredentialNeedsLogin();
@@ -165,6 +182,9 @@ class SiteCredentialHandoff {
       // 原生收到新凭证后会自己对这一段会话重试一次；应用在这里只等它落定，
       // 不发起第二次续期。
       await _letNativeRetry();
+      // 提醒播放器「本集要重开一次」。去重在 planner 里：同一段会话只重开一
+      // 次，终止性拒绝不重开。
+      _planReopen(event);
       return _recover(
         recovered: CredentialRecovered(credential: credential, pushed: true),
       );
@@ -173,8 +193,24 @@ class SiteCredentialHandoff {
     }
   }
 
-  CredentialNeedsLogin _needsLogin() =>
-      _recover(recovered: const CredentialNeedsLogin());
+  /// 续期成功后通知播放器重开本集；这一步不改结论，也不影响提示。
+  void _planReopen(NativeCredentialEvent event) {
+    final attempt = reopenPlanner.plan(event: event, reopen: reopen);
+    if (!attempt.scheduled) return;
+    try {
+      attempt.reopen!();
+    } on Object {
+      // 重开失败（页面已关、候选已失效）不该把「续期成功」变成错误：下一次
+      // 失效事件会按自己的预算重新判定。
+      reopenPlanner.forget(event.sessionId);
+      return;
+    }
+  }
+
+  CredentialNeedsLogin _needsLogin() {
+    // 「需要重新登录」是这段会话的终局：不再自动重开。
+    return _recover(recovered: const CredentialNeedsLogin());
+  }
 
   T _recover<T extends CredentialRecovery>({required T recovered}) {
     if (!_recoveries.isClosed) _recoveries.add(recovered);
