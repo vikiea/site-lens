@@ -1,0 +1,162 @@
+{
+  "app": {
+    "package": "top.ultqd.hypnfq",
+    "name": "黄果短剧",
+    "versionName": "1.7.0",
+    "versionCode": 170,
+    "framework": "Flutter",
+    "dartVersion": "3.4.3",
+    "snapshotHash": "d20a1be77c3d3c41b2a5accaee1ce549",
+    "entry": "com.org.aksm.MainActivity",
+    "abis": [
+      "arm64-v8a"
+    ]
+  },
+  "transport": {
+    "protocol": "https",
+    "method": "POST_ONLY",
+    "contentType": "application/json",
+    "getRejected": {
+      "code": 400,
+      "message": "业务接口只支持 POST"
+    },
+    "requestEnvelope": {
+      "fields": [
+        "data",
+        "以及各接口业务字段"
+      ],
+      "note": "POST body 为 JSON；部分接口 data 字段为 AES 密文"
+    },
+    "responseEnvelope": [
+      "code",
+      "isLogin",
+      "message",
+      "needLogin",
+      "data",
+      "request_id",
+      "timestamp",
+      "sign"
+    ],
+    "signFormat": "32 位小写 hex（MD5 形态）",
+    "requestIdFlow": "服务端下发 request_id，客户端下轮回传"
+  },
+  "crypto": {
+    "xfCip": {
+      "algorithm": "AES-128-CBC",
+      "padding": "PKCS7",
+      "keyLen": 16,
+      "ivLen": 16,
+      "keyConstant": "Wq2sSktSz_7Qwkpr",
+      "ivConstant": "7fhW_qmFUpfoA25L",
+      "cacheKey": "xf_cip_v1",
+      "ttlRegex": "^[0-9a-fA-F]{64}_3600$",
+      "ttlSeconds": 3600,
+      "secretEndpoint": "https://raw.githubusercontent.com/ffbctffbct/yueda-bak/main/dx-161-hgdj-head.txt",
+      "secretBytes": 80,
+      "secretDerivation": "80B = 2×32B；各自转 64 位 hex 后拼 `_3600` 作为 KEY / IV（运行时覆盖常量）",
+      "fallbackSecretB64": "h93Y3YD8d2eWQZUzgj30vmdVwjcxY4U2coyQDy8JHwbDeUglBg6rIkdbcoNdosUBFyPE4ISOxb/bBB0nclLM1CbXV/oqW0fXOVF9Wwv4X94=",
+      "errorStrings": [
+        "XF CIP: KEY and IV must each contain 16 bytes",
+        "XF CIP: invalid AES ciphertext length",
+        "XF CIP: plaintext must contain a 64-digit hex secret followed by _3600",
+        "XF CIP: invalid Base64 ciphertext",
+        "XF CIP: AES-128-CBC/PKCS7 decryption failed"
+      ]
+    },
+    "hls": {
+      "method": "AES-128",
+      "note": "m3u8 索引本身加密，需先解出分片地址",
+      "strings": [
+        "#EXT-X-KEY:METHOD=AES-128",
+        "[Crypto] decrypted m3u8 length=",
+        "m3u8 decrypt failed"
+      ]
+    }
+  },
+  "auth": {
+    "tokens": [
+      "access_token",
+      "refresh_token",
+      "verify_token"
+    ],
+    "signingKeys": {
+      "business": [
+        "signKey"
+      ],
+      "event": [
+        "eventSignKey",
+        "event_signature_key",
+        "event_sig_key"
+      ],
+      "other": [
+        "hmacKey",
+        "key"
+      ]
+    },
+    "headers": [
+      "authorization",
+      "x-auth",
+      "appSign",
+      "sign",
+      "sign_ts",
+      "signature",
+      "device_id",
+      "deviceId"
+    ],
+    "deviceId": {
+      "source": "analytics_sdk MethodChannel",
+      "invalidPattern": "^0+$"
+    },
+    "channels": [
+      "analytics_sdk",
+      "android_id",
+      "walle_channel",
+      "app_installer"
+    ],
+    "loginEndpoint": "/account/users/login",
+    "userEndpoint": "/account/users/base-info"
+  },
+  "hosts": {
+    "primary": [
+      "https://api1.huangguoju.com",
+      "https://api1.xhrxoyyth.cc"
+    ],
+    "backup": [
+      "https://bak.czlelqhfn.cc",
+      "https://new.poemts.cn",
+      "http://new.ezowwn.cn",
+      "http://new.xmbvxj.cn"
+    ],
+    "web": [
+      "https://huangguoai.com",
+      "https://ai-drama.com"
+    ],
+    "accountRecovery": "https://d4c4.cvbghvqur.cc",
+    "adsSdk": "*.iqiyi.com",
+    "dohFallback": [
+      "dns.alidns.com",
+      "doh.pub",
+      "dns.google",
+      "cloudflare-dns.com"
+    ],
+    "plainDnsFallback": [
+      "223.5.5.5",
+      "8.8.8.8",
+      "1.12.12.12",
+      "120.53.53.53"
+    ]
+  },
+  "vip": {
+    "fieldIsVip": "is_vip",
+    "fieldExpiry": "vip_expiration_time",
+    "fieldExpiredStr": "expired_str",
+    "cardStates": {
+      "0": "立即开通",
+      "1": "会员（有效期至）",
+      ">1": "永久会员"
+    },
+    "stateMachine": "0x9201b0 cmp x1,#1 / b.gt 永久；cmp x1,#0 / b.gt 会员；else 未开通",
+    "serverSideGated": true
+  },
+  "endpointCount": 365
+}

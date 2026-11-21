@@ -1,0 +1,431 @@
+{
+ "version": 20,
+ "updatedAt": "2026-10-24T03:28:46Z",
+ "websiteUrl": "https://www.jdbus.net",
+ "sources": {
+  "defaultKey": "douban",
+  "order": [
+   "douban",
+   "dbk",
+   "guazi",
+   "jianpian",
+   "jpys",
+   "nm",
+   "rebo",
+   "sd",
+   "yzx",
+   "zhuiju",
+   "hongguo",
+   "v4k",
+   "liangzi",
+   "comment_platforms",
+   "youzi",
+   "xiaozhu",
+   "taiqi",
+   "gulugulu",
+   "kanju",
+   "sx",
+   "danmu_jddfk8",
+   "hongniu"
+  ],
+  "items": [
+   {
+    "key": "douban",
+    "title": "易幕",
+    "desc": "",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/douban.js?v=33",
+    "codeVer": "3",
+    "kind": ""
+   },
+   {
+    "key": "dbk",
+    "title": "独播",
+    "desc": "",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/dbk.js?v=10",
+    "codeVer": "3",
+    "kind": "",
+    "danmuOnly": false,
+    "ext": {}
+   },
+   {
+    "key": "guazi",
+    "title": "瓜子",
+    "desc": "",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/guazi.js?v=33",
+    "codeVer": "27",
+    "kind": "",
+    "danmuOnly": false
+   },
+   {
+    "key": "jianpian",
+    "title": "荐片",
+    "desc": "",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/jianpian.js?v=29",
+    "codeVer": "2",
+    "kind": "",
+    "danmuOnly": false
+   },
+   {
+    "key": "jpys",
+    "title": "金牌",
+    "desc": "",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/jpys.js?v=30",
+    "codeVer": "29",
+    "kind": "",
+    "danmuOnly": false,
+    "ext": {
+     "outbound": "home",
+     "outboundAuto": true
+    }
+   },
+   {
+    "key": "nm",
+    "title": "农民",
+    "desc": "",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/nm.js?v=29",
+    "codeVer": "2",
+    "kind": "",
+    "danmuOnly": false,
+    "ext": {
+     "outbound": "home",
+     "outboundAuto": true
+    }
+   },
+   {
+    "key": "rebo",
+    "title": "热播",
+    "desc": "",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/rebo.js?v=29",
+    "codeVer": "2",
+    "kind": "",
+    "danmuOnly": false
+   },
+   {
+    "key": "sd",
+    "title": "闪电",
+    "desc": "",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/sd.js?v=29",
+    "codeVer": "6",
+    "kind": "",
+    "danmuOnly": false
+   },
+   {
+    "key": "yzx",
+    "title": "云享",
+    "desc": "",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/yzx.js?v=28",
+    "codeVer": "3",
+    "kind": "",
+    "danmuOnly": false
+   },
+   {
+    "key": "zhuiju",
+    "title": "追剧",
+    "desc": "",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/zhuiju.js?v=28",
+    "codeVer": "1",
+    "kind": "",
+    "danmuOnly": false,
+    "ext": {}
+   },
+   {
+    "key": "hongguo",
+    "title": "红果官方短剧",
+    "desc": "红果官方短剧",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/hongguo.js?v=12",
+    "codeVer": "11",
+    "ext": {
+     "hgSecret": "eca3bbc41f95dc3022ff005341020bc1",
+     "hgSecretRotatedAt": 1792884974407,
+     "hqMode": true,
+     "hgSecretPrev": "f95aaaf69b0e498cc2c51ef11387b0f2"
+    }
+   },
+   {
+    "key": "v4k",
+    "title": "4K影视",
+    "desc": "4K高清影视（逆向自官方App：ECDH加密全链路）",
+    "enabled": true,
+    "codeVer": "10",
+    "kind": "",
+    "codeUrl": "https://www.jdbus.net/sources/v4k.js",
+    "ext": {
+     "outbound": "home",
+     "outboundAuto": true
+    }
+   },
+   {
+    "key": "liangzi",
+    "title": "量子",
+    "desc": "",
+    "enabled": true,
+    "codeVer": "2",
+    "kind": "",
+    "codeUrl": "https://www.jdbus.net/sources/liangzi.js?v=16"
+   },
+   {
+    "key": "comment_platforms",
+    "title": "全网评论",
+    "desc": "",
+    "enabled": true,
+    "codeVer": "1",
+    "kind": "comment",
+    "codeUrl": "https://www.jdbus.net/sources/comment_platforms.js?v=15",
+    "ext": {}
+   },
+   {
+    "key": "youzi",
+    "title": "柚子",
+    "desc": "",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/youzi.js?v=29",
+    "codeVer": "2",
+    "kind": "",
+    "danmuOnly": false
+   },
+   {
+    "key": "xiaozhu",
+    "title": "小猪",
+    "desc": "",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/xiaozhu.js?v=29",
+    "codeVer": "14",
+    "kind": "",
+    "danmuOnly": false,
+    "ext": {}
+   },
+   {
+    "key": "taiqi",
+    "title": "泰奇",
+    "desc": "",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/taiqi.js?v=10",
+    "codeVer": "4",
+    "ext": {}
+   },
+   {
+    "key": "gulugulu",
+    "title": "解析专用",
+    "desc": "",
+    "kind": "search",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/gulugulu.js?v=12",
+    "codeVer": "1",
+    "danmuOnly": false,
+    "code": "/* ============================================================================\n * 万象解析（key: jx）  —  易幕 / ekan-clone 源脚本  v1.0\n * ----------------------------------------------------------------------------\n * 这是什么：\n *   一个「解析接口源」。它做两件事：\n *     ① 搜索 —— 走两家采集站(暴风 bfzyapi / 量子 lziapi)的标准 MacCMS 接口；\n *     ② 播放 —— 把地址过一批解析接口，换成播放器真能播的 m3u8。\n *   它只用于搜索与播放，不参与首页浏览（homeSections 返回空）。\n *\n * 为什么这么设计（全部来自实测，不是推断）：\n *   - zy=ff/bf/lz 就是「非凡/暴风/量子」，与源名一一对应；\n *   - bfzyapi.com / cj.lziapi.com 实测 200 返回真片单（见 out/probe_chain*.txt）；\n *   - qgg.php 须同时带 zy + url 两个参数；\n *   - 缓存文件名 = md5(url)（两条样本逐字符命中）；\n *   - 服务端会把上游 404 的错误体当成 playlist 写进缓存，\n *     所以「拿到 url」不等于「可播」——必须校验首行 #EXTM3U。\n *     本脚本用 http.request2 拿 status+body 做这道闸门。\n *\n * 部署（三步）：\n *   1) 把本文件传到你的源脚本托管目录，例如 https://js.z1i.cn/ek/jx.js\n *   2) 在云控 config 的 sources.items[] 里加一条：\n *        { \"key\":\"jx\", \"title\":\"解析\", \"desc\":\"\", \"enabled\":true,\n *          \"codeUrl\":\"https://js.z1i.cn/ek/jx.js\", \"codeVer\":\"1\" }\n *      （「不在源列表显示」按你选的方案：只隐藏数据源管理页，见交付报告）\n *   3) 重进 App，搜索任意片名即可。\n *\n * 通过 ext 可覆盖（云控 item 里加 \"ext\":\"<json 字符串>\"）：\n *   { \"sites\":[\"bf\",\"lz\"], \"zy\":[\"lz\",\"bf\",\"ff\"], \"verifyDirect\":true,\n *     \"cacheFirst\":false, \"debug\":false }\n *\n * 纪律：本文件不含任何客户端代码改动；不写死设备相关值。\n * ==========================================================================*/\n\n/* ─────────────────────────── ext 配置 ─────────────────────────── */\nvar EXT = (typeof ext !== 'undefined' && ext) ? ext : {};\nif (typeof EXT === 'string') { try { EXT = JSON.parse(EXT); } catch (e) { EXT = {}; } }\nfunction cfgArr(k, dft) {\n    var v = EXT[k];\n    if (v instanceof Array && v.length) return v;\n    if (typeof v === 'string' && v) { try { var p = JSON.parse(v); if (p instanceof Array && p.length) return p; } catch (e) {} }\n    return dft;\n}\nfunction cfgBool(k, dft) { return (typeof EXT[k] === 'boolean') ? EXT[k] : dft; }\nvar DEBUG = cfgBool('debug', false);\nvar VERIFY_DIRECT = cfgBool('verifyDirect', true);\nvar VERIFY_CACHE = cfgBool('verifyCache', false);\nvar CACHE_FIRST = cfgBool('cacheFirst', false);\nvar SITE_ORDER = cfgArr('sites', ['bf', 'lz']);\nvar ZY_ORDER = cfgArr('zy', ['lz', 'bf', 'ff']);\n\nvar UA = 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';\n/* 单请求超时。实测：qgg 命中缓存 ~0.1s、回源 0.4~0.6s；CMS 搜索 ~0.3~0.9s。\n * 取 12s 是给移动网络留余量，同时不至于让「一条挂掉的端点」拖死整条链。 */\nvar TIMEOUT = Number(EXT.timeout) > 0 ? Number(EXT.timeout) : 12000;\n\n/* ─────────────────────────── 基础工具 ─────────────────────────── */\nfunction t(v) { return v == null ? '' : String(v); }\nfunction trim(v) { return t(v).replace(/^\\s+|\\s+$/g, ''); }\nfunction enc(v) { try { return encodeUri(t(v)); } catch (e) { try { return encodeURIComponent(t(v)); } catch (e2) { return t(v); } } }\nfunction md5hex(v) {\n    try { return t(md5(t(v))).toLowerCase(); } catch (e) {}\n    try { return t(crypto.hash('MD5', t(v), { input: 'utf8', output: 'hex' })).toLowerCase(); } catch (e2) { return ''; }\n}\nfunction jparse(s, dft) { try { if (typeof parseJson === 'function') { var o = parseJson(t(s)); if (o) return o; } } catch (e) {} try { return JSON.parse(t(s)); } catch (e2) { return dft == null ? null : dft; } }\nfunction dbg(msg) { if (DEBUG) { try { log('[jx] ' + msg); } catch (e) {} } }\n\n/* 同步 GET：返回 body 字符串（失败返回空串）。tries 用于 CMS 这类「抖一下就没了」的请求。 */\nfunction httpGet(url, headers, tries) {\n    var o = { headers: headers || { 'User-Agent': UA, 'Referer': 'https://js.z1i.cn/' }, timeout: TIMEOUT };\n    var n = tries && tries > 0 ? tries : 1;\n    for (var i = 0; i < n; i++) {\n        try { var r = request(url, JSON.stringify(o)); if (r != null && t(r).length) return t(r); } catch (e) { dbg('GET fail ' + url.slice(0, 80) + ' | ' + e); }\n    }\n    return '';\n}\n/* 同步 GET：返回 {status, ok, body}，用于校验闸门 */\nfunction httpProbe(url) {\n    try {\n        if (typeof http !== 'undefined' && http && typeof http.request2 === 'function') {\n            var r = http.request2(url, JSON.stringify({ headers: { 'User-Agent': UA }, timeout: TIMEOUT }));\n            if (r && typeof r === 'object') return { status: Number(r.status || 0), ok: !!r.ok, body: t(r.body == null ? '' : r.body) };\n        }\n    } catch (e) { dbg('probe2 fail | ' + e); }\n    var b = httpGet(url);\n    return { status: b ? 200 : 0, ok: !!b, body: b };\n}\n\n/* ─────────────────────────── 采集站表（内容/搜索） ───────────────────────────\n * 对应关系来自实测：zy=bf↔暴风, zy=lz↔量子。\n * lz 走 http —— 其 https 入口实测会间歇 UNEXPECTED_EOF。 */\nvar SITES = {\n    bf: { key: 'bf', name: '暴风', zy: 'bf', cms: 'https://bfzyapi.com' },\n    lz: { key: 'lz', name: '量子', zy: 'lz', cms: 'http://cj.lziapi.com' }\n};\n\n/* ─────────────────────────── 解析接口登记表 ───────────────────────────\n * url 模板已含参数名，直接拼「编码后的目标地址」即可。\n * fields：从响应 JSON 里按顺序取址的字段路径。\n * caps  ：吃哪种输入 —— 'url' 普通地址 / 'cipher' xfy- 密文。缺省视为 url。\n * by    ：实测结论（取自 out/probe_matrix.txt，不美化）。\n * off   ：默认停用；改 off:true→false 即可启用（实测失败原因见 by）。 */\nvar ENDPOINTS = [\n    /* —— A 档：本次样本上实测解出真 playlist（唯一一批）—— */\n    { id: 'qgg', name: '咕噜·量子', url: 'http://111.170.58.215:7788/qgg.php?zy=lz&url=', fields: ['url'], by: 'A 实测出真playlist', zy: 'lz', group: 'qgg' },\n    { id: 'qgg', name: '咕噜·暴风', url: 'http://111.170.58.215:7788/qgg.php?zy=bf&url=', fields: ['url'], by: 'A 实测出真playlist', zy: 'bf', group: 'qgg' },\n    { id: 'qgg', name: '咕噜·非凡', url: 'http://111.170.58.215:7788/qgg.php?zy=ff&url=', fields: ['url'], by: 'A 实测出真playlist', zy: 'ff', group: 'qgg' },\n\n    /* —— B 档：存活、参数契约清楚，但本次样本上未产出可播地址 —— */\n    { id: 'glgltos', name: 'glgltos', url: 'http://122.228.193.79:6699/glgltos.php?url=', fields: ['main_url', 'url'], by: 'B 存活未产出（唯一吃 xfy- 密文的）', caps: ['cipher', 'url'] },\n    { id: 'dsxtC', name: 'dsxt-C', url: 'http://172.247.189.48:7788/dsxt/api.php?user=xt&key=969632c8da19b3ef8c56e5b51011d5e0&j=19227eae77225a30&url=', fields: ['url', 'data.url'], by: 'B 存活未产出（有每日额度）' },\n    { id: 'nbyjson', name: 'nbyjson', url: 'https://api.nbyjson.top:7788/api/?key=8LJohkjTZHC2F9ct48&url=', fields: ['url', 'data.url'], by: 'B 存活未产出（只吃自家采集数据）', off: true },\n    { id: 'dsxtA', name: 'dsxt-A', url: 'http://172.247.189.48:7788/dsxt/api.php?user=xt&key=e1234a9df0358c6d78f20721a1b7b055&j=b8582063bca37121&url=', fields: ['url', 'data.url'], by: 'B 存活但上游回源要 15s 超时 —— 默认关，否则拖死整条链', off: true },\n    { id: 'hxx', name: 'hxx2023', url: 'https://jf.hxx2023.cc/api?key=Uw5rZokFSAywqcLN&url=', fields: ['url'], by: 'B 存活未产出', off: true },\n    { id: 'jdyx', name: 'jdyx', url: 'https://jiexi.jdyx.pro/api/?key=8a94da668d980bae94fbc8dd3fd115ce&url=', fields: ['url', 'data.url'], by: 'B 存活未产出', off: true },\n    { id: 'co4k', name: 'co4k', url: 'https://co4k.1ljx.com:32010/api/?key=6db7285d-c228-4cee-918e-67a01ef7c3f8&url=', fields: ['url', 'data.url'], by: 'B 返回的址 HTTP 404', off: true },\n    { id: 'huaqi', name: 'huaqi', url: 'https://api.huaqi.pro/api?key=29f6670f4bf121162d337d9171689a10&url=', fields: ['url'], by: 'B 存活未产出', off: true },\n    { id: 'p4470', name: '4470', url: 'http://111.170.58.215:4470/api.php?id=', fields: ['url', 'data.url'], by: 'B 存活未产出（参数名是 id 不是 url）', off: true },\n    { id: 'kz3821', name: 'KZNBJX-3821', url: 'http://122.228.193.79:3821/KZNBJX.php?url=', fields: ['url'], by: 'B 回 不支��的解析', off: true },\n    { id: 'kz3721', name: 'KZNBJX-3721', url: 'http://122.228.193.79:3721/KZNBJX.php?url=', fields: ['url'], by: 'B 回 不支持的解析', off: true },\n\n    /* —— C 档：实测不可用，保留只为「别再踩进来」 —— */\n    { id: 'dsxtB', name: 'dsxt-B', url: 'http://172.247.44.102:7788/dsxt/api.php?user=xt&key=118066f4cea9d46ce2187c136ffc77a6&j=f96409e57ad0db3e&url=', fields: ['url'], by: 'C 502 upstream timeout', off: true },\n    { id: 'xfy', name: 'xfyvideochandi', url: 'https://xfyvideochandi.online/p.php?id=', fields: ['url'], by: 'C 超时无响应', off: true },\n    { id: 'coffee', name: 'coffee-api', url: 'https://coffee-api.1ljx.com/api/?key=a6e68ade-8d4b-4ef3-8cb3-753a5e01d5fa&url=', fields: ['url'], by: 'C 403 IP白名单（客户端 IP 进不去）', off: true }\n];\n\n/* ─────────────────────────── 地址性质判定 ─────────────────────────── */\nfunction isMedia(u) { return /\\.(m3u8|mp4|flv|mkv|m4s|mpd)(?:[?#]|$)/i.test(t(u)); }\nfunction isCipher(u) { return /^xfy-/i.test(t(u)); }\nfunction isHttp(u) { return /^https?:\\/\\//i.test(t(u)); }\nfunction mediaType(u) {\n    var s = t(u); if (/\\.m3u8(?:[?#]|$)/i.test(s)) return 'm3u8';\n    if (/\\.mp4(?:[?#]|$)/i.test(s)) return 'mp4';\n    if (/\\.flv(?:[?#]|$)/i.test(s)) return 'flv';\n    if (/\\.m4s(?:[?#]|$)/i.test(s)) return 'm4s';\n    return 'auto';\n}\nfunction looksLikeHtml(r) {\n    var b = t(r && r.body).replace(/^\\uFEFF/, '').replace(/^\\s+/, '').toLowerCase();\n    return b.indexOf('<!doctype') === 0 || b.indexOf('<html') === 0 || b.indexOf('<head') === 0;\n}\n/* 严格判据：响应体本身就是一条 playlist（用于判定「目标地址直连能不能播」） */\nfunction isValidBody(r) {\n    if (!r) return false;\n    if (r.status && (r.status < 200 || r.status >= 400)) return false;\n    var b = t(r.body).replace(/^\\uFEFF/, '').replace(/^\\s+/, '');\n    return b.indexOf('#EXTM3U') === 0;\n}\n\n/* 宽判据：这个地址交给播放器之前，先确认它真是一条 playlist。\n * 这是本脚本最值钱的一处 —— 服务端会把上游 404 的错误体当 playlist 缓存，\n * 接口照样回 code:200，不校验就会黑屏。实测现场见 out/probe_matrix.txt T2。 */\nfunction isValidPlaylist(u) {\n    if (!isHttp(u)) return false;\n    var r = httpProbe(u);\n    if (isValidBody(r)) return true;\n    /* 容忍「响应体是 JSON 且其 url 字段是 m3u8」这种中转形态 */\n    var b = t(r.body).replace(/^\\s+/, '');\n    if (b.charAt(0) === '{' || b.charAt(0) === '[') {\n        var o = jparse(b, null);\n        if (o) { var d = digUrl(o); if (d && /\\.m3u8([?#]|$)/i.test(d)) return true; }\n    }\n    return false;\n}\n\n/* 从解析接口响应里挖出地址：先按字段路径，再退化到正则扫 \"url\":\"...\" */\nfunction digUrl(o) {\n    if (!o || typeof o !== 'object') return '';\n    var paths = ['url', 'data.url', 'main_url', 'data.main_url', 'json.url', 'data', 'play_url', 'vurl'];\n    for (var i = 0; i < paths.length; i++) {\n        var cur = o, parts = paths[i].split('.'), ok = true;\n        for (var j = 0; j < parts.length; j++) {\n            if (cur && typeof cur === 'object' && cur[parts[j]] != null) cur = cur[parts[j]]; else { ok = false; break; }\n        }\n        if (ok) {\n            var s = t(cur);\n            if (s && isHttp(s)) return s;\n            if (s && /\\.m3u8([?#]|$)/i.test(s)) return s;\n        }\n    }\n    return '';\n}\nfunction extractUrl(body) {\n    var s = trim(t(body));\n    if (!s) return '';\n    if (s.indexOf('#EXTM3U') === 0) return '';      /* 响应体即 playlist：交给调用方按模板处理 */\n    var o = jparse(s, null);\n    if (o) { var u = digUrl(o); if (u) return u; }\n    var m = s.match(/https?:\\/\\/[^\\s\"'\\\\<>]+\\.m3u8[^\\s\"'\\\\<>]*/i);\n    if (m) return m[0].replace(/\\\\\\//g, '/');\n    return '';\n}\n\n/* 本地结果缓存：key = md5(原始地址)。命中就省掉整条链路。 */\nfunction ck(u) { return 'jxc:' + md5hex(u); }\nfunction cGet(u) { try { return t(getItem(ck(u), '')); } catch (e) { return ''; } }\nfunction cPut(u, v) { try { if (v) setItem(ck(u), v); } catch (e) {} }\n\n/* 服务端把上游失败也写进缓存，且不自愈（实测：cache=yes 的污染缓存会一直返回错误体）。\n * 同一 md5 在各 zy 目录下会被一起污染，所以同组其余档位再试也是白费。 */\nfunction isPoisoned(body) { var o = jparse(trim(body), null); return !!(o && t(o.cache) === 'yes'); }\n\n/* ─────────────────────────── 解析主链 ─────────────────────────── */\n/* 把 target 依次喂给启用的解析接口，返回第一个「通过校验闸门」的地址。\n * shape='cipher' 时只喂标记了 caps:['cipher'] 的端点（密文不是 URL，喂给 URL 型接口只会得到「无效的URL格式」）。 */\nfunction parseChain(target, shape) {\n    var out = '', skipped = {};\n    for (var i = 0; i < ENDPOINTS.length && !out; i++) {\n        var ep = ENDPOINTS[i];\n        if (ep.off) continue;\n        if (ep.group && skipped[ep.group]) { dbg('跳过 ' + ep.name + '（同组缓存已污染）'); continue; }\n        var caps = ep.caps || ['url'];\n        if (shape === 'cipher') { if (caps.indexOf('cipher') < 0) continue; }\n        else { if (caps.indexOf('url') < 0) continue; }\n        var req = ep.url + enc(target);\n        var body = httpGet(req);\n        if (!body) { dbg(ep.name + ' 空响应'); continue; }\n        if (trim(body).indexOf('#EXTM3U') === 0) { out = req; break; }        /* 响应体即 playlist：把接口地址直接当播放地址 */\n        var cand = extractUrl(body);\n        if (!cand) {\n            dbg(ep.name + ' 无址: ' + trim(body).slice(0, 60));\n            if (ep.group && isPoisoned(body)) skipped[ep.group] = 1;\n            continue;\n        }\n        if (!VERIFY_DIRECT || isValidPlaylist(cand)) { out = cand; break; }\n        dbg(ep.name + ' 址不可播: ' + cand.slice(0, 70));\n        if (ep.group && isPoisoned(body)) skipped[ep.group] = 1;\n    }\n    return out;\n}\n\n/* 自算远端缓存直取：Cache/<ZY 大写>/<md5(url)>.m3u8（实测规则） */\nfunction tryRemoteCache(target) {\n    var h = md5hex(target);\n    if (!h) return '';\n    for (var i = 0; i < ZY_ORDER.length; i++) {\n        var cu = 'http://111.170.58.215:7788/Cache/' + t(ZY_ORDER[i]).toUpperCase() + '/' + h + '.m3u8';\n        var r = httpProbe(cu);\n        if (r.status === 200 && t(r.body).replace(/^\\s+/, '').indexOf('#EXTM3U') === 0) return cu;\n    }\n    return '';\n}\n\n/* ─────────────────────────── 采集站访问 ─────────────────────────── */\nfunction cmsApi(site, query) { return site.cms + '/api.php/provide/vod/?' + query; }\nfunction cmsHeaders(site) { return { 'User-Agent': UA, 'Referer': site.cms + '/' }; }\n\nfunction cmsSearch(site, kw, page) {\n    var url = cmsApi(site, 'ac=detail&wd=' + enc(kw) + '&pg=' + Math.max(1, Number(page) || 1));\n    var raw = httpGet(url, cmsHeaders(site), 2);          /* 采集站会偶发空响应，重试一次 */\n    var o = jparse(raw, null);\n    if (!o) { dbg(site.name + ' 搜索非JSON: ' + raw.slice(0, 60)); return []; }\n    var list = o.list instanceof Array ? o.list : [];\n    return list;\n}\nfunction cmsDetail(site, vid) {\n    var url = cmsApi(site, 'ac=detail&ids=' + enc(vid));\n    var raw = httpGet(url, cmsHeaders(site), 2);\n    var o = jparse(raw, null);\n    if (!o || !(o.list instanceof Array) || !o.list.length) {\n        dbg(site.name + ' 详情失败 url=' + url + ' rawLen=' + t(raw).length + ' head=' + t(raw).slice(0, 140));\n        return null;\n    }\n    return o.list[0];\n}\n\n/* id 形如 \"bf:139597\"，用站点前缀区分两家 */\nfunction makeId(siteKey, vid) { return siteKey + ':' + t(vid); }\nfunction parseId(id) {\n    var s = trim(id), i = s.indexOf(':');\n    if (i > 0) {\n        var k = s.substring(0, i);\n        if (SITES[k]) return { site: SITES[k], vid: s.substring(i + 1) };\n    }\n    return { site: SITES[SITE_ORDER[0]], vid: s };\n}\n\n/* ─────────────────────────── 源契约 ─────────────────────────── */\nfunction config() { return JSON.stringify({ kind: 'video', browseOnly: false, source: '解析' }); }\nfunction categories() { return '[]'; }\nfunction homeSections() { return '[]'; }\nfunction searchFiltered() { return '[]'; }\nfunction related() { return '[]'; }\n\nfunction cardOf(site, v) {\n    v = v || {};\n    var id = v.vod_id != null ? v.vod_id : v.id;\n    if (id == null || id === '') return null;\n    var name = trim(v.vod_name || v.name || v.title);\n    if (!name) return null;\n    var desc = trim(v.vod_blurb || v.vod_content || v.desc || '');\n    if (desc.length > 180) desc = desc.substring(0, 180);\n    return { id: makeId(site.key, id), name: name,\n             pic: trim(v.vod_pic || v.pic || ''),\n             type: trim(v.vod_class || v.type_name || v.type || ''),\n             year: t(v.vod_year || v.year || ''),\n             remarks: trim(v.vod_remarks || v.remarks || ''), desc: desc };\n}\n\nfunction search(keyword, page) {\n    var kw = trim(keyword);\n    if (!kw) return '[]';\n    var p = Math.max(1, Number(page) || 1), out = [], seen = {}, CAP = 60;\n    for (var i = 0; i < SITE_ORDER.length && out.length < CAP; i++) {\n        var site = SITES[SITE_ORDER[i]];\n        if (!site) continue;\n        var list = cmsSearch(site, kw, p);\n        for (var j = 0; j < list.length && out.length < CAP; j++) {\n            var c = cardOf(site, list[j]);\n            if (!c) continue;\n            var dedup = c.name + '|' + c.id;\n            if (seen[dedup]) continue;\n            seen[dedup] = 1;\n            out.push(c);\n        }\n    }\n    dbg('search \"' + kw + '\" p' + p + ' -> ' + out.length + ' 条');\n    return JSON.stringify(out);\n}\n\nfunction detail(id) {\n    var ref = parseId(id);\n    var v = cmsDetail(ref.site, ref.vid);\n    if (!v) return JSON.stringify({ id: t(id), name: '', pic: '', episodes: [] });\n\n    var froms = t(v.vod_play_from).split('$$$');\n    var groups = t(v.vod_play_url).split('$$$');\n\n    /* 组优先级：组名含 m3u8 的是直连媒体，排前面；\n     * 实测「量子」组0=liangzi 是分享页(HTML，所有接口都解不了)，\n     * 组1=lzm3u8 才是直连 m3u8 —— 不排序就会把死路当默认线路。 */\n    var order = [];\n    for (var g = 0; g < groups.length; g++) {\n        var gname = trim(froms[g]) || ('线路' + (g + 1));\n        var score = /m3u8/i.test(gname) ? 0 : (/m3u|hls/i.test(gname) ? 1 : 2);\n        order.push({ i: g, name: gname, score: score });\n    }\n    order.sort(function (a, b) { return a.score - b.score || a.i - b.i; });\n\n    var eps = [], usedUrl = {};\n    for (var o = 0; o < order.length; o++) {\n        var gi = order[o].i, gname2 = order[o].name;\n        var items = t(groups[gi]).split('#');\n        var n = 0;\n        for (var k = 0; k < items.length; k++) {\n            var it = trim(items[k]);\n            if (!it) continue;\n            var pos = it.indexOf('$'), nm, u;\n            if (pos >= 0) { nm = trim(it.substring(0, pos)); u = trim(it.substring(pos + 1)); }\n            else { nm = ''; u = it; }\n            if (!u) continue;\n            n++;\n            if (!nm) nm = '第' + n + '集';\n            /* episode.url 会被下载队列与列表 key 消费，必须保持原始地址，不能打包 */\n            if (usedUrl[u]) continue;\n            usedUrl[u] = 1;\n            eps.push({ name: nm, url: u, route: ref.site.name + '·' + gname2 });\n        }\n    }\n\n    var out = { id: t(id),\n                name: trim(v.vod_name || v.name || ''),\n                pic: trim(v.vod_pic || ''),\n                type: trim(v.vod_class || v.type_name || ''),\n                year: t(v.vod_year || ''),\n                remarks: trim(v.vod_remarks || ''),\n                desc: (trim(v.vod_content || v.vod_blurb || '')).substring(0, 300) };\n    out.episodes = eps;\n    dbg('detail ' + t(id) + ' -> ' + eps.length + ' 集 / ' + order.length + ' 线路');\n    return JSON.stringify(out);\n}\n\n/* 统一的返回值构造。\n * userAgent 与 headers 同时给：客户端 parsePlay 读 userAgent，多数源脚本用 headers，\n * 两条通道都铺上，避免因字段名不同导致 UA 丢失。 */\nfunction outPlay(u) {\n    return JSON.stringify({ url: u, type: mediaType(u), userAgent: UA, headers: { 'User-Agent': UA } });\n}\n\nfunction play(flag) {\n    var u = trim(flag);\n    if (!u) return JSON.stringify({ url: '', type: 'auto' });\n\n    /* 0) 本地结果缓存：只缓存「需要解析才有答案」的地址。\n     * 写入时已过校验闸门，默认不再复验（否则缓存等于白做）；要复验置 ext.verifyCache=true。 */\n    var hit = cGet(u);\n    if (hit && (!VERIFY_CACHE || isValidPlaylist(hit))) { dbg('本地缓存命中'); return outPlay(hit); }\n\n    /* 1) 一次探测，同时完成两件事：判「直连能不能播」+ 判「地址是什么形态」 */\n    var shape = 'unknown';\n    if (isCipher(u)) {\n        shape = 'cipher';\n    } else if (isHttp(u)) {\n        if (!VERIFY_DIRECT && isMedia(u)) { dbg('直连(未校验)'); return outPlay(u); }\n        var pr = httpProbe(u);\n        if (isValidBody(pr)) { dbg('直连可播'); return outPlay(u); }\n        shape = looksLikeHtml(pr) ? 'page' : 'media';\n        dbg('直连不可播 shape=' + shape);\n    }\n\n    /* 2) 可选：自算远端缓存直取（命中零上游） */\n    if (CACHE_FIRST && isHttp(u)) {\n        var rc = tryRemoteCache(u);\n        if (rc) { cPut(u, rc); dbg('远端缓存直取命中'); return outPlay(rc); }\n    }\n\n    /* 3) 解析链。\n     * shape='page' 直接跳过 —— 实测六条接口对 HTML 页面全部失败，跑一遍纯属白等 3~18s。\n     * 网页交给第 4 步的端内嗅探，那才是它的正解。 */\n    if (shape !== 'page') {\n        var got = parseChain(u, shape === 'cipher' ? 'cipher' : 'url');\n        if (got) { cPut(u, got); return outPlay(got); }\n    }\n\n    /* 4) 端内嗅探兜底（依赖 App 的 WebView 嗅探，与解析接口互补，对网页最有用） */\n    try {\n        if (typeof sniffMedia === 'function') {\n            var s = sniffMedia(u, { timeout: TIMEOUT });\n            if (s && s.ok && s.url) { cPut(u, s.url); dbg('sniffMedia 命中'); return outPlay(s.url); }\n        }\n    } catch (e) { dbg('sniff 失败 ' + e); }\n\n    /* 5) 诚实失败：交回客户端走它自己的换���/回退，不硬塞一个假地址 */\n    dbg('全部解析失败: ' + u.slice(0, 80));\n    return JSON.stringify({ url: '', type: 'auto' });\n}\n",
+    "ext": {
+     "outbound": "home3",
+     "outboundAuto": true
+    }
+   },
+   {
+    "key": "kanju",
+    "title": "看剧AI",
+    "desc": "看剧AI(kanju.ai)电影天堂系聚合，免登录，官方1080P+多线路+四维筛选+空结果/损坏体镜像轮询容灾",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/kanju.js?v=16",
+    "codeVer": "6",
+    "kind": "",
+    "danmuOnly": false,
+    "ext": {}
+   },
+   {
+    "key": "sx",
+    "title": "世雄",
+    "desc": "",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/sx.js?v=29",
+    "codeVer": "2",
+    "kind": "",
+    "danmuOnly": false
+   },
+   {
+    "key": "danmu_jddfk8",
+    "title": "弹幕专用",
+    "desc": "",
+    "enabled": true,
+    "codeUrl": "https://www.jdbus.net/sources/danmu_jddfk8.js?v=27",
+    "danmuOnly": true,
+    "codeVer": "1",
+    "kind": "danmu"
+   },
+   {
+    "key": "hongniu",
+    "title": "红牛",
+    "desc": "",
+    "enabled": true,
+    "codeVer": "2",
+    "kind": "",
+    "codeUrl": "https://www.jdbus.net/sources/hongniu.js?v=16",
+    "ext": {}
+   },
+   {
+    "key": "llq",
+    "title": "零零七",
+    "desc": "零零七官方API直连（AES加密协议全量适配：9分类+6线路+筛选+搜索，双机容灾）",
+    "codeUrl": "https://www.jdbus.net/sources/llq.js?v=4",
+    "kind": "video",
+    "enabled": true
+   }
+  ],
+  "version": 5,
+  "updatedAt": "2026-10-19 23:29:03"
+ },
+ "announcement": {
+  "enabled": true,
+  "title": "更新说明",
+  "body": "播放卡顿时，关掉多线程拉流和极速模式。",
+  "linkUrl": "",
+  "imageUrl": "",
+  "version": 40,
+  "forceViewSeconds": 5,
+  "alwaysShow": false
+ },
+ "update": {
+  "forceUpdate": true,
+  "releaseNotes": "新增羊毛板块：饿了么果园·浇水·夺宝，UC芭芭农场·福利猪任务云端自动托管，24小时自动跑任务，收益通知实时汇报，绑定即验证无效不扣费。上线限时体验：托管每天仅 1 金币，3 天后恢复原价。",
+  "latestVersionCode": 50,
+  "latestVersionName": "1.0.6",
+  "downloadUrl": "https://5bd030687304834fc778472f3cf5b970.r2.cloudflarestorage.com/easyl/yimu-v1.0.6.apk?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=9d52eee60f44941640beb0cb0edecdb4%2F20261031%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=20261031T185526Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=55d562a15c23b5c5f9590a38fd72fbb65babf3c071dd89a7faf59786070662c6",
+  "downloadUrlMethod": "inapp",
+  "backupDownloadUrl": "",
+  "backupDownloadUrlMethod": "browser",
+  "sha256": "c851c05ca58f4796ff8179e9e6dd8ea9611f511b697ffcb7d41cec997d2779a8",
+  "minSupportedVersionCode": 0,
+  "show": true,
+  "title": "发现新版本 v1.0.6"
+ },
+ "homeBanners": [],
+ "hotAnime": [],
+ "barrage": {
+  "enabled": true,
+  "apiBaseUrl": "https://www.jdbus.net",
+  "sendEnabled": true,
+  "maxPerPage": 5000
+ },
+ "announceBarrage": {
+  "enabled": false,
+  "intervalSec": 0,
+  "items": [
+   {
+    "text": "请勿相信任何广告，谨防被骗！",
+    "color": "#FF5252"
+   }
+  ]
+ },
+ "comments": {
+  "enabled": true,
+  "apiBaseUrl": "https://www.jdbus.net"
+ },
+ "room": {
+  "enabled": true,
+  "apiBaseUrl": "https://www.jdbus.net"
+ },
+ "auth": {
+  "enabled": true,
+  "apiBaseUrl": "https://www.jdbus.net",
+  "registerEnabled": true,
+  "requireEmailVerification": true,
+  "agreementUrl": "",
+  "inviteEnabled": true
+ },
+ "feedback": {
+  "enabled": true,
+  "apiBaseUrl": "https://www.jdbus.net"
+ },
+ "contact": {
+  "email": "",
+  "qqGroup": "",
+  "official": "https://www.jdbus.net",
+  "tg": ""
+ },
+ "pages": {
+  "plaza": {
+   "key": "plaza",
+   "enabled": true
+  },
+  "guess": {
+   "key": "guess",
+   "enabled": true
+  },
+  "custom": []
+ },
+ "block": {
+  "enabled": true,
+  "titles": [],
+  "categories": []
+ },
+ "ads": {
+  "enabled": true,
+  "splash": {
+   "cooldownSeconds": 60,
+   "hotMinBackgroundSeconds": 60,
+   "enabled": true
+  },
+  "feed": {
+   "everyPages": 7,
+   "enabled": true
+  },
+  "interstitial": {
+   "enabled": true,
+   "cooldownSeconds": 90
+  }
+ },
+ "coverDecryptRules": [
+  {
+   "host": "pic.wirqed.cn",
+   "algo": "AES/CBC/PKCS5Padding",
+   "key": "f5d965df75336270",
+   "iv": "97b60394abc2fbe1",
+   "keyFormat": "utf8",
+   "ivFormat": "utf8"
+  },
+  {
+   "host": "pic.jtzatly.cn",
+   "algo": "AES/CBC/PKCS5Padding",
+   "key": "f5d965df75336270",
+   "iv": "97b60394abc2fbe1",
+   "keyFormat": "utf8",
+   "ivFormat": "utf8"
+  },
+  {
+   "host": "pic.wlwvch.cn",
+   "algo": "AES/CBC/PKCS5Padding",
+   "key": "f5d965df75336270",
+   "iv": "97b60394abc2fbe1",
+   "keyFormat": "utf8",
+   "ivFormat": "utf8"
+  },
+  {
+   "host": "pic.drleao.cn",
+   "algo": "AES/CBC/PKCS5Padding",
+   "key": "f5d965df75336270",
+   "iv": "97b60394abc2fbe1",
+   "keyFormat": "utf8",
+   "ivFormat": "utf8"
+  }
+ ],
+ "liveEngine": {
+  "fetchTimeoutMs": 15000,
+  "resolveTimeoutMs": 45000
+ },
+ "srcRunner": {
+  "callTimeoutMs": 60000,
+  "loadTimeoutMs": 30000
+ },
+ "coverDecryptScripts": [],
+ "outbounds": {
+  "home": "http://127.0.0.1:19901"
+ }
+}
