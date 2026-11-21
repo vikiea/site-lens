@@ -32,6 +32,8 @@ import '../device/device_conditions.dart';
 import '../discovery/health_checker.dart';
 import '../discovery/probe_coordinator.dart';
 import '../domain/models.dart';
+import '../domain/site_adapter.dart';
+import '../testing/fake_site_adapter.dart';
 import '../domain/web_page_origin.dart';
 import '../network/transport.dart';
 import '../network/native_system_http.dart';
@@ -783,6 +785,49 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   List<Candidate> sites = [];
   List<PublishingSource> sources = [];
   List<SiteProfile> profiles = [];
+
+  /// The adapter that serves one profile's 直连出口, or null when that profile
+  /// has none. Passing an adapter in is the test seam; production composes a
+  /// fake one until a site ships its own protocol.
+  final Map<int, SiteAdapter> _theaterAdapters = {};
+
+  /// Composes (once per profile) the adapter 剧场 reads its catalog from.
+  void installTheaterAdapter(int profileId, SiteAdapter adapter) {
+    _theaterAdapters[profileId] = adapter;
+  }
+
+  SiteAdapter? theaterAdapterFor(int profileId) {
+    final known = _theaterAdapters[profileId];
+    if (known != null) return known;
+    final profile = profiles.where((p) => p.id == profileId).firstOrNull;
+    if (profile == null) return null;
+    final routes = profile.routes.isEmpty ? {SiteRoute.browse} : profile.routes;
+    if (!routes.contains(SiteRoute.direct)) return null;
+    final addresses = _theaterAddressesFor(profile);
+    if (addresses.isEmpty) return null;
+    final adapter = FakeSiteAdapter(
+      id: 'fake-$profileId',
+      profileId: profileId,
+      addresses: addresses,
+    );
+    // No site protocol exists yet: 剧场 therefore shows the empty state rather
+    // than inventing content. A fake with a configured catalog is installed by
+    // [installTheaterAdapter].
+    adapter.configureCatalog(const []);
+    _theaterAdapters[profileId] = adapter;
+    return adapter;
+  }
+
+  List<Uri> _theaterAddressesFor(SiteProfile profile) {
+    final owned = <Uri>{};
+    final landing = profile.lastLanding;
+    if (landing != null) owned.add(landing);
+    for (final site in sites) {
+      if (site.profileId == profile.id) owned.add(site.url);
+    }
+    return List.unmodifiable(owned);
+  }
+
   bool _persistentStateLoaded = false;
 
   /// True after the first persistent-state read has completed. An empty list

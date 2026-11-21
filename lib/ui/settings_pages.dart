@@ -73,7 +73,7 @@ class SettingsPage extends StatelessWidget {
         const SiteLensSettingsDivider(),
         _BackgroundSetting(app: app),
       ], dividers: false),
-      _settingsSection('浏览', [
+      _settingsSection('站外浏览', [
         _settingsSwitch(
           context,
           title: '恢复上次标签',
@@ -131,7 +131,7 @@ class SettingsPage extends StatelessWidget {
       ]),
       if (Theme.of(context).platform == TargetPlatform.android)
         _settingsSection('网络', [_SecureDnsSetting(app: app)]),
-      _settingsSection('媒体', [
+      _settingsSection('媒体库', [
         _settingsLink(
           context,
           title: '媒体管理',

@@ -47,11 +47,13 @@ import 'device_diagnostics_screen.dart';
 import 'double_back_exit.dart';
 import 'filter_diagnostics_panel.dart';
 import 'ui_util.dart';
+import 'site_browse_panel.dart';
+import 'theater_screen.dart';
 import 'ui_primitives.dart';
 
 part 'settings_pages.dart';
 
-enum AppDestination { sites, browser, media, settings }
+enum AppDestination { theater, browse, media, settings }
 
 class SiteLensBottomNavigationItem {
   const SiteLensBottomNavigationItem({
@@ -212,13 +214,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       listenable: app,
       builder: (context, _) {
         final destinations = <AppDestination>[
-          AppDestination.sites,
-          AppDestination.browser,
+          AppDestination.theater,
+          AppDestination.browse,
           AppDestination.media,
           AppDestination.settings,
         ];
-        final destination =
-            destinations[page.clamp(0, destinations.length - 1)];
+        // Read and write through the same field: the theater is index 0, so a
+        // stale page number must land on 剧场 rather than on a tab whose
+        // meaning changed under it.
+        final selected = page.clamp(0, destinations.length - 1);
+        if (page != selected) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && page != selected) setState(() => page = selected);
+          });
+        }
+        final destination = destinations[selected];
         return PopScope(
           canPop: false,
           onPopInvokedWithResult: (didPop, _) {
@@ -241,11 +251,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       destination == AppDestination.settings
                   ? null
                   : AppBar(
-                      title: destination == AppDestination.sites
-                          ? const Text('Site Lens')
-                          : null,
+                      // The theater names its own station; the sites list is a
+                      // second-level surface now, so the bar carries actions
+                      // only.
                       actions: siteLensTopBarActions(switch (destination) {
-                        AppDestination.sites => [
+                        AppDestination.theater => [
+                          IconButton(
+                            tooltip: '站点档案',
+                            icon: const Icon(Icons.travel_explore_outlined),
+                            onPressed: () => setState(
+                              () => page = AppDestination.browse.index,
+                            ),
+                          ),
+                        ],
+                        AppDestination.browse => [
                           IconButton(
                             tooltip: '添加站点',
                             icon: const Icon(Icons.add_link),
@@ -276,8 +295,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                                   })
                                 : null,
                           ),
-                        ],
-                        AppDestination.browser => [
                           IconButton(
                             tooltip: '新建标签页',
                             icon: const Icon(Icons.add),
@@ -299,9 +316,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                             ],
                             onSelected: (_) => safely(context, () async {
                               await app.closeAllTabs();
-                              if (!mounted || page != 1) return;
+                              if (!mounted ||
+                                  page != AppDestination.browse.index) {
+                                return;
+                              }
                               if (app.browserTabs.isEmpty) {
-                                setState(() => page = 0);
+                                setState(
+                                  () => page = AppDestination.theater.index,
+                                );
                               }
                             }),
                           ),
@@ -314,15 +336,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 child: KeyedSubtree(
                   key: ValueKey(destination),
                   child: switch (destination) {
-                    AppDestination.sites => ProfilesPanel(
+                    AppDestination.theater => TheaterScreen(
+                      stations: directTheaterStations(
+                        profiles: app.profiles,
+                        resolveAdapter: app.theaterAdapterFor,
+                      ),
+                      onOpenSeries: (station, series) =>
+                          _openProfile(app, station.profile),
+                      onAddSite: () =>
+                          setState(() => page = AppDestination.browse.index),
+                    ),
+                    AppDestination.browse => SiteBrowsePanel(
                       app: app,
                       onOpen: (profile) => _openProfile(app, profile),
                       onEnterProfile: (profile) => _enterProfile(app, profile),
                       onResume: () => _resume(app),
-                    ),
-                    AppDestination.browser => BrowserTabsPage(
-                      app: app,
-                      onResume: (tab) => _resumeTab(app, tab),
+                      onResumeTab: (tab) => _resumeTab(app, tab),
                       onNewTab: () =>
                           safely(context, () => promptNewTab(context, app)),
                     ),
@@ -355,24 +384,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       },
                       items: [
                         const SiteLensBottomNavigationItem(
-                          icon: Icons.travel_explore_outlined,
-                          selectedIcon: Icons.travel_explore,
-                          label: '站点',
+                          icon: Icons.theaters_outlined,
+                          selectedIcon: Icons.theaters,
+                          label: '剧场',
                         ),
                         SiteLensBottomNavigationItem(
                           icon: app.browserTabs.isEmpty
-                              ? Icons.tab_unselected
+                              ? Icons.travel_explore_outlined
                               : Icons.tab_outlined,
-                          selectedIcon: Icons.tab,
-                          label: '浏览',
+                          selectedIcon: app.browserTabs.isEmpty
+                              ? Icons.travel_explore
+                              : Icons.tab,
+                          label: '站外浏览',
                           semanticLabel: app.browserTabs.isEmpty
-                              ? '浏览'
-                              : '浏览，${app.browserTabs.length} 个标签',
+                              ? '站外浏览'
+                              : '站外浏览，${app.browserTabs.length} 个标签',
                         ),
                         const SiteLensBottomNavigationItem(
                           icon: Icons.video_library_outlined,
                           selectedIcon: Icons.video_library,
-                          label: '媒体',
+                          label: '媒体库',
                         ),
                         const SiteLensBottomNavigationItem(
                           icon: Icons.tune_outlined,

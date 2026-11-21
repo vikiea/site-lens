@@ -209,15 +209,15 @@ void main() {
         reason: 'the bottom navigation stays compact without a badge',
       );
       expect(
-        find.descendant(of: navigation, matching: find.text('站点')),
+        find.descendant(of: navigation, matching: find.text('剧场')),
         findsOneWidget,
       );
       expect(
-        find.descendant(of: navigation, matching: find.text('浏览')),
+        find.descendant(of: navigation, matching: find.text('站外浏览')),
         findsOneWidget,
       );
       expect(
-        find.descendant(of: navigation, matching: find.text('媒体')),
+        find.descendant(of: navigation, matching: find.text('媒体库')),
         findsOneWidget,
       );
       expect(
