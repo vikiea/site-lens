@@ -232,14 +232,16 @@ class _TheaterScreenState extends State<TheaterScreen> {
           SliverToBoxAdapter(
             child: SiteLensSectionHeader(
               title: '我的追剧',
-              subtitle: (widget.following ?? _series).isEmpty
+              // 追剧记录只记观看位置，所以这里从不回退到目录 feed：
+              // 没有记录时横排显示空态，而不是把整份 feed 再抄一遍。
+              subtitle: (widget.following ?? const <SeriesSummary>[]).isEmpty
                   ? null
                   : '继续看上次停下的那部',
             ),
           ),
           SliverToBoxAdapter(
             child: _FollowingStrip(
-              series: widget.following ?? _series,
+              series: widget.following ?? const <SeriesSummary>[],
               onTap: (series) => widget.onOpenSeries?.call(station, series),
             ),
           ),

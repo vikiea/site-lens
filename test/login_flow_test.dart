@@ -123,7 +123,9 @@ void main() {
     expect(outcome, isA<LoginSucceeded>());
     final succeeded = outcome as LoginSucceeded;
     expect(api.destroyed, contains(entry.hostId));
-    expect(hosts.sessions[entry.hostId]!.disposed, isTrue);
+    // A closed host is gone from the session map rather than left behind
+    // holding a disposed handle.
+    expect(hosts.sessions.containsKey(entry.hostId), isFalse);
     expect(succeeded.returnTo, origin.returnTo);
     expect(succeeded.seriesKey, 's-1');
     expect(succeeded.loginHostId, entry.hostId);
@@ -217,6 +219,7 @@ void main() {
       script,
       Cancellation(),
       networkMode: ScriptNetworkMode.public,
+      publicConfirmed: true,
     );
 
     await hosts.configure(browse);
