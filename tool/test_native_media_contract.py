@@ -31,15 +31,23 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn('class MediaFileLeaseRegistry', NATIVE_LEASES)
         for token in ('acquireRead', 'acquireMutation', 'overlaps', 'taskIds', 'documents'):
             self.assertIn(token, NATIVE_LEASES)
-        local = NATIVE_MEDIA.split('private fun openLocal(', 1)[1].split('private fun start(', 1)[0]
+        local = NATIVE_MEDIA.split('private fun openLocal(', 1)[1].split('private fun openInService(', 1)[0]
         self.assertIn('openInService(', local)
         self.assertLess(local.index('openFileDescriptor'), local.index('openInService'))
         self.assertIn('Uri.fromFile(file).toString()', local)
-        self.assertIn('MediaFileLeaseRegistry.Scope.file(File(uri.path!!).parentFile!!)', NATIVE_SESSION)
-        self.assertIn('NativeMediaFileLeases.registry.acquireRead(leaseScope)', NATIVE_SESSION)
-        self.assertLess(NATIVE_SESSION.index('acquireRead(leaseScope)'), NATIVE_SESSION.index('player.setMediaItem'))
-        stop = NATIVE_MEDIA.split('private fun stopLocalPlayer()', 1)[1].split('private fun ensureTexture(', 1)[0]
-        self.assertLess(stop.index('media.release()'), stop.index('fileLease?.close()'))
+        # 租约范围由判定对象给出；服务只负责拿与放。
+        route = (ANDROID / "NativeMediaSessionRoute.kt").read_text()
+        self.assertIn('MediaFileLeaseRegistry.Scope.file(parent)', route)
+        self.assertEqual(1, NATIVE_SESSION.count('NativeMediaFileLeases.registry.acquireRead('))
+        self.assertLess(
+            NATIVE_SESSION.index('acquireRead(it)'),
+            NATIVE_SESSION.index('player.setMediaItem'),
+        )
+        # 进程内播放器与它的文件租约都不存在了；租约只由服务持有与释放。
+        self.assertNotIn('fileLease', NATIVE_MEDIA)
+        self.assertNotIn('ExoPlayer.Builder', NATIVE_MEDIA)
+        self.assertIn('fileLease?.close()', NATIVE_SESSION)
+        self.assertIn('var fileLease: Closeable? = null', NATIVE_SESSION)
 
     def test_native_media_session_service_owns_background_player_and_media3_notification(self):
         self.assertIn('class NativeMediaSessionService : MediaSessionService()', NATIVE_SESSION)
@@ -93,10 +101,67 @@ class NativeMediaContractTests(unittest.TestCase):
         ):
             self.assertIn(token, NATIVE_SESSION)
 
+    def test_remote_sessions_are_decided_by_one_route_object(self):
+        route = (ANDROID / "NativeMediaSessionRoute.kt").read_text()
+        # 判定对象必须能独立单测：不引入 Android 类，也不碰 Media3。
+        for forbidden in ("android.", "androidx.", "Context", "Uri.parse"):
+            self.assertNotIn(forbidden, route)
+        for token in (
+            "internal data class NativeMediaSessionRoute",
+            "enum class Family",
+            "LOCAL",
+            "REMOTE",
+            "holdsFileLease",
+            "isRestorable",
+            "fun leaseForOpening(",
+            "fun sourceOf(",
+            "fun shouldPreserveRestorable(",
+            "fun shouldRestore(",
+            "Scheme.HTTP",
+            "Scheme.HTTPS",
+        ):
+            self.assertIn(token, route)
+        # 服务只按判定对象的结论执行：租约、可恢复记录、冷恢复、数据源四处。
+        self.assertIn("NativeMediaSessionRoute.classify(", NATIVE_SESSION)
+        self.assertIn("val leaseScope = route.leaseForOpening(", NATIVE_SESSION)
+        self.assertIn("val nextLease = leaseScope?.let { NativeMediaFileLeases.registry.acquireRead(it) }", NATIVE_SESSION)
+        self.assertIn("if (route.isRestorable) clearRestorable()", NATIVE_SESSION)
+        self.assertIn("when (route.sourceOf(hls))", NATIVE_SESSION)
+        self.assertIn("private fun sessionAllowsRestorable(): Boolean", NATIVE_SESSION)
+        self.assertIn("restorable = sessionAllowsRestorable()", NATIVE_SESSION)
+        self.assertIn("NativeMediaSessionRoute.shouldRestore(uri)", NATIVE_SESSION)
+        self.assertIn("NativeMediaSessionRoute.shouldPreserveRestorable(raw)", NATIVE_SESSION)
+        self.assertNotIn('require(uri.scheme == "file" || uri.scheme == "content")', NATIVE_SESSION)
+
+    def test_remote_scheme_arrives_through_an_explicit_source_preference(self):
+        self.assertIn(
+            'const val PREF_REMOTE_SOURCE_ALLOWED = "remoteSourceAllowed"',
+            (ANDROID / "NativeMediaSessionRoute.kt").read_text(),
+        )
+        self.assertIn("val remoteSourceAllowed: Boolean = false,", NATIVE_SESSION)
+        for token in (
+            "remoteSourceAllowed = request.remoteSourceAllowed",
+            "NativeMediaSessionRoute.preferenceAllowsRemoteSource(",
+            "remoteSourceAllowed = remoteSourceEnabled(context)",
+        ):
+            self.assertTrue(token in NATIVE_SESSION or token in NATIVE_MEDIA, token)
+
+    def test_process_local_remote_player_is_no_longer_a_path(self):
+        for token in (
+            "private fun start(",
+            "startAfterStop",
+            "referer",
+            "SystemMediaNetwork.buildOkHttpClient(",
+            "AndroidCookieReader.get(",
+        ):
+            self.assertNotIn(token, NATIVE_MEDIA)
+        # 远程地址唯一出口是媒体会话，进程内不再自建 ExoPlayer 播放它。
+        self.assertIn("openInService(call, result, taskId = \"\"", NATIVE_MEDIA)
+
     def test_local_service_replacement_does_not_stop_the_service(self):
         self.assertIn('stopLocalPlayer()', NATIVE_MEDIA)
         replacement = NATIVE_MEDIA.split('private fun openInService(', 1)[1].split(
-            'private fun start(', 1
+            'private fun openInServiceAfterStop(', 1
         )[0]
         self.assertNotIn('NativeMediaSessionService.stop(context)', replacement)
         self.assertIn('openRequestId++', replacement)
@@ -504,9 +569,10 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn('if (offset > 0 && total == offset) return offset', TRANSFER)
 
     def test_native_playback_claims_media_audio_focus(self):
-        self.assertIn("setAudioAttributes", NATIVE_MEDIA)
-        self.assertIn("C.USAGE_MEDIA", NATIVE_MEDIA)
-        self.assertIn("setHandleAudioBecomingNoisy(true)", NATIVE_MEDIA)
+        # 进程内播放器不再是播放路径，音频焦点只由媒体会话持有。
+        self.assertIn("setAudioAttributes", NATIVE_SESSION)
+        self.assertIn("C.USAGE_MEDIA", NATIVE_SESSION)
+        self.assertIn("setHandleAudioBecomingNoisy(true)", NATIVE_SESSION)
 
     def test_hls_transformer_preflight_and_output_contract(self):
         body = NATIVE_EXPORT.split("private fun muxHls(", 1)[1].split("private fun validateSampleParity(", 1)[0]
