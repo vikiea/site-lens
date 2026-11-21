@@ -211,6 +211,7 @@ const _v26RouteHealthTables = <String>[
       'failure_category TEXT, '
       'failure_detail TEXT, '
       'station_key TEXT, '
+      'last_failure_route TEXT, '
       'PRIMARY KEY(profile_id, route))',
 ];
 
@@ -701,6 +702,11 @@ class AppDatabase extends GeneratedDatabase {
       await customStatement(sql);
     }
     migrationDebugHook?.call('v26-after-table');
+    if (!await _columnExists('site_profile_health', 'last_failure_route')) {
+      await customStatement(
+        'ALTER TABLE site_profile_health ADD COLUMN last_failure_route TEXT',
+      );
+    }
     // 从 v1 一路升上来的夹具可能连 profile_pages 都没有：那一步只在 v2 建表，
     // 而 ALTER 一棵不存在的表会直接让整次迁移失败。表不存在时按当前形状一次性
     // 建全，保证此后读到的一定带 route 列。
