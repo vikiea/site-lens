@@ -217,6 +217,20 @@ const _v26RouteHealthTables = <String>[
 /// The 出口 a publishing page belongs to (ADR-0006). A page-level result is
 /// only meaningful when the reader knows which route produced it, so the
 /// column lands in the same migration as the per-出口 verdict table.
+/// The publishing-page row at the shape the current code reads. Used when a
+/// migration reaches v26 on a fixture that never created the table.
+const _profilePagesTable =
+    'CREATE TABLE IF NOT EXISTS profile_pages('
+    'id INTEGER PRIMARY KEY AUTOINCREMENT, '
+    'profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE, '
+    'url TEXT NOT NULL, '
+    'region_selector TEXT NOT NULL, '
+    'enabled INTEGER NOT NULL DEFAULT 1, '
+    'route TEXT NOT NULL DEFAULT \'browse\', '
+    'refreshed_at TEXT, '
+    'error TEXT, '
+    'UNIQUE(profile_id, url))';
+
 const _v26PageRouteColumn =
     'ALTER TABLE profile_pages ADD COLUMN route TEXT NOT NULL DEFAULT \'browse\'';
 
@@ -687,9 +701,11 @@ class AppDatabase extends GeneratedDatabase {
     }
     migrationDebugHook?.call('v26-after-table');
     // 从 v1 一路升上来的夹具可能连 profile_pages 都没有：那一步只在 v2 建表，
-    // 而 ALTER 一棵不存在的表会直接让整次迁移失败。
-    if (await _tableExists('profile_pages') &&
-        !await _columnExists('profile_pages', 'route')) {
+    // 而 ALTER 一棵不存在的表会直接让整次迁移失败。表不存在时按当前形状一次性
+    // 建全，保证此后读到的一定带 route 列。
+    if (!await _tableExists('profile_pages')) {
+      await customStatement(_profilePagesTable);
+    } else if (!await _columnExists('profile_pages', 'route')) {
       await customStatement(_v26PageRouteColumn);
     }
     migrationDebugHook?.call('v26-after-page-route');
@@ -905,6 +921,23 @@ class AppDatabase extends GeneratedDatabase {
 
   /// Reads every recorded 出口 in one query. Values this build does not know
   /// are skipped rather than guessed at.
+  /// 声明一个档案具备哪些出口。整批替换：一份档案同时可以是直连与浏览出口
+  /// （ADR-0002），所以这里是集合而不是单值。
+  Future<void> setProfileRoutes(int profileId, Set<SiteRoute> routes) =>
+      transaction(() async {
+        await customStatement(
+          'DELETE FROM site_profile_routes WHERE profile_id=?',
+          [profileId],
+        );
+        for (final route in routes) {
+          await customStatement(
+            'INSERT OR IGNORE INTO site_profile_routes(profile_id,route) '
+            'VALUES(?,?)',
+            [profileId, route.storageName],
+          );
+        }
+      });
+
   Future<Map<int, Set<SiteRoute>>> _routesByProfile() async {
     final routes = <int, Set<SiteRoute>>{};
     for (final row in await customSelect(

@@ -135,6 +135,13 @@ void main() {
       ),
     ];
     app.installTheaterAdapter(profile.id, adapter);
+    // 这份档案两条出口都具备，才能表达「直连失败、浏览仍可用」。
+    await db.setProfileRoutes(profile.id, {
+      SiteRoute.direct,
+      SiteRoute.browse,
+    });
+    await app.load();
+    profile = app.profiles.singleWhere((value) => value.id == profile.id);
     // The direct route is failing while the browse route still works: the
     // panel must name the 出口 that failed, not declare the site broken.
     await db.customStatement(
