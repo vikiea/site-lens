@@ -133,15 +133,20 @@ data class SiteCredentialRecord(
             if (cookieNode != null && cookieNode !is JSONObject) throw IllegalArgumentException(UNREADABLE)
             val cookies = LinkedHashMap<String, String>()
             val cookieObject = cookieNode as? JSONObject
-            for (name in cookieObject?.keys()?.asSequence() ?: emptySequence()) {
-                val cookieName = name.trim()
-                if (cookieName.isEmpty() || cookieName.length > MAX_COOKIE_NAME_LENGTH) {
-                    throw IllegalArgumentException(UNREADABLE)
+            if (cookieObject != null) {
+                for (name in cookieObject.keys().asSequence()) {
+                    val cookieName = name.trim()
+                    if (cookieName.isEmpty() || cookieName.length > MAX_COOKIE_NAME_LENGTH) {
+                        throw IllegalArgumentException(UNREADABLE)
+                    }
+                    val cookieValue = text(cookieObject, name)
+                        ?: throw IllegalArgumentException(UNREADABLE)
+                    if (cookieValue.length > MAX_COOKIE_VALUE_LENGTH) {
+                        throw IllegalArgumentException(UNREADABLE)
+                    }
+                    cookies[cookieName] = cookieValue
+                    if (cookies.size > MAX_COOKIE_COUNT) throw IllegalArgumentException(UNREADABLE)
                 }
-                val cookieValue = text(cookieObject, name) ?: throw IllegalArgumentException(UNREADABLE)
-                if (cookieValue.length > MAX_COOKIE_VALUE_LENGTH) throw IllegalArgumentException(UNREADABLE)
-                cookies[cookieName] = cookieValue
-                if (cookies.size > MAX_COOKIE_COUNT) throw IllegalArgumentException(UNREADABLE)
             }
             // 令牌与 cookie 缺一不可：分片与 CDN 常只认 cookie，而清单要令牌。
             if (accessToken == null || cookies.isEmpty()) throw IllegalArgumentException(UNREADABLE)
