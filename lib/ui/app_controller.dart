@@ -4058,6 +4058,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     deviceDiagnostics.removeListener(_diagnosticsChanged);
     deviceDiagnostics.dispose();
     unawaited(_diagnosticPlaybackEvents?.cancel());
+    // 凭证握手订阅着原生会话流；不释放它，shutdown 之后仍有一个活的订阅，
+    // 测试里的 pumpAndSettle 就永远等不到静止。
+    unawaited(_credentialOutcomes?.cancel());
+    _credentialOutcomes = null;
+    final handoff = credentialHandoff;
+    credentialHandoff = null;
+    if (handoff != null) unawaited(handoff.dispose());
     mediaCast.removeListener(_observeCastForDiagnostics);
     hosts.changed.removeListener(_hostMetadataChanged);
     _network?.cancel();
