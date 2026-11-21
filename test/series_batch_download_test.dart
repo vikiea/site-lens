@@ -301,7 +301,12 @@ void main() {
       expect(app.mediaTasks.tasks, hasLength(3));
       final removed = await store.deleteEpisode(2);
 
-      expect(removed, 1);
+      expect(
+        removed,
+        1,
+        reason:
+            'tasks=${app.mediaTasks.tasks.map((t) => '${t.id}/${t.episodeNumber}/${t.batchDirectory}').toList()}',
+      );
       expect(app.mediaTasks.tasks.map((task) => task.episodeNumber).toSet(), {
         1,
         3,
