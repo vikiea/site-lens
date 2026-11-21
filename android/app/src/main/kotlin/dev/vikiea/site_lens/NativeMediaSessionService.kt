@@ -20,6 +20,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -334,6 +335,12 @@ class NativeMediaSessionService : MediaSessionService() {
                 if (!applicationForeground && !allowNativeBackgroundPlayback) {
                     scheduleControllerCommandsRefresh()
                 }
+            }
+            // 画面比例只有在解码器知道尺寸之后才存在。播放页按它把纹理装进
+            // 可用区域（竖屏短剧与横屏都靠它），所以尺寸一到就推一次快照。
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                if (!acceptsCallback(generation)) return
+                publish()
             }
             override fun onPlayerError(error: PlaybackException) {
                 if (!acceptsCallback(generation)) return

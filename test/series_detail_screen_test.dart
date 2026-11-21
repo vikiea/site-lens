@@ -302,15 +302,112 @@ void main() {
     expect(find.textContaining('该线路维护中'), findsOneWidget);
   });
 
-  testWidgets('播放入口明确标为尚未实现，本轮不做播放', (tester) async {
+  testWidgets('没有接播放时，播放按钮说明这一集还没有可播放的候选', (tester) async {
     final owner = profile(1, '甲站');
     await pumpDetail(tester, adapter: adapterWith(), owner: owner);
 
     final play = find.widgetWithText(FilledButton, '播放');
     expect(play, findsOneWidget);
+    expect(find.text('播放尚未接入'), findsOneWidget);
     await tester.tap(play);
     await tester.pumpAndSettle();
-    expect(find.textContaining('播放'), findsWidgets);
+    expect(find.text('这一集还没有可播放的候选'), findsOneWidget);
+  });
+
+  testWidgets('接了播放时：点一集就把这一集的候选交出去', (tester) async {
+    final owner = profile(1, '甲站');
+    final requested = <MediaCandidate>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SeriesDetailScreen(
+            adapter: adapterWith(),
+            profile: owner,
+            series: const SeriesSummary(
+              seriesKey: 's-1',
+              title: '示例剧',
+              episodeCount: 2,
+            ),
+            onRequestPlay: requested.add,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 第 1 集的候选已经在手上：点选集立刻播这一集。
+    await tester.tap(find.text('第1集'));
+    await tester.pumpAndSettle();
+    expect(requested, hasLength(1));
+    expect(requested.single.episodeNumber, 1);
+
+    // 第 2 集要等线路与候选落地：候选一到就交出，且只交一次。
+    await tester.tap(find.text('第2集'));
+    await tester.pumpAndSettle();
+    expect(requested, hasLength(2));
+    expect(requested.last.episodeNumber, 2);
+    expect(requested.last.mediaUrl.toString(), contains('alpha-1080'));
+  });
+
+  testWidgets('接了播放时：播放按钮交出的就是选中的那一份候选', (tester) async {
+    final owner = profile(1, '甲站');
+    final requested = <MediaCandidate>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SeriesDetailScreen(
+            adapter: adapterWith(),
+            profile: owner,
+            series: const SeriesSummary(
+              seriesKey: 's-1',
+              title: '示例剧',
+              episodeCount: 2,
+            ),
+            onRequestPlay: requested.add,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, '播放'));
+    await tester.pumpAndSettle();
+    expect(requested, hasLength(1));
+    expect(requested.single.id, contains(':1:alpha:0'));
+  });
+
+  testWidgets('接了播放时：候选取不到就不交出去，失败说清楚是哪一集', (tester) async {
+    final owner = profile(1, '甲站');
+    final adapter = adapterWith();
+    final requested = <MediaCandidate>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SeriesDetailScreen(
+            adapter: adapter,
+            profile: owner,
+            series: const SeriesSummary(
+              seriesKey: 's-1',
+              title: '示例剧',
+              episodeCount: 2,
+            ),
+            onRequestPlay: requested.add,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 第二集的候选取不到：播放按钮不能假装可以播，也不许把上一集的候选交出去。
+    adapter.failNextWith(SiteAdapterErrorKind.unavailable, '线路维护中');
+    await tester.tap(find.text('第2集'));
+    await tester.pumpAndSettle();
+
+    expect(requested, isEmpty);
+    await tester.tap(find.widgetWithText(FilledButton, '播放'));
+    await tester.pumpAndSettle();
+    expect(requested, isEmpty);
+    expect(find.textContaining('线路维护中'), findsWidgets);
   });
 
   testWidgets('剧场点进剧集后打开详情页', (tester) async {

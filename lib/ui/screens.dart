@@ -49,6 +49,7 @@ import 'double_back_exit.dart';
 import 'filter_diagnostics_panel.dart';
 import 'ui_util.dart';
 import 'series_detail_screen.dart';
+import 'remote_player_screen.dart';
 import 'site_browse_panel.dart';
 import 'theater_screen.dart';
 import 'ui_primitives.dart';
@@ -468,9 +469,52 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           profile: station.profile,
           series: series,
           lineMemory: app.seriesLineMemory,
+          // 点一集就播：详情页只交出候选，应用侧负责凭证、原生会话与失败
+          // 归因，播放页负责画面与跳集（T11）。
+          onRequestPlay: (candidate) =>
+              unawaited(_playRemote(app, station, candidate)),
         ),
       ),
     );
+  }
+
+  /// 从详情页进入远程播放。
+  ///
+  /// 打开失败在这里就地说明：此时还没有播放页，也没有可归因的原生会话。
+  /// 打开成功之后，播放页自己持有会话，失败由远程归因链处置。
+  Future<void> _playRemote(
+    AppController app,
+    TheaterStation station,
+    MediaCandidate candidate,
+  ) async {
+    if (!mounted) return;
+    final episodeNumber = candidate.episodeNumber == null
+        ? null
+        : '第 ${candidate.episodeNumber} 集';
+    await safely(context, () async {
+      final launch = await app.openRemoteEpisode(
+        candidate,
+        adapter: station.adapter,
+        seriesKey: candidate.seriesKey ?? '',
+        episodeTitle: episodeNumber,
+      );
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => RemotePlayerScreen(
+            host: AppRemotePlaybackHost(app),
+            candidate: launch.candidate,
+            title: launch.title,
+            episodeNumber: launch.episodeNumber,
+            source: launch.source,
+            lineId: launch.lineId,
+            qualityLabel: launch.candidate.qualityLabel,
+            audioLabel: launch.candidate.audioLabel,
+            continueWatchingMs: launch.continueWatchingMs,
+          ),
+        ),
+      );
+    });
   }
 
   void _openProfile(AppController app, SiteProfile profile) {

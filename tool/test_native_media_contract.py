@@ -378,13 +378,56 @@ class NativeMediaContractTests(unittest.TestCase):
             self.assertIn(token, notice)
         # 应用侧把四类接到同一处，并且不经过媒体任务状态。
         for token in (
-            "RemoteFailurePlan reportRemoteFailure(RemotePlaybackFailure failure)",
-            "RemoteFailurePlan? observeRemoteFailure(NativePlaybackSession session)",
+            "RemoteFailurePlan reportRemoteFailure(",
+            "RemoteFailurePlan? observeRemoteFailure(",
             "RemoteFailureNotice? get remoteFailureNotice",
             "Future<MediaCandidate?> downloadEpisodeAfterSegmentFailure()",
             "Future<void> reopenAfterManifestRefresh()",
         ):
             self.assertIn(token, APP_CONTROLLER)
+
+    def test_series_detail_hands_a_candidate_straight_to_remote_playback(self):
+        # T11：从详情页点选集直接进入远程播放，播放页不认识适配器、凭证或任务。
+        detail = (ROOT / "lib/ui/series_detail_screen.dart").read_text()
+        player = (ROOT / "lib/ui/remote_player_screen.dart").read_text()
+        controller = (ROOT / "lib/media/remote_playback_controller.dart").read_text()
+        source = (ROOT / "lib/media/remote_episode_source.dart").read_text()
+        # 详情页只交出候选；它自己不开会话、不建任务。
+        self.assertIn("final void Function(MediaCandidate candidate)? onRequestPlay;", detail)
+        self.assertIn("_deliverPendingPlay()", detail)
+        self.assertNotIn("openRemoteCandidate", detail)
+        self.assertNotIn("MediaTask", detail)
+        # 应用侧把打开、目录来源与播放页接起来。
+        for token in (
+            "Future<RemotePlayerLaunch> openRemoteEpisode(",
+            "await openRemoteCandidate(",
+            "class AppRemotePlaybackHost implements RemotePlaybackHost",
+        ):
+            self.assertIn(token, APP_CONTROLLER)
+        # 播放页只依赖宿主接口；换集是「先开新的、再关旧的」。
+        self.assertIn("abstract interface class RemotePlaybackHost", controller)
+        self.assertIn("Stream<NativePlaybackSession> get nativeStates;", controller)
+        open_next = controller.split("Future<void> _switchToOffset(", 1)[1].split(
+            "Future<void> _onCompleted()", 1
+        )[0]
+        self.assertLess(
+            open_next.index("await _open(candidate"),
+            open_next.index("await _closeQuietly(previous)"),
+        )
+        # 倍速跟着播放器走，不跟着会话走。
+        self.assertIn("if (_speed != 1 && next.id.isNotEmpty)", controller)
+        self.assertIn("await _host.setSpeed(_speed, next.id);", controller)
+        # 下一集只能由适配器产出；播放页不自己拼地址。
+        self.assertIn("abstract interface class RemoteEpisodeSource", source)
+        self.assertIn("await adapter.lines(seriesKey, episodeNumber, cancel);", source)
+        self.assertNotIn("http://", player)
+        self.assertNotIn("https://", player)
+        # 失败归因：播放页执行 plan 给出的动作，自己不判定种类。
+        self.assertIn("RemoteFailureAction.suggestDownload", player)
+        self.assertIn("RemoteFailureAction.keepNetworkMessage", player)
+        self.assertIn("abstract interface class RemotePlaybackHost", player + controller)
+        # 取景只缩放、不改比例：两种方向都走同一个算式。
+        self.assertIn("static Size fittedSize({", player)
 
     def test_credential_files_never_log_a_value(self):
         for name in (
