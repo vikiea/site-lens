@@ -96,7 +96,7 @@ void main() {
 
     // The trigger renders the selected station's name; "切换站点" is only its
     // tooltip and semantics label.
-    await tester.tap(find.text('甲站').first);
+    await tester.tap(find.byTooltip('切换站点'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('乙站').last);
     await tester.pumpAndSettle();
@@ -105,7 +105,7 @@ void main() {
     expect(find.text('甲的剧'), findsNothing);
 
     // 切回来仍能看到甲站的目录：每个站点各自缓存自己那一份。
-    await tester.tap(find.text('乙站').first);
+    await tester.tap(find.byTooltip('切换站点'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('甲站').last);
     await tester.pumpAndSettle();
@@ -132,7 +132,7 @@ void main() {
 
     // The trigger renders the selected station's name; "切换站点" is only its
     // tooltip and semantics label.
-    await tester.tap(find.text('甲站').first);
+    await tester.tap(find.byTooltip('切换站点'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('乙站').last);
     await tester.pumpAndSettle();
@@ -263,9 +263,19 @@ void main() {
     expect(find.text('脚本管理'), findsOneWidget);
     expect(find.text('广告与反跟踪'), findsOneWidget);
 
+    // 设置页滚动之后，「站外浏览」既是导航标签也是分类标题；只有滚回顶部
+    // 再点导航项才不会歧义。
+    await tester.tap(find.text('剧场'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('站外浏览'));
     await tester.pumpAndSettle();
-    expect(find.byTooltip('新建标签页'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AppBar),
+        matching: find.byTooltip('新建标签页'),
+      ),
+      findsOneWidget,
+    );
 
     await tester.pumpWidget(const SizedBox());
     await tester.runAsync(() async {
