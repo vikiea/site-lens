@@ -72,6 +72,13 @@ void main() {
       await tester.pumpAndSettle();
 
       final backupTile = find.byKey(const ValueKey('profile-backup-addresses'));
+      // 出口与基站面板插在顶部卡片之后，备用地址被推到了首屏之下。
+      await tester.scrollUntilVisible(
+        backupTile,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
       expect(backupTile, findsOneWidget);
       expect(find.text('备用地址一'), findsOneWidget);
 

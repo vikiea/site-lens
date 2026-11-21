@@ -218,7 +218,9 @@ const _v26RouteHealthTables = <String>[
 /// only meaningful when the reader knows which route produced it, so the
 /// column lands in the same migration as the per-出口 verdict table.
 const _v26PageRouteColumn =
-    'ALTER TABLE profile_pages ADD COLUMN route TEXT NOT NULL DEFAULT \'browse\'';/// The candidate row, always created with every column the current code reads.
+    'ALTER TABLE profile_pages ADD COLUMN route TEXT NOT NULL DEFAULT \'browse\'';
+
+/// The candidate row, always created with every column the current code reads.
 ///
 /// A v1-v15 fixture has no media_candidates table at all, so the v24 step
 /// cannot assume an existing table to alter. Creating it here keeps one
@@ -684,7 +686,10 @@ class AppDatabase extends GeneratedDatabase {
       await customStatement(sql);
     }
     migrationDebugHook?.call('v26-after-table');
-    if (!await _columnExists('profile_pages', 'route')) {
+    // 从 v1 一路升上来的夹具可能连 profile_pages 都没有：那一步只在 v2 建表，
+    // 而 ALTER 一棵不存在的表会直接让整次迁移失败。
+    if (await _tableExists('profile_pages') &&
+        !await _columnExists('profile_pages', 'route')) {
       await customStatement(_v26PageRouteColumn);
     }
     migrationDebugHook?.call('v26-after-page-route');
@@ -715,6 +720,14 @@ class AppDatabase extends GeneratedDatabase {
       await customStatement(sql);
     }
   });
+
+  Future<bool> _tableExists(String table) async {
+    final rows = await customSelect(
+      'SELECT name FROM sqlite_master WHERE type=? AND name=?',
+      variables: [const Variable('table'), Variable(table)],
+    ).get();
+    return rows.isNotEmpty;
+  }
 
   Future<bool> _columnExists(String table, String column) async {
     final rows = await customSelect('PRAGMA table_info($table)').get();
@@ -909,6 +922,13 @@ class AppDatabase extends GeneratedDatabase {
         final id = await _insertProfile(name, readySelector);
         await customStatement(
           'INSERT OR IGNORE INTO profile_health(profile_id) VALUES(?)',
+          [id],
+        );
+        // 新档案默认只有浏览出口，和读了 `profiles()` 的默认值保持一致；
+        // 不播种的话，按出口计量的健康会把它当成「没有任何出口」。
+        await customStatement(
+          'INSERT OR IGNORE INTO site_profile_routes(profile_id,route) '
+          "VALUES(?,'browse')",
           [id],
         );
         return id;
