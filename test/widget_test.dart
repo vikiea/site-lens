@@ -65,7 +65,15 @@ void main() {
     await tester.tap(find.text('站外浏览'));
     await tester.pump();
     expect(find.byType(AppBar), findsOneWidget);
-    expect(find.byTooltip('新建标签页'), findsOneWidget);
+    // Both the session panel and the app bar offer a new-tab action, so the
+    // app bar's own copy is what this asserts on.
+    expect(
+      find.descendant(
+        of: find.byType(AppBar),
+        matching: find.byTooltip('新建标签页'),
+      ),
+      findsOneWidget,
+    );
     await tester.tap(find.text('媒体库'));
     await tester.pump();
     expect(tester.widget<Scaffold>(find.byType(Scaffold).first).appBar, isNull);

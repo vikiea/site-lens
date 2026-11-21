@@ -1,4 +1,5 @@
 import 'package:drift/native.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:site_lens/data/database.dart';
 import 'package:site_lens/domain/models.dart';
@@ -24,6 +25,7 @@ void main() {
   late NativeHosts hosts;
   late CancellationSignal cancel;
   late SiteCredentialStore credentials;
+  late InMemorySecureStorage secure;
 
   late AppDatabase db;
   late ScriptService scripts;
@@ -38,10 +40,13 @@ void main() {
     );
     api = FakeWebHostApi();
     credentials = SiteCredentialStore();
+    secure = InMemorySecureStorage();
+    secure.install();
     cancel = CancellationSignal();
   });
 
   tearDown(() async {
+    secure.uninstall();
     for (final session in hosts.sessions.values.toList()) {
       if (!session.disposed) await hosts.destroy(session);
     }
@@ -304,4 +309,48 @@ class _HalfVerdictAdapter implements SiteAdapter {
   @override
   Future<AdapterHealth> health(CancellationSignal cancel) =>
       inner.health(cancel);
+}
+
+/// Stand-in for the `flutter_secure_storage` platform channel. Widget tests
+/// have no native keystore, so the channel has to be answered in-process; the
+/// store still exercises its real encode/decode and key scheme.
+class InMemorySecureStorage {
+  final values = <String, String>{};
+  static const channel = MethodChannel(
+    'plugins.it_nomads.com/flutter_secure_storage',
+  );
+
+  void install() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          final arguments = Map<Object?, Object?>.from(call.arguments as Map);
+          final key = arguments['key'] as String;
+          switch (call.method) {
+            case 'write':
+            case 'writeAll':
+              values[key] = arguments['value'] as String;
+              return null;
+            case 'read':
+            case 'readAll':
+              final value = values[key];
+              return call.method == 'readAll' ? Map.of(values) : value;
+            case 'delete':
+              values.remove(key);
+              return null;
+            case 'deleteAll':
+              values.clear();
+              return null;
+            case 'containsKey':
+              return values.containsKey(key);
+            default:
+              return null;
+          }
+        });
+  }
+
+  void uninstall() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null);
+    values.clear();
+  }
 }

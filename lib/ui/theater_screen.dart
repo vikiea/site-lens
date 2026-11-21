@@ -298,10 +298,11 @@ class _StationSwitcher extends StatelessWidget {
       trailing: SiteLensMenuSelector<String>(
         label: '切换站点',
         value: selected.key,
+        // The selector asserts that exactly one option carries the current
+        // value, so the trigger's own station stays in the list.
         options: [
           for (final station in stations)
-            if (station.key != selected.key)
-              SiteLensMenuOption(value: station.key, label: station.name),
+            SiteLensMenuOption(value: station.key, label: station.name),
         ],
         onSelected: (key) {
           for (final station in stations) {
