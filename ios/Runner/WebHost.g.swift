@@ -192,6 +192,7 @@ enum HostPurpose: Int, CaseIterable {
   case browsing = 0
   case discovery = 1
   case verification = 2
+  case login = 3
 }
 
 /// A query failure is distinct from an unsupported capability. Null values in

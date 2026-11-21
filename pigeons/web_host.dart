@@ -8,7 +8,7 @@ import 'package:pigeon/pigeon.dart';
     swiftOut: 'ios/Runner/WebHost.g.swift',
   ),
 )
-enum HostPurpose { browsing, discovery, verification }
+enum HostPurpose { browsing, discovery, verification, login }
 
 class HostCapabilities {
   HostCapabilities({
