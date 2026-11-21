@@ -94,7 +94,9 @@ void main() {
     await pumpTheater(tester, stations: stations);
     expect(find.text('甲的剧'), findsOneWidget);
 
-    await tester.tap(find.text('切换站点'));
+    // The trigger renders the selected station's name; "切换站点" is only its
+    // tooltip and semantics label.
+    await tester.tap(find.text('甲站').first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('乙站').last);
     await tester.pumpAndSettle();
@@ -103,7 +105,7 @@ void main() {
     expect(find.text('甲的剧'), findsNothing);
 
     // 切回来仍能看到甲站的目录：每个站点各自缓存自己那一份。
-    await tester.tap(find.text('切换站点'));
+    await tester.tap(find.text('乙站').first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('甲站').last);
     await tester.pumpAndSettle();
@@ -128,7 +130,9 @@ void main() {
     );
     expect(find.text('甲的剧'), findsOneWidget);
 
-    await tester.tap(find.text('切换站点'));
+    // The trigger renders the selected station's name; "切换站点" is only its
+    // tooltip and semantics label.
+    await tester.tap(find.text('甲站').first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('乙站').last);
     await tester.pumpAndSettle();
@@ -248,6 +252,13 @@ void main() {
     expect(find.text('站点'), findsNothing);
 
     await tester.tap(find.text('设置'));
+    await tester.pumpAndSettle();
+    // 站外浏览 分类不在首屏视口内，惰性列表要先滚到它才会构建。
+    await tester.scrollUntilVisible(
+      find.text('脚本管理'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.pumpAndSettle();
     expect(find.text('脚本管理'), findsOneWidget);
     expect(find.text('广告与反跟踪'), findsOneWidget);

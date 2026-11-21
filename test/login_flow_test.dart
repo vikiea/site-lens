@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:drift/native.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -25,6 +27,7 @@ void main() {
   late NativeHosts hosts;
   late CancellationSignal cancel;
   late SiteCredentialStore credentials;
+  late Directory scriptDir;
   late InMemorySecureStorage secure;
 
   late AppDatabase db;
@@ -33,7 +36,10 @@ void main() {
   setUp(() async {
     db = AppDatabase(NativeDatabase.memory());
     final http = ControlledHttp();
-    scripts = ScriptService(db, http);
+    // ScriptService 默认把用户脚本源文件写进 path_provider 的应用支持目录，
+    // 测试环境没有那个插件，所以给一个临时目录。
+    scriptDir = await Directory.systemTemp.createTemp('login-flow-scripts');
+    scripts = ScriptService(db, http, sourceDirectory: () async => scriptDir);
     adapter = FakeSiteAdapter(
       profileId: 1,
       addresses: [Uri.parse('https://alpha.example/')],
@@ -47,6 +53,7 @@ void main() {
 
   tearDown(() async {
     secure.uninstall();
+    if (await scriptDir.exists()) await scriptDir.delete(recursive: true);
     for (final session in hosts.sessions.values.toList()) {
       if (!session.disposed) await hosts.destroy(session);
     }
