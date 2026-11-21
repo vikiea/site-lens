@@ -144,12 +144,21 @@ class EpisodeSummary {
 /// yield several media candidates (quality, audio track); the player is given
 /// a candidate, never a line (see 线路 in `GLOSSARY.md`).
 class Line {
-  const Line({required this.lineId, required this.label, this.note});
+  const Line({
+    required this.lineId,
+    required this.label,
+    this.note,
+    this.episodeNumber,
+  });
   final String lineId;
   final String label;
 
   /// Site-stated remark, such as availability. Optional and never parsed.
   final String? note;
+
+  /// 这条线路属于哪一集。同一个 lineId 在不同集下可以产出不同候选，所以
+  /// `candidates(line)` 必须知道上下文；缺省表示调用方没有这个上下文。
+  final int? episodeNumber;
 }
 
 /// Where the user logs in, and how the app tells that logging in worked.

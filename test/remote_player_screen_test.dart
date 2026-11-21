@@ -142,10 +142,11 @@ void main() {
     final host = FakeRemotePlaybackHost();
     await pumpPlayer(tester, host: host, size: const Size(400, 300));
 
-    // 可用区域 400x300 里，16:9 的内容按高度装：宽 533、高 300。
+    // 可用区域 400x300 里，16:9 的内容受宽度限制：宽 400、高 225，上下留边。
+    // （按高度装会得到宽 533，超出可用区域，不是「装进去」。）
     final box = tester.getSize(find.byType(Texture));
-    expect(box.height, closeTo(300, 0.5));
-    expect(box.width, closeTo(300 * 16 / 9, 0.5));
+    expect(box.width, closeTo(400, 0.5));
+    expect(box.height, closeTo(400 * 9 / 16, 0.5));
   });
 
   test('取景算式：两种比例在两种方向下都不越界，且比例不变', () {

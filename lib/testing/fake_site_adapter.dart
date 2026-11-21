@@ -135,7 +135,12 @@ class FakeSiteAdapter implements SiteAdapter {
     final episode = _episode(seriesKey, episodeNumber);
     return [
       for (final line in episode.lines)
-        Line(lineId: line.lineId, label: line.label, note: line.note),
+        Line(
+          lineId: line.lineId,
+          label: line.label,
+          note: line.note,
+          episodeNumber: episodeNumber,
+        ),
     ];
   }
 
@@ -147,6 +152,11 @@ class FakeSiteAdapter implements SiteAdapter {
     _enter(cancel);
     for (final series in _catalog) {
       for (final episode in series.episodes) {
+        // 同一个 lineId 在每一集都能出现：只看 lineId 会把第 2 集解析成第 1 集。
+        if (line.episodeNumber != null &&
+            episode.episodeNumber != line.episodeNumber) {
+          continue;
+        }
         for (final known in episode.lines) {
           if (known.lineId != line.lineId) continue;
           return [
