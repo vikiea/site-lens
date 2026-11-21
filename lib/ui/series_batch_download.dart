@@ -541,6 +541,9 @@ class SeriesBatchDownloadStore extends ChangeNotifier {
         return null;
       }
       await app.mediaTasks.ready;
+      // 直连出口的候选不是从页面授权来的，没有别的地方替它落库；
+      // media_tasks.candidate_id 有外键，不先存就入不了队。
+      await app.db.saveMediaCandidate(candidate);
       final created = await app.mediaTasks.create(
         candidate,
         batchDirectory: directory,

@@ -372,9 +372,14 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('已选 2 / 3 集'), findsOneWidget);
+      expect(find.text('已选 2 / 3 集'), findsWidgets);
 
+      // startSelection 会走真实数据库与适配器；widget 测试的假时钟不会推进
+      // 这些异步，直接 pumpAndSettle 会挂到超时，所以放进 runAsync 里跑完。
       await tester.tap(find.byKey(const Key('batch-start')));
+      // 按钮自己会调 startSelection；假时钟推不动它里面的真实异步，
+      // 用 runAsync 让那串 future 跑完，再回到假时钟断言。
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       await tester.pumpAndSettle();
 
       expect(find.byKey(const Key('batch-progress')), findsOneWidget);
@@ -382,7 +387,7 @@ void main() {
       expect(store.job?.total, 2);
 
       // 逐项失败：把一集改成失败，行里出现重试。
-      store.retryItem(0);
+      await tester.runAsync(() => store.retryItem(0));
       await tester.pumpAndSettle();
 
       await tester.dragUntilVisible(
@@ -445,7 +450,7 @@ void main() {
       await tester.tap(find.text('批量下载'));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('batch-selection-label')), findsOneWidget);
-      expect(find.text('已选 0 / 3 集'), findsOneWidget);
+      expect(find.text('已选 0 / 3 集'), findsWidgets);
 
       await tester.scrollUntilVisible(
         find.byKey(const ValueKey('episode-select-1')),
@@ -454,7 +459,7 @@ void main() {
       );
       await tester.tap(find.byKey(const ValueKey('episode-select-1')));
       await tester.pumpAndSettle();
-      expect(find.text('已选 1 / 3 集'), findsOneWidget);
+      expect(find.text('已选 1 / 3 集'), findsWidgets);
 
       await tester.scrollUntilVisible(
         find.byKey(const ValueKey('episode-select-2')),
@@ -463,7 +468,7 @@ void main() {
       );
       await tester.tap(find.byKey(const ValueKey('episode-select-2')));
       await tester.pumpAndSettle();
-      expect(find.text('已选 2 / 3 集'), findsOneWidget);
+      expect(find.text('已选 2 / 3 集'), findsWidgets);
 
       // 打开批量下载面板，计数跟着选集走。
       await tester.scrollUntilVisible(
