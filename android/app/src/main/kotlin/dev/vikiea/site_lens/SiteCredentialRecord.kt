@@ -1,9 +1,7 @@
 package dev.vikiea.site_lens
 
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
+import org.json.JSONException
+import org.json.JSONObject
 import java.net.URI
 import java.util.Locale
 
@@ -15,7 +13,7 @@ import java.util.Locale
  * `lib/site_credentials/site_credential_store.dart` 的记录一一对应，版本号不同就
  * 整体不认识——宁可当成「没有凭证」，也不要读出一个半截会话。
  */
-internal data class SiteCredentialRecord(
+data class SiteCredentialRecord(
     val profileId: Int,
     val accountId: String,
     /** 这份凭证所服务的站点 origin；为空表示不限定站点。 */
@@ -102,8 +100,6 @@ internal data class SiteCredentialRecord(
         /** 没有凭证。远程来源的准入判定用它代表「公开内容」。 */
         val NONE = SiteCredentialRecord(0, DEFAULT_ACCOUNT_ID, null, null, null, emptyMap(), null, null)
 
-        private val json = Json { ignoreUnknownKeys = true }
-
         fun of(source: String): Nothing = throw IllegalArgumentException(NOT_A_STRING)
 
         /**
@@ -112,33 +108,37 @@ internal data class SiteCredentialRecord(
          */
         fun decode(profileId: Int, raw: String): SiteCredentialRecord {
             if (raw.length > MAX_RECORD_LENGTH) throw IllegalArgumentException(UNREADABLE)
-            val root = runCatching { json.parseToJsonElement(raw) as? JsonObject }
-                .getOrNull() ?: throw IllegalArgumentException(UNREADABLE)
+            val root = runCatching { JSONObject(raw) }
+                .getOrElse { throw IllegalArgumentException(UNREADABLE) }
             return runCatching { build(profileId, root) }
                 .getOrElse { throw IllegalArgumentException(UNREADABLE) }
         }
 
-        private fun build(profileId: Int, root: JsonObject): SiteCredentialRecord {
-            val version = (root["version"] as? JsonPrimitive)?.content?.toIntOrNull()
-                ?: throw IllegalArgumentException(UNREADABLE)
+        private fun build(profileId: Int, root: JSONObject): SiteCredentialRecord {
+            val version = if (root.has("version") && !root.isNull("version")) {
+                root.optString("version", "").toIntOrNull()
+            } else {
+                null
+            } ?: throw IllegalArgumentException(UNREADABLE)
             if (version != RECORD_VERSION) throw IllegalArgumentException(UNREADABLE)
-            val account = account(root["account"]) ?: DEFAULT_ACCOUNT_ID
+            val account = account(root) ?: DEFAULT_ACCOUNT_ID
             // Dart 侧 `jsonEncode` 把 null 原样写出：没有站点限制就是没有，不是坏
             // 记录；别的形状（数字、对象）仍然整体拒绝。
-            val station = parseStation(root["station"])
-            val accessToken = text(root["accessToken"])?.also { bounded(it) }
-            val refreshToken = text(root["refreshToken"])?.also { bounded(it) }
-            val installationStamp = text(root["installationStamp"])?.also { bounded(it) }
-            val expiresAt = text(root["expiresAt"])?.also { bounded(it) }?.let { parseInstant(it) }
-            val cookieNode = root["cookies"]
-            if (cookieNode != null && cookieNode !is JsonObject) throw IllegalArgumentException(UNREADABLE)
+            val station = parseStation(root, "station")
+            val accessToken = text(root, "accessToken")?.also { bounded(it) }
+            val refreshToken = text(root, "refreshToken")?.also { bounded(it) }
+            val installationStamp = text(root, "installationStamp")?.also { bounded(it) }
+            val expiresAt = text(root, "expiresAt")?.also { bounded(it) }?.let { parseInstant(it) }
+            val cookieNode = if (root.has("cookies") && !root.isNull("cookies")) root.get("cookies") else null
+            if (cookieNode != null && cookieNode !is JSONObject) throw IllegalArgumentException(UNREADABLE)
             val cookies = LinkedHashMap<String, String>()
-            for ((name, value) in (cookieNode as? JsonObject)?.entries ?: emptySet<Map.Entry<String, JsonPrimitive>>()) {
+            val cookieObject = cookieNode as? JSONObject
+            for (name in cookieObject?.keys()?.asSequence() ?: emptySequence()) {
                 val cookieName = name.trim()
                 if (cookieName.isEmpty() || cookieName.length > MAX_COOKIE_NAME_LENGTH) {
                     throw IllegalArgumentException(UNREADABLE)
                 }
-                val cookieValue = text(value) ?: throw IllegalArgumentException(UNREADABLE)
+                val cookieValue = text(cookieObject, name) ?: throw IllegalArgumentException(UNREADABLE)
                 if (cookieValue.length > MAX_COOKIE_VALUE_LENGTH) throw IllegalArgumentException(UNREADABLE)
                 cookies[cookieName] = cookieValue
                 if (cookies.size > MAX_COOKIE_COUNT) throw IllegalArgumentException(UNREADABLE)
@@ -157,17 +157,17 @@ internal data class SiteCredentialRecord(
             )
         }
 
-        private fun text(node: kotlinx.serialization.json.JsonElement?): String? {
-            if (node == null) return null
-            if (node !is JsonPrimitive || !node.isString) throw IllegalArgumentException(UNREADABLE)
-            val trimmed = node.content.trim()
-            return trimmed.ifEmpty { null }
+        private fun text(root: JSONObject, key: String): String? {
+            if (!root.has(key) || root.isNull(key)) return null
+            val node = root.get(key)
+            // 只接受 JSON 字符串；数字、对象、数组都算坏记录。
+            if (node !is String) throw IllegalArgumentException(UNREADABLE)
+            return node.trim().ifEmpty { null }
         }
 
         /** 与 [text] 分开：账号名是一个受限标识，不是任意文本。 */
-        private fun account(node: kotlinx.serialization.json.JsonElement?): String? {
-            if (node == null) return null
-            val value = text(node) ?: return null
+        private fun account(root: JSONObject): String? {
+            val value = text(root, "account") ?: return null
             if (value.length > MAX_ACCOUNT_LENGTH) throw IllegalArgumentException(UNREADABLE)
             return value
         }
@@ -181,12 +181,8 @@ internal data class SiteCredentialRecord(
         }
 
         /** 没有站点、或者 Dart 侧显式写出的 `null`，都表示不限定站点。 */
-        private fun parseStation(node: kotlinx.serialization.json.JsonElement?): String? {
-            if (node == null) return null
-            if (node is JsonNull) return null
-            if (node is JsonPrimitive && !node.isString && node.content == "null") return null
-            return text(node)?.let { normalizeOrigin(it) }
-        }
+        private fun parseStation(root: JSONObject, key: String): String? =
+            text(root, key)?.let { normalizeOrigin(it) }
 
         private fun bounded(value: String) {
             if (value.length > MAX_FIELD_LENGTH) throw IllegalArgumentException(UNREADABLE)

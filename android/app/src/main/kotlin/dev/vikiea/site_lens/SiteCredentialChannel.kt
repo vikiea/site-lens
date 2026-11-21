@@ -8,7 +8,7 @@ package dev.vikiea.site_lens
  * 有没有可用的凭证」——它不返回任何凭证值，回执里只有档案 id 与代次。原生从不
  * 回写这份副本：应用侧推什么，它就拿着什么。
  */
-internal class SiteCredentialChannel(
+class SiteCredentialChannel(
     private val shelf: SiteCredentialRecord.Shelf,
     private val clock: () -> Long,
     private val loader: ((Loader) -> Unit)? = null,

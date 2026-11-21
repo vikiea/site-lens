@@ -1,8 +1,6 @@
 package dev.vikiea.site_lens
 
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -180,7 +178,7 @@ class SiteCredentialRecordTest {
         )
         assertEquals(
             "access-2f7a",
-            (Json.parseToJsonElement(record) as JsonObject)["accessToken"]!!.jsonPrimitive.content,
+            JSONObject(record).getString("accessToken"),
         )
     }
 }
