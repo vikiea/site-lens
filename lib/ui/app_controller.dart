@@ -329,13 +329,25 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         deviceDiagnostics.clearObservation('media.playback.session');
         // 会话结束：这一段的重试预算可以回收了。
         _remoteFailures.forget(session.id);
+        _handledRemoteFailures.removeWhere(
+          (key) => key.startsWith('${session.id}|'),
+        );
         return;
       }
       // 远程失败归因（T8）。只认远程错误码：本地会话的失败码不在这条线上，
-      // 两套归因不共用错误码，也不会互相覆盖。
+      // 两套归因不共用错误码，也不会互相覆盖。同一段会话的同一份结论只处置一
+      // 次——快照会反复下发，重试预算不能因此被反复扣。
       if (session.state == NativePlaybackState.failed) {
-        observeRemoteFailure(session);
+        final key = '${session.id}|${session.errorCode}';
+        if (_handledRemoteFailures.add(key)) {
+          observeRemoteFailure(session);
+        }
+        return;
       }
+      // 这段会话重新开始播了：它的失败结论与去重标记都可以收掉。
+      _handledRemoteFailures.removeWhere(
+        (key) => key.startsWith('${session.id}|'),
+      );
       deviceDiagnostics.recordObservation(
         id: 'media.playback.session',
         observed: session.state.name,
@@ -857,6 +869,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 四类远程失败的重试预算。按「会话 + 种类」记，会话结束由链自己回收。
   final RemoteFailureRetryChain _remoteFailures = RemoteFailureRetryChain();
+
+  /// 已经处置过的远程失败（会话 + 错误码）。同一份快照反复下发时不再重复处置。
+  final _handledRemoteFailures = <String>{};
 
   /// 最近四类远程失败各自怎么判定、要不要重开、给用户看什么。
   RemoteFailureNotice? get remoteFailureNotice => _remoteFailureNotice;
