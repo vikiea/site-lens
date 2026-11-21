@@ -469,6 +469,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           profile: station.profile,
           series: series,
           lineMemory: app.seriesLineMemory,
+          app: app,
           // 点一集就播：详情页只交出候选，应用侧负责凭证、原生会话与失败
           // 归因，播放页负责画面与跳集（T11）。
           onRequestPlay: (candidate) =>

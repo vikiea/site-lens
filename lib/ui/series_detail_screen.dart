@@ -5,8 +5,12 @@ import 'package:flutter/material.dart';
 import '../domain/models.dart';
 import '../domain/site_adapter.dart';
 import '../theater/series_line_memory.dart';
+import 'app_controller.dart';
 import 'app_theme.dart';
 import 'glass_surface.dart';
+import 'series_batch_download.dart';
+import 'series_batch_download_resolver.dart';
+import 'series_batch_download_sheet.dart';
 import 'ui_primitives.dart';
 import 'ui_util.dart';
 
@@ -21,6 +25,12 @@ import 'ui_util.dart';
 /// quality, rebuilding the page or leaving it and coming back keeps the line
 /// the user picked. Another episode never inherits it.
 ///
+/// 批量下载 (T14) lives beside this page, not inside its playback path: the
+/// 选集 list has a selection mode, the selection is handed to a
+/// [SeriesBatchDownloadStore], and the sheet reports the batch as a whole. A
+/// batch never changes what is playing (ADR-0005), and it never writes into the
+/// playback cache (ADR-0010).
+///
 /// Scope stops at the hand-off. Tapping 播放 or an 选集 hands one 媒体候选 to
 /// [onRequestPlay]; what happens next belongs to the player (T11), downloads
 /// (T14) and credentials (T4), and none of it lives here.
@@ -32,6 +42,7 @@ class SeriesDetailScreen extends StatefulWidget {
     required this.series,
     this.lineMemory,
     this.onRequestPlay,
+    this.app,
   });
 
   /// The adapter that owns this series. Its [SiteAdapter.id] scopes the line
@@ -52,6 +63,10 @@ class SeriesDetailScreen extends StatefulWidget {
   /// 播放入口。给了它就「点开就播」：播放按钮进入选中的那一集，选集行直接
   /// 进入那一集。回调拿到的永远是一个**媒体候选**，而不是线路。
   final void Function(MediaCandidate candidate)? onRequestPlay;
+
+  /// The application the batch download store enqueues through. A page without
+  /// it still shows the 选集 list and the batch sheet, but a batch cannot start.
+  final AppController? app;
 
   @override
   State<SeriesDetailScreen> createState() => _SeriesDetailScreenState();
@@ -82,6 +97,50 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
   List<MediaCandidate> _candidates = const [];
   String? _candidateId;
 
+  /// The batch selection model, created on first use so a page without an
+  /// [SeriesDetailScreen.app] never builds a store it cannot feed.
+  SeriesBatchDownloadStore? _batch;
+
+  /// Whether the 选集 list is in batch selection mode.
+  bool _selecting = false;
+
+  SeriesBatchDownloadStore? _ensureBatch() {
+    final app = widget.app;
+    if (app == null) return null;
+    final current = _batch;
+    if (current != null) return current;
+    final store = SeriesBatchDownloadStore(
+      app: app,
+      seriesKey: widget.series.seriesKey,
+      adapterId: widget.adapter.id,
+      resolver: SeriesBatchDownloadResolver(
+        adapter: widget.adapter,
+        memory: _memory,
+        seriesKey: widget.series.seriesKey,
+        seriesTitle: widget.series.title,
+        hostId: widget.profile.id,
+      ),
+    );
+    store.addListener(_batchChanged);
+    _batch = store;
+    store.setEpisodes(_batchEpisodes());
+    return store;
+  }
+
+  List<SeriesBatchEpisode> _batchEpisodes() => [
+    for (final (index, episode) in _episodes.indexed)
+      SeriesBatchEpisode(
+        position: index,
+        episodeNumber: episode.episodeNumber,
+        title: episode.title,
+        durationMs: episode.durationMs,
+      ),
+  ];
+
+  void _batchChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void initState() {
     super.initState();
@@ -108,6 +167,9 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
   @override
   void dispose() {
     _cancel.cancel();
+    _batch?.removeListener(_batchChanged);
+    _batch?.dispose();
+    _batch = null;
     super.dispose();
   }
 
@@ -142,6 +204,10 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
             ? null
             : result.episodes.first.episodeNumber;
       });
+      // A reload keeps the selection that is still listed and drops the
+      // episodes that disappeared, instead of silently enqueueing rows the
+      // detail page no longer shows.
+      _batch?.setEpisodes(_batchEpisodes());
       final episode = _episodeNumber;
       if (episode != null) await _loadLines(episode);
     } on SiteAdapterError catch (error) {
@@ -284,6 +350,54 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
     widget.onRequestPlay?.call(candidate);
   }
 
+  /// Enters or leaves the 选集 multi-select. Entering does not touch the line
+  /// area: the episode whose line is shown stays the one 线路 describes.
+  void _toggleBatchMode(bool selecting) {
+    setState(() => _selecting = selecting);
+    if (!selecting) _batch?.clearSelection();
+  }
+
+  /// Opens 批量下载 as a sheet over this page, and starts nothing on its own:
+  /// the user still has to press 下载 in the sheet, which keeps "打开面板" and
+  /// "开始下载" two separate decisions.
+  Future<void> _openBatchSheet() async {
+    final batch = _ensureBatch();
+    if (batch == null || !mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => SeriesBatchDownloadSheet(
+        store: batch,
+        onPlay: (candidate) => _playCandidateFromBatch(sheetContext, candidate),
+        onChanged: () {
+          if (mounted) setState(() {});
+        },
+      ),
+    );
+    if (mounted) setState(() {});
+  }
+
+  /// Plays one candidate of an episode while its download keeps running.
+  ///
+  /// Playback is handed to the page's play entry, which never consults the
+  /// download batch: the running task keeps transferring, and the player opens
+  /// the remote candidate rather than a local file (ADR-0005).
+  Future<void> _playCandidateFromBatch(
+    BuildContext sheetContext,
+    MediaCandidate candidate,
+  ) async {
+    final onRequestPlay = widget.onRequestPlay;
+    if (onRequestPlay == null) {
+      ScaffoldMessenger.of(sheetContext)
+          .showSnackBar(const SnackBar(content: Text('播放尚未接入：详情页没有播放入口。')));
+      return;
+    }
+    Navigator.of(sheetContext).pop();
+    onRequestPlay(candidate);
+  }
+
   void _selectLine(String lineId) {
     final episode = _episodeNumber;
     if (episode == null || lineId == _lineId) return;
@@ -302,6 +416,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final episodeCount = widget.series.episodeCount;
+    final batch = _ensureBatch();
     return Scaffold(
       backgroundColor: Colors.transparent,
       appBar: AppBar(title: const Text('剧集详情')),
@@ -323,9 +438,34 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
                   title: '选集',
                   subtitle: _episodes.isEmpty
                       ? null
+                      : _selecting
+                      ? batch?.selectionLabel
                       : '目录共有 ${_episodes.length} 集',
+                  action: _episodes.isEmpty
+                      ? null
+                      : TextButton(
+                          onPressed: batch == null
+                              ? null
+                              : () => _toggleBatchMode(!_selecting),
+                          child: Text(_selecting ? '取消多选' : '批量下载'),
+                        ),
                 ),
               ),
+              if (_selecting && batch != null)
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(
+                    SiteLensMetrics.pagePadding,
+                    0,
+                    SiteLensMetrics.pagePadding,
+                    8,
+                  ),
+                  sliver: SliverToBoxAdapter(
+                    child: SiteLensBatchSelectionBar(
+                      store: batch,
+                      onOpen: () => unawaited(_openBatchSheet()),
+                    ),
+                  ),
+                ),
               _episodeList(),
               SliverToBoxAdapter(
                 child: SiteLensSectionHeader(
@@ -423,6 +563,7 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
   }
 
   Widget _episodeList() {
+    final batch = _batch;
     if (_loadingEpisodes && _episodes.isEmpty) {
       return const SliverToBoxAdapter(
         child: Padding(
@@ -464,6 +605,35 @@ class _SeriesDetailScreenState extends State<SeriesDetailScreen> {
             const SizedBox(height: SiteLensMetrics.listGap),
         itemBuilder: (context, index) {
           final episode = _episodes[index];
+          final selecting = _selecting && batch != null;
+          if (selecting) {
+            final selected = batch.isSelected(index);
+            return SiteLensPanel(
+              padding: EdgeInsets.zero,
+              child: SiteLensCompactRow(
+                key: ValueKey('episode-select-$index'),
+                leading: Icon(
+                  selected ? Icons.check_box : Icons.check_box_outline_blank,
+                  size: SiteLensMetrics.compactIconSize,
+                  color: selected
+                      ? Theme.of(context).colorScheme.primary
+                      : null,
+                ),
+                title: Text(episode.title),
+                subtitle: episode.durationMs == null
+                    ? null
+                    : Text(formatEpisodeDuration(episode.durationMs!)),
+                onTap: () => batch.toggle(
+                  SeriesBatchEpisode(
+                    position: index,
+                    episodeNumber: episode.episodeNumber,
+                    title: episode.title,
+                    durationMs: episode.durationMs,
+                  ),
+                ),
+              ),
+            );
+          }
           return SiteLensPanel(
             padding: EdgeInsets.zero,
             child: SiteLensCompactRow(
@@ -693,4 +863,59 @@ String formatEpisodeDuration(int durationMs) {
     return '$hours:${minutes.toString().padLeft(2, '0')}:$seconds';
   }
   return '$minutes:$seconds';
+}
+
+/// The bar under 选集 while the list is in batch selection mode: the count, the
+/// two bulk actions, and the way into 批量下载.
+///
+/// It reads the store directly so the label and the button state can never
+/// disagree with what the rows show.
+class SiteLensBatchSelectionBar extends StatelessWidget {
+  const SiteLensBatchSelectionBar({
+    super.key,
+    required this.store,
+    required this.onOpen,
+  });
+
+  final SeriesBatchDownloadStore store;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SiteLensPanel(
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SiteLensRowText(
+                  store.selectionLabel,
+                  key: const Key('batch-selection-label'),
+                  semanticsLabel: store.selectionLabel,
+                  style: theme.textTheme.titleSmall,
+                ),
+                Text('一次选中多集批量入队，失败的可以单独重试', style: theme.textTheme.bodySmall),
+              ],
+            ),
+          ),
+          TextButton(
+            onPressed: store.episodes.isEmpty ? null : store.selectAll,
+            child: const Text('全选'),
+          ),
+          TextButton(
+            onPressed: store.selectedCount == 0 ? null : store.clearSelection,
+            child: const Text('清空'),
+          ),
+          const SizedBox(width: SiteLensMetrics.formGap),
+          FilledButton(
+            key: const Key('open-batch-sheet'),
+            onPressed: onOpen,
+            child: const Text('批量下载'),
+          ),
+        ],
+      ),
+    );
+  }
 }
