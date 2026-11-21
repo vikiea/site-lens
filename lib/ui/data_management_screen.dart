@@ -78,6 +78,16 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
     }
   }
 
+  Future<void> _clearPlaybackCache() async {
+    final cleared = await widget.app.clearPlaybackCache();
+    if (!mounted || cleared == null) return;
+    final megabytes = (cleared.reclaimedBytes / (1024 * 1024)).toStringAsFixed(
+      1,
+    );
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('已清除 $megabytes MB 播放缓存，下载未受影响')));
+  }
+
   @override
   Widget build(BuildContext context) => SiteLensPageScaffold(
     title: '数据管理',
@@ -123,6 +133,23 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             title: '恢复默认偏好',
             subtitle: '保留档案、脚本、脚本停用状态及浏览记录',
             onTap: busy ? null : () => _run(widget.app.resetPreferences),
+          ),
+        ),
+        const SizedBox(height: SiteLensMetrics.sectionGap),
+        Text('播放缓存', style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 10),
+        Text(
+          '远程播放看过的分片会存在本机，再看时不再联网。缓存与下载分开存放：清除缓存不会动已下载的媒体。',
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+        const SizedBox(height: SiteLensMetrics.sectionGap),
+        SiteLensPanel(
+          padding: EdgeInsets.zero,
+          child: SiteLensActionRow(
+            icon: Icons.cleaning_services_outlined,
+            title: '清除播放缓存',
+            subtitle: '已下载的媒体与任务保持不变',
+            onTap: busy ? null : () => _run(_clearPlaybackCache),
           ),
         ),
         if (busy)

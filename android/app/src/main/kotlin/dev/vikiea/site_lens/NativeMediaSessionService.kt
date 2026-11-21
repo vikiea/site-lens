@@ -20,6 +20,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -527,6 +528,30 @@ class NativeMediaSessionService : MediaSessionService() {
         }
     }
 
+    /**
+     * 远程播放的数据来源（T7）。凭证来源在最里层、每次请求现取；缓存包在它
+     * 外面，因此缓存命中的分片连凭证都不需要再取一次。
+     *
+     * 返回空实现时等于不缓存：会话只按默认值走凭证来源，不改任何失败处置。
+     *
+     * 整集已经在下载里时 [OpenRequest.admitsPlaybackCache] 为假：这一次播放
+     * 只读远端，不写缓存，避免同一份字节同时归缓存与下载。
+     */
+    private fun remoteDataSources(request: OpenRequest): DataSource.Factory {
+        val credentialed = SiteCredentialDataSource.factory { url -> headersFor(request, url) }
+        if (!request.admitsPlaybackCache) return credentialed
+        // 目录相交说明缓存配置指到了下载上：宁可这次不缓存，也不让两份存储共用文件。
+        val downloadRoot = runCatching { NativeMediaDownloadWorker.root(applicationContext) }
+            .getOrNull()
+        val cacheRoot = NativeMediaPlaybackCachePolicy.root(applicationContext.cacheDir)
+        if (downloadRoot != null &&
+            NativeMediaPlaybackCachePolicy.overlapsDownloadRoot(cacheRoot, downloadRoot)
+        ) {
+            return credentialed
+        }
+        return NativeMediaPlaybackCache.dataSourceFactory(applicationContext, credentialed)
+    }
+
     /** 这条地址此刻该带的请求头；取不到就是公开内容。 */
     private fun headersFor(request: OpenRequest, url: String = request.uri): Map<String, String> =
         runCatching { request.credentials(request.profileId, url) }.getOrDefault(emptyMap())
@@ -964,16 +989,17 @@ class NativeMediaSessionService : MediaSessionService() {
                         .createMediaSource(item),
                 )
                 // 远程 HLS 与远程渐进式共用带凭证的数据来源：主清单与分片都在
-                // 每次请求时取当前凭证。
+                // 每次请求时取当前凭证。播放缓存挂在凭证来源的外面（T7）：
+                // 命中缓存的分片不再发网络请求，未命中的边读边写进缓存目录。
                 NativeMediaSessionRoute.SourceKind.REMOTE_HTTP -> player.setMediaSource(
                     HlsMediaSource.Factory(
-                        SiteCredentialDataSource.factory { url -> headersFor(request, url) },
+                        remoteDataSources(request),
                     ).createMediaSource(item),
                 )
                 // 远程渐进式同样是逐字节区间请求，凭证注入与 HLS 共用同一个数据来源。
                 NativeMediaSessionRoute.SourceKind.REMOTE_HTTP_PROGRESSIVE -> player.setMediaSource(
                     ProgressiveMediaSource.Factory(
-                        SiteCredentialDataSource.factory { url -> headersFor(request, url) },
+                        remoteDataSources(request),
                     ).createMediaSource(item),
                 )
                 NativeMediaSessionRoute.SourceKind.LOCAL_DEFAULT -> player.setMediaItem(item)
@@ -1138,6 +1164,7 @@ class NativeMediaSessionService : MediaSessionService() {
         lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.STOPPING
         playerGeneration++
         var firstFailure: Throwable? = null
+        // 播放器持有远程数据来源，它要先松开缓存句柄；之后才能关闭缓存。
         if (::player.isInitialized && !playerReleased) {
             runCatching {
                 player.stop()
@@ -1156,6 +1183,12 @@ class NativeMediaSessionService : MediaSessionService() {
                 player.release()
                 playerReleased = true
             }.onFailure { firstFailure = firstFailure ?: it }
+        }
+        // 播放缓存的范围止于本次会话：播放器与媒体会话都放开之后才关缓存，
+        // 并在关闭时按最近使用时间把总量压回上限（T7）。
+        if (playerReleased && mediaSessionReleased) {
+            runCatching { NativeMediaPlaybackCache.release(applicationContext) }
+                .onFailure { firstFailure = firstFailure ?: it }
         }
         engineReleased = mediaSessionReleased && playerReleased
         if (engineReleased) lifecyclePhase = NativeMediaSessionPolicy.LifecyclePhase.RELEASED
@@ -1252,6 +1285,11 @@ class NativeMediaSessionService : MediaSessionService() {
         val surface: Surface?,
         val surfaceBindingId: String? = null,
         val surfaceOwnerId: String? = null,
+        /**
+         * 这次远程播放能不能经过播放缓存（T7）。整集已在下载时不进缓存：
+         * 一次播放只读一次字节来源，不跟下载抢同一份。
+         */
+        val admitsPlaybackCache: Boolean = true,
         val isCurrent: () -> Boolean = { true },
         val callback: (Result<Map<String, Any?>>) -> Unit,
     )

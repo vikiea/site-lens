@@ -1823,6 +1823,41 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Bytes held by the remote playback cache, or `null` when this platform
+  /// has no native cache. Reading it never touches a download.
+  Future<PlaybackCacheUsage?> playbackCacheUsage() async {
+    final downloads = nativeDownloads;
+    if (downloads == null) return null;
+    return _readPlaybackCache(downloads.playbackCacheUsage);
+  }
+
+  /// Clears the remote playback cache and returns what was removed.
+  ///
+  /// Only the cache directory is touched: completed downloads own another
+  /// directory, keep their files, and keep their task rows. Returns `null`
+  /// when this platform has no native cache to clear.
+  Future<PlaybackCacheClearResult?> clearPlaybackCache() async {
+    final downloads = nativeDownloads;
+    if (downloads == null) return null;
+    final result = await _readPlaybackCache(downloads.clearPlaybackCache);
+    if (result == null) return null;
+    // The tasks themselves did not change; only what a replay could reuse.
+    notifyListeners();
+    return result;
+  }
+
+  /// A native call that a desktop or test host may not implement. A missing
+  /// channel means "this platform has no cache", not a playback failure.
+  Future<T?> _readPlaybackCache<T>(Future<T> Function() call) async {
+    try {
+      return await call();
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
   Future<void> setMediaExportConcurrency(int value) async {
     await updateSettings({'mediaExportConcurrency': value});
     if (nativeExports != null) {
