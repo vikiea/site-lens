@@ -172,17 +172,17 @@ void main() {
     expect(find.text('外观'), findsOneWidget);
     expect(find.byType(ExpansionTile), findsNothing);
     await tester.scrollUntilVisible(
-      find.text('浏览'),
+      find.text('站外浏览'),
       200,
       scrollable: find.byType(Scrollable),
     );
-    expect(find.text('浏览'), findsOneWidget);
+    expect(find.text('站外浏览'), findsOneWidget);
     await tester.scrollUntilVisible(
-      find.text('媒体'),
+      find.text('媒体库'),
       200,
       scrollable: find.byType(Scrollable),
     );
-    expect(find.text('媒体'), findsOneWidget);
+    expect(find.text('媒体库'), findsOneWidget);
     expect(find.text('当前标签后台播放'), findsNothing);
     await tester.scrollUntilVisible(
       find.text('数据与诊断'),
@@ -199,6 +199,20 @@ void main() {
     expect(find.text('关于'), findsOneWidget);
     expect(find.text('软件更新'), findsOneWidget);
     expect(find.byType(Scrollable), findsOneWidget);
+  });
+
+  testWidgets('scripts and ad filtering stay reachable from settings', (
+    tester,
+  ) async {
+    await pumpSettings(tester, app);
+
+    await tester.scrollUntilVisible(
+      find.text('脚本管理'),
+      200,
+      scrollable: find.byType(Scrollable),
+    );
+    expect(find.text('脚本管理'), findsOneWidget);
+    expect(find.text('广告与反跟踪'), findsOneWidget);
   });
 
   testWidgets('secure DNS is Android-only and exposes all built-ins', (
