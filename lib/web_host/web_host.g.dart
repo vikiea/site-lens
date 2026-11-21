@@ -110,7 +110,8 @@ int _deepHash(Object? value) {
 enum HostPurpose {
   browsing,
   discovery,
-  verification;
+  verification,
+  login;
 }
 
 /// A query failure is distinct from an unsupported capability. Null values in
