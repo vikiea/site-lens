@@ -4,7 +4,7 @@
 
 ---
 
-我要在**另一台具备完整 Flutter 工具链的机器**上接手一个进行中的改造，仓库是 `vikiea/site-lens`，集成分支 `feat/direct-route`。
+我要在这台机器上接手一个进行中的改造（前提是它具备完整的 Flutter 工具链），仓库是 `vikiea/site-lens`，集成分支 `feat/direct-route`。
 
 ## 你要先读的
 
