@@ -116,7 +116,7 @@ void main() {
   /// 线路名在线路行里出现两次（行标题与选择器触发器都会渲染它），断言要看
   /// 「线路区里写着哪条线路」，而不是页面上这个词出现了几次。
   Finder lineText(String label) => find.descendant(
-    of: find.byIcon(Icons.alt_route),
+    of: find.byType(SiteLensCompactRow),
     matching: find.text(label),
   );
 
