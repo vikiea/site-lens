@@ -375,6 +375,34 @@
       "validation": "L4",
       "blocking": true,
       "revision": 1
+    },
+    {
+      "id": "MEDIA-CACHE-002",
+      "description": "远程播放缓存与下载分账：缓存有上限、可清除，播放中不切换到本地文件。",
+      "owner": "site-lens-quality",
+      "changedPaths": [
+        "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeMediaPlaybackCache.kt",
+        "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeMediaPlaybackCachePolicy.kt",
+        "android/app/src/main/kotlin/dev/vikiea/site_lens/NativeMediaSessionService.kt",
+        "lib/media/native_download_runtime.dart",
+        "lib/ui/data_management_screen.dart"
+      ],
+      "testFiles": [
+        "tool/test_native_media_contract.py"
+      ],
+      "evidence": [
+        {
+          "kind": "command",
+          "ref": "python3 tool/test_native_media_contract.py"
+        }
+      ],
+      "validation": "L2",
+      "blocking": true,
+      "introducedIn": "0.6.0",
+      "revision": 1,
+      "status": "active",
+      "replacedBy": null,
+      "lastVerified": null
     }
   ],
   "history": [
@@ -520,6 +548,17 @@
       "status": "active",
       "stateHash": "2f98590f1b7cd217cbc4191baee28291cb82bc96a2c2833656d7f0997688a059",
       "behaviorHash": "c340d9ffedc45cb502d2f5efec1809e81f4f3b064136e9a043a317d0b1bc87f3"
+    },
+    {
+      "id": "MEDIA-CACHE-002",
+      "revision": 1,
+      "action": "introduced",
+      "date": "2026-11-21",
+      "version": "0.6.0",
+      "summary": "T7 引入远程播放缓存后补登缺失的 MEDIA-CACHE-002 契约，恢复标记与注册表的双向绑定",
+      "status": "active",
+      "stateHash": "51b38de1042928c8f14721a8558b705748635ffb9383d1ae860f6205d8b0be47",
+      "behaviorHash": "67747692d32982883c24a0e4fed3009325db92488251a66215ae54d6e6f066e0"
     }
   ]
 }
