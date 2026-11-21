@@ -393,24 +393,34 @@ class RemotePlaybackController extends ChangeNotifier {
   }
 
   /// 页面离开：先关会话，再放掉所有订阅。
+  ///
+  /// 页面可能已经被 Flutter 先 dispose 掉（`super.dispose()` 之后就不允许再
+  /// 通知监听者），所以这里先把会话交出去关掉，再决定要不要通知收尾。
   Future<void> stopAndDispose() async {
-    if (_disposed) return;
+    final wasDisposed = _disposed;
     _disposed = true;
     final current = _session;
     _session = null;
-    await _states.cancel();
-    _position.dispose();
-    notifyListeners();
+    if (!wasDisposed) {
+      await _states.cancel();
+      _position.dispose();
+    }
     await _closeQuietly(current);
+    if (!wasDisposed) notifyListeners();
   }
 
   @override
   void dispose() {
-    if (!_disposed) {
-      _disposed = true;
-      unawaited(_states.cancel());
-      _position.dispose();
+    if (_disposed) {
+      super.dispose();
+      return;
     }
+    _disposed = true;
+    final current = _session;
+    _session = null;
+    unawaited(_states.cancel());
+    _position.dispose();
+    unawaited(_closeQuietly(current));
     super.dispose();
   }
 }
