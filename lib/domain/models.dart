@@ -319,6 +319,11 @@ class SiteProfile {
 
 /// A publishing page (primary or backup) that a profile discovers candidates
 /// from, together with the selector for its "latest addresses" region.
+///
+/// A page belongs to exactly one 出口, because the two routes fail for
+/// different reasons: a blocked mirror does not mean the site's interface is
+/// down. [refreshedAt] / [error] are this page's result, i.e. the route-level
+/// evidence a detail screen shows (ADR-0006).
 class ProfilePage {
   const ProfilePage({
     required this.id,
@@ -326,6 +331,7 @@ class ProfilePage {
     required this.url,
     required this.regionSelector,
     this.enabled = true,
+    this.route = SiteRoute.browse,
     this.refreshedAt,
     this.error,
   });
@@ -334,6 +340,10 @@ class ProfilePage {
   final Uri url;
   final String regionSelector;
   final bool enabled;
+
+  /// The 出口 this page serves. Defaults to the browse route, which is the
+  /// only route a page could serve before 出口 existed.
+  final SiteRoute route;
   final DateTime? refreshedAt;
   final String? error;
 }

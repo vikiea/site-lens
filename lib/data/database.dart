@@ -192,6 +192,34 @@ const _v25RouteTables = <String>[
       'route TEXT NOT NULL, PRIMARY KEY(profile_id, route))',
 ];
 
+/// Statements that materialise the v26 "health is measured per 出口" shape
+/// (ADR-0006). They are shared by fresh installs (`onCreate`) and the
+/// v25 -> v26 migration (`onUpgrade`) so the two paths can never drift apart.
+///
+/// One profile holds at most one row per 出口, so the primary key is the pair
+/// and no route is ever able to overwrite another's record. Page-level results
+/// stay in `profile_pages.refreshed_at / error`; this table is the 出口 verdict
+/// only.
+const _v26RouteHealthTables = <String>[
+  'CREATE TABLE IF NOT EXISTS site_profile_health('
+      'profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE, '
+      'route TEXT NOT NULL, '
+      'state TEXT NOT NULL DEFAULT \'unknown\', '
+      'consecutive_failures INTEGER NOT NULL DEFAULT 0, '
+      'last_checked_at TEXT, '
+      'last_ok_at TEXT, '
+      'failure_category TEXT, '
+      'failure_detail TEXT, '
+      'station_key TEXT, '
+      'PRIMARY KEY(profile_id, route))',
+];
+
+/// The 出口 a publishing page belongs to (ADR-0006). A page-level result is
+/// only meaningful when the reader knows which route produced it, so the
+/// column lands in the same migration as the per-出口 verdict table.
+const _v26PageRouteColumn =
+    'ALTER TABLE profile_pages ADD COLUMN route TEXT NOT NULL DEFAULT \'browse\'';
+
 /// The candidate row, always created with every column the current code reads.
 ///
 /// A v1-v15 fixture has no media_candidates table at all, so the v24 step
@@ -275,7 +303,7 @@ class AppDatabase extends GeneratedDatabase {
   @visibleForTesting
   static void Function(String step)? migrationDebugHook;
 
-  static const currentSchemaVersion = 25;
+  static const currentSchemaVersion = 26;
 
   @override
   int get schemaVersion => currentSchemaVersion;
@@ -311,6 +339,8 @@ class AppDatabase extends GeneratedDatabase {
         ..._v22HealthColumns,
         ..._v23NativePlaybackTables,
         ..._v25RouteTables,
+        ..._v26RouteHealthTables,
+        _v26PageRouteColumn,
       ]) {
         await customStatement(sql);
       }
@@ -443,6 +473,7 @@ class AppDatabase extends GeneratedDatabase {
         }
       }
       if (from < 25) await _migrateV24toV25();
+      if (from < 26) await _migrateV25toV26();
     },
     beforeOpen: (_) async {
       await customStatement('PRAGMA foreign_keys = ON');
@@ -580,13 +611,14 @@ class AppDatabase extends GeneratedDatabase {
         sourceId,
       ]);
       await customStatement(
-        'INSERT INTO profile_pages(profile_id,url,region_selector,enabled,refreshed_at,error) VALUES(?,?,?,?,?,?) '
+        'INSERT INTO profile_pages(profile_id,url,region_selector,enabled,route,refreshed_at,error) VALUES(?,?,?,?,?,?,?) '
         'ON CONFLICT(profile_id,url) DO NOTHING',
         [
           profileId,
           url,
           row.read<String>('region_selector'),
           row.read<int>('enabled'),
+          SiteRoute.browse.storageName,
           row.readNullable<String>('refreshed_at'),
           row.readNullable<String>('error'),
         ],
@@ -641,12 +673,61 @@ class AppDatabase extends GeneratedDatabase {
     migrationDebugHook?.call('v25-after-backfill');
   });
 
+  /// v25 -> v26: 健康开始按出口计量 (ADR-0006).
+  ///
+  /// Adds the per-出口 table and the 出口 column on publishing pages, then
+  /// seeds one `unknown` row per 出口 for every profile. Seeding is
+  /// `INSERT OR IGNORE` with no verdict, so a retry after a committed
+  /// migration can never erase health recorded afterwards. The profile-level
+  /// `profile_health` row stays where it is: nothing is moved or deleted.
+  Future<void> _migrateV25toV26() => transaction(() async {
+    migrationDebugHook?.call('v25-to-v26');
+    for (final sql in _v26RouteHealthTables) {
+      await customStatement(sql);
+    }
+    migrationDebugHook?.call('v26-after-table');
+    // 从 v1 一路升上来的夹具可能连 profile_pages 都没有：那一步只在 v2 建表，
+    // 而 ALTER 一棵不存在的表会直接让整次迁移失败。
+    if (await _tableExists('profile_pages') &&
+        !await _columnExists('profile_pages', 'route')) {
+      await customStatement(_v26PageRouteColumn);
+    }
+    migrationDebugHook?.call('v26-after-page-route');
+    final routes = await _routesByProfile();
+    for (final row in await customSelect('SELECT id FROM profiles').get()) {
+      final profileId = row.read<int>('id');
+      // A profile without recorded routes was reached through the page, so
+      // it lands on the browse route — the reading `profiles()` applies.
+      final offered = routes[profileId] ?? const <SiteRoute>{SiteRoute.browse};
+      for (final route in offered) {
+        await customStatement(
+          'INSERT OR IGNORE INTO site_profile_health(profile_id,route,state) '
+          'VALUES(?,?,\'unknown\')',
+          [profileId, route.storageName],
+        );
+      }
+      await customStatement(
+        'INSERT OR IGNORE INTO profile_health(profile_id) VALUES(?)',
+        [profileId],
+      );
+    }
+    migrationDebugHook?.call('v26-after-seed');
+  });
+
   /// v2 -> v3: adds the pinned `@resource` snapshot table. Idempotent.
   Future<void> _migrateV2toV3() => transaction(() async {
     for (final sql in _v3Tables) {
       await customStatement(sql);
     }
   });
+
+  Future<bool> _tableExists(String table) async {
+    final rows = await customSelect(
+      'SELECT name FROM sqlite_master WHERE type=? AND name=?',
+      variables: [const Variable('table'), Variable(table)],
+    ).get();
+    return rows.isNotEmpty;
+  }
 
   Future<bool> _columnExists(String table, String column) async {
     final rows = await customSelect('PRAGMA table_info($table)').get();
@@ -843,6 +924,13 @@ class AppDatabase extends GeneratedDatabase {
           'INSERT OR IGNORE INTO profile_health(profile_id) VALUES(?)',
           [id],
         );
+        // 新档案默认只有浏览出口，和读了 `profiles()` 的默认值保持一致；
+        // 不播种的话，按出口计量的健康会把它当成「没有任何出口」。
+        await customStatement(
+          'INSERT OR IGNORE INTO site_profile_routes(profile_id,route) '
+          "VALUES(?,'browse')",
+          [id],
+        );
         return id;
       });
   Future<void> renameProfile(int id, String name) =>
@@ -919,6 +1007,7 @@ class AppDatabase extends GeneratedDatabase {
               url: Uri.parse(r.read<String>('url')),
               regionSelector: r.read<String>('region_selector'),
               enabled: r.read<int>('enabled') == 1,
+              route: _pageRoute(r),
               refreshedAt: r.readNullable<String>('refreshed_at') == null
                   ? null
                   : DateTime.parse(r.read<String>('refreshed_at')),
@@ -926,22 +1015,36 @@ class AppDatabase extends GeneratedDatabase {
             ),
           )
           .toList();
-  Future<void> addProfilePage(int profileId, Uri url, String regionSelector) =>
-      customStatement(
-        'INSERT INTO profile_pages(profile_id,url,region_selector) VALUES(?,?,?) ON CONFLICT(profile_id,url) DO UPDATE SET region_selector=excluded.region_selector,enabled=1',
-        [profileId, url.toString(), regionSelector],
-      );
+  Future<void> addProfilePage(
+    int profileId,
+    Uri url,
+    String regionSelector, {
+    SiteRoute route = SiteRoute.browse,
+  }) => customStatement(
+    'INSERT INTO profile_pages(profile_id,url,region_selector,route) VALUES(?,?,?,?) '
+    'ON CONFLICT(profile_id,url) DO UPDATE SET region_selector=excluded.region_selector,'
+    'route=excluded.route,enabled=1',
+    [profileId, url.toString(), regionSelector, route.storageName],
+  );
   Future<void> deleteProfilePage(int id) =>
       customStatement('DELETE FROM profile_pages WHERE id=?', [id]);
+  /// The 出口 a page row belongs to. Rows written before the column existed
+  /// read as the browse route, the only route they could have served.
+  SiteRoute _pageRoute(QueryRow row) =>
+      SiteRoute.fromStorage(row.readNullable<String>('route') ?? '') ??
+      SiteRoute.browse;
+
+  /// Records one publishing page's result. Success clears the previous error:
+  /// `profile_pages.error` is the page's current verdict, not a log.
   Future<void> profilePageRefreshed(int id, {String? error}) => error == null
       ? customStatement(
           'UPDATE profile_pages SET refreshed_at=?,error=NULL WHERE id=?',
           [DateTime.now().toIso8601String(), id],
         )
-      : customStatement('UPDATE profile_pages SET error=? WHERE id=?', [
-          error,
-          id,
-        ]);
+      : customStatement(
+          'UPDATE profile_pages SET refreshed_at=?,error=? WHERE id=?',
+          [DateTime.now().toIso8601String(), error, id],
+        );
 
   Future<List<ProfileHealth>> profileHealthAll() async =>
       (await customSelect('SELECT * FROM profile_health').get())
@@ -980,6 +1083,71 @@ class AppDatabase extends GeneratedDatabase {
       health.lastOkAt?.toIso8601String(),
       health.lastFailureCategory,
       health.lastFailureRoute,
+    ],
+  );
+
+  /// Every 出口-level health row (ADR-0006), keyed by profile and route.
+  ///
+  /// Rows this build does not recognise are skipped rather than guessed at,
+  /// the rule [SiteRoute.fromStorage] applies to the route table.
+  Future<List<({int profileId, SiteRoute route, ProfileHealth health})>>
+  routeHealthRows() async {
+    final rows = await customSelect(
+      'SELECT * FROM site_profile_health ORDER BY profile_id, route',
+    ).get();
+    return [
+      for (final row in rows)
+        if (SiteRoute.fromStorage(row.read<String>('route')) case final route?)
+          (
+            profileId: row.read<int>('profile_id'),
+            route: route,
+            health: ProfileHealth(
+              profileId: row.read<int>('profile_id'),
+              consecutiveFailures: row.read<int>('consecutive_failures'),
+              state: ProfileHealthState.values.byName(
+                row.read<String>('state'),
+              ),
+              lastCheckedAt: row.readNullable<String>('last_checked_at') == null
+                  ? null
+                  : DateTime.parse(row.read<String>('last_checked_at')),
+              lastOkAt: row.readNullable<String>('last_ok_at') == null
+                  ? null
+                  : DateTime.parse(row.read<String>('last_ok_at')),
+              lastFailureCategory: row.readNullable<String>('failure_category'),
+              // Here the legacy column always carries this row's own 出口.
+              lastFailureRoute: route.storageName,
+            ),
+          ),
+    ];
+  }
+
+  /// Writes one 出口's verdict. The profile-level badge row is untouched, so
+  /// measuring a second route cannot overwrite the first one's record.
+  Future<void> saveRouteHealth(
+    int profileId,
+    SiteRoute route,
+    ProfileHealth health, {
+    String? failureDetail,
+    String? stationKey,
+  }) => customStatement(
+    'INSERT INTO site_profile_health(profile_id,route,state,consecutive_failures,'
+    'last_checked_at,last_ok_at,failure_category,failure_detail,station_key) '
+    'VALUES(?,?,?,?,?,?,?,?,?) '
+    'ON CONFLICT(profile_id,route) DO UPDATE SET state=excluded.state, '
+    'consecutive_failures=excluded.consecutive_failures, '
+    'last_checked_at=excluded.last_checked_at, last_ok_at=excluded.last_ok_at, '
+    'failure_category=excluded.failure_category, '
+    'failure_detail=excluded.failure_detail, station_key=excluded.station_key',
+    [
+      profileId,
+      route.storageName,
+      health.state.name,
+      health.consecutiveFailures,
+      health.lastCheckedAt?.toIso8601String(),
+      health.lastOkAt?.toIso8601String(),
+      health.lastFailureCategory,
+      failureDetail,
+      stationKey,
     ],
   );
 
