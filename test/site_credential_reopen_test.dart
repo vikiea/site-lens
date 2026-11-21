@@ -13,6 +13,10 @@ import 'package:site_lens/testing/fake_site_adapter.dart';
 /// 这一段是那条状态机本身：一次失效只带来一次重开，重开失败的第二份凭证失效
 /// 不再叠加；重开要用**当前**这一集的地址，而不是失效时那一段会话的残留。
 void main() {
+  // 这些用例走的是 MethodChannel 上的凭证推送，需要在无 widget 的测试里
+  // 自己初始化 binding。
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('reopen after a credential recovery', () {
     test('one rejection produces exactly one reopen', () async {
       final planner = CredentialReopenPlanner();

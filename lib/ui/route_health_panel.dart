@@ -63,11 +63,11 @@ class RouteHealthPanel extends StatelessWidget {
         Icons.help_outline,
       ),
     };
+    // 详情页的徽章要说清状态，用户没法从一个图标读出「可达 / 连续不可达」。
     return SiteLensStatusBadge(
       label: healthLabel(state),
       icon: icon,
       color: color,
-      compact: true,
     );
   }
 
