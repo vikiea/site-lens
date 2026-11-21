@@ -114,8 +114,11 @@ class SiteCredentialHandoff {
 
   /// 处置一次失效事件。
   Future<CredentialRecovery> handle(NativeCredentialEvent event) async {
+    // 终止性拒绝（原生已经重试过、仍然被拒）不再续期：上一份凭证就是最终
+    // 结论，直接落到「需要重新登录」。续期只会把一个已经确定的结局再拖一轮。
+    if (event.terminal) return _needsLogin();
     // 同一段会话只续期一次：原生只重试一次，应用也只为它续期一次。
-    if (!event.terminal && !_inFlight.add(event.sessionId)) {
+    if (!_inFlight.add(event.sessionId)) {
       return const CredentialNeedsLogin();
     }
     try {

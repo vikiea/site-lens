@@ -120,7 +120,6 @@ void main() {
     matching: find.text(label),
   );
 
-
   /// 候选区在 800x600 的测试视口里位于首屏之外；点击或断言之前先滚到它。
   Future<void> revealCandidates(WidgetTester tester) async {
     final target = find.byTooltip('切换清晰度');
@@ -215,8 +214,9 @@ void main() {
     await pumpDetail(tester, adapter: adapterWith(), owner: owner);
     await revealCandidates(tester);
 
-    expect(find.text('1080P'), findsOneWidget);
-    expect(find.text('720P'), findsOneWidget);
+    // 候选渲染的是「清晰度 · 音轨」拼起来的整串，所以按包含匹配。
+    expect(find.textContaining('1080P'), findsWidgets);
+    expect(find.textContaining('720P'), findsWidgets);
     expect(find.textContaining('国语'), findsWidgets);
   });
 
