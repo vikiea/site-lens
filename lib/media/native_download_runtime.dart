@@ -109,4 +109,63 @@ class NativeDownloadRuntime {
         'taskId': taskId,
         ...?(reservationId == null ? null : {'reservationId': reservationId}),
       });
+
+  /// Bytes the remote playback cache currently holds, and its cap.
+  ///
+  /// The cache lives in its own directory, so this figure never includes a
+  /// download; reading it cannot start or resume a transfer.
+  Future<PlaybackCacheUsage> playbackCacheUsage() async {
+    final value = await _channel.invokeMapMethod<String, Object?>(
+      'playbackCacheStatus',
+    );
+    return PlaybackCacheUsage(
+      bytes: (value?['bytes'] as num?)?.toInt() ?? 0,
+      limitBytes:
+          (value?['limitBytes'] as num?)?.toInt() ??
+          PlaybackCacheUsage.defaultLimitBytes,
+    );
+  }
+
+  /// Clears the playback cache only. Completed downloads live in another
+  /// directory and keep their files and task rows.
+  Future<PlaybackCacheClearResult> clearPlaybackCache() async {
+    final value = await _channel.invokeMapMethod<String, Object?>(
+      'clearPlaybackCache',
+    );
+    return PlaybackCacheClearResult(
+      bytesBefore: (value?['bytesBefore'] as num?)?.toInt() ?? 0,
+      bytesAfter: (value?['bytesAfter'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+/// One reading of the playback cache. [limitBytes] is the cap the native side
+/// enforces when a playback session ends.
+class PlaybackCacheUsage {
+  const PlaybackCacheUsage({required this.bytes, required this.limitBytes});
+
+  static const int defaultLimitBytes = 512 * 1024 * 1024;
+
+  final int bytes;
+  final int limitBytes;
+
+  Map<String, Object?> toJson() => {'bytes': bytes, 'limitBytes': limitBytes};
+}
+
+/// What a clear actually removed, measured by the native side.
+class PlaybackCacheClearResult {
+  const PlaybackCacheClearResult({
+    required this.bytesBefore,
+    required this.bytesAfter,
+  });
+
+  final int bytesBefore;
+  final int bytesAfter;
+
+  int get reclaimedBytes => (bytesBefore - bytesAfter).clamp(0, bytesBefore);
+
+  Map<String, Object?> toJson() => {
+    'bytesBefore': bytesBefore,
+    'bytesAfter': bytesAfter,
+  };
 }
