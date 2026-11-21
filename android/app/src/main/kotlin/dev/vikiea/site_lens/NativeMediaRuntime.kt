@@ -273,14 +273,40 @@ class NativeMediaRuntime(
             hasCredential = credentials.remoteSourceEnabled(profileId, raw),
         )
         require(route.family == NativeMediaSessionRoute.Family.REMOTE) { "媒体地址无效" }
+        // 整集已在下载里时这次播放不进缓存（T7）：同一份字节只归下载。
+        val admitted = playbackCacheAdmission(raw)
         val mime = call.argument<String>("mime")?.trim().orEmpty()
         val uri = Uri.parse(raw)
         val hls = mime.contains("mpegurl", ignoreCase = true) ||
             uri.path?.lowercase()?.let { it.endsWith(".m3u8") || it.endsWith(".m3u") } == true
         // 进程内播放器不再是任何界面的主路径（ADR-0005）：远程地址一律交给媒体
         // 会话，由它统一提供锁屏、通知栏、媒体键与后台策略。
-        openInService(call, result, taskId = "", uri = raw, mime = mime, hls = hls)
+        openInService(
+            call,
+            result,
+            taskId = "",
+            uri = raw,
+            mime = mime,
+            hls = hls,
+            admitsPlaybackCache = admitted,
+        )
     }
+
+    /**
+     * 这次远程播放能不能进缓存（T7）。判定只看下载队列自己的记录：同一集
+     * 正在下载或已下载时，播放只读远端，缓存目录里不会出现第二份同源字节。
+     *
+     * 读不到记录时按「可以缓存」：缓存只能省一次网络请求，不该因为读不到
+     * 任务表就让播放走另一条路。
+     */
+    private fun playbackCacheAdmission(raw: String): Boolean = runCatching {
+        val repository = NativeMediaTaskRepository(context)
+        val sources = repository.all().map { it.sourceUrl.ifBlank { it.url } }
+        NativeMediaPlaybackCachePolicy.admitPlayback(
+            raw,
+            NativeMediaPlaybackCachePolicy.downloadPaths(sources),
+        )
+    }.getOrDefault(true)
 
     private fun openLocal(call: MethodCall, result: MethodChannel.Result) {
         val taskId = call.argument<String>("taskId")?.takeIf { it.isNotBlank() }
@@ -328,6 +354,7 @@ class NativeMediaRuntime(
         uri: String,
         mime: String,
         hls: Boolean,
+        admitsPlaybackCache: Boolean = true,
     ) {
         openRequestId++
         // NativeMediaSessionService.open() replaces the current item while
@@ -335,7 +362,7 @@ class NativeMediaRuntime(
         // first creates a release/restart window in which the next-episode
         // request can be sent to the instance that is already being torn
         // down.
-        openInServiceAfterStop(call, result, taskId, uri, mime, hls)
+        openInServiceAfterStop(call, result, taskId, uri, mime, hls, admitsPlaybackCache)
     }
 
     private fun openInServiceAfterStop(
@@ -345,6 +372,7 @@ class NativeMediaRuntime(
         uri: String,
         mime: String,
         hls: Boolean,
+        admitsPlaybackCache: Boolean,
     ) {
         applicationForeground =
             call.argument<Boolean>("applicationForeground") ?: applicationForeground
@@ -372,6 +400,7 @@ class NativeMediaRuntime(
                     SiteCredentialSources.headers(credentials, profile, url)
                 },
                 autoPlay = call.argument<Boolean>("autoPlay") ?: true,
+                admitsPlaybackCache = admitsPlaybackCache,
                     applicationForeground = applicationForeground,
                     allowNativeBackgroundPlayback = allowNativeBackgroundPlayback,
                 surface = surface,

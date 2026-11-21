@@ -28,6 +28,11 @@ AUTHORED_HTTP = (ANDROID / "AuthoredHttpRequest.kt").read_text()
 CREDENTIAL_REOPEN = (ROOT / "lib/media/credential_reopen.dart").read_text()
 CREDENTIAL_HANDOFF = (ROOT / "lib/media/site_credential_handoff.dart").read_text()
 APP_CONTROLLER = (ROOT / "lib/ui/app_controller.dart").read_text()
+NATIVE_CACHE = (ANDROID / "NativeMediaPlaybackCache.kt").read_text()
+CACHE_POLICY = (ANDROID / "NativeMediaPlaybackCachePolicy.kt").read_text()
+CACHE_ADR = (ROOT / "docs/adr/0010-remote-playback-cache-is-separate-from-downloads.md").read_text()
+DATA_MANAGEMENT = (ROOT / "lib/ui/data_management_screen.dart").read_text()
+NATIVE_LIBRARY = (ROOT / "lib/media/native_download_runtime.dart").read_text()
 
 # REGRESSION CONTRACT: MEDIA-HLS-001
 
@@ -179,6 +184,10 @@ class NativeMediaContractTests(unittest.TestCase):
         # 主清单与分片走同一个数据来源：HLS 与渐进式各自挂同一个工厂。
         self.assertEqual(
             2,
+            NATIVE_SESSION.count("remoteDataSources(request)"),
+        )
+        self.assertEqual(
+            1,
             NATIVE_SESSION.count("SiteCredentialDataSource.factory { url -> headersFor(request, url) }"),
         )
         self.assertIn("HlsMediaSource.Factory(", NATIVE_SESSION)
@@ -312,7 +321,14 @@ class NativeMediaContractTests(unittest.TestCase):
         ):
             self.assertNotIn(token, NATIVE_MEDIA)
         # 远程地址唯一出口是媒体会话，进程内不再自建 ExoPlayer 播放它。
-        self.assertIn("openInService(call, result, taskId = \"\"", NATIVE_MEDIA)
+        # T7 之后这一次调用额外带缓存准入，调用形态由花括号参数列表给出。
+        self.assertIn("openInService(", NATIVE_MEDIA)
+        remote_open = NATIVE_MEDIA.split("private fun open(call: MethodCall", 1)[1].split(
+            "private fun playbackCacheAdmission", 1
+        )[0]
+        self.assertIn('taskId = ""', remote_open)
+        self.assertIn("admitsPlaybackCache = admitted", remote_open)
+        self.assertNotIn("ExoPlayer.Builder", remote_open)
 
     def test_local_service_replacement_does_not_stop_the_service(self):
         self.assertIn('stopLocalPlayer()', NATIVE_MEDIA)
@@ -837,6 +853,102 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertLess(cleanup.index("cancelUniqueWork"), cleanup.index("withFileLock"))
         self.assertLess(cleanup.index("withFileLock"), cleanup.index("if (cleaned &&"))
         self.assertIn("if (cleaned && mutationReservations.remove(id, reservation))", cleanup)
+
+
+# REGRESSION CONTRACT: MEDIA-CACHE-002
+
+
+class RemotePlaybackCacheContractTests(unittest.TestCase):
+    """T7：远程播放缓存与下载分账，缓存有上限、可清除，且不切本地文件。"""
+
+    def test_remote_sources_pass_through_the_cache_outside_credentials(self):
+        section = NATIVE_SESSION.split("private fun remoteDataSources(", 1)[1]
+        section = section.split("private fun headersFor", 1)[0]
+        self.assertIn("SiteCredentialDataSource.factory", section)
+        self.assertIn("NativeMediaPlaybackCache.dataSourceFactory(applicationContext, credentialed)", section)
+        # 缓存包在凭证来源外面：命中缓存的分片不再取凭证、不再发请求。
+        self.assertLess(
+            section.index("SiteCredentialDataSource.factory"),
+            section.index("NativeMediaPlaybackCache.dataSourceFactory"),
+        )
+        # 同一候选正在下载时不进缓存，只读远端。
+        self.assertIn("if (!request.admitsPlaybackCache) return credentialed", section)
+        for kind in ("SourceKind.REMOTE_HTTP ->", "SourceKind.REMOTE_HTTP_PROGRESSIVE ->"):
+            branch = NATIVE_SESSION.split(kind, 1)[1].split("NativeMediaSessionRoute.SourceKind.", 1)[0]
+            self.assertIn("remoteDataSources(request)", branch)
+        # 本地会话不经过缓存：边下边播仍由 GrowingFileDataSource 提供。
+        local = NATIVE_SESSION.split("SourceKind.LOCAL_GROWING_FILE ->", 1)[1].split(
+            "SourceKind.REMOTE_HTTP ->", 1
+        )[0]
+        self.assertIn("GrowingFileDataSource.Factory()", local)
+        self.assertNotIn("NativeMediaPlaybackCache", local)
+
+    def test_cache_uses_media3_simple_cache_with_an_explicit_limit(self):
+        self.assertIn("SimpleCache(root, NoOpCacheEvictor(), provider)", NATIVE_CACHE)
+        self.assertIn("CacheDataSource.Factory()", NATIVE_CACHE)
+        self.assertIn(".setUpstreamDataSourceFactory(upstream)", NATIVE_CACHE)
+        self.assertIn("FLAG_IGNORE_CACHE_ON_ERROR", NATIVE_CACHE)
+        self.assertIn("MAX_BYTES = 512L * 1024L * 1024L", CACHE_POLICY)
+        self.assertIn("TARGET_BYTES = 384L * 1024L * 1024L", CACHE_POLICY)
+        self.assertIn("fun evict(", CACHE_POLICY)
+        # 回收发生在播放引擎释放之后，且只删媒体3 写下的条目。
+        release = NATIVE_SESSION.split("private fun releaseMediaEngine()", 1)[1].split(
+            "private fun detachSurfaceFromPlayer", 1
+        )[0]
+        self.assertIn("NativeMediaPlaybackCache.release(applicationContext)", release)
+        self.assertLess(release.index("playerReleased = true"), release.index("NativeMediaPlaybackCache.release"))
+        clear = NATIVE_CACHE.split("fun clear(context: Context)", 1)[1].split("fun sizeBytes", 1)[0]
+        self.assertIn("cacheInstance?.release()", clear)
+        self.assertIn("purgePlan(root)", clear)
+
+    def test_cache_lives_in_its_own_directory_and_carries_the_station_identity(self):
+        self.assertIn('DIRECTORY = "media_playback_cache"', CACHE_POLICY)
+        self.assertIn("fun root(cacheDir: File): File = File(cacheDir, DIRECTORY)", CACHE_POLICY)
+        self.assertIn('"profile=$profileId|host=$host"', CACHE_POLICY)
+        self.assertIn("fun overlapsDownloadRoot(", CACHE_POLICY)
+        bound = NATIVE_SESSION.split("private fun remoteDataSources(", 1)[1].split(
+            "private fun headersFor", 1
+        )[0]
+        self.assertIn("overlapsDownloadRoot(cacheRoot, downloadRoot)", bound)
+        # 下载目录与缓存目录是两个不同的根。
+        self.assertIn("NativeMediaDownloadWorker.root(context)", DOWNLOAD_WORKER + DOWNLOAD_RUNTIME)
+        self.assertIn("Environment.DIRECTORY_DOWNLOADS", DOWNLOAD_WORKER)
+        self.assertNotIn("media_playback_cache", DOWNLOAD_WORKER)
+
+    def test_playback_cache_is_clearable_without_touching_downloads(self):
+        dispatch = DOWNLOAD_RUNTIME.split("override fun onMethodCall", 1)[1].split("private fun start", 1)[0]
+        self.assertIn('"playbackCacheStatus" ->', dispatch)
+        self.assertIn('"clearPlaybackCache" ->', dispatch)
+        clear = DOWNLOAD_RUNTIME.split("private fun clearPlaybackCache()", 1)[1].split(
+            "private fun start", 1
+        )[0]
+        self.assertIn("NativeMediaPlaybackCache.clear(context)", clear)
+        self.assertNotIn("delete(", clear)
+        self.assertNotIn("repository", clear)
+        self.assertIn("clearPlaybackCache", NATIVE_LIBRARY)
+        self.assertIn("Future<PlaybackCacheClearResult?> clearPlaybackCache()", APP_CONTROLLER)
+        self.assertIn("clearPlaybackCache", DATA_MANAGEMENT)
+
+    def test_download_ownership_decides_whether_one_fragment_is_cached(self):
+        self.assertIn("fun admitPlayback(raw: String, downloadPaths: List<String>): Boolean", CACHE_POLICY)
+        self.assertIn("fun ownedByDownload(raw: String, downloadPaths: List<String>): Boolean", CACHE_POLICY)
+        admission = (ANDROID / "NativeMediaRuntime.kt").read_text()
+        admit = admission.split("private fun playbackCacheAdmission", 1)[1].split(
+            "private fun openLocal", 1
+        )[0]
+        self.assertIn("NativeMediaPlaybackCachePolicy.admitPlayback(", admit)
+        self.assertIn("getOrDefault(true)", admit)
+        self.assertIn("admitsPlaybackCache = admitted", admission)
+        self.assertIn("val admitsPlaybackCache: Boolean = true", NATIVE_SESSION)
+        self.assertIn("admitsPlaybackCache = admitsPlaybackCache", admission)
+        # 缓存只决定取值范围，不改失败处置：远程重试仍由既有策略决定。
+        self.assertIn("sourceRetryCount", NATIVE_SESSION)
+        self.assertIn("CREDENTIAL_RESUME_DELAY_MS", NATIVE_SESSION)
+
+    def test_cache_layer_is_documented_as_separate_from_downloads(self):
+        self.assertIn("cacheDir/media_playback_cache", CACHE_ADR)
+        self.assertIn("Download/site-lens", CACHE_ADR)
+        self.assertIn("NoOpCacheEvictor", CACHE_ADR)
 
 
 if __name__ == "__main__":
