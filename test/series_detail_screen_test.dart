@@ -120,6 +120,16 @@ void main() {
     matching: find.text(label),
   );
 
+
+  /// 候选区在 800x600 的测试视口里位于首屏之外；点击或断言之前先滚到它。
+  Future<void> revealCandidates(WidgetTester tester) async {
+    final target = find.byTooltip('切换清晰度');
+    if (tester.any(target)) {
+      await tester.ensureVisible(target);
+      await tester.pumpAndSettle();
+    }
+  }
+
   testWidgets('详情页显示剧名、简介、总集数与已更新的集数', (tester) async {
     final owner = profile(1, '甲站');
     await pumpDetail(tester, adapter: adapterWith(), owner: owner);
@@ -203,6 +213,7 @@ void main() {
   testWidgets('一条线路下的清晰度与音轨作为候选呈现', (tester) async {
     final owner = profile(1, '甲站');
     await pumpDetail(tester, adapter: adapterWith(), owner: owner);
+    await revealCandidates(tester);
 
     expect(find.text('1080P'), findsOneWidget);
     expect(find.text('720P'), findsOneWidget);
@@ -220,6 +231,7 @@ void main() {
     expect(lineText('乙线路'), findsWidgets);
 
     // 候选是线路产出的清晰度/音轨；换候选不影响「我选的是哪条线路」。
+    await revealCandidates(tester);
     await tester.tap(find.byTooltip('切换清晰度'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('粤语音轨').last);
