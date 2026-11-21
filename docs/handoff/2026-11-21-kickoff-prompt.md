@@ -57,13 +57,18 @@ flutter test          # 全量
 
 这推翻了原规格里"首屏用假适配器、真适配器 out of scope"的口径。也就是说：现在首屏在生产路径下是空态，而下一个里程碑就是让它有内容。
 
-参考材料（在**上一台机器**上，路径是 `/root/work/hypnfq/` 与 `/root/work/easyl/`）：
-- `hypnfq/out/REPORT.md` —— 黄果短剧逆向总报告
-- `hypnfq/out/api_inventory.json` —— 365 个端点
-- `hypnfq/out/shell_integration.json` —— 传输层、加密、鉴权、域名、会员字段的结构化摘要
-- `easyl/` —— 易幕逆向，参考它"远端配置 + 源脚本"的形态
+参考材料**已随本分支带来**，在 `docs/handoff/reference/`（约 150 KB，临时材料，任务结束后删除）：
 
-如果这些资料没有随仓库过来，先问我要，别凭印象造。
+- `reference/huangguo/shell_integration.json` —— **接适配器先读这个**：传输层、响应包络、加密参数、鉴权头、主备域名、DoH 兜底
+- `reference/huangguo/REPORT.md` —— 黄果逆向总报告
+- `reference/huangguo/api_inventory.json` —— 365 个端点（结构化）
+- `reference/huangguo/endpoints.txt` —— 端点平铺
+- `reference/easyl/` —— 易幕逆向，参考"远端配置 + 源脚本"的形态
+- `reference/README.md` —— 材料导读与关键事实摘要
+
+**先读 `reference/README.md`**，它把接适配器前必看的几条（只许 POST、响应包络、密钥派生是运行时不是常量、m3u8 可能二次加密、以及三处未落地的逆向）列在一起了。
+
+被刻意排除的：APK 本体、`libapp.so` 反汇编、blutter 对象池、easyl 明文源码。需要时再补，别自己造。
 
 ## 三条已知设计缺陷（接真适配器前必须处理）
 
