@@ -321,11 +321,18 @@ class RemotePlaybackController extends ChangeNotifier {
       onEpisodeChanged?.call(currentEpisode, 0);
     } catch (error) {
       // 换集失败：原会话没动，把失败说清楚，用户还停在这一集。
-      _openError = switch (error) {
-        SiteAdapterError() => '第 $target 集取不到：${error.message}',
-        _ => remoteOpenFailureText(error),
-      };
-      _reachedLast = false;
+      // 但「目录里没有下一集」不是换集失败，而是到头了——用户手动点下一集
+      // 时才把原因说出来，自动连播则安静停下。
+      final isLast =
+          error is SiteAdapterError &&
+          error.kind == SiteAdapterErrorKind.notFound;
+      _reachedLast = isLast;
+      if (!isLast || byUser) {
+        _openError = switch (error) {
+          SiteAdapterError() => '第 $target 集取不到：${error.message}',
+          _ => remoteOpenFailureText(error),
+        };
+      }
     } finally {
       _switching = false;
       if (!_disposed) notifyListeners();

@@ -90,7 +90,8 @@ class FakeRemotePlaybackHost implements RemotePlaybackHost {
   @override
   Future<NativePlaybackSession> close(String sessionId) async {
     closed.add(sessionId);
-    _active = null;
+    // 换集时先开新会话再关旧的：关旧会话不能把新会话也从「当前」里抹掉。
+    if (_active?.id == sessionId) _active = null;
     return NativePlaybackSession(
       id: sessionId,
       candidateId: '',
