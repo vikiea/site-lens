@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../adapters/direct_route.dart';
 import '../backup/backup_service.dart';
 import '../background/background_asset_store.dart';
 import '../background/background_snapshot.dart';
@@ -40,7 +41,6 @@ import '../media/remote_playback_controller.dart';
 import '../media/remote_playback_failure.dart';
 import '../media/site_credential_handoff.dart';
 import '../site_credentials/site_credential_store.dart';
-import '../testing/fake_site_adapter.dart';
 import '../theater/series_line_memory.dart';
 import '../domain/web_page_origin.dart';
 import '../network/transport.dart';
@@ -235,7 +235,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     NativeMediaAuthRefresh? nativeMediaAuthRefresh,
     NativeDownloadRuntime? nativeDownloads,
     NativeTlsTransferWithPolicy? mediaPolicyTransfer,
+    NativeSystemHttpTransport? systemHttpTransport,
+    Uint8List? directRouteSecret,
   }) : startupTrace = startupTrace ?? StartupTrace() {
+    _directRouteSecret = directRouteSecret;
     this.mediaPolicyTransfer = mediaPolicyTransfer;
     this.nativeMediaAuthRefresh =
         nativeMediaAuthRefresh ??
@@ -260,9 +263,12 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     settingsRepository = SettingsRepository(db);
     backgroundAssets = BackgroundAssetStore();
     secureDnsResolver = SecureDnsResolver();
-    final nativeSystemTransport = Platform.isAndroid
-        ? NativeSystemHttpTransport()
-        : null;
+    final nativeSystemTransport =
+        systemHttpTransport ??
+        (Platform.isAndroid ? NativeSystemHttpTransport() : null);
+    // 直连出口的适配器走同一条系统网络通道：媒体、脚本、探测与目录不应该
+    // 各自解释一套代理/DNS/TLS。
+    _nativeSystemTransport = nativeSystemTransport;
     final mediaNetwork = Platform.isAndroid ? MediaNetwork() : null;
     if (bootstrap != null) _applySettings();
     transientCache = TransientCacheService(runtime: AppRuntimeApi());
@@ -1119,8 +1125,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   List<SiteProfile> profiles = [];
 
   /// The adapter that serves one profile's 直连出口, or null when that profile
-  /// has none. Passing an adapter in is the test seam; production composes a
-  /// fake one until a site ships its own protocol.
+  /// has none. [installTheaterAdapter] is the test seam; production composes a
+  /// real one from the addresses the profile publishes.
   final Map<int, SiteAdapter> _theaterAdapters = {};
 
   /// Which 线路 the user picked for an 选集, for the app's lifetime.
@@ -1144,17 +1150,58 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     if (!routes.contains(SiteRoute.direct)) return null;
     final addresses = _theaterAddressesFor(profile);
     if (addresses.isEmpty) return null;
-    final adapter = FakeSiteAdapter(
-      id: 'fake-$profileId',
-      profileId: profileId,
-      addresses: addresses,
-    );
-    // No site protocol exists yet: 剧场 therefore shows the empty state rather
-    // than inventing content. A fake with a configured catalog is installed by
-    // [installTheaterAdapter].
-    adapter.configureCatalog(const []);
-    _theaterAdapters[profileId] = adapter;
-    return adapter;
+    // 首屏由真适配器供数：只有认不出站点时才没有剧场（而不是拿假目录显示
+    // 空态）。建立适配器要读一次已存凭证，所以它是异步的；读完之后由
+    // [load] 收尾重建，在那之前 [theaterAdapterFor] 返回 null，界面显示的是
+    // 「还在准备」而不是「没有内容」。
+    final ready = _directRouteAdapters[profileId];
+    if (ready != null) return ready;
+    unawaited(_composeDirectRouteAdapter(profile, addresses));
+    return null;
+  }
+
+  /// 直连出口的适配器，按档案缓存。与 [_theaterAdapters] 分开，是因为后者是
+  /// 测试与界面注入的入口（[installTheaterAdapter]），而这里的实例由应用自
+  /// 己按已存凭证组装。
+  final Map<int, SiteAdapter> _directRouteAdapters = {};
+
+  /// The system-network transport the 直连出口 shares with scripts, hosts and
+  /// filter sources. Null off Android, where dart:io's stack is the system's.
+  NativeSystemHttpTransport? _nativeSystemTransport;
+
+  /// A published key already in hand. Production leaves this null so the
+  /// adapter fetches its own; a test fixture hands one in instead of letting a
+  /// fake interface answer with content the app cannot read.
+  Uint8List? _directRouteSecret;
+  final Set<int> _directRouteComposing = {};
+
+  Future<void> _composeDirectRouteAdapter(
+    SiteProfile profile,
+    List<Uri> addresses,
+  ) async {
+    final profileId = profile.id;
+    if (_directRouteComposing.contains(profileId)) return;
+    _directRouteComposing.add(profileId);
+    try {
+      final composed = await createDirectRouteAdapter(
+        profileId: profileId,
+        addresses: addresses,
+        http: ControlledHttp(nativeTransport: _nativeSystemTransport),
+        credentials: siteCredentialStore,
+        remoteSecret: _directRouteSecret,
+      );
+      if (composed == null || _directRouteAdapters.containsKey(profileId)) {
+        return;
+      }
+      _directRouteAdapters[profileId] = composed.adapter;
+      notifyListeners();
+    } catch (error) {
+      // 认不出站点或凭证读不出来：这个档案就没有直连出口。界面按「这个站点
+      // 还没有直连入口」处理，不把插件错误抛给用户。
+      unawaited(errorLogger.record(error, module: 'theater.adapter'));
+    } finally {
+      _directRouteComposing.remove(profileId);
+    }
   }
 
   List<Uri> _theaterAddressesFor(SiteProfile profile) {
