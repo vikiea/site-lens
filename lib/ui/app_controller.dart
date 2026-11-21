@@ -314,6 +314,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       pusher: NativeCredentialPush(),
       credentialSink: StoreCredentialSink(siteCredentialStore),
       media: nativeMedia,
+      // 续期成功之后把这一集重开一次：用户不需要手动重试。
+      reopen: () => unawaited(reopenAfterCredentialRefresh()),
     );
     _credentialOutcomes = credentialHandoff!.recoveries.listen(
       _onCredentialRecovery,
@@ -813,6 +815,14 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }) async {
     final target = profileId ?? _activeCredentialProfileId;
     if (target != null) rememberCredentialProfile(target);
+    // 记住这一次打开用的四样东西：凭证续期后要原样再开一次本集。
+    _lastRemoteOpen = (
+      candidate: candidate,
+      hostId: hostId,
+      generation: generation,
+      sourceUrl: sourceUrl,
+      profileId: target,
+    );
     return nativeMedia.open(
       candidate,
       hostId: hostId,
@@ -820,6 +830,42 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       sourceUrl: sourceUrl,
       profileId: target,
     );
+  }
+
+  /// 最近一次远程播放的请求参数。自动重开用它把**同一集**再打开一次。
+  ({
+    MediaCandidate candidate,
+    int hostId,
+    int generation,
+    Uri sourceUrl,
+    int? profileId,
+  })?
+  _lastRemoteOpen;
+
+  /// 凭证续期成功后重开本集（T6）。没有可重开的远程播放就什么都不做。
+  ///
+  /// 重开就是一次普通的 [openRemoteCandidate]：原生按当前凭证重新取头，用户看
+  /// 到的是一次短暂停顿，不是错误页。失败不转成新提示——下一次失效事件会按它
+  /// 自己的预算判定。
+  Future<void> reopenAfterCredentialRefresh() async {
+    final last = _lastRemoteOpen;
+    if (last == null) return;
+    try {
+      await openRemoteCandidate(
+        last.candidate,
+        hostId: last.hostId,
+        generation: last.generation,
+        sourceUrl: last.sourceUrl,
+        profileId: last.profileId,
+      );
+    } on Object catch (error, stack) {
+      AppErrorLogger.capture(
+        error,
+        module: 'media.credential',
+        context: 'reopen=1',
+        stack: stack,
+      );
+    }
   }
 
   /// 用户点掉提示。

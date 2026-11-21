@@ -22,6 +22,12 @@ MAIN_ACTIVITY = (ANDROID / "MainActivity.kt").read_text()
 POLICY = (ANDROID / "MediaAuthRefreshPolicy.kt").read_text()
 NATIVE_EXPORT = (ANDROID / "NativeExportRuntime.kt").read_text()
 NATIVE_LEASES = (ANDROID / "NativeMediaFileLeases.kt").read_text()
+CREDENTIAL_DATA_SOURCE = (ANDROID / "SiteCredentialDataSource.kt").read_text()
+CREDENTIAL_RECORD = (ANDROID / "SiteCredentialRecord.kt").read_text()
+AUTHORED_HTTP = (ANDROID / "AuthoredHttpRequest.kt").read_text()
+CREDENTIAL_REOPEN = (ROOT / "lib/media/credential_reopen.dart").read_text()
+CREDENTIAL_HANDOFF = (ROOT / "lib/media/site_credential_handoff.dart").read_text()
+APP_CONTROLLER = (ROOT / "lib/ui/app_controller.dart").read_text()
 
 # REGRESSION CONTRACT: MEDIA-HLS-001
 
@@ -148,6 +154,42 @@ class NativeMediaContractTests(unittest.TestCase):
         self.assertIn("hasCredential = headersFor(request).isNotEmpty()", NATIVE_SESSION)
         self.assertIn("fun admit(", (ANDROID / "NativeMediaSessionRoute.kt").read_text())
 
+    def test_fragments_and_cdn_requests_carry_the_credential_per_request(self):
+        # T6：分片与 CDN 请求也带凭证。判定按**每一次请求的地址**重新做，不是
+        # 一次性的会话头；头合并只在 AuthoredHttpRequest 一处发生。
+        for token in (
+            "fun withCredentialHeaders(",
+            "headersFor(dataSpec.uri.toString())",
+            "AuthoredHttpRequest.merge(",
+            "dataSpec.withAdditionalHeaders(merged)",
+        ):
+            self.assertIn(token, CREDENTIAL_DATA_SOURCE)
+        # 数据来源不缓存、不记忆上一次的头。
+        for forbidden in ("remember", "cached", "lastHeaders"):
+            self.assertNotIn(forbidden, CREDENTIAL_DATA_SOURCE)
+        for token in (
+            "fun merge(",
+            "SiteCredentialRecord.HEADER_AUTHORIZATION",
+            "SiteCredentialRecord.HEADER_COOKIE",
+            "ignoreCase = true",
+        ):
+            self.assertIn(token, AUTHORED_HTTP)
+        # 只有凭证那两个头会被改写；其余的头保持页面原样。
+        self.assertNotIn("putAll(", AUTHORED_HTTP)
+        # 主清单与分片走同一个数据来源：HLS 与渐进式各自挂同一个工厂。
+        self.assertEqual(
+            2,
+            NATIVE_SESSION.count("SiteCredentialDataSource.factory { url -> headersFor(request, url) }"),
+        )
+        self.assertIn("HlsMediaSource.Factory(", NATIVE_SESSION)
+        self.assertIn("ProgressiveMediaSource.Factory(", NATIVE_SESSION)
+        # 本地文件路径不经过这个数据来源。
+        local = NATIVE_SESSION.split("SourceKind.LOCAL_GROWING_FILE ->", 1)[1].split(
+            "SourceKind.REMOTE_HTTP ->", 1
+        )[0]
+        self.assertNotIn("SiteCredentialDataSource", local)
+        self.assertIn("GrowingFileDataSource.Factory()", local)
+
     def test_credentials_cross_into_native_through_a_one_way_channel(self):
         channel = (ANDROID / "SiteCredentialChannel.kt").read_text()
         activity = (ANDROID / "MainActivity.kt").read_text()
@@ -214,6 +256,38 @@ class NativeMediaContractTests(unittest.TestCase):
             "onCredentialPushed(",
         ):
             self.assertIn(token, NATIVE_SESSION)
+
+    def test_a_recovered_credential_reopens_the_episode_once(self):
+        # T6：续期成功后播放器自动重开本集，用户不需要手动重试。
+        for token in (
+            "class CredentialReopenPlanner",
+            "enum ReopenStatus",
+            "ReopenStatus.needsLogin",
+            "ReopenStatus.exhausted",
+            "int reopensFor(String sessionId)",
+            "void forget(String sessionId)",
+        ):
+            self.assertIn(token, CREDENTIAL_REOPEN)
+        # 去重按会话：同一段会话只重开一次，终止性拒绝不重开。
+        self.assertIn("if (event.terminal)", CREDENTIAL_REOPEN)
+        self.assertIn("if (used > 0)", CREDENTIAL_REOPEN)
+        # 续期链把重开接进来，但「需要重新登录」的结论不受影响。
+        for token in (
+            "final void Function()? reopen;",
+            "final reopenPlanner = CredentialReopenPlanner();",
+            "void _planReopen(NativeCredentialEvent event)",
+            "reopenPlanner.plan(event: event, reopen: reopen)",
+        ):
+            self.assertIn(token, CREDENTIAL_HANDOFF)
+        # 重开失败不改写续期成功的结论。
+        self.assertIn("reopenPlanner.forget(event.sessionId)", CREDENTIAL_HANDOFF)
+        # 应用侧记住这一次远程打开用的参数，重开的是同一集。
+        for token in (
+            "Future<void> reopenAfterCredentialRefresh()",
+            "reopen: () => unawaited(reopenAfterCredentialRefresh()),",
+            "MediaCandidate candidate,\n    int hostId,\n    int generation,\n    Uri sourceUrl,\n    int? profileId,",
+        ):
+            self.assertIn(token, APP_CONTROLLER)
 
     def test_credential_files_never_log_a_value(self):
         for name in (

@@ -161,7 +161,7 @@ internal data class NativeMediaSessionRoute(
          */
         fun admit(
             raw: String,
-            shelf: SiteCredentialRecord.Shelf,
+            shelf: SiteCredentialRecord.ShelfLookup,
             profileId: Int,
         ): Admission {
             val credential = shelf.get(profileId, raw)

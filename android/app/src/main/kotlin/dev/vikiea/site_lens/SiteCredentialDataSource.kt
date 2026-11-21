@@ -31,16 +31,18 @@ internal class SiteCredentialDataSource(
 
     override fun close() = upstream.close()
 
-    /** 把这条地址的凭证合并进请求头；同名（忽略大小写）的旧值被替换。 */
+    /**
+     * 把这条地址的凭证合并进请求头；同名（忽略大小写）的旧值被替换。
+     *
+     * 只有 [SiteCredentialRecord.HEADER_AUTHORIZATION] 与
+     * [SiteCredentialRecord.HEADER_COOKIE] 会被改写：别的头属于页面，凭证不该
+     * 顺手覆盖它们。
+     */
     fun withCredentialHeaders(dataSpec: DataSpec): DataSpec {
+        // 每一次请求都重新问一次：清单与分片各算一次，会话中途续期也走这里。
         val headers = headersFor(dataSpec.uri.toString())
         if (headers.isEmpty()) return dataSpec
-        val merged = LinkedHashMap<String, String>(dataSpec.httpRequestHeaders)
-        for (name in listOf(SiteCredentialRecord.HEADER_AUTHORIZATION, SiteCredentialRecord.HEADER_COOKIE)) {
-            val value = headers[name] ?: continue
-            merged.keys.firstOrNull { it.equals(name, ignoreCase = true) }?.let(merged::remove)
-            merged[name] = value
-        }
+        val merged = AuthoredHttpRequest.merge(dataSpec.httpRequestHeaders, headers)
         return dataSpec.withAdditionalHeaders(merged)
     }
 
