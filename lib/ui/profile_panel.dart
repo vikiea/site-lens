@@ -1051,6 +1051,27 @@ class _AdvancedArea extends StatelessWidget {
             ),
           ),
           const Divider(),
+          SwitchListTile(
+            key: const ValueKey('profile-direct-route'),
+            contentPadding: EdgeInsets.zero,
+            title: const Text('直连出口'),
+            subtitle: Text(
+              _directRouteSubtitle,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            value: _offersDirect,
+            onChanged: (value) => safely(context, () async {
+              final routes = <SiteRoute>{
+                for (final route in profile.routes)
+                  if (route != SiteRoute.direct) route,
+                if (value) SiteRoute.direct,
+              };
+              if (routes.isEmpty) routes.add(SiteRoute.browse);
+              await app.db.setProfileRoutes(profile.id, routes);
+              await app.load();
+            }),
+          ),
+          const Divider(),
           Wrap(
             spacing: 8,
             runSpacing: 8,
@@ -1081,6 +1102,17 @@ class _AdvancedArea extends StatelessWidget {
       ),
     ),
   );
+
+  /// 直连出口 = 「应用按站点自己的接口取内容」。它不是一个开关式的降级策略：
+  /// 打开之后剧场才会把这份档案当成一个站点，关掉之后它只保留浏览出口。
+  bool get _offersDirect => profile.routes.contains(SiteRoute.direct);
+
+  String get _directRouteSubtitle {
+    if (!_offersDirect) return '关：只在网页里浏览，剧场不列出这个站点';
+    final adapter = app.theaterAdapterFor(profile.id);
+    if (adapter == null) return '开：正在按这份档案的地址认站点接口';
+    return '开：剧场用它自己的接口取目录（${adapter.id}）';
+  }
 
   Future<void> _editReadySelector(BuildContext context) async {
     final value = await promptText(

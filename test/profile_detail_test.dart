@@ -136,10 +136,7 @@ void main() {
     ];
     app.installTheaterAdapter(profile.id, adapter);
     // 这份档案两条出口都具备，才能表达「直连失败、浏览仍可用」。
-    await db.setProfileRoutes(profile.id, {
-      SiteRoute.direct,
-      SiteRoute.browse,
-    });
+    await db.setProfileRoutes(profile.id, {SiteRoute.direct, SiteRoute.browse});
     await app.load();
     profile = app.profiles.singleWhere((value) => value.id == profile.id);
     // The direct route is failing while the browse route still works: the
@@ -227,5 +224,67 @@ void main() {
     await tester.tap(find.text('恢复跟随全局策略'));
     await tester.pumpAndSettle();
     expect(app.profileFilterPolicies.containsKey(profile.id), isFalse);
+  });
+
+  testWidgets('详情页可以打开直连出口，打开之后剧场才把这个档案当成站点', (tester) async {
+    // 真机上没有任何别的地方会写这条出口：这是用户把一份档案变成剧站点的入口。
+    expect(
+      profile.routes.contains(SiteRoute.direct),
+      isFalse,
+      reason: '新档案默认只有浏览出口',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildSiteLensTheme(ThemePresetId.oceanBlue, Brightness.light),
+        home: ProfileDetailScreen(
+          app: app,
+          profile: profile,
+          onEnter: (_) {},
+          onEnterProfile: (_) async {},
+          onResume: () {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final toggle = find.byKey(const ValueKey('profile-direct-route'));
+    // 高级区默认折叠：先展开，再滚到开关。
+    await tester.scrollUntilVisible(
+      find.text('高级：发布页与选择器'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('高级：发布页与选择器'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      toggle,
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('直连出口'), findsOneWidget);
+    expect(find.textContaining('剧场不列出这个站点'), findsOneWidget);
+
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+
+    final saved = app.profiles.singleWhere((value) => value.id == profile.id);
+    expect(saved.routes, contains(SiteRoute.direct), reason: '打开开关就该把直连出口写进档案');
+    expect(
+      saved.routes,
+      contains(SiteRoute.browse),
+      reason: '打开直连出口不该把浏览出口去掉（ADR-0002：两条出口并列）',
+    );
+
+    // 关回去只撤掉直连出口，浏览出口还在。
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    final reverted = app.profiles.singleWhere(
+      (value) => value.id == profile.id,
+    );
+    expect(reverted.routes, isNot(contains(SiteRoute.direct)));
+    expect(reverted.routes, contains(SiteRoute.browse));
   });
 }
