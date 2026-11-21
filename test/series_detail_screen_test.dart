@@ -239,7 +239,8 @@ void main() {
     await revealCandidates(tester);
     await tester.tap(find.byTooltip('切换清晰度'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('粤语音轨').last);
+    // 候选的 label 是「清晰度 · 音轨」整串，按包含匹配点选。
+    await tester.tap(find.textContaining('粤语音轨').last);
     await tester.pumpAndSettle();
 
     expect(lineText('乙线路'), findsWidgets);
