@@ -897,6 +897,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       source: source,
       lineId: lineId,
       continueWatchingMs: continueWatchingMs,
+      profileId: target,
     );
   }
 
@@ -4473,6 +4474,7 @@ class RemotePlayerLaunch {
     required this.source,
     this.lineId,
     this.continueWatchingMs = 0,
+    this.profileId,
   });
 
   final MediaCandidate candidate;
@@ -4481,6 +4483,10 @@ class RemotePlayerLaunch {
   final RemoteEpisodeSource source;
   final String? lineId;
   final int continueWatchingMs;
+
+  /// 这一部剧所属的站点档案：播放页换集、失败重开时原样带回宿主，原生按它
+  /// 取凭证（ADR-0009）。
+  final int? profileId;
 }
 
 /// 把 `AppController` 的远程播放能力交给播放页（[RemotePlaybackHost]）。
@@ -4493,18 +4499,22 @@ class AppRemotePlaybackHost implements RemotePlaybackHost {
 
   final AppController app;
 
-  /// 候选所属的站点档案就是它的 `hostId` 指向的那个宿主；`openRemoteCandidate`
-  /// 在没有档案时按公开内容照播（ADR-0009），所以这里把宿主 id 也当作档案 id
-  /// 传下去，与详情页交出来的候选保持一致。
+  /// 档案 id 由调用方交进来，不从候选身上推。
+  ///
+  /// 候选的 `hostId` 是观察它的网页宿主，档案 id 是凭证与目录的归属者；两者
+  /// 只是碰巧都是小整数。把宿主 id 当档案 id 用，原生就会去一个不存在的档案
+  /// 名下找凭证，带凭证的站点在换集、失败重开时安静地退回匿名。
   @override
-  Future<NativePlaybackSession> openRemote(MediaCandidate candidate) =>
-      app.openRemoteCandidate(
-        candidate,
-        hostId: candidate.hostId,
-        generation: candidate.generation,
-        sourceUrl: candidate.sourceUrl,
-        profileId: candidate.hostId,
-      );
+  Future<NativePlaybackSession> openRemote(
+    MediaCandidate candidate, {
+    int? profileId,
+  }) => app.openRemoteCandidate(
+    candidate,
+    hostId: candidate.hostId,
+    generation: candidate.generation,
+    sourceUrl: candidate.sourceUrl,
+    profileId: profileId,
+  );
 
   @override
   Stream<NativePlaybackSession> get nativeStates => app.nativeMedia.states;

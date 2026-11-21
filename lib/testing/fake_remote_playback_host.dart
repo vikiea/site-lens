@@ -16,6 +16,9 @@ class FakeRemotePlaybackHost implements RemotePlaybackHost {
   /// 每一次 `openRemote` 收到的候选，按顺序。
   final opened = <MediaCandidate>[];
 
+  /// 与 [opened] 一一对应的档案 id：换集与失败重开都必须带着它。
+  final openedProfileIds = <int?>[];
+
   /// 每一次命令，形如 `seek:1500`、`speed:2.0`。
   final commands = <String>[];
 
@@ -40,9 +43,13 @@ class FakeRemotePlaybackHost implements RemotePlaybackHost {
   Stream<NativePlaybackSession> get nativeStates => controller.stream;
 
   @override
-  Future<NativePlaybackSession> openRemote(MediaCandidate candidate) async {
+  Future<NativePlaybackSession> openRemote(
+    MediaCandidate candidate, {
+    int? profileId,
+  }) async {
     _opens++;
     opened.add(candidate);
+    openedProfileIds.add(profileId);
     final session = NativePlaybackSession(
       id: 'native_$_opens',
       candidateId: candidate.id,

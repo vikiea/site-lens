@@ -14,7 +14,15 @@ import 'remote_playback_failure.dart';
 /// 通道也能把所有交互走一遍。
 abstract interface class RemotePlaybackHost {
   /// 打开一个远程候选（凭证注入、缓存、凭证租约都由这一层处理）。
-  Future<NativePlaybackSession> openRemote(MediaCandidate candidate);
+  ///
+  /// [profileId] 是这次播放所属的**站点档案**，由调用方在打开播放页时就交给
+  /// 宿主：原生按它取凭证（ADR-0009），续期之后的重新打开也要用同一个 id。
+  /// 候选自带的 `hostId` 是观察它的网页宿主，两者是不同的东西——把宿主 id
+  /// 当档案 id 传下去，会让带凭证的站点在换集、重开时安静地退回匿名。
+  Future<NativePlaybackSession> openRemote(
+    MediaCandidate candidate, {
+    int? profileId,
+  });
 
   /// 原生会话快照的推送流。订阅方负责在销毁时取消。
   Stream<NativePlaybackSession> get nativeStates;
@@ -58,6 +66,7 @@ class RemotePlaybackController extends ChangeNotifier {
     this.audioLabel,
     this.continueWatching = 0,
     this.onEpisodeChanged,
+    this.profileId,
   }) : _host = host {
     _states = host.nativeStates.listen(_onNativeState);
   }
@@ -84,6 +93,10 @@ class RemotePlaybackController extends ChangeNotifier {
   /// 「继续观看」的起点。**不落库**：追剧记录是另一件事（T12），这里只把
   /// 调用方手里已有的位置用上，没有就从头上播。
   final int continueWatching;
+
+  /// 这一部剧所属的站点档案。每次打开（第一集、换集、失败重开）都带给宿主，
+  /// 免得「播放页手里只有候选」时把网页宿主 id 当成档案 id。
+  final int? profileId;
 
   /// 当前这一集换了之后的通知，参数是（集号标签，是不是用户自己跳的）。
   final void Function(String episode, int positionMs)? onEpisodeChanged;
@@ -138,7 +151,7 @@ class RemotePlaybackController extends ChangeNotifier {
   }) async {
     _openError = null;
     _failure = null;
-    final next = await _host.openRemote(candidate);
+    final next = await _host.openRemote(candidate, profileId: profileId);
     if (_disposed) {
       // 打开期间页面就走了：新会话不能留在后台占着音频。
       try {

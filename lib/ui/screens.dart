@@ -512,6 +512,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             qualityLabel: launch.candidate.qualityLabel,
             audioLabel: launch.candidate.audioLabel,
             continueWatchingMs: launch.continueWatchingMs,
+            profileId: launch.profileId,
           ),
         ),
       );

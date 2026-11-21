@@ -86,6 +86,7 @@ void main() {
     FakeRemotePlaybackHost host, {
     RemoteEpisodeSource? source,
     int continueWatching = 0,
+    int? profileId,
   }) => RemotePlaybackController(
     host: host,
     title: '示例剧',
@@ -96,6 +97,7 @@ void main() {
     qualityLabel: '1080P',
     audioLabel: '国语',
     continueWatching: continueWatching,
+    profileId: profileId,
   );
 
   test('点开就播：start 打开候选并让它开始播放', () async {
@@ -109,6 +111,34 @@ void main() {
     expect(host.opened.single.id, candidateFor(1).id);
     expect(controller.session!.state, NativePlaybackState.playing);
     expect(host.commands, contains('play:native_1'));
+  });
+
+  // ADR-0009：原生按档案 id 取站点凭证。候选自带的 hostId 是观察它的网页
+  // 宿主，不是档案；带着凭证的站点如果在换集时把宿主 id 当档案传下去，就会
+  // 安静地退回匿名播放，用户看到的是「突然只能放 480P 或者直接 403」。
+  //
+  // 换集拿到的新候选与原候选属于同一个网页宿主（都是 hostId=1），所以这条
+  // 用例直接盯住控制器交给宿主的那两个值：档案 id 必须一路是同一个，宿主 id
+  // 只在打开候选时用，不能顶替档案。
+  test('换集与重开都带着同一个档案 id，不拿候选的宿主 id 顶替', () async {
+    final host = FakeRemotePlaybackHost();
+    addTearDown(host.dispose);
+    final controller = controllerFor(
+      host,
+      source: AdapterEpisodeSource(adapter: catalogAdapter(), seriesKey: 's-1'),
+      profileId: 7,
+    );
+    addTearDown(() => controller.stopAndDispose());
+
+    await controller.start();
+    await controller.switchBy(1);
+    await controller.retryCurrent();
+
+    expect(host.opened, hasLength(3));
+    expect(host.openedProfileIds, [7, 7, 7], reason: '每一次打开都该带同一个档案 id');
+    // 候选上的宿主 id 与档案 id 不是一回事：换集时宿主 id 保持 1，档案 id
+    // 保持 7。两边任意一方被另一方顶替，这里就对不上。
+    expect(host.opened.map((c) => c.hostId), [1, 1, 1]);
   });
 
   test('跳集：新会话开好之后才关旧的，一次换集只构建一次 MediaItem', () async {

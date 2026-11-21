@@ -30,6 +30,7 @@ class RemotePlayerScreen extends StatefulWidget {
     this.audioLabel,
     this.continueWatchingMs = 0,
     this.onEpisodeChanged,
+    this.profileId,
   });
 
   final RemotePlaybackHost host;
@@ -42,6 +43,9 @@ class RemotePlayerScreen extends StatefulWidget {
   final String? audioLabel;
   final int continueWatchingMs;
   final void Function(String episode, int positionMs)? onEpisodeChanged;
+
+  /// 这一部剧所属的站点档案；换集与失败重开都带给宿主（ADR-0009）。
+  final int? profileId;
 
   @override
   State<RemotePlayerScreen> createState() => _RemotePlayerScreenState();
@@ -58,6 +62,7 @@ class _RemotePlayerScreenState extends State<RemotePlayerScreen> {
     qualityLabel: widget.qualityLabel,
     audioLabel: widget.audioLabel,
     continueWatching: widget.continueWatchingMs,
+    profileId: widget.profileId,
     onEpisodeChanged: (episode, position) =>
         widget.onEpisodeChanged?.call(episode, position),
   );
