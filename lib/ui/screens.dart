@@ -468,6 +468,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           profile: station.profile,
           series: series,
           lineMemory: app.seriesLineMemory,
+          app: app,
         ),
       ),
     );
