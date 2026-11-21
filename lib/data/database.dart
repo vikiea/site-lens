@@ -1154,8 +1154,13 @@ class AppDatabase extends GeneratedDatabase {
                   ? null
                   : DateTime.parse(row.read<String>('last_ok_at')),
               lastFailureCategory: row.readNullable<String>('failure_category'),
-              // Here the legacy column always carries this row's own 出口.
-              lastFailureRoute: route.storageName,
+              // 只有失败的出口才点名自己；可用的出口不带失败归属，否则一处旧失败
+              // 会挂在一个健康的出口上。
+              lastFailureRoute: row.readNullable<String>('last_failure_route') ??
+                  (ProfileHealthState.values.byName(row.read<String>('state')) ==
+                          ProfileHealthState.failing
+                      ? route.storageName
+                      : null),
             ),
           ),
     ];
