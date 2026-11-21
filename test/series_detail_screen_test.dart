@@ -214,9 +214,14 @@ void main() {
     await pumpDetail(tester, adapter: adapterWith(), owner: owner);
     await revealCandidates(tester);
 
-    // 候选渲染的是「清晰度 · 音轨」拼起来的整串，所以按包含匹配。
+    // 候选渲染的是「清晰度 · 音轨」拼起来的整串；选择器平时只显示选中的
+    // 那条，其余条目要展开菜单才存在。
     expect(find.textContaining('1080P'), findsWidgets);
+    await tester.tap(find.byTooltip('切换清晰度'));
+    await tester.pumpAndSettle();
     expect(find.textContaining('720P'), findsWidgets);
+    await tester.tap(find.byTooltip('切换清晰度'));
+    await tester.pumpAndSettle();
     expect(find.textContaining('国语'), findsWidgets);
   });
 
