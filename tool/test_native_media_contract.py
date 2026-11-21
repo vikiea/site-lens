@@ -43,8 +43,11 @@ class NativeMediaContractTests(unittest.TestCase):
             NATIVE_SESSION.index('acquireRead(it)'),
             NATIVE_SESSION.index('player.setMediaItem'),
         )
-        stop = NATIVE_MEDIA.split('private fun stopLocalPlayer()', 1)[1].split('private fun ensureTexture(', 1)[0]
-        self.assertLess(stop.index('media.release()'), stop.index('fileLease?.close()'))
+        # 进程内播放器与它的文件租约都不存在了；租约只由服务持有与释放。
+        self.assertNotIn('fileLease', NATIVE_MEDIA)
+        self.assertNotIn('ExoPlayer.Builder', NATIVE_MEDIA)
+        self.assertIn('fileLease?.close()', NATIVE_SESSION)
+        self.assertIn('var fileLease: Closeable? = null', NATIVE_SESSION)
 
     def test_native_media_session_service_owns_background_player_and_media3_notification(self):
         self.assertIn('class NativeMediaSessionService : MediaSessionService()', NATIVE_SESSION)
